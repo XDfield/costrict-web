@@ -34,9 +34,13 @@ costrict-web/
 
 ## 快速开始
 
-### 使用 Docker（推荐）
+### 使用 Docker 或 Podman（推荐）
 
-**注意**：在 Windows 上运行 Docker 需要管理员权限。请以管理员身份运行终端或 PowerShell。
+**注意**：本项目同时支持 Docker 和 Podman。
+
+#### 使用 Docker
+
+在 Windows 上运行 Docker 需要管理员权限。
 
 ```bash
 # 启动所有服务（PostgreSQL, Casdoor, Go 后端, Next.js 前端）
@@ -51,6 +55,28 @@ docker-compose down
 # 清理所有数据（包括数据库）
 docker-compose down -v
 ```
+
+#### 使用 Podman
+
+Podman 使用 rootless 模式，不需要管理员权限。
+
+```bash
+# 启动所有服务
+podman-compose up -d
+
+# 查看日志
+podman-compose logs -f
+
+# 停止所有服务
+podman-compose down
+
+# 清理所有数据（包括数据库）
+podman-compose down -v
+```
+
+**注意**：
+- docker-compose.yml 文件格式与 Podman Compose 兼容
+- 卷挂载路径已针对 Podman 进行优化
 
 ### 本地开发
 

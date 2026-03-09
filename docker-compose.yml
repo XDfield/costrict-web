@@ -11,8 +11,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - costrict-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U costrict"]
       interval: 10s
@@ -38,8 +36,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - costrict-network
     volumes:
       - casdoor_conf:/conf
 
@@ -63,8 +59,8 @@ services:
         condition: service_healthy
       casdoor:
         condition: service_started
-    networks:
-      - costrict-network
+    volumes:
+      - ./server:/app
 
   # Costrict-Web 前端应用 (buildwithclaude web-ui)
   web:
@@ -79,16 +75,10 @@ services:
       POSTGRES_URL: "postgresql://costrict:costrict_password@postgres:5432/costrict_db"
     depends_on:
       - server
-    networks:
-      - costrict-network
     volumes:
       - ./web:/app
       - /app/node_modules
       - /app/.next
-
-networks:
-  costrict-network:
-    driver: bridge
 
 volumes:
   postgres_data:
