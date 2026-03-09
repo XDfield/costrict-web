@@ -36,6 +36,8 @@ costrict-web/
 
 ### 使用 Docker（推荐）
 
+**注意**：在 Windows 上运行 Docker 需要管理员权限。请以管理员身份运行终端或 PowerShell。
+
 ```bash
 # 启动所有服务（PostgreSQL, Casdoor, Go 后端, Next.js 前端）
 docker-compose up -d
@@ -45,6 +47,9 @@ docker-compose logs -f
 
 # 停止所有服务
 docker-compose down
+
+# 清理所有数据（包括数据库）
+docker-compose down -v
 ```
 
 ### 本地开发
