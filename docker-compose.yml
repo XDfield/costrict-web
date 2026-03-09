@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16-alpine
+    container_name: costrict-postgres
+    environment:
+      POSTGRES_USER: costrict
+      POSTGRES_PASSWORD: costrict_password
+      POSTGRES_DB: costrict_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - costrict-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costrict"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Casdoor 认证服务
+  casdoor:
+    image: casbin/casdoor:latest
+    container_name: costrict-casdoor
+    ports:
+      - "8000:8000"
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      DRIVER: "postgres"
+      SQL_USERNAME: "costrict"
+      SQL_PASSWORD: "costrict_password"
+      SQL_HOST_NAME: "postgres"
+      SQL_PORT: "5432"
+      SQL_DB_NAME: "costrict_db"
+      CREATOR: "admin"
+      PASSWORD: "123"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - costrict-network
+    volumes:
+      - casdoor_conf:/conf
+
+  # Costrict-Web 应用
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: costrict-web
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: "postgresql://costrict:costrict_password@postgres:5432/costrict_db"
+      CASDOOR_ENDPOINT: "http://casdoor:8000"
+      CASDOOR_CLIENT_ID: "your-client-id"
+      CASDOOR_CLIENT_SECRET: "your-client-secret"
+      NEXTAUTH_URL: "http://localhost:3000"
+      NEXTAUTH_SECRET: "your-secret-key"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      casdoor:
+        condition: service_started
+    networks:
+      - costrict-network
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+networks:
+  costrict-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  casdoor_conf:

@@ -5,8 +5,13 @@
 - [x] 初始化 Git 仓库
 - [x] 创建 .gitignore 文件
 - [x] 创建 README.md 文件
-- [ ] 初始化 Next.js 项目
-- [ ] 配置 TypeScript
+- [x] Clone buildwithclaude 参考项目
+- [x] 复制基础配置文件（package.json, tsconfig.json, next.config.ts 等）
+- [x] 复制目录结构（app, components, lib, public）
+- [x] 创建数据库 schema (costrict-schema.ts)
+- [x] 创建 .env.example 文件
+- [ ] 安装项目依赖
+- [ ] 配置 Docker Compose
 - [ ] 配置 Tailwind CSS
 
 ## Docker 配置

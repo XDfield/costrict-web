@@ -1,0 +1,3 @@
+[submodule "references/buildwithclaude"]
+	path = references/buildwithclaude
+	url = https://github.com/davepoon/buildwithclaude.git
