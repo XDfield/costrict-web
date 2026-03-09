@@ -5,7 +5,7 @@
   "description": "AI Agent Platform - Integrating Casdoor and buildwithclaude",
   "scripts": {
     "dev:server": "cd server && go run main.go",
-    "dev:web": "cd references/buildwithclaude/web-ui && npm run dev",
+    "dev:web": "cd web/web-ui && npm run dev",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
     "build:server": "cd server && go build -o bin/server main.go",
     "docker:up": "docker-compose up -d",

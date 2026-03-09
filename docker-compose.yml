@@ -71,7 +71,7 @@ services:
   # Costrict-Web 前端应用 (buildwithclaude web-ui)
   web:
     build:
-      context: ./references/buildwithclaude/web-ui
+      context: ./web/web-ui
       dockerfile: Dockerfile
     container_name: costrict-web
     ports:
@@ -84,7 +84,7 @@ services:
     networks:
       - costrict-network
     volumes:
-      - ./references/buildwithclaude/web-ui:/app
+      - ./web/web-ui:/app
       - /app/node_modules
       - /app/.next
 

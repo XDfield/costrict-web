@@ -54,4 +54,4 @@
  server/go.sum
 
 # Submodule
- references/buildwithclaude/
+ web/

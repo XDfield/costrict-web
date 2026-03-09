@@ -22,9 +22,11 @@ costrict-web/
 │   │   └── middleware/  # 中间件
 │   ├── main.go       # 应用入口
 │   └── Dockerfile    # 后端 Docker 镜像
-├── references/       # 参考项目
-│   └── buildwithclaude/  # 前端（submodule）
-│       └── web-ui/       # Next.js 前端应用
+├── web/             # 前端应用（buildwithclaude）
+│   ├── web-ui/       # Next.js 前端应用
+│   ├── plugins/       # 插件资源
+│   ├── scripts/       # 构建脚本
+│   └── tests/         # 测试文件
 ├── docker-compose.yml # Docker Compose 配置
 ├── package.json     # 根目录脚本
 └── .env.example    # 环境变量示例
@@ -51,7 +53,7 @@ docker-compose down
 
 ```bash
 # 进入前端目录
-cd references/buildwithclaude/web-ui
+cd web/web-ui
 
 # 安装依赖
 npm install

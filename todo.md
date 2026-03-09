@@ -6,15 +6,15 @@
 - [x] 创建 .gitignore 文件
 - [x] 创建 README.md 文件
 - [x] Clone buildwithclaude 参考项目（作为前端）
-- [x] 删除自定义前端文件（直接使用 buildwithclaude）
+- [x] 将 buildwithclaude 移动到 web/ 目录
+- [x] 删除 references/ 目录
 - [x] 创建 Go 后端项目结构
 - [x] 创建 Go 后端基础文件（main.go, config, database, handlers, middleware）
-- [x] 更新 docker-compose.yml（添加 Go 后端服务，前端使用 buildwithclaude web-ui）
+- [x] 更新 docker-compose.yml（前端使用 web/web-ui）
 - [x] 创建 Go 后端 Dockerfile
-- [x] 更新根目录 package.json（添加开发脚本）
-- [x] 更新 .gitignore（添加 Go 忽略规则）
+- [x] 更新根目录 package.json（更新前端路径）
+- [x] 更新 .gitignore（添加 web/ 忽略规则）
 - [ ] 运行 go mod tidy（安装 Go 依赖）
-- [ ] 安装根目录依赖（concurrently）
 - [ ] 测试 Docker Compose 启动
 
 ## Docker 配置
