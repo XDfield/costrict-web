@@ -1,104 +1,90 @@
-# BuildWithClaude - Web UI
+# Costrict-Web
 
-A modern web interface for browsing and installing Claude Code plugins, agents, commands, hooks, MCP servers, and plugin marketplaces.
+AI Agent 平台，整合 Casdoor 的组织管理能力和 buildwithclaude 的技能市场功能。
 
-## Features
+## 技术栈
 
-- 🤖 Browse 317+ specialized AI agents across 11 categories
-- 🔧 Explore 192 slash commands for automation
-- 🪝 Discover 40 automation hooks
-- 🔌 Browse 199+ MCP servers for database/API integrations
-- 🧩 Discover 20.3k+ community plugins from 1,158 marketplaces
-- ⚡ Browse 2k+ individual skills from plugins
-- 🏪 Explore 1,158 community plugin marketplaces
-- 🏷️ Filter by category
-- 🔎 Real-time search functionality
-- 📋 One-click copy to clipboard
-- 💾 Direct download of markdown files
-- 📱 Fully responsive design
-- 🌙 Dark mode support
-- 🚀 Built with Next.js 16, React 19, and shadcn/ui
+- **前端**: Next.js 16 + React 19 + TypeScript + Tailwind CSS
+- **后端**: Go + Gin + GORM
+- **认证**: Casdoor (OAuth 2.0)
+- **数据库**: PostgreSQL + GORM
+- **容器化**: Docker + Docker Compose
 
-## Local Development
+## 项目结构
 
-1. Navigate to the web-ui directory:
-   ```bash
-   cd web-ui
-   ```
+```
+costrict-web/
+├── app/              # Next.js App Router (前端)
+├── components/       # React 组件 (前端)
+├── lib/             # 工具库和 API 客户端 (前端)
+├── server/           # Go 后端服务
+│   ├── internal/
+│   │   ├── config/      # 配置管理
+│   │   ├── database/    # 数据库连接
+│   │   ├── handlers/    # HTTP 处理器
+│   │   └── middleware/  # 中间件
+│   ├── main.go       # 应用入口
+│   └── Dockerfile    # 后端 Docker 镜像
+├── docker/          # Docker 配置
+├── references/       # 参考项目 (buildwithclaude submodule)
+└── public/          # 静态资源 (前端)
+```
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+## 快速开始
 
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-
-4. Open [http://localhost:3000](http://localhost:3000) in your browser
-
-## Building for Production
+### 使用 Docker（推荐）
 
 ```bash
-npm run build
+# 启动所有服务（PostgreSQL, Casdoor, Go 后端, Next.js 前端）
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止所有服务
+docker-compose down
 ```
 
+### 本地开发
 
-### Other Platforms
-
-The site can be deployed to any platform that supports Next.js:
-- Vercel
-- Netlify
-- AWS Amplify
-- Cloudflare Pages
-- Self-hosted with Node.js
-
-## Tech Stack
-
-- **Framework**: Next.js 16 (App Router) + React 19
-- **UI Components**: shadcn/ui + Radix UI
-- **Styling**: Tailwind CSS 4
-- **Language**: TypeScript
-- **Database**: Neon Postgres + Drizzle ORM
-- **Icons**: Lucide React + Radix Icons
-
-## Environment Variables
-
-For local development with database features:
+#### 前端开发
 
 ```bash
-# Required for database features (MCP servers, marketplaces, plugins, skills)
-POSTGRES_URL=postgres://...
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
 ```
 
-Without `POSTGRES_URL`, the app still works for browsing agents, commands, and hooks (read from markdown files).
+#### 后端开发
 
-## Project Structure
+```bash
+cd server
 
-```
-web-ui/
-├── app/                    # Next.js App Router pages
-│   ├── subagents/          # Browse agents page
-│   ├── commands/           # Browse commands page
-│   ├── hooks/              # Browse hooks page
-│   ├── mcp-servers/        # Browse MCP servers (database)
-│   ├── marketplaces/       # Browse community plugin marketplaces (database)
-│   ├── plugins/            # Browse community plugins (database)
-│   ├── skills/             # Browse skills from plugins (database)
-│   └── page.tsx            # Home page
-├── components/             # React components (shadcn/ui + custom)
-│   ├── ui/                 # shadcn/ui base components
-│   └── ...                 # Feature components
-├── lib/                    # Server utilities and data fetching
-│   ├── db/                 # Database schema and client
-│   │   ├── client.ts       # Drizzle ORM client
-│   │   └── schema.ts       # Database schema definitions
-│   ├── *-server.ts         # Server-side data fetching
-│   └── *-types.ts          # TypeScript type definitions
-└── public/                 # Static assets
+# 安装依赖
+go mod tidy
+
+# 运行应用
+go run main.go
 ```
 
-## Contributing
+## 服务端口
 
-See the main repository's [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
+- **前端**: http://localhost:3000
+- **后端 API**: http://localhost:8080
+- **Casdoor**: http://localhost:8000
+- **PostgreSQL**: localhost:5432
+
+## 文档
+
+- [系统设计文档](./SYSTEM_DESIGN.md)
+- [开发进度](./todo.md)
+
+## 参考项目
+
+- [buildwithclaude](./references/buildwithclaude) - Claude 技能市场参考实现（submodule）
+
+## 许可证
+
+MIT
