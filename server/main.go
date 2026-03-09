@@ -7,6 +7,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/costrict/costrict-web/server/internal/models"
 )
 
 func main() {
@@ -18,6 +19,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Auto migrate database schema
+	err = db.AutoMigrate(
+		&models.SkillRepository{},
+		&models.Skill{},
+		&models.Agent{},
+		&models.Command{},
+		&models.MCPServer{},
+		&models.SkillRating{},
+		&models.UserPreference{},
+	)
+	if err != nil {
+		log.Fatalf("Failed to migrate database: %v", err)
+	}
+
+	log.Println("Database migrated successfully")
 
 	// Initialize Gin router
 	r := gin.Default()
@@ -38,7 +55,7 @@ func main() {
 		// Auth routes
 		auth := api.Group("/auth")
 		{
-			auth.POST("/login", handlers.Login)
+			auth.GET("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
 			auth.GET("/me", handlers.GetCurrentUser)
 		}

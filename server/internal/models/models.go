@@ -2,8 +2,18 @@ package models
 
 import (
 	"time"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// Organization represents a Casdoor organization
+type Organization struct {
+	ID          string    `gorm:"type:uuid;primaryKey" json:"id"`
+	Name        string    `gorm:"type:varchar(255);not null" json:"name"`
+	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
+	CreatedAt   time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+}
 
 // SkillRepository represents a repository that contains skills/agents/commands
 type SkillRepository struct {
