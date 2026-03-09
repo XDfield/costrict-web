@@ -84,7 +84,7 @@ services:
     networks:
       - costrict-network
     volumes:
-      - ./web/web-ui:/app
+      - ./web:/app
       - /app/node_modules
       - /app/.next
 
