@@ -14,7 +14,38 @@
 - [x] 更新根目录 package.json（更新前端路径）
 - [x] 更新 .gitignore（添加 web/ 忽略规则）
 - [x] 运行 go mod tidy（安装 Go 依赖）
+- [x] 创建数据库模型（GORM models）
+- [x] 创建 Casdoor 客户端（OAuth 2.0 集成）
 - [ ] 测试 Docker Compose 启动（需要管理员权限）
+
+## 后端开发
+
+- [x] 创建基础项目结构
+- [x] 创建配置管理（config）
+- [x] 创建数据库连接（database）
+- [x] 创建中间件（middleware）
+- [x] 创建 HTTP 处理器框架（handlers）
+- [x] 创建数据库模型（models）
+- [x] 创建 Casdoor 集成（casdoor/client）
+- [ ] 实现认证逻辑（登录、登出、获取当前用户）
+- [ ] 实现组织管理 API
+- [ ] 实现仓库管理 API
+- [ ] 实现技能管理 API
+- [ ] 实现 Agent 管理 API
+- [ ] 实现命令管理 API
+- [ ] 实现 MCP 服务器管理 API
+- [ ] 实现技能市场 API
+- [ ] 数据库迁移和初始化
+
+## 前端开发
+
+- [x] 集成 buildwithclaude 作为前端（submodule）
+- [ ] 修改 buildwithclaude 以集成 Go 后端 API
+- [ ] 添加认证流程（Casdoor OAuth）
+- [ ] 添加组织管理界面
+- [ ] 添加仓库管理界面
+- [ ] 添加技能管理界面
+- [ ] 添加技能市场界面
 
 ## Docker 配置
 
