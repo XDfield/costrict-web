@@ -13,8 +13,8 @@
 - [x] 创建 Go 后端 Dockerfile
 - [x] 更新根目录 package.json（更新前端路径）
 - [x] 更新 .gitignore（添加 web/ 忽略规则）
-- [ ] 运行 go mod tidy（安装 Go 依赖）
-- [ ] 测试 Docker Compose 启动
+- [x] 运行 go mod tidy（安装 Go 依赖）
+- [ ] 测试 Docker Compose 启动（需要管理员权限）
 
 ## Docker 配置
 
