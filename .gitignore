@@ -40,3 +40,14 @@ next-env.d.ts
 
 # Trigger.dev
 .trigger/
+
+# Go
+server/bin/
+server/pkg/
+server/*.exe
+server/*.exe~
+server/*.dll
+server/*.so
+server/*.dylib
+server/vendor/
+server/go.sum

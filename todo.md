@@ -10,9 +10,15 @@
 - [x] 复制目录结构（app, components, lib, public）
 - [x] 创建数据库 schema (costrict-schema.ts)
 - [x] 创建 .env.example 文件
-- [ ] 安装项目依赖
-- [ ] 配置 Docker Compose
-- [ ] 配置 Tailwind CSS
+- [x] 创建 Go 后端项目结构
+- [x] 创建 Go 后端基础文件（main.go, config, database, handlers, middleware）
+- [x] 更新 docker-compose.yml（添加 Go 后端服务）
+- [x] 创建 Go 后端 Dockerfile
+- [x] 创建前端 Dockerfile
+- [x] 更新 .gitignore（添加 Go 忽略规则）
+- [ ] 安装前端依赖
+- [ ] 运行 go mod tidy（安装 Go 依赖）
+- [ ] 测试 Docker Compose 启动
 
 ## Docker 配置
 
