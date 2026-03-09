@@ -98,7 +98,7 @@ npm run dev
 
 ## 参考项目
 
-- [buildwithclaude](./references/buildwithclaude) - Claude 技能市场参考实现（submodule）
+- [buildwithclaude](./web) - Claude 技能市场参考实现（submodule，可跟踪上游更新）
 
 ## 许可证
 

@@ -6,8 +6,7 @@
 - [x] 创建 .gitignore 文件
 - [x] 创建 README.md 文件
 - [x] Clone buildwithclaude 参考项目（作为前端）
-- [x] 将 buildwithclaude 移动到 web/ 目录
-- [x] 删除 references/ 目录
+- [x] 将 buildwithclaude 添加为 submodule 到 web/ 目录（保留更新能力）
 - [x] 创建 Go 后端项目结构
 - [x] 创建 Go 后端基础文件（main.go, config, database, handlers, middleware）
 - [x] 更新 docker-compose.yml（前端使用 web/web-ui）
