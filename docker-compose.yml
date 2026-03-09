@@ -68,24 +68,23 @@ services:
     networks:
       - costrict-network
 
-  # Costrict-Web 前端应用 (Next.js)
+  # Costrict-Web 前端应用 (buildwithclaude web-ui)
   web:
     build:
-      context: .
+      context: ./references/buildwithclaude/web-ui
       dockerfile: Dockerfile
     container_name: costrict-web
     ports:
       - "3000:3000"
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_API_URL: "http://localhost:8080"
-      NEXT_PUBLIC_CASDOOR_URL: "http://localhost:8000"
+      POSTGRES_URL: "postgresql://costrict:costrict_password@postgres:5432/costrict_db"
     depends_on:
       - server
     networks:
       - costrict-network
     volumes:
-      - .:/app
+      - ./references/buildwithclaude/web-ui:/app
       - /app/node_modules
       - /app/.next
 

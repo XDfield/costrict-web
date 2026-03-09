@@ -14,9 +14,6 @@ AI Agent 平台，整合 Casdoor 的组织管理能力和 buildwithclaude 的技
 
 ```
 costrict-web/
-├── app/              # Next.js App Router (前端)
-├── components/       # React 组件 (前端)
-├── lib/             # 工具库和 API 客户端 (前端)
 ├── server/           # Go 后端服务
 │   ├── internal/
 │   │   ├── config/      # 配置管理
@@ -25,9 +22,12 @@ costrict-web/
 │   │   └── middleware/  # 中间件
 │   ├── main.go       # 应用入口
 │   └── Dockerfile    # 后端 Docker 镜像
-├── docker/          # Docker 配置
-├── references/       # 参考项目 (buildwithclaude submodule)
-└── public/          # 静态资源 (前端)
+├── references/       # 参考项目
+│   └── buildwithclaude/  # 前端（submodule）
+│       └── web-ui/       # Next.js 前端应用
+├── docker-compose.yml # Docker Compose 配置
+├── package.json     # 根目录脚本
+└── .env.example    # 环境变量示例
 ```
 
 ## 快速开始
@@ -50,6 +50,9 @@ docker-compose down
 #### 前端开发
 
 ```bash
+# 进入前端目录
+cd references/buildwithclaude/web-ui
+
 # 安装依赖
 npm install
 
@@ -67,6 +70,16 @@ go mod tidy
 
 # 运行应用
 go run main.go
+```
+
+#### 同时启动前后端
+
+```bash
+# 安装根目录依赖
+npm install
+
+# 同时启动前后端
+npm run dev
 ```
 
 ## 服务端口

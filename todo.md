@@ -5,19 +5,16 @@
 - [x] 初始化 Git 仓库
 - [x] 创建 .gitignore 文件
 - [x] 创建 README.md 文件
-- [x] Clone buildwithclaude 参考项目
-- [x] 复制基础配置文件（package.json, tsconfig.json, next.config.ts 等）
-- [x] 复制目录结构（app, components, lib, public）
-- [x] 创建数据库 schema (costrict-schema.ts)
-- [x] 创建 .env.example 文件
+- [x] Clone buildwithclaude 参考项目（作为前端）
+- [x] 删除自定义前端文件（直接使用 buildwithclaude）
 - [x] 创建 Go 后端项目结构
 - [x] 创建 Go 后端基础文件（main.go, config, database, handlers, middleware）
-- [x] 更新 docker-compose.yml（添加 Go 后端服务）
+- [x] 更新 docker-compose.yml（添加 Go 后端服务，前端使用 buildwithclaude web-ui）
 - [x] 创建 Go 后端 Dockerfile
-- [x] 创建前端 Dockerfile
+- [x] 更新根目录 package.json（添加开发脚本）
 - [x] 更新 .gitignore（添加 Go 忽略规则）
-- [ ] 安装前端依赖
 - [ ] 运行 go mod tidy（安装 Go 依赖）
+- [ ] 安装根目录依赖（concurrently）
 - [ ] 测试 Docker Compose 启动
 
 ## Docker 配置
