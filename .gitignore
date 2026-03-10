@@ -43,18 +43,28 @@
  .trigger/
 
 # Go
- server/bin/
- server/pkg/
- server/*.exe
- server/*.exe~
- server/*.dll
- server/*.so
- server/*.dylib
- server/vendor/
- server/go.sum
+server/bin/
+server/pkg/
+server/*.exe
+server/*.exe~
+server/*.dll
+server/*.so
+server/*.dylib
+server/vendor/
+server/*.log
 
 # Submodule
- web/
+web/
 
 # Costrict temporary files
- .costrict/
+.costrict/
+
+# Artifact storage (runtime data, not source)
+data/
+
+# Casdoor runtime files (contain sensitive credentials)
+casdoor/init.sql
+casdoor/app.conf
+
+# Docker / Podman
+.docker/
