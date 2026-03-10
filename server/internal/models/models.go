@@ -2,6 +2,7 @@ package models
 
 import (
 	"time"
+	"gorm.io/datatypes"
 )
 
 // Organization represents a Casdoor organization
@@ -113,4 +114,75 @@ type UserPreference struct {
 
 	// Relationships
 	DefaultRepository *SkillRepository `gorm:"foreignKey:DefaultRepositoryID" json:"defaultRepository,omitempty"`
+}
+
+type SkillRegistry struct {
+	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name        string     `gorm:"not null" json:"name"`
+	Description string     `json:"description"`
+	SourceType  string     `gorm:"not null;default:'internal'" json:"sourceType"`
+	ExternalURL    string     `json:"externalUrl"`
+	ExternalBranch string     `gorm:"default:'main'" json:"externalBranch"`
+	SyncEnabled    bool       `gorm:"default:false" json:"syncEnabled"`
+	SyncInterval   int        `gorm:"default:3600" json:"syncInterval"`
+	LastSyncedAt   *time.Time `json:"lastSyncedAt"`
+	LastSyncSHA    string     `json:"lastSyncSha"`
+	Visibility string `gorm:"default:'org'" json:"visibility"`
+	OrgID      string `json:"orgId"`
+	OwnerID    string `gorm:"not null" json:"ownerId"`
+	Items []SkillItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type SkillItem struct {
+	ID         string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID string `gorm:"not null" json:"registryId"`
+	Slug       string `gorm:"not null" json:"slug"`
+	ItemType   string `gorm:"not null" json:"itemType"`
+	Name       string `gorm:"not null" json:"name"`
+	Description string `json:"description"`
+	Category   string `json:"category"`
+	Version    string `gorm:"default:'1.0.0'" json:"version"`
+	Content    string `gorm:"type:text" json:"content"`
+	Metadata   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata"`
+	SourcePath string `json:"sourcePath"`
+	SourceSHA  string `json:"sourceSha"`
+	Visibility string `json:"visibility"`
+	InstallCount int    `gorm:"default:0" json:"installCount"`
+	Status       string `gorm:"default:'active'" json:"status"`
+	CreatedBy string `gorm:"not null" json:"createdBy"`
+	UpdatedBy string `json:"updatedBy"`
+	Registry  *SkillRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions  []SkillVersion  `gorm:"foreignKey:ItemID" json:"versions,omitempty"`
+	Artifacts []SkillArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type SkillVersion struct {
+	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID    string         `gorm:"not null" json:"itemId"`
+	Version   int            `gorm:"not null" json:"version"`
+	Content   string         `gorm:"type:text;not null" json:"content"`
+	Metadata  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata"`
+	CommitMsg string         `json:"commitMsg"`
+	CreatedBy string         `gorm:"not null" json:"createdBy"`
+	CreatedAt time.Time      `json:"createdAt"`
+}
+
+type SkillArtifact struct {
+	ID              string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID          string    `gorm:"not null" json:"itemId"`
+	Filename        string    `gorm:"not null" json:"filename"`
+	FileSize        int64     `gorm:"not null" json:"fileSize"`
+	ChecksumSHA256  string    `gorm:"not null" json:"checksumSha256"`
+	MimeType        string    `json:"mimeType"`
+	StorageBackend  string    `gorm:"default:'local'" json:"storageBackend"`
+	StorageKey      string    `gorm:"not null" json:"storageKey"`
+	ArtifactVersion string    `gorm:"not null" json:"artifactVersion"`
+	IsLatest        bool      `gorm:"default:false" json:"isLatest"`
+	DownloadCount   int       `gorm:"default:0" json:"downloadCount"`
+	UploadedBy      string    `gorm:"not null" json:"uploadedBy"`
+	CreatedAt       time.Time `json:"createdAt"`
 }
