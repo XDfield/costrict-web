@@ -55,3 +55,6 @@
 
 # Submodule
  web/
+
+# Costrict temporary files
+ .costrict/
