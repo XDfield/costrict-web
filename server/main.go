@@ -2,10 +2,12 @@ package main
 
 import (
 	"log"
+	"os"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/costrict/costrict-web/server/internal/models"
 )
@@ -39,6 +41,16 @@ func main() {
 	}
 
 	log.Println("Database migrated successfully")
+
+	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
+	if storagePath == "" {
+		storagePath = "./data/artifacts"
+	}
+	storageBackend, err := storage.NewLocalBackend(storagePath)
+	if err != nil {
+		log.Fatalf("Failed to initialize storage backend: %v", err)
+	}
+	handlers.StorageBackend = storageBackend
 
 	// Initialize Gin router
 	r := gin.Default()
@@ -137,6 +149,28 @@ func main() {
 			marketplace.GET("/categories", handlers.ListCategories)
 			marketplace.GET("/skills/trending", handlers.GetTrendingSkills)
 		}
+
+		// Skill Registries
+		api.GET("/registries", handlers.ListRegistries)
+		api.POST("/registries", handlers.CreateRegistry)
+		api.GET("/registries/:id", handlers.GetRegistry)
+		api.PUT("/registries/:id", handlers.UpdateRegistry)
+		api.DELETE("/registries/:id", handlers.DeleteRegistry)
+		api.GET("/registries/:registryId/items", handlers.ListItems)
+		api.POST("/registries/:registryId/items", handlers.CreateItem)
+
+		// Skill Items
+		api.GET("/items/:id", handlers.GetItem)
+		api.PUT("/items/:id", handlers.UpdateItem)
+		api.DELETE("/items/:id", handlers.DeleteItem)
+		api.GET("/items/:id/versions", handlers.ListItemVersions)
+		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
+		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
+
+		// Artifacts
+		api.POST("/artifacts/upload", handlers.UploadArtifact)
+		api.GET("/artifacts/:id/download", handlers.DownloadArtifact)
+		api.DELETE("/artifacts/:id", handlers.DeleteArtifact)
 	}
 
 	// Start server

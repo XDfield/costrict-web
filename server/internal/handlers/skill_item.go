@@ -161,6 +161,10 @@ func UpdateItem(c *gin.Context) {
 	if req.Content != "" {
 		var maxVersion int
 		db.Model(&models.SkillVersion{}).Where("item_id = ?", id).Select("COALESCE(MAX(version), 0)").Scan(&maxVersion)
+		createdBy := item.UpdatedBy
+		if createdBy == "" {
+			createdBy = item.CreatedBy
+		}
 		sv := models.SkillVersion{
 			ID:        uuid.New().String(),
 			ItemID:    item.ID,
@@ -168,7 +172,7 @@ func UpdateItem(c *gin.Context) {
 			Content:   item.Content,
 			Metadata:  datatypes.JSON([]byte("{}")),
 			CommitMsg: req.CommitMsg,
-			CreatedBy: item.UpdatedBy,
+			CreatedBy: createdBy,
 		}
 		db.Create(&sv)
 	}

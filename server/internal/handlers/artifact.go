@@ -31,7 +31,7 @@ func UploadArtifact(c *gin.Context) {
 
 	itemID := c.PostForm("item_id")
 	version := c.PostForm("version")
-	uploadedBy := c.PostForm("description")
+	uploadedBy := c.PostForm("uploaded_by")
 
 	db := database.GetDB()
 	var item models.SkillItem
@@ -40,46 +40,44 @@ func UploadArtifact(c *gin.Context) {
 		return
 	}
 
+	filename := filepath.Base(header.Filename)
+	storageKey := fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
+	fileSize := header.Size
+
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 
-	content, err := io.ReadAll(tee)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file content"})
-		return
-	}
-
-	checksum := hex.EncodeToString(hasher.Sum(nil))
-	filename := filepath.Base(header.Filename)
-	storageKey := fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
-	fileSize := int64(len(content))
-
 	ctx := context.Background()
-	if err := StorageBackend.Put(ctx, storageKey, io.NopCloser(
-		newBytesReader(content),
-	), fileSize); err != nil {
+	if err := StorageBackend.Put(ctx, storageKey, tee, fileSize); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store file"})
 		return
 	}
 
-	db.Model(&models.SkillArtifact{}).Where("item_id = ?", itemID).Update("is_latest", false)
+	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	artifact := models.SkillArtifact{
-		ID:              uuid.New().String(),
-		ItemID:          itemID,
-		Filename:        filename,
-		FileSize:        fileSize,
-		ChecksumSHA256:  checksum,
-		MimeType:        header.Header.Get("Content-Type"),
-		StorageBackend:  "local",
-		StorageKey:      storageKey,
-		ArtifactVersion: version,
-		IsLatest:        true,
-		UploadedBy:      uploadedBy,
-		CreatedAt:       time.Now(),
-	}
-
-	if result := db.Create(&artifact); result.Error != nil {
+	var artifact models.SkillArtifact
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.SkillArtifact{}).Where("item_id = ?", itemID).Update("is_latest", false).Error; err != nil {
+			return err
+		}
+		artifact = models.SkillArtifact{
+			ID:              uuid.New().String(),
+			ItemID:          itemID,
+			Filename:        filename,
+			FileSize:        fileSize,
+			ChecksumSHA256:  checksum,
+			MimeType:        header.Header.Get("Content-Type"),
+			StorageBackend:  "local",
+			StorageKey:      storageKey,
+			ArtifactVersion: version,
+			IsLatest:        true,
+			UploadedBy:      uploadedBy,
+			CreatedAt:       time.Now(),
+		}
+		return tx.Create(&artifact).Error
+	})
+	if err != nil {
+		StorageBackend.Delete(context.Background(), storageKey)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create artifact record"})
 		return
 	}
@@ -150,20 +148,4 @@ func DeleteArtifact(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Artifact deleted"})
 }
 
-type bytesReader struct {
-	data []byte
-	pos  int
-}
 
-func newBytesReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-func (r *bytesReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}
