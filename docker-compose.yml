@@ -39,53 +39,6 @@ services:
     volumes:
       - casdoor_conf:/conf
 
-  # Costrict-Web 后端服务 (Go)
-  server:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-      args:
-        HTTPS_PROXY: http://172.29.240.1:7890
-        HTTP_PROXY: http://172.29.240.1:7890
-    container_name: costrict-server
-    ports:
-      - "8080:8080"
-    environment:
-      DATABASE_URL: "postgresql://costrict:costrict_password@postgres:5432/costrict_db?sslmode=disable"
-      CASDOOR_ENDPOINT: "http://casdoor:8000"
-      CASDOOR_CLIENT_ID: "your-client-id"
-      CASDOOR_CLIENT_SECRET: "your-client-secret"
-      CASDOOR_CALLBACK_URL: "http://localhost:8080/api/auth/callback"
-      PORT: "8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      casdoor:
-        condition: service_started
-    volumes:
-      - ./server:/app
-
-  # Costrict-Web 前端应用 (buildwithclaude web-ui)
-  web:
-    build:
-      context: ./web/web-ui
-      dockerfile: Dockerfile
-      args:
-        HTTPS_PROXY: http://172.29.240.1:7890
-        HTTP_PROXY: http://172.29.240.1:7890
-    container_name: costrict-web
-    ports:
-      - "3000:3000"
-    environment:
-      NODE_ENV: development
-      POSTGRES_URL: "postgresql://costrict:costrict_password@postgres:5432/costrict_db"
-    depends_on:
-      - server
-    volumes:
-      - ./web:/app
-      - /app/node_modules
-      - /app/.next
-
 volumes:
   postgres_data:
   casdoor_conf:

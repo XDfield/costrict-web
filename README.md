@@ -34,7 +34,58 @@ costrict-web/
 
 ## 快速开始
 
-### 使用 Docker 或 Podman（推荐）
+### 开发模式（推荐）
+
+开发模式下，前端和后端在本地运行，只有 PostgreSQL 和 Casdoor 使用容器。
+
+#### 启动基础服务
+
+```bash
+# 启动 PostgreSQL 和 Casdoor
+podman-compose up -d
+
+# 或使用 Docker
+docker-compose up -d
+```
+
+#### 前端开发
+
+```bash
+# 进入前端目录
+cd web/web-ui
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+```
+
+#### 后端开发
+
+```bash
+cd server
+
+# 安装依赖
+go mod tidy
+
+# 运行应用
+go run main.go
+```
+
+#### 同时启动前后端
+
+```bash
+# 安装根目录依赖
+npm install
+
+# 同时启动前后端
+npm run dev
+```
+
+### 生产部署
+
+#### 使用 Docker 或 Podman
 
 **注意**：本项目同时支持 Docker 和 Podman。
 
@@ -77,43 +128,6 @@ podman-compose down -v
 **注意**：
 - docker-compose.yml 文件格式与 Podman Compose 兼容
 - 卷挂载路径已针对 Podman 进行优化
-
-### 本地开发
-
-#### 前端开发
-
-```bash
-# 进入前端目录
-cd web/web-ui
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
-```
-
-#### 后端开发
-
-```bash
-cd server
-
-# 安装依赖
-go mod tidy
-
-# 运行应用
-go run main.go
-```
-
-#### 同时启动前后端
-
-```bash
-# 安装根目录依赖
-npm install
-
-# 同时启动前后端
-npm run dev
-```
 
 ## 服务端口
 

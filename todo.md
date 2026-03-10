@@ -152,6 +152,12 @@
 
 ## 部署
 
+- [x] Docker Compose 配置（开发模式：仅 PostgreSQL 和 Casdoor）
+- [x] 创建 Go 后端 Dockerfile（生产部署用）
+- [x] 创建前端 Dockerfile（生产部署用）
+- [x] 更新 README.md（开发模式和生产部署说明）
+- [ ] 测试 Podman 启动基础服务
+- [ ] 测试 Docker 启动基础服务
 - [ ] 配置生产环境
 - [ ] 编写部署脚本
 - [ ] 配置 CI/CD
