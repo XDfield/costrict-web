@@ -5,13 +5,28 @@ import (
 	"gorm.io/datatypes"
 )
 
-// Organization represents a Casdoor organization
+// Organization represents an organization
 type Organization struct {
 	ID          string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Name        string    `gorm:"type:varchar(255);not null" json:"name"`
+	Name        string    `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
+	Description string    `gorm:"type:text" json:"description"`
+	Visibility  string    `gorm:"type:varchar(32);default:'private'" json:"visibility"` // public | private
+	OwnerID     string    `gorm:"type:varchar(191);not null" json:"ownerId"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+
+	Members []OrgMember `gorm:"foreignKey:OrgID" json:"members,omitempty"`
+}
+
+// OrgMember represents a user's membership in an organization
+type OrgMember struct {
+	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
+	OrgID     string    `gorm:"type:uuid;not null;index" json:"orgId"`
+	UserID    string    `gorm:"type:varchar(191);not null" json:"userId"`
+	Username  string    `gorm:"type:varchar(255)" json:"username"`
+	Role      string    `gorm:"type:varchar(32);default:'member'" json:"role"` // owner | admin | member
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
 }
 
 // SkillRepository represents a repository that contains skills/agents/commands

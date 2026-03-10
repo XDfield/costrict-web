@@ -24,6 +24,8 @@ func main() {
 
 	// Auto migrate database schema
 	err = db.AutoMigrate(
+		&models.Organization{},
+		&models.OrgMember{},
 		&models.SkillRepository{},
 		&models.Skill{},
 		&models.Agent{},
@@ -80,10 +82,12 @@ func main() {
 		orgs := api.Group("/organizations")
 		{
 			orgs.GET("", handlers.ListOrganizations)
+			orgs.GET("/my", handlers.GetMyOrganizations)
 			orgs.POST("", handlers.CreateOrganization)
 			orgs.GET("/:id", handlers.GetOrganization)
 			orgs.PUT("/:id", handlers.UpdateOrganization)
 			orgs.DELETE("/:id", handlers.DeleteOrganization)
+			orgs.GET("/:id/members", handlers.ListOrganizationMembers)
 			orgs.POST("/:id/members", handlers.AddOrganizationMember)
 			orgs.DELETE("/:id/members/:userId", handlers.RemoveOrganizationMember)
 		}
@@ -152,12 +156,17 @@ func main() {
 
 		// Skill Registries
 		api.GET("/registries", handlers.ListRegistries)
+		api.GET("/registries/my", handlers.ListMyRegistries)
 		api.POST("/registries", handlers.CreateRegistry)
+		api.POST("/registries/ensure-personal", handlers.EnsurePersonalRegistry)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.PUT("/registries/:id", handlers.UpdateRegistry)
 		api.DELETE("/registries/:id", handlers.DeleteRegistry)
 		api.GET("/registries/:registryId/items", handlers.ListItems)
 		api.POST("/registries/:registryId/items", handlers.CreateItem)
+
+		// My items
+		api.GET("/items/my", handlers.ListMyItems)
 
 		// Skill Items
 		api.GET("/items/:id", handlers.GetItem)

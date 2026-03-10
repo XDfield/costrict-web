@@ -147,3 +147,73 @@ func DeleteRegistry(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Registry deleted"})
 }
+
+func EnsurePersonalRegistry(c *gin.Context) {
+	var req struct {
+		OwnerID  string `json:"ownerId" binding:"required"`
+		Username string `json:"username"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	db := database.GetDB()
+	var registry models.SkillRegistry
+	result := db.Where("owner_id = ? AND source_type = 'internal' AND org_id = ''", req.OwnerID).First(&registry)
+	if result.Error == nil {
+		c.JSON(http.StatusOK, registry)
+		return
+	}
+
+	name := "personal"
+	if req.Username != "" {
+		name = req.Username + "-skills"
+	}
+	registry = models.SkillRegistry{
+		ID:          uuid.New().String(),
+		Name:        name,
+		Description: "Personal skill registry",
+		SourceType:  "internal",
+		Visibility:  "public",
+		OwnerID:     req.OwnerID,
+	}
+	if result := db.Create(&registry); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
+		return
+	}
+	c.JSON(http.StatusCreated, registry)
+}
+
+func ListMyRegistries(c *gin.Context) {
+	ownerID := c.Query("ownerId")
+	if ownerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ownerId is required"})
+		return
+	}
+	db := database.GetDB()
+	var registries []models.SkillRegistry
+	db.Where("owner_id = ?", ownerID).Find(&registries)
+	c.JSON(http.StatusOK, gin.H{"registries": registries})
+}
+
+func ListMyItems(c *gin.Context) {
+	ownerID := c.Query("ownerId")
+	if ownerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ownerId is required"})
+		return
+	}
+	db := database.GetDB()
+	var registryIDs []string
+	db.Model(&models.SkillRegistry{}).Where("owner_id = ?", ownerID).Pluck("id", &registryIDs)
+
+	var items []models.SkillItem
+	if len(registryIDs) > 0 {
+		query := db.Where("registry_id IN ?", registryIDs)
+		if itemType := c.Query("type"); itemType != "" {
+			query = query.Where("item_type = ?", itemType)
+		}
+		query.Order("created_at DESC").Find(&items)
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}

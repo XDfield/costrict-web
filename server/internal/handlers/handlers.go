@@ -80,6 +80,9 @@ func CreateOrganization(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
 		DisplayName string `json:"displayName"`
+		Description string `json:"description"`
+		Visibility  string `json:"visibility"`
+		OwnerID     string `json:"ownerId" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -87,10 +90,18 @@ func CreateOrganization(c *gin.Context) {
 		return
 	}
 
+	visibility := req.Visibility
+	if visibility == "" {
+		visibility = "private"
+	}
+
 	org := models.Organization{
 		ID:          uuid.New().String(),
 		Name:        req.Name,
 		DisplayName: req.DisplayName,
+		Description: req.Description,
+		Visibility:  visibility,
+		OwnerID:     req.OwnerID,
 	}
 
 	db := database.GetDB()
@@ -98,6 +109,14 @@ func CreateOrganization(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create organization"})
 		return
 	}
+
+	ownerMember := models.OrgMember{
+		ID:     uuid.New().String(),
+		OrgID:  org.ID,
+		UserID: req.OwnerID,
+		Role:   "owner",
+	}
+	db.Create(&ownerMember)
 
 	c.JSON(http.StatusCreated, org)
 }
@@ -120,6 +139,8 @@ func UpdateOrganization(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
+		Description string `json:"description"`
+		Visibility  string `json:"visibility"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -140,6 +161,12 @@ func UpdateOrganization(c *gin.Context) {
 	}
 	if req.DisplayName != "" {
 		org.DisplayName = req.DisplayName
+	}
+	if req.Description != "" {
+		org.Description = req.Description
+	}
+	if req.Visibility != "" {
+		org.Visibility = req.Visibility
 	}
 
 	if result := db.Save(&org); result.Error != nil {
@@ -163,10 +190,11 @@ func DeleteOrganization(c *gin.Context) {
 }
 
 func AddOrganizationMember(c *gin.Context) {
-	_ = c.Param("id")
+	orgID := c.Param("id")
 	var req struct {
-		UserID string `json:"userId" binding:"required"`
-		Role   string `json:"role"`
+		UserID   string `json:"userId" binding:"required"`
+		Username string `json:"username"`
+		Role     string `json:"role"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -174,16 +202,76 @@ func AddOrganizationMember(c *gin.Context) {
 		return
 	}
 
-	// TODO: Add member to organization
-	c.JSON(http.StatusOK, gin.H{"message": "Member added"})
+	role := req.Role
+	if role == "" {
+		role = "member"
+	}
+
+	db := database.GetDB()
+	var existing models.OrgMember
+	if db.Where("org_id = ? AND user_id = ?", orgID, req.UserID).First(&existing).Error == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member"})
+		return
+	}
+
+	member := models.OrgMember{
+		ID:       uuid.New().String(),
+		OrgID:    orgID,
+		UserID:   req.UserID,
+		Username: req.Username,
+		Role:     role,
+	}
+
+	if result := db.Create(&member); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, member)
 }
 
 func RemoveOrganizationMember(c *gin.Context) {
-	_ = c.Param("id")
-	_ = c.Param("userId")
-	_ = database.GetDB()
-	// TODO: Remove member from organization
+	orgID := c.Param("id")
+	userID := c.Param("userId")
+	db := database.GetDB()
+	result := db.Where("org_id = ? AND user_id = ?", orgID, userID).Delete(&models.OrgMember{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
+}
+
+func ListOrganizationMembers(c *gin.Context) {
+	orgID := c.Param("id")
+	db := database.GetDB()
+	var members []models.OrgMember
+	result := db.Where("org_id = ?", orgID).Find(&members)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch members"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
+func GetMyOrganizations(c *gin.Context) {
+	userID := c.Query("userId")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "userId is required"})
+		return
+	}
+	db := database.GetDB()
+	var members []models.OrgMember
+	db.Where("user_id = ?", userID).Find(&members)
+	orgIDs := make([]string, 0, len(members))
+	for _, m := range members {
+		orgIDs = append(orgIDs, m.OrgID)
+	}
+	var orgs []models.Organization
+	if len(orgIDs) > 0 {
+		db.Where("id IN ?", orgIDs).Find(&orgs)
+	}
+	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }
 
 // Repository handlers
