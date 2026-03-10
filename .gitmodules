@@ -1,3 +1,4 @@
 [submodule "web"]
 	path = web
-	url = https://github.com/davepoon/buildwithclaude.git
+	url = https://github.com/XDfield/buildwithclaude.git
+	branch = costrict
