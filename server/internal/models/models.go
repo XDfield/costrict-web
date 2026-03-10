@@ -2,8 +2,6 @@ package models
 
 import (
 	"time"
-	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // Organization represents a Casdoor organization
