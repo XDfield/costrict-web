@@ -44,6 +44,9 @@ services:
     build:
       context: ./server
       dockerfile: Dockerfile
+      args:
+        HTTPS_PROXY: http://172.29.240.1:7890
+        HTTP_PROXY: http://172.29.240.1:7890
     container_name: costrict-server
     ports:
       - "8080:8080"
@@ -67,6 +70,9 @@ services:
     build:
       context: ./web/web-ui
       dockerfile: Dockerfile
+      args:
+        HTTPS_PROXY: http://172.29.240.1:7890
+        HTTP_PROXY: http://172.29.240.1:7890
     container_name: costrict-web
     ports:
       - "3000:3000"

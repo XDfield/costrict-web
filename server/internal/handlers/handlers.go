@@ -163,7 +163,7 @@ func DeleteOrganization(c *gin.Context) {
 }
 
 func AddOrganizationMember(c *gin.Context) {
-	id := c.Param("id")
+	_ = c.Param("id")
 	var req struct {
 		UserID string `json:"userId" binding:"required"`
 		Role   string `json:"role"`
@@ -179,9 +179,9 @@ func AddOrganizationMember(c *gin.Context) {
 }
 
 func RemoveOrganizationMember(c *gin.Context) {
-	id := c.Param("id")
-	userID := c.Param("userId")
-	db := database.GetDB()
+	_ = c.Param("id")
+	_ = c.Param("userId")
+	_ = database.GetDB()
 	// TODO: Remove member from organization
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }
@@ -298,7 +298,7 @@ func DeleteRepository(c *gin.Context) {
 }
 
 func AddRepositoryMember(c *gin.Context) {
-	id := c.Param("id")
+	_ = c.Param("id")
 	var req struct {
 		UserID string `json:"userId" binding:"required"`
 		Role   string `json:"role"`
@@ -314,9 +314,9 @@ func AddRepositoryMember(c *gin.Context) {
 }
 
 func RemoveRepositoryMember(c *gin.Context) {
-	id := c.Param("id")
-	userID := c.Param("userId")
-	db := database.GetDB()
+	_ = c.Param("id")
+	_ = c.Param("userId")
+	_ = database.GetDB()
 	// TODO: Remove member from repository
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }

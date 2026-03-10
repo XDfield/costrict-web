@@ -1,32 +1,41 @@
 # Build stage
 FROM golang:1.21-alpine AS builder
 
+# Set proxy for build
+ARG HTTPS_PROXY
+ARG HTTP_PROXY
+
 WORKDIR /app
 
-# Copy go mod files
-COPY go.mod go.sum ./
+# Install ca-certificates
+RUN apk add --no-cache ca-certificates
 
-# Download dependencies
-RUN go mod download
+# Set Go module proxy
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
 
-# Copy source code
+# Copy all source code
 COPY . .
 
-# Build the application
+# Build application (will automatically download dependencies)
 RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
 # Final stage
 FROM alpine:latest
 
+# Set proxy for final stage
+ARG HTTPS_PROXY
+ARG HTTP_PROXY
+
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
-# Copy the binary from builder
+# Copy binary from builder
 COPY --from=builder /app/server .
 
 # Expose port
 EXPOSE 8080
 
-# Run the application
+# Run application
 CMD ["./server"]
