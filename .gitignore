@@ -52,12 +52,15 @@ server/*.so
 server/*.dylib
 server/vendor/
 server/*.log
+server/*.err
+server/docs/
 
 # Submodule
 web/
 
 # Costrict temporary files
 .costrict/
+.cospec/
 
 # Artifact storage (runtime data, not source)
 data/
