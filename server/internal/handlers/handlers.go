@@ -9,7 +9,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// Auth handlers
+// Login godoc
+// @Summary      OAuth login
+// @Description  Exchange OAuth authorization code for access token
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        body  body  object{code=string,state=string}  true  "OAuth code"
+// @Success      200   {object}  object{token=string,tokenType=string,user=object}
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /auth/login [get]
 func Login(c *gin.Context) {
 	var req struct {
 		Code  string `json:"code" binding:"required"`
@@ -42,10 +52,27 @@ func Login(c *gin.Context) {
 	})
 }
 
+// Logout godoc
+// @Summary      Logout
+// @Description  Invalidate current session
+// @Tags         auth
+// @Produce      json
+// @Success      200  {object}  object{message=string}
+// @Router       /auth/logout [post]
 func Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
 
+// GetCurrentUser godoc
+// @Summary      Get current user
+// @Description  Get information of the authenticated user
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{}
+// @Failure      401  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
 	accessToken := c.GetHeader("Authorization")
 	if accessToken == "" {
@@ -63,7 +90,14 @@ func GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userInfo.User)
 }
 
-// Organization handlers
+// ListOrganizations godoc
+// @Summary      List organizations
+// @Description  Get all organizations
+// @Tags         organizations
+// @Produce      json
+// @Success      200  {object}  object{organizations=[]models.Organization}
+// @Failure      500  {object}  object{error=string}
+// @Router       /organizations [get]
 func ListOrganizations(c *gin.Context) {
 	db := database.GetDB()
 	var orgs []models.Organization
@@ -76,6 +110,17 @@ func ListOrganizations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }
 
+// CreateOrganization godoc
+// @Summary      Create organization
+// @Description  Create a new organization
+// @Tags         organizations
+// @Accept       json
+// @Produce      json
+// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string}  true  "Organization data"
+// @Success      201  {object}  models.Organization
+// @Failure      400  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /organizations [post]
 func CreateOrganization(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -118,9 +163,29 @@ func CreateOrganization(c *gin.Context) {
 	}
 	db.Create(&ownerMember)
 
+	orgRegistry := models.SkillRegistry{
+		ID:          uuid.New().String(),
+		Name:        org.Name,
+		Description: "Registry for organization " + org.Name,
+		SourceType:  "internal",
+		Visibility:  visibility,
+		OrgID:       org.ID,
+		OwnerID:     req.OwnerID,
+	}
+	db.Create(&orgRegistry)
+
 	c.JSON(http.StatusCreated, org)
 }
 
+// GetOrganization godoc
+// @Summary      Get organization
+// @Description  Get organization by ID
+// @Tags         organizations
+// @Produce      json
+// @Param        id   path      string  true  "Organization ID"
+// @Success      200  {object}  models.Organization
+// @Failure      404  {object}  object{error=string}
+// @Router       /organizations/{id} [get]
 func GetOrganization(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -134,6 +199,19 @@ func GetOrganization(c *gin.Context) {
 	c.JSON(http.StatusOK, org)
 }
 
+// UpdateOrganization godoc
+// @Summary      Update organization
+// @Description  Update organization by ID
+// @Tags         organizations
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Organization ID"
+// @Param        body  body      object{name=string,displayName=string,description=string,visibility=string}  false  "Organization data"
+// @Success      200   {object}  models.Organization
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /organizations/{id} [put]
 func UpdateOrganization(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -177,6 +255,15 @@ func UpdateOrganization(c *gin.Context) {
 	c.JSON(http.StatusOK, org)
 }
 
+// DeleteOrganization godoc
+// @Summary      Delete organization
+// @Description  Delete organization by ID
+// @Tags         organizations
+// @Produce      json
+// @Param        id   path      string  true  "Organization ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /organizations/{id} [delete]
 func DeleteOrganization(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -189,6 +276,19 @@ func DeleteOrganization(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Organization deleted"})
 }
 
+// AddOrganizationMember godoc
+// @Summary      Add organization member
+// @Description  Add a user to an organization
+// @Tags         organizations
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Organization ID"
+// @Param        body  body      object{userId=string,username=string,role=string}  true  "Member data"
+// @Success      201   {object}  models.OrgMember
+// @Failure      400   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /organizations/{id}/members [post]
 func AddOrganizationMember(c *gin.Context) {
 	orgID := c.Param("id")
 	var req struct {
@@ -230,6 +330,16 @@ func AddOrganizationMember(c *gin.Context) {
 	c.JSON(http.StatusCreated, member)
 }
 
+// RemoveOrganizationMember godoc
+// @Summary      Remove organization member
+// @Description  Remove a user from an organization
+// @Tags         organizations
+// @Produce      json
+// @Param        id      path      string  true  "Organization ID"
+// @Param        userId  path      string  true  "User ID"
+// @Success      200     {object}  object{message=string}
+// @Failure      500     {object}  object{error=string}
+// @Router       /organizations/{id}/members/{userId} [delete]
 func RemoveOrganizationMember(c *gin.Context) {
 	orgID := c.Param("id")
 	userID := c.Param("userId")
@@ -242,6 +352,15 @@ func RemoveOrganizationMember(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }
 
+// ListOrganizationMembers godoc
+// @Summary      List organization members
+// @Description  Get all members of an organization
+// @Tags         organizations
+// @Produce      json
+// @Param        id   path      string  true  "Organization ID"
+// @Success      200  {object}  object{members=[]models.OrgMember}
+// @Failure      500  {object}  object{error=string}
+// @Router       /organizations/{id}/members [get]
 func ListOrganizationMembers(c *gin.Context) {
 	orgID := c.Param("id")
 	db := database.GetDB()
@@ -254,6 +373,36 @@ func ListOrganizationMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"members": members})
 }
 
+// GetOrganizationRegistry godoc
+// @Summary      Get organization registry
+// @Description  Get the internal skill registry for an organization
+// @Tags         organizations
+// @Produce      json
+// @Param        id   path      string  true  "Organization ID"
+// @Success      200  {object}  models.SkillRegistry
+// @Failure      404  {object}  object{error=string}
+// @Router       /organizations/{id}/registry [get]
+func GetOrganizationRegistry(c *gin.Context) {
+	orgID := c.Param("id")
+	db := database.GetDB()
+	var registry models.SkillRegistry
+	result := db.Where("org_id = ? AND source_type = 'internal'", orgID).First(&registry)
+	if result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found for this organization"})
+		return
+	}
+	c.JSON(http.StatusOK, registry)
+}
+
+// GetMyOrganizations godoc
+// @Summary      Get my organizations
+// @Description  Get all organizations the user belongs to
+// @Tags         organizations
+// @Produce      json
+// @Param        userId  query     string  true  "User ID"
+// @Success      200     {object}  object{organizations=[]models.Organization}
+// @Failure      400     {object}  object{error=string}
+// @Router       /organizations/my [get]
 func GetMyOrganizations(c *gin.Context) {
 	userID := c.Query("userId")
 	if userID == "" {
@@ -274,7 +423,14 @@ func GetMyOrganizations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }
 
-// Repository handlers
+// ListRepositories godoc
+// @Summary      List repositories
+// @Description  Get all skill repositories
+// @Tags         repositories
+// @Produce      json
+// @Success      200  {object}  object{repositories=[]models.SkillRepository}
+// @Failure      500  {object}  object{error=string}
+// @Router       /repositories [get]
 func ListRepositories(c *gin.Context) {
 	db := database.GetDB()
 	var repos []models.SkillRepository
@@ -287,6 +443,17 @@ func ListRepositories(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"repositories": repos})
 }
 
+// CreateRepository godoc
+// @Summary      Create repository
+// @Description  Create a new skill repository
+// @Tags         repositories
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{name=string,description=string,visibility=string,ownerId=string,organizationId=string,groupId=string}  true  "Repository data"
+// @Success      201   {object}  models.SkillRepository
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /repositories [post]
 func CreateRepository(c *gin.Context) {
 	var req struct {
 		Name         string `json:"name" binding:"required"`
@@ -321,6 +488,15 @@ func CreateRepository(c *gin.Context) {
 	c.JSON(http.StatusCreated, repo)
 }
 
+// GetRepository godoc
+// @Summary      Get repository
+// @Description  Get skill repository by ID
+// @Tags         repositories
+// @Produce      json
+// @Param        id   path      string  true  "Repository ID"
+// @Success      200  {object}  models.SkillRepository
+// @Failure      404  {object}  object{error=string}
+// @Router       /repositories/{id} [get]
 func GetRepository(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -334,6 +510,19 @@ func GetRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, repo)
 }
 
+// UpdateRepository godoc
+// @Summary      Update repository
+// @Description  Update skill repository by ID
+// @Tags         repositories
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Repository ID"
+// @Param        body  body      object{name=string,description=string,visibility=string}  false  "Repository data"
+// @Success      200   {object}  models.SkillRepository
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /repositories/{id} [put]
 func UpdateRepository(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -373,6 +562,15 @@ func UpdateRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, repo)
 }
 
+// DeleteRepository godoc
+// @Summary      Delete repository
+// @Description  Delete skill repository by ID
+// @Tags         repositories
+// @Produce      json
+// @Param        id   path      string  true  "Repository ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /repositories/{id} [delete]
 func DeleteRepository(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -385,6 +583,17 @@ func DeleteRepository(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Repository deleted"})
 }
 
+// AddRepositoryMember godoc
+// @Summary      Add repository member
+// @Description  Add a user to a repository
+// @Tags         repositories
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Repository ID"
+// @Param        body  body      object{userId=string,role=string}  true  "Member data"
+// @Success      200   {object}  object{message=string}
+// @Failure      400   {object}  object{error=string}
+// @Router       /repositories/{id}/members [post]
 func AddRepositoryMember(c *gin.Context) {
 	_ = c.Param("id")
 	var req struct {
@@ -401,6 +610,15 @@ func AddRepositoryMember(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Member added"})
 }
 
+// RemoveRepositoryMember godoc
+// @Summary      Remove repository member
+// @Description  Remove a user from a repository
+// @Tags         repositories
+// @Produce      json
+// @Param        id      path      string  true  "Repository ID"
+// @Param        userId  path      string  true  "User ID"
+// @Success      200     {object}  object{message=string}
+// @Router       /repositories/{id}/members/{userId} [delete]
 func RemoveRepositoryMember(c *gin.Context) {
 	_ = c.Param("id")
 	_ = c.Param("userId")
@@ -409,7 +627,14 @@ func RemoveRepositoryMember(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }
 
-// Skill handlers
+// ListSkills godoc
+// @Summary      List skills
+// @Description  Get all skills
+// @Tags         skills
+// @Produce      json
+// @Success      200  {object}  object{skills=[]models.Skill}
+// @Failure      500  {object}  object{error=string}
+// @Router       /skills [get]
 func ListSkills(c *gin.Context) {
 	db := database.GetDB()
 	var skills []models.Skill
@@ -422,6 +647,17 @@ func ListSkills(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"skills": skills})
 }
 
+// CreateSkill godoc
+// @Summary      Create skill
+// @Description  Create a new skill
+// @Tags         skills
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{name=string,description=string,version=string,repoId=string,isPublic=boolean}  true  "Skill data"
+// @Success      201   {object}  models.Skill
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /skills [post]
 func CreateSkill(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -454,6 +690,15 @@ func CreateSkill(c *gin.Context) {
 	c.JSON(http.StatusCreated, skill)
 }
 
+// GetSkill godoc
+// @Summary      Get skill
+// @Description  Get skill by ID
+// @Tags         skills
+// @Produce      json
+// @Param        id   path      string  true  "Skill ID"
+// @Success      200  {object}  models.Skill
+// @Failure      404  {object}  object{error=string}
+// @Router       /skills/{id} [get]
 func GetSkill(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -467,6 +712,19 @@ func GetSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, skill)
 }
 
+// UpdateSkill godoc
+// @Summary      Update skill
+// @Description  Update skill by ID
+// @Tags         skills
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Skill ID"
+// @Param        body  body      object{name=string,description=string,version=string,isPublic=boolean}  false  "Skill data"
+// @Success      200   {object}  models.Skill
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /skills/{id} [put]
 func UpdateSkill(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -508,6 +766,15 @@ func UpdateSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, skill)
 }
 
+// DeleteSkill godoc
+// @Summary      Delete skill
+// @Description  Delete skill by ID
+// @Tags         skills
+// @Produce      json
+// @Param        id   path      string  true  "Skill ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /skills/{id} [delete]
 func DeleteSkill(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -520,6 +787,16 @@ func DeleteSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Skill deleted"})
 }
 
+// InstallSkill godoc
+// @Summary      Install skill
+// @Description  Increment install count for a skill
+// @Tags         skills
+// @Produce      json
+// @Param        id   path      string  true  "Skill ID"
+// @Success      200  {object}  object{message=string,installCount=integer}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /skills/{id}/install [post]
 func InstallSkill(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -539,6 +816,19 @@ func InstallSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Skill installed", "installCount": skill.InstallCount})
 }
 
+// RateSkill godoc
+// @Summary      Rate skill
+// @Description  Submit a rating for a skill
+// @Tags         skills
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Skill ID"
+// @Param        body  body      object{rating=integer,comment=string}  true  "Rating data"
+// @Success      200   {object}  object{message=string,rating=number}
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /skills/{id}/rating [post]
 func RateSkill(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -571,7 +861,14 @@ func RateSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Skill rated", "rating": skill.Rating})
 }
 
-// Agent handlers
+// ListAgents godoc
+// @Summary      List agents
+// @Description  Get all agents
+// @Tags         agents
+// @Produce      json
+// @Success      200  {object}  object{agents=[]models.Agent}
+// @Failure      500  {object}  object{error=string}
+// @Router       /agents [get]
 func ListAgents(c *gin.Context) {
 	db := database.GetDB()
 	var agents []models.Agent
@@ -584,6 +881,17 @@ func ListAgents(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"agents": agents})
 }
 
+// CreateAgent godoc
+// @Summary      Create agent
+// @Description  Create a new agent
+// @Tags         agents
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{name=string,description=string,version=string,repoId=string,isPublic=boolean}  true  "Agent data"
+// @Success      201   {object}  models.Agent
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /agents [post]
 func CreateAgent(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -616,6 +924,15 @@ func CreateAgent(c *gin.Context) {
 	c.JSON(http.StatusCreated, agent)
 }
 
+// GetAgent godoc
+// @Summary      Get agent
+// @Description  Get agent by ID
+// @Tags         agents
+// @Produce      json
+// @Param        id   path      string  true  "Agent ID"
+// @Success      200  {object}  models.Agent
+// @Failure      404  {object}  object{error=string}
+// @Router       /agents/{id} [get]
 func GetAgent(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -629,6 +946,19 @@ func GetAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, agent)
 }
 
+// UpdateAgent godoc
+// @Summary      Update agent
+// @Description  Update agent by ID
+// @Tags         agents
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Agent ID"
+// @Param        body  body      object{name=string,description=string,version=string,isPublic=boolean}  false  "Agent data"
+// @Success      200   {object}  models.Agent
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /agents/{id} [put]
 func UpdateAgent(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -670,6 +1000,15 @@ func UpdateAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, agent)
 }
 
+// DeleteAgent godoc
+// @Summary      Delete agent
+// @Description  Delete agent by ID
+// @Tags         agents
+// @Produce      json
+// @Param        id   path      string  true  "Agent ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /agents/{id} [delete]
 func DeleteAgent(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -682,7 +1021,14 @@ func DeleteAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Agent deleted"})
 }
 
-// Command handlers
+// ListCommands godoc
+// @Summary      List commands
+// @Description  Get all commands
+// @Tags         commands
+// @Produce      json
+// @Success      200  {object}  object{commands=[]models.Command}
+// @Failure      500  {object}  object{error=string}
+// @Router       /commands [get]
 func ListCommands(c *gin.Context) {
 	db := database.GetDB()
 	var commands []models.Command
@@ -695,6 +1041,17 @@ func ListCommands(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"commands": commands})
 }
 
+// CreateCommand godoc
+// @Summary      Create command
+// @Description  Create a new command
+// @Tags         commands
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{name=string,description=string,repoId=string}  true  "Command data"
+// @Success      201   {object}  models.Command
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /commands [post]
 func CreateCommand(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -723,6 +1080,15 @@ func CreateCommand(c *gin.Context) {
 	c.JSON(http.StatusCreated, command)
 }
 
+// GetCommand godoc
+// @Summary      Get command
+// @Description  Get command by ID
+// @Tags         commands
+// @Produce      json
+// @Param        id   path      string  true  "Command ID"
+// @Success      200  {object}  models.Command
+// @Failure      404  {object}  object{error=string}
+// @Router       /commands/{id} [get]
 func GetCommand(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -736,6 +1102,19 @@ func GetCommand(c *gin.Context) {
 	c.JSON(http.StatusOK, command)
 }
 
+// UpdateCommand godoc
+// @Summary      Update command
+// @Description  Update command by ID
+// @Tags         commands
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Command ID"
+// @Param        body  body      object{name=string,description=string}  false  "Command data"
+// @Success      200   {object}  models.Command
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /commands/{id} [put]
 func UpdateCommand(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -771,6 +1150,15 @@ func UpdateCommand(c *gin.Context) {
 	c.JSON(http.StatusOK, command)
 }
 
+// DeleteCommand godoc
+// @Summary      Delete command
+// @Description  Delete command by ID
+// @Tags         commands
+// @Produce      json
+// @Param        id   path      string  true  "Command ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /commands/{id} [delete]
 func DeleteCommand(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -783,7 +1171,14 @@ func DeleteCommand(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Command deleted"})
 }
 
-// MCP Server handlers
+// ListMCPServers godoc
+// @Summary      List MCP servers
+// @Description  Get all MCP servers
+// @Tags         mcp-servers
+// @Produce      json
+// @Success      200  {object}  object{mcpServers=[]models.MCPServer}
+// @Failure      500  {object}  object{error=string}
+// @Router       /mcp-servers [get]
 func ListMCPServers(c *gin.Context) {
 	db := database.GetDB()
 	var mcpServers []models.MCPServer
@@ -796,6 +1191,17 @@ func ListMCPServers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"mcpServers": mcpServers})
 }
 
+// CreateMCPServer godoc
+// @Summary      Create MCP server
+// @Description  Create a new MCP server
+// @Tags         mcp-servers
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{name=string,description=string,repoId=string}  true  "MCP server data"
+// @Success      201   {object}  models.MCPServer
+// @Failure      400   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /mcp-servers [post]
 func CreateMCPServer(c *gin.Context) {
 	var req struct {
 		Name        string `json:"name" binding:"required"`
@@ -824,6 +1230,15 @@ func CreateMCPServer(c *gin.Context) {
 	c.JSON(http.StatusCreated, mcpServer)
 }
 
+// GetMCPServer godoc
+// @Summary      Get MCP server
+// @Description  Get MCP server by ID
+// @Tags         mcp-servers
+// @Produce      json
+// @Param        id   path      string  true  "MCP server ID"
+// @Success      200  {object}  models.MCPServer
+// @Failure      404  {object}  object{error=string}
+// @Router       /mcp-servers/{id} [get]
 func GetMCPServer(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -837,6 +1252,19 @@ func GetMCPServer(c *gin.Context) {
 	c.JSON(http.StatusOK, mcpServer)
 }
 
+// UpdateMCPServer godoc
+// @Summary      Update MCP server
+// @Description  Update MCP server by ID
+// @Tags         mcp-servers
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "MCP server ID"
+// @Param        body  body      object{name=string,description=string}  false  "MCP server data"
+// @Success      200   {object}  models.MCPServer
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /mcp-servers/{id} [put]
 func UpdateMCPServer(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -872,6 +1300,15 @@ func UpdateMCPServer(c *gin.Context) {
 	c.JSON(http.StatusOK, mcpServer)
 }
 
+// DeleteMCPServer godoc
+// @Summary      Delete MCP server
+// @Description  Delete MCP server by ID
+// @Tags         mcp-servers
+// @Produce      json
+// @Param        id   path      string  true  "MCP server ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /mcp-servers/{id} [delete]
 func DeleteMCPServer(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -884,7 +1321,14 @@ func DeleteMCPServer(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "MCP server deleted"})
 }
 
-// Marketplace handlers
+// ListMarketplaceSkills godoc
+// @Summary      List marketplace skills
+// @Description  Get all public skills available in the marketplace
+// @Tags         marketplace
+// @Produce      json
+// @Success      200  {object}  object{skills=[]models.Skill}
+// @Failure      500  {object}  object{error=string}
+// @Router       /marketplace/skills [get]
 func ListMarketplaceSkills(c *gin.Context) {
 	db := database.GetDB()
 	var skills []models.Skill
@@ -897,6 +1341,13 @@ func ListMarketplaceSkills(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"skills": skills})
 }
 
+// ListCategories godoc
+// @Summary      List categories
+// @Description  Get all skill categories
+// @Tags         marketplace
+// @Produce      json
+// @Success      200  {object}  object{categories=[]string}
+// @Router       /marketplace/categories [get]
 func ListCategories(c *gin.Context) {
 	categories := []string{
 		"Development",
@@ -912,6 +1363,14 @@ func ListCategories(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"categories": categories})
 }
 
+// GetTrendingSkills godoc
+// @Summary      Get trending skills
+// @Description  Get top 10 most installed public skills
+// @Tags         marketplace
+// @Produce      json
+// @Success      200  {object}  object{skills=[]models.Skill}
+// @Failure      500  {object}  object{error=string}
+// @Router       /marketplace/skills/trending [get]
 func GetTrendingSkills(c *gin.Context) {
 	db := database.GetDB()
 	var skills []models.Skill

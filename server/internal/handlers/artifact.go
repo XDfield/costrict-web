@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,21 @@ import (
 
 var StorageBackend storage.Backend
 
+// UploadArtifact godoc
+// @Summary      Upload artifact
+// @Description  Upload a file artifact for a skill item
+// @Tags         artifacts
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        file        formData  file    true   "File to upload"
+// @Param        item_id     formData  string  true   "Item ID"
+// @Param        version     formData  string  false  "Artifact version"
+// @Param        uploaded_by formData  string  false  "Uploader user ID"
+// @Success      201         {object}  models.SkillArtifact
+// @Failure      400         {object}  object{error=string}
+// @Failure      404         {object}  object{error=string}
+// @Failure      500         {object}  object{error=string}
+// @Router       /artifacts/upload [post]
 func UploadArtifact(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -31,17 +47,32 @@ func UploadArtifact(c *gin.Context) {
 
 	itemID := c.PostForm("item_id")
 	version := c.PostForm("version")
-	uploadedBy := c.PostForm("uploaded_by")
+
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	uploadedBy, _ := userIDVal.(string)
+	if uploadedBy == "" {
+		uploadedBy = c.PostForm("uploaded_by")
+	}
 
 	db := database.GetDB()
 	var item models.SkillItem
-	if result := db.First(&item, "id = ?", itemID); result.Error != nil {
+	if result := db.Preload("Registry").First(&item, "id = ?", itemID); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
 
+	orgID := ""
+	if item.Registry != nil {
+		orgID = item.Registry.OrgID
+	}
+
 	filename := filepath.Base(header.Filename)
-	storageKey := fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
+	var storageKey string
+	if orgID != "" {
+		storageKey = fmt.Sprintf("%s/%s/v%s/%s", orgID, itemID, version, filename)
+	} else {
+		storageKey = fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
+	}
 	fileSize := header.Size
 
 	hasher := sha256.New()
@@ -85,6 +116,16 @@ func UploadArtifact(c *gin.Context) {
 	c.JSON(http.StatusCreated, artifact)
 }
 
+// DownloadArtifact godoc
+// @Summary      Download artifact
+// @Description  Download a file artifact by ID
+// @Tags         artifacts
+// @Produce      application/octet-stream
+// @Param        id   path      string  true  "Artifact ID"
+// @Success      200  {file}    binary
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /artifacts/{id}/download [get]
 func DownloadArtifact(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -116,6 +157,15 @@ func DownloadArtifact(c *gin.Context) {
 	io.Copy(c.Writer, reader)
 }
 
+// ListArtifacts godoc
+// @Summary      List item artifacts
+// @Description  Get all artifacts for a skill item
+// @Tags         artifacts
+// @Produce      json
+// @Param        id   path      string  true  "Item ID"
+// @Success      200  {object}  object{artifacts=[]models.SkillArtifact}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/artifacts [get]
 func ListArtifacts(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
@@ -128,6 +178,16 @@ func ListArtifacts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"artifacts": artifacts})
 }
 
+// DeleteArtifact godoc
+// @Summary      Delete artifact
+// @Description  Delete an artifact by ID and remove its stored file
+// @Tags         artifacts
+// @Produce      json
+// @Param        id   path      string  true  "Artifact ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /artifacts/{id} [delete]
 func DeleteArtifact(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()

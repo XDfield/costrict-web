@@ -160,7 +160,7 @@ type SkillItem struct {
 	Category   string `json:"category"`
 	Version    string `gorm:"default:'1.0.0'" json:"version"`
 	Content    string `gorm:"type:text" json:"content"`
-	Metadata   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata"`
+	Metadata   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	SourcePath string `json:"sourcePath"`
 	SourceSHA  string `json:"sourceSha"`
 	Visibility string `json:"visibility"`
@@ -180,7 +180,7 @@ type SkillVersion struct {
 	ItemID    string         `gorm:"not null" json:"itemId"`
 	Version   int            `gorm:"not null" json:"version"`
 	Content   string         `gorm:"type:text;not null" json:"content"`
-	Metadata  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata"`
+	Metadata  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	CommitMsg string         `json:"commitMsg"`
 	CreatedBy string         `gorm:"not null" json:"createdBy"`
 	CreatedAt time.Time      `json:"createdAt"`
