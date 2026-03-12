@@ -22,6 +22,7 @@ type ParsedItem struct {
 	Metadata    map[string]any
 	SourcePath  string
 	ContentHash string
+	AssetPaths  []string
 }
 
 func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*ParsedItem, error) {
@@ -145,17 +146,87 @@ func (p *ParserService) ParseAgentsMD(content []byte, sourcePath string) ([]*Par
 	return []*ParsedItem{item}, nil
 }
 
+func (p *ParserService) ParseHooksJSON(content []byte, sourcePath string) (*ParsedItem, error) {
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse hooks.json: %w", err)
+	}
+	return &ParsedItem{
+		Slug:       "hooks",
+		ItemType:   "hook",
+		Name:       "Hooks",
+		Content:    string(content),
+		Metadata:   data,
+		SourcePath: sourcePath,
+		Version:    "1.0.0",
+	}, nil
+}
+
+// ParseMCPJSON parses .mcp.json and returns one ParsedItem per mcpServers entry.
+func (p *ParserService) ParseMCPJSON(content []byte, sourcePath string) ([]*ParsedItem, error) {
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse .mcp.json: %w", err)
+	}
+
+	servers, _ := data["mcpServers"].(map[string]any)
+	if len(servers) == 0 {
+		return []*ParsedItem{{
+			Slug:       "mcp-config",
+			ItemType:   "mcp",
+			Name:       "MCP Config",
+			Content:    string(content),
+			Metadata:   data,
+			SourcePath: sourcePath,
+			Version:    "1.0.0",
+		}}, nil
+	}
+
+	items := make([]*ParsedItem, 0, len(servers))
+	for key, val := range servers {
+		serverMeta := map[string]any{"key": key}
+		if m, ok := val.(map[string]any); ok {
+			for k, v := range m {
+				serverMeta[k] = v
+			}
+		}
+
+		name := key
+		if v, ok := serverMeta["name"].(string); ok && v != "" {
+			name = v
+		}
+
+		description := ""
+		if v, ok := serverMeta["description"].(string); ok {
+			description = v
+		}
+
+		items = append(items, &ParsedItem{
+			Slug:        "mcp-" + slugifyKey(key),
+			ItemType:    "mcp",
+			Name:        name,
+			Description: description,
+			Content:     string(content),
+			Metadata:    serverMeta,
+			SourcePath:  sourcePath,
+			Version:     "1.0.0",
+		})
+	}
+	return items, nil
+}
+
 func (p *ParserService) InferItemType(filePath string) string {
 	lower := strings.ToLower(filepath.ToSlash(filePath))
+	base := filepath.Base(lower)
 	switch {
+	case base == ".mcp.json":
+		return "mcp"
 	case strings.Contains(lower, "agents/") || strings.HasSuffix(lower, "agents.md"):
 		return "agent"
 	case strings.Contains(lower, "commands/"):
 		return "command"
 	case strings.Contains(lower, "hooks/"):
 		return "hook"
-	case strings.Contains(lower, "mcp/"):
-		return "mcp"
 	default:
 		return "skill"
 	}
@@ -191,12 +262,24 @@ func (p *ParserService) InferSlug(filePath string) string {
 
 func inferNameFromPath(filePath string) string {
 	base := filepath.Base(filePath)
-	ext := filepath.Ext(base)
-	name := strings.TrimSuffix(base, ext)
-	name = strings.ReplaceAll(name, "-", " ")
+	if strings.ToUpper(base) == "SKILL.MD" {
+		dir := filepath.Dir(filePath)
+		base = filepath.Base(dir)
+	} else {
+		ext := filepath.Ext(base)
+		base = strings.TrimSuffix(base, ext)
+	}
+	name := strings.ReplaceAll(base, "-", " ")
 	name = strings.ReplaceAll(name, "_", " ")
 	if len(name) > 0 {
 		name = strings.ToUpper(name[:1]) + name[1:]
 	}
 	return name
+}
+
+func slugifyKey(key string) string {
+	result := strings.ToLower(key)
+	result = strings.ReplaceAll(result, "_", "-")
+	result = strings.ReplaceAll(result, " ", "-")
+	return result
 }
