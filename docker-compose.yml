@@ -29,5 +29,22 @@ services:
     volumes:
       - ./casdoor/app.conf:/conf/app.conf
 
+  # Sync Worker（可多副本横向扩展）
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://costrict:costrict_password@postgres:5432/costrict_db?sslmode=disable
+      WORKER_CONCURRENCY: "3"
+      WORKER_POLL_INTERVAL_SECONDS: "5"
+      SYNC_TMP_DIR: /tmp/costrict-sync
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - sync_tmp:/tmp/costrict-sync
+
 volumes:
   postgres_data:
+  sync_tmp:
