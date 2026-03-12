@@ -18,7 +18,6 @@ func Initialize(databaseURL string) (*gorm.DB, error) {
 
 	log.Println("Database connected successfully")
 
-	// Enable pgvector extension
 	if err := enablePgVector(db); err != nil {
 		log.Printf("Warning: Failed to enable pgvector extension: %v (continuing without vector support)", err)
 	}
@@ -27,12 +26,10 @@ func Initialize(databaseURL string) (*gorm.DB, error) {
 	return db, nil
 }
 
-// enablePgVector enables the pgvector extension in PostgreSQL
+// enablePgVector enables the pgvector extension in PostgreSQL.
 func enablePgVector(db *gorm.DB) error {
-	// Create extension if not exists
-	result := db.Exec("CREATE EXTENSION IF NOT EXISTS vector")
-	if result.Error != nil {
-		return fmt.Errorf("failed to create vector extension: %w", result.Error)
+	if err := db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
+		return fmt.Errorf("failed to create vector extension: %w", err)
 	}
 	log.Println("pgvector extension enabled successfully")
 	return nil

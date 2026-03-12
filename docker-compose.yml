@@ -1,7 +1,7 @@
 services:
   # PostgreSQL 数据库
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: costrict-postgres
     environment:
       POSTGRES_USER: costrict
