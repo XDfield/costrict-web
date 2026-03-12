@@ -45,9 +45,9 @@
         ↓
 ┌───────────────────────────────────────┐
 │  PostgreSQL（主存储 + 索引）            │  ← 所有读操作走这里，毫秒级响应
-│  skill_registries  技能仓库            │
-│  skill_items       统一条目            │
-│  skill_versions    版本历史            │
+│  capability_registries  技能仓库        │
+│  capability_items       统一条目        │
+│  capability_versions    版本历史        │
 └───────────────────────────────────────┘
         ↓ 异步（非阻塞，用户不感知）
 ┌───────────────────────────────────────┐
@@ -59,17 +59,17 @@
         ↓ 定时拉取（已有 indexer 雏形）
    解析 SKILL.md / plugin.json / mcp.yaml
         ↓
-   写入 skill_items（标记 source_type=external）
+   写入 capability_items（标记 source_type=external）
 ```
 
 ---
 
 ## 核心数据模型
 
-### `skill_registries`（技能仓库）
+### `capability_registries`（技能仓库）
 
 ```sql
-CREATE TABLE skill_registries (
+CREATE TABLE capability_registries (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name         VARCHAR(255) NOT NULL,
   description  TEXT,
@@ -102,12 +102,12 @@ CREATE TABLE skill_registries (
 );
 ```
 
-### `skill_items`（统一技能条目）
+### `capability_items`（统一技能条目）
 
 ```sql
-CREATE TABLE skill_items (
+CREATE TABLE capability_items (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  registry_id  UUID REFERENCES skill_registries(id) ON DELETE CASCADE,
+  registry_id  UUID REFERENCES capability_registries(id) ON DELETE CASCADE,
 
   -- 内容标识
   slug         VARCHAR(255) NOT NULL,
@@ -148,12 +148,12 @@ CREATE TABLE skill_items (
 );
 ```
 
-### `skill_versions`（版本历史，对标 git log）
+### `capability_versions`（版本历史，对标 git log）
 
 ```sql
-CREATE TABLE skill_versions (
+CREATE TABLE capability_versions (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id      UUID REFERENCES skill_items(id) ON DELETE CASCADE,
+  item_id      UUID REFERENCES capability_items(id) ON DELETE CASCADE,
 
   version      INTEGER NOT NULL,       -- 自增版本号
   content      TEXT NOT NULL,          -- 该版本的完整内容快照
@@ -178,8 +178,8 @@ CREATE TABLE skill_versions (
 用户在平台填写表单 → `POST /api/registries/:id/items`
 
 ```
-写 skill_items（status='draft' 或 'active'）
-写 skill_versions（version=1，commit_msg="Initial version"）
+写 capability_items（status='draft' 或 'active'）
+写 capability_versions（version=1，commit_msg="Initial version"）
 异步：git commit 到内置 bare repo（用户不感知）
 前端立即可见
 ```
@@ -188,12 +188,12 @@ CREATE TABLE skill_versions (
 
 ```
 用户修改内容 → PUT /api/items/:id
-更新 skill_items
-写新的 skill_versions 记录（version 自增，用户可填写变更说明）
+更新 capability_items
+写新的 capability_versions 记录（version 自增，用户可填写变更说明）
 异步 git commit
 ```
 
-版本历史对用户的呈现（读 `skill_versions` 表）：
+版本历史对用户的呈现（读 `capability_versions` 表）：
 
 ```
 v3 · 张三 · 2小时前 · "修复了示例代码"
@@ -210,11 +210,11 @@ v1 · 张三 · 3天前  · "初始版本"
 - 可见性：`public`
 
 ```
-创建 skill_registries 记录（source_type='external'）
+创建 capability_registries 记录（source_type='external'）
 后台定时任务启动
 拉取仓库，遍历 skills/*/SKILL.md
 对比 source_sha，只处理变更文件（增量同步）
-upsert skill_items（记录 source_path, source_sha）
+upsert capability_items（记录 source_path, source_sha）
 前端展示，标记"来源: buildwithclaude"
 ```
 
@@ -227,7 +227,7 @@ upsert skill_items（记录 source_path, source_sha）
 
 ```
 管理员上传 ZIP 包，或配置内网 Git 地址
-解析内容，写入 skill_items
+解析内容，写入 capability_items
 visibility='org'，org_id='内部组织名'
 只有该组织成员可见
 不出网，不同步到任何外部
@@ -239,13 +239,13 @@ visibility='org'，org_id='内部组织名'
 
 | 现有模块 | 改造方式 | 工作量 |
 |---------|---------|-------|
-| `lib/skills-server.ts`（读文件） | 改为从 `skill_items WHERE item_type='skill'` 读取 | 小 |
+| `lib/skills-server.ts`（读文件） | 改为从 `capability_items WHERE item_type='skill'` 读取 | 小 |
 | `lib/subagents-server.ts`（读文件） | 同上，`item_type='subagent'` | 小 |
 | `lib/commands-server.ts`（读文件） | 同上，`item_type='command'` | 小 |
-| `lib/indexer/mcp-server-indexer.ts` | 保留逻辑，写入目标改为 `skill_items`（`item_type='mcp'`） | 中 |
-| `lib/indexer/marketplace-indexer.ts` | 保留逻辑，`skill_registries` 对应 marketplace | 中 |
-| Go 后端 `SkillRepository` model | 重命名/对应 `skill_registries` | 小 |
-| Go 后端 `Skill/Agent/Command` model | 合并为 `skill_items`，加 `item_type` 字段 | 中 |
+| `lib/indexer/mcp-server-indexer.ts` | 保留逻辑，写入目标改为 `capability_items`（`item_type='mcp'`） | 中 |
+| `lib/indexer/marketplace-indexer.ts` | 保留逻辑，`capability_registries` 对应 marketplace | 中 |
+| Go 后端 `SkillRepository` model | 重命名/对应 `capability_registries` | 小 |
+| Go 后端 `Skill/Agent/Command` model | 合并为 `capability_items`，加 `item_type` 字段 | 中 |
 
 ---
 
@@ -260,7 +260,7 @@ visibility='org'，org_id='内部组织名'
 
 | 用途 | 说明 |
 |-----|------|
-| 导出/备份 | 定期把 `skill_items` 内容 dump 成 SKILL.md 并 commit 到内置 bare repo |
+| 导出/备份 | 定期把 `capability_items` 内容 dump 成 SKILL.md 并 commit 到内置 bare repo |
 | 增量同步锚点 | 用 `source_sha`（git blob sha）判断外部文件是否有变更，避免重复处理 |
 | 内容格式标准 | `content` 字段存储与现有 SKILL.md 完全兼容的 Markdown+frontmatter |
 | 可移植性 | 用户可以将仓库内容导出为标准格式，不被平台锁定 |
@@ -320,7 +320,7 @@ MCP 名称:    my-internal-tool
 claude mcp add my-internal-tool -e API_KEY=<your-api-key> -- npx -y @internal/my-mcp-server@1.0.0
 ```
 
-**`skill_items.metadata` 结构（形态一）：**
+**`capability_items.metadata` 结构（形态一）：**
 
 ```jsonc
 {
@@ -348,8 +348,8 @@ claude mcp add my-internal-tool -e API_KEY=<your-api-key> -- npx -y @internal/my
   在平台上传压缩包 + 填写元数据
         ↓
   平台存储文件（本地磁盘 / S3 / MinIO）
-  写入 skill_items（元数据）
-  写入 skill_artifacts（制品记录）
+  写入 capability_items（元数据）
+  写入 capability_artifacts（制品记录）
         ↓
   其他用户在技能中心找到该工具
   点击下载 .tgz 文件
@@ -358,7 +358,7 @@ claude mcp add my-internal-tool -e API_KEY=<your-api-key> -- npx -y @internal/my
     claude mcp add my-server -- my-mcp-server
 ```
 
-**`skill_items.metadata` 结构（形态二）：**
+**`capability_items.metadata` 结构（形态二）：**
 
 ```jsonc
 {
@@ -395,7 +395,7 @@ MCP 名称:    my-remote-service
 claude mcp add my-remote-service --transport http https://mcp.internal.corp/api/v1
 ```
 
-**`skill_items.metadata` 结构（形态三）：**
+**`capability_items.metadata` 结构（形态三）：**
 
 ```jsonc
 {
@@ -416,21 +416,92 @@ claude mcp add my-remote-service --transport http https://mcp.internal.corp/api/
 
 #### 文件范围说明
 
-项目中有两类文件，性质完全不同，处理方式不同：
+项目中有三类文件，性质不同，处理方式不同：
 
 | 类型 | 内容 | 体积 | 存储方式 |
 |-----|------|------|---------|
-| 内容文件 | Skill/Subagent/Command 的 Markdown | 几 KB | 直接存 `skill_items.content` 字段，不需要文件系统 |
-| 制品文件 | MCP Server 压缩包（.tgz/.zip） | 几 KB ~ 几百 MB | 文件系统 + `skill_artifacts` 表记录元数据 |
+| 主内容文件 | Skill/Agent/Command 的入口 Markdown（SKILL.md 等） | 几 KB | 直接存 `capability_items.content` 字段 |
+| 附属资源文件 | Skill 包内的辅助文件（reference.md、scripts/\*.sh、图片等） | 几 KB ~ 几 MB | 文本存 `capability_assets.text_content`；二进制走文件系统 + `capability_assets` 表 |
+| 制品文件 | MCP Server 压缩包（.tgz/.zip），含用户上传和同步自动打包两种来源 | 几 KB ~ 几百 MB | 文件系统 + `capability_artifacts` 表记录元数据 |
 
-本节专注**制品文件**的管理。
+本节分别说明**附属资源文件**和**制品文件**的管理方案。
+
+#### `capability_assets` 表（附属资源文件）
+
+Skill 包目录下除入口文件外的所有附属文件，按路径逐文件存储，Claude 运行时可按路径引用。
+
+```
+skills/my-skill/
+├── SKILL.md          → capability_items.content（主入口，不在此表）
+├── reference.md      → capability_assets（text_content 存正文）
+├── scripts/
+│   └── helper.sh     → capability_assets（text_content 存脚本内容）
+└── assets/
+    └── icon.png      → capability_assets（二进制，走 storage_key）
+```
+
+```sql
+CREATE TABLE capability_assets (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id          UUID NOT NULL REFERENCES capability_items(id) ON DELETE CASCADE,
+
+  -- 在 item 包内的相对路径，如 reference.md、scripts/helper.sh、assets/icon.png
+  rel_path         VARCHAR(512) NOT NULL,
+
+  -- 文本文件直接存内容；二进制文件为 NULL，走 storage_key
+  text_content     TEXT,
+
+  -- 二进制文件的存储位置（与 capability_artifacts 复用同一套 StorageBackend 机制）
+  storage_backend  VARCHAR(32) DEFAULT 'local',  -- 'local' | 's3' | 'minio'
+  storage_key      VARCHAR(512),
+  -- local:       assets/{org_id}/{item_id}/assets/icon.png
+  -- s3 / minio:  {bucket}/{org_id}/{item_id}/assets/icon.png
+
+  mime_type        VARCHAR(128),
+  file_size        BIGINT NOT NULL DEFAULT 0,
+  content_sha      VARCHAR(64),     -- 内容 SHA-256，增量同步时与远程对比，独立于 capability_items.source_sha
+
+  created_at       TIMESTAMP DEFAULT NOW(),
+  updated_at       TIMESTAMP DEFAULT NOW(),
+
+  UNIQUE(item_id, rel_path)
+);
+```
+
+**与 `capability_artifacts` 的边界**
+
+| | `capability_assets` | `capability_artifacts` |
+|---|---|---|
+| 语义 | item 包内的附属资源，内容的一部分 | 可发布的独立制品（tgz/zip） |
+| 来源 | Git 同步自动写入 | 用户手动上传 / 同步自动打包 |
+| 版本管理 | 跟随 `capability_items` 版本，无独立版本号 | 独立 `artifact_version` + `is_latest` |
+| 下载统计 | 无 | `download_count` |
+| 适用类型 | skill / agent / command | mcp（源码类） |
+
+---
+
+#### `capability_artifacts` 表（制品文件）
+
+MCP 类型存在两种制品来源，需区分：
+
+- **`upload`**：用户在平台手动上传的 tgz/zip 包
+- **`sync`**：Git 同步时对 MCP 源码目录自动执行 `git archive` 打包生成
+
+MCP 源码类同步流程：
+```
+Git 仓库（整个仓库或子目录是 MCP Server 源码）
+  ├── package.json      ─┐
+  ├── src/index.ts       │  git archive → tgz → capability_artifacts（source_type='sync'）
+  └── ...               ─┘
+  元数据从 package.json / pyproject.toml 提取 → capability_items + metadata
+```
 
 #### 存储目录结构
 
 ```
 /data/artifacts/                        ← ARTIFACT_STORAGE_PATH 环境变量
   └── {org_id}/                         ← 组织隔离，不同组织文件物理分离
-        └── {item_id}/                  ← 对应 skill_items.id
+        └── {item_id}/                  ← 对应 capability_items.id
               ├── v1.0.0/
               │     └── my-mcp-1.0.0.tgz
               └── v1.1.0/
@@ -445,9 +516,9 @@ claude mcp add my-remote-service --transport http https://mcp.internal.corp/api/
 #### 数据库表
 
 ```sql
-CREATE TABLE skill_artifacts (
+CREATE TABLE capability_artifacts (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  item_id          UUID NOT NULL REFERENCES skill_items(id) ON DELETE CASCADE,
+  item_id          UUID NOT NULL REFERENCES capability_items(id) ON DELETE CASCADE,
 
   -- 文件基本信息
   filename         VARCHAR(255) NOT NULL,   -- 原始文件名，如 my-mcp-1.0.0.tgz
@@ -465,11 +536,16 @@ CREATE TABLE skill_artifacts (
   artifact_version VARCHAR(64) NOT NULL,    -- 语义化版本，如 1.0.0
   is_latest        BOOLEAN DEFAULT false,   -- 是否为最新版本
 
+  -- 制品来源
+  source_type      VARCHAR(32) DEFAULT 'upload',
+  -- 'upload' : 用户手动上传
+  -- 'sync'   : Git 同步时自动 git archive 打包（MCP 源码类仓库）
+
   -- 下载统计
   download_count   INTEGER DEFAULT 0,
 
-  -- 审计
-  uploaded_by      VARCHAR(191) NOT NULL,   -- Casdoor user id
+  -- 审计（source_type='sync' 时 uploaded_by 填系统账号）
+  uploaded_by      VARCHAR(191) NOT NULL,
   created_at       TIMESTAMP DEFAULT NOW(),
 
   UNIQUE(item_id, artifact_version)
@@ -486,7 +562,7 @@ Content-Type: multipart/form-data
 
 字段：
   file          文件本体（.tgz / .zip / .tar.gz）
-  item_id       关联的 skill_items.id
+  item_id       关联的 capability_items.id
   version       版本号，如 1.0.0
   description   本次版本的说明（可选）
 ```
@@ -527,14 +603,14 @@ GET /api/artifacts/{artifact_id}/download
 ```
 ① 鉴权
    验证 token（Cookie 或 Authorization header）
-   查 skill_artifacts → skill_items → skill_registries 获取 visibility 和 org_id
+   查 capability_artifacts → capability_items → capability_registries 获取 visibility 和 org_id
    public  → 任何登录用户可下载
    org     → 必须是同一 org_id 的成员
    private → 必须是 owner 本人
 
 ② 查文件记录
    SELECT storage_backend, storage_key, filename, checksum_sha256
-   FROM skill_artifacts WHERE id = ?
+   FROM capability_artifacts WHERE id = ?
 
 ③ 异步增加下载计数（不阻塞响应）
 
@@ -624,7 +700,7 @@ ARTIFACT_MAX_SIZE_MB=500
 | 存储爆满 | 上传前按 org 统计已用空间，超配额拒绝上传 |
 | 大文件内存溢出 | 上传/下载全程流式处理（`io.Copy`），不 `ReadAll` |
 
-#### `skill_items.metadata` 中的 MCP 安装说明
+#### `capability_items.metadata` 中的 MCP 安装说明
 
 ```jsonc
 {
@@ -647,7 +723,7 @@ ARTIFACT_MAX_SIZE_MB=500
 
 ### 形态四：公网数据源同步（兼容 buildwithclaude 方案）
 
-平台内置定时同步任务，从公网 MCP 数据源拉取数据写入本地 `skill_items` 表，用户在平台上直接浏览和使用，无需手动录入。这是对 [buildwithclaude.com/mcp-servers](https://buildwithclaude.com/mcp-servers) 同步方案的完整继承。
+平台内置定时同步任务，从公网 MCP 数据源拉取数据写入本地 `capability_items` 表，用户在平台上直接浏览和使用，无需手动录入。这是对 [buildwithclaude.com/mcp-servers](https://buildwithclaude.com/mcp-servers) 同步方案的完整继承。
 
 #### 数据来源
 
@@ -671,7 +747,7 @@ ARTIFACT_MAX_SIZE_MB=500
          packages（npm 包信息）/ remotes（HTTP 地址）
          environment_variables / installation_methods
         ↓
-upsert skill_items
+upsert capability_items
   source_type = 'external-sync'
   item_type   = 'mcp'
   hosting_type 根据包信息自动推断：
@@ -687,8 +763,8 @@ upsert skill_items
 
 现有代码（`lib/indexer/mcp-server-indexer.ts`）已实现完整的拉取和解析逻辑，写入目标是 `mcp_servers` 表（Drizzle）。迁移策略：
 
-- **第一版**：保留现有 indexer 不动，`mcp_servers` 表继续作为公网同步数据的存储，`skill_items` 表存内部创建的数据，前端分别查询后合并展示
-- **后续**：将 indexer 写入目标统一迁移到 `skill_items`，`mcp_servers` 表废弃
+- **第一版**：保留现有 indexer 不动，`mcp_servers` 表继续作为公网同步数据的存储，`capability_items` 表存内部创建的数据，前端分别查询后合并展示
+- **后续**：将 indexer 写入目标统一迁移到 `capability_items`，`mcp_servers` 表废弃
 
 #### 同步来的数据在平台上的展示
 
@@ -744,7 +820,7 @@ NPM_CONFIG_REGISTRY=http://npm.internal:4873 \
 
 ```
 Step 1 — 建表 + 迁移现有文件数据
-  ✦ 创建 skill_registries / skill_items / skill_versions / skill_artifacts 表
+  ✦ 创建 capability_registries / capability_items / capability_versions / capability_assets / capability_artifacts 表
   ✦ 写一次性迁移脚本：读文件系统 → 写 DB
   ✦ 改 skills-server.ts 等从 DB 读取
   ✦ 前端表现不变，但数据来源切换完成
@@ -765,7 +841,7 @@ Step 4 — 公网 MCP 数据源同步
   ✦ 前端 MCP 列表合并展示内部创建 + 公网同步数据
   ✦ 标记来源（[内部] / [官方] / [Docker]），公网数据只读
   ✦ Fork 功能：将公网条目复制为内部可编辑副本
-  ✦ 后续再将 indexer 写入目标统一迁移到 skill_items 表
+  ✦ 后续再将 indexer 写入目标统一迁移到 capability_items 表
 
 Step 5 — 权限控制
   ✦ 对接 Casdoor org/group 做组织隔离
