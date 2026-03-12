@@ -1,6 +1,6 @@
 // @title           Costrict Web API
 // @version         1.0
-// @description     AI Agent Platform API - Skill marketplace, organization and repository management.
+// @description     AI Agent Platform API - Skill marketplace, repository and registry management.
 // @termsOfService  http://swagger.io/terms/
 
 // @contact.name   CoStrict Team
@@ -52,19 +52,24 @@ func main() {
 	}
 
 	err = db.AutoMigrate(
-		&models.Organization{},
-		&models.OrgMember{},
+		&models.Repository{},
+		&models.RepoMember{},
+		&models.RepoInvitation{},
+		&models.SyncLog{},
+		&models.SyncJob{},
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
-		&models.SyncJob{},
-		&models.SyncLog{},
 		&models.SecurityScan{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
+	}
+
+	if err := runPostMigrations(db); err != nil {
+		log.Fatalf("Failed to run post-migrations: %v", err)
 	}
 
 	log.Println("Database migrated successfully")
@@ -122,27 +127,31 @@ func main() {
 			auth.GET("/me", handlers.GetCurrentUser)
 		}
 
-		orgs := api.Group("/organizations")
+		repos := api.Group("/repositories")
 		{
-			orgs.GET("", handlers.ListOrganizations)
-			orgs.GET("/my", handlers.GetMyOrganizations)
-			orgs.POST("", handlers.CreateOrganization)
-			orgs.GET("/:id", handlers.GetOrganization)
-			orgs.PUT("/:id", handlers.UpdateOrganization)
-			orgs.DELETE("/:id", handlers.DeleteOrganization)
-			orgs.GET("/:id/members", handlers.ListOrganizationMembers)
-			orgs.POST("/:id/members", handlers.AddOrganizationMember)
-			orgs.DELETE("/:id/members/:userId", handlers.RemoveOrganizationMember)
-			orgs.GET("/:id/registry", handlers.GetOrganizationRegistry)
-			orgs.GET("/:id/registries", handlers.ListOrgRegistries)
-			orgs.POST("/:id/registries", handlers.AddOrgRegistry)
-			orgs.PUT("/:id/registries/:regId", handlers.UpdateOrgRegistry)
-			orgs.DELETE("/:id/registries/:regId", handlers.RemoveOrgRegistry)
-			orgs.POST("/:id/sync", handlers.TriggerOrgSync)
-			orgs.POST("/:id/sync/cancel", handlers.CancelOrgSync)
-			orgs.GET("/:id/sync-status", handlers.GetOrgSyncStatus)
-			orgs.GET("/:id/sync-logs", handlers.ListOrgSyncLogs)
-			orgs.GET("/:id/sync-jobs", handlers.ListOrgSyncJobs)
+			repos.GET("", handlers.ListRepositories)
+			repos.GET("/my", handlers.GetMyRepositories)
+			repos.POST("", handlers.CreateRepository)
+			repos.GET("/:id", handlers.GetRepository)
+			repos.PUT("/:id", handlers.UpdateRepository)
+			repos.DELETE("/:id", handlers.DeleteRepository)
+			repos.GET("/:id/members", handlers.ListRepositoryMembers)
+			repos.POST("/:id/members", handlers.AddRepositoryMember)
+			repos.PUT("/:id/members/:userId", handlers.UpdateRepositoryMember)
+			repos.DELETE("/:id/members/:userId", handlers.RemoveRepositoryMember)
+			repos.GET("/:id/invitations", handlers.ListRepoInvitations)
+			repos.POST("/:id/invitations", handlers.CreateRepoInvitation)
+			repos.DELETE("/:id/invitations/:invId", handlers.CancelRepoInvitation)
+			repos.GET("/:id/registry", handlers.GetRepositoryRegistry)
+			repos.GET("/:id/registries", handlers.ListRepoRegistries)
+			repos.POST("/:id/registries", handlers.AddRepoRegistry)
+			repos.PUT("/:id/registries/:regId", handlers.UpdateRepoRegistry)
+			repos.DELETE("/:id/registries/:regId", handlers.RemoveRepoRegistry)
+			repos.POST("/:id/sync", handlers.TriggerRepoSync)
+			repos.POST("/:id/sync/cancel", handlers.CancelRepoSync)
+			repos.GET("/:id/sync-status", handlers.GetRepoSyncStatus)
+			repos.GET("/:id/sync-logs", handlers.ListRepoSyncLogs)
+			repos.GET("/:id/sync-jobs", handlers.ListRepoSyncJobs)
 		}
 
 		api.GET("/registries", handlers.ListRegistries)
@@ -152,6 +161,7 @@ func main() {
 		api.POST("/registries/ensure-personal", handlers.EnsurePersonalRegistry)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.PUT("/registries/:id", handlers.UpdateRegistry)
+		api.PUT("/registries/:id/transfer", handlers.TransferRegistry)
 		api.DELETE("/registries/:id", handlers.DeleteRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)
 		api.POST("/registries/:id/items", handlers.CreateItem)
@@ -177,9 +187,14 @@ func main() {
 
 		api.GET("/items/:id/download", handlers.DownloadItem)
 
-		api.GET("/registry/:org/access", handlers.RegistryAccess)
-		api.GET("/registry/:org/index.json", handlers.RegistryIndex)
-		api.GET("/registry/:org/:slug/:file", handlers.DownloadRegistryFile)
+		api.GET("/registry/:repo/access", handlers.RegistryAccess)
+		api.GET("/registry/:repo/index.json", handlers.RegistryIndex)
+		api.GET("/registry/:repo/:slug/:file", handlers.DownloadRegistryFile)
+
+		api.GET("/users/search", handlers.SearchUsers)
+		api.GET("/invitations/my", handlers.GetMyInvitations)
+		api.POST("/invitations/:id/accept", handlers.AcceptInvitation)
+		api.POST("/invitations/:id/decline", handlers.DeclineInvitation)
 
 		api.GET("/sync-logs/:id", handlers.GetSyncLogDetail)
 		api.GET("/sync-jobs/:id", handlers.GetSyncJobDetail)
@@ -192,7 +207,91 @@ func main() {
 	}
 }
 
+func runPostMigrations(db *gorm.DB) error {
+	fks := []struct {
+		table      string
+		constraint string
+		stmt       string
+	}{
+		{
+			table:      "sync_logs",
+			constraint: "fk_sync_logs_registry",
+			stmt:       `ALTER TABLE sync_logs ADD CONSTRAINT fk_sync_logs_registry FOREIGN KEY (registry_id) REFERENCES capability_registries(id)`,
+		},
+		{
+			table:      "sync_jobs",
+			constraint: "fk_sync_jobs_registry",
+			stmt:       `ALTER TABLE sync_jobs ADD CONSTRAINT fk_sync_jobs_registry FOREIGN KEY (registry_id) REFERENCES capability_registries(id)`,
+		},
+		{
+			table:      "capability_registries",
+			constraint: "fk_capability_registries_last_sync_log",
+			stmt:       `ALTER TABLE capability_registries ADD CONSTRAINT fk_capability_registries_last_sync_log FOREIGN KEY (last_sync_log_id) REFERENCES sync_logs(id) ON DELETE SET NULL`,
+		},
+	}
+
+	for _, fk := range fks {
+		var exists int
+		db.Raw(`SELECT 1 FROM information_schema.table_constraints WHERE table_name=? AND constraint_name=?`, fk.table, fk.constraint).Scan(&exists)
+		if exists == 1 {
+			continue
+		}
+		if err := db.Exec(fk.stmt).Error; err != nil {
+			return fmt.Errorf("post-migration failed (%s): %w", fk.stmt, err)
+		}
+	}
+	return nil
+}
+
 func runPreMigrations(db *gorm.DB) error {
+	bootstrapStmts := []string{
+		`CREATE TABLE IF NOT EXISTS sync_logs (
+			id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+			registry_id uuid NOT NULL,
+			trigger_type text NOT NULL,
+			trigger_user text,
+			status text NOT NULL DEFAULT 'running',
+			commit_sha text,
+			previous_sha text,
+			total_items bigint DEFAULT 0,
+			added_items bigint DEFAULT 0,
+			updated_items bigint DEFAULT 0,
+			deleted_items bigint DEFAULT 0,
+			skipped_items bigint DEFAULT 0,
+			failed_items bigint DEFAULT 0,
+			error_message text,
+			duration_ms bigint,
+			started_at timestamptz NOT NULL DEFAULT now(),
+			finished_at timestamptz,
+			created_at timestamptz
+		)`,
+		`CREATE TABLE IF NOT EXISTS capability_registries (
+			id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+			name text NOT NULL,
+			description text,
+			source_type text NOT NULL DEFAULT 'internal',
+			external_url text,
+			external_branch text DEFAULT 'main',
+			sync_enabled boolean DEFAULT false,
+			sync_interval bigint DEFAULT 3600,
+			last_synced_at timestamptz,
+			last_sync_sha text,
+			sync_status text DEFAULT 'idle',
+			sync_config JSONB DEFAULT '{}',
+			last_sync_log_id uuid,
+			visibility text DEFAULT 'repo',
+			repo_id text,
+			owner_id text NOT NULL,
+			created_at timestamptz,
+			updated_at timestamptz
+		)`,
+	}
+	for _, stmt := range bootstrapStmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("bootstrap failed: %w", err)
+		}
+	}
+
 	migrations := []struct {
 		check string
 		stmts []string
