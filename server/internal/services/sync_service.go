@@ -10,6 +10,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -45,22 +46,65 @@ type syncConfig struct {
 	ConflictStrategy string   `json:"conflictStrategy"`
 }
 
-func (s *SyncService) parseFile(content []byte, relPath string) (*ParsedItem, error) {
+func (s *SyncService) applyPluginJSON(content []byte, registry *models.CapabilityRegistry) {
+	item, err := s.Parser.ParsePluginJSON(content, ".claude-plugin/plugin.json")
+	if err != nil {
+		return
+	}
+	updates := map[string]any{}
+	if item.Name != "" && registry.Name == "" {
+		updates["name"] = item.Name
+	}
+	if item.Description != "" && registry.Description == "" {
+		updates["description"] = item.Description
+	}
+	if len(updates) > 0 {
+		s.DB.Model(registry).Updates(updates)
+	}
+}
+
+// parseFile returns one or more ParsedItems for the given file content.
+func (s *SyncService) parseFile(content []byte, relPath string) ([]*ParsedItem, error) {
 	lower := strings.ToLower(relPath)
 	base := strings.ToLower(filepath.Base(relPath))
 
 	switch {
-	case base == "plugin.json":
-		return s.Parser.ParsePluginJSON(content, relPath)
+	case base == "hooks.json":
+		item, err := s.Parser.ParseHooksJSON(content, relPath)
+		if err != nil {
+			return nil, err
+		}
+		return []*ParsedItem{item}, nil
+	case base == ".mcp.json":
+		return s.Parser.ParseMCPJSON(content, relPath)
 	case base == "agents.md" || strings.HasSuffix(lower, "/agents.md"):
 		items, err := s.Parser.ParseAgentsMD(content, relPath)
 		if err != nil || len(items) == 0 {
-			return s.Parser.ParseSKILLMD(content, relPath)
+			item, err2 := s.Parser.ParseSKILLMD(content, relPath)
+			if err2 != nil {
+				return nil, err2
+			}
+			return []*ParsedItem{item}, nil
 		}
-		return items[0], nil
+		return items, nil
 	default:
-		return s.Parser.ParseSKILLMD(content, relPath)
+		item, err := s.Parser.ParseSKILLMD(content, relPath)
+		if err != nil {
+			return nil, err
+		}
+		return []*ParsedItem{item}, nil
 	}
+}
+
+func metadataJSON(m map[string]any) datatypes.JSON {
+	if len(m) == 0 {
+		return datatypes.JSON([]byte("{}"))
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return datatypes.JSON([]byte("{}"))
+	}
+	return datatypes.JSON(b)
 }
 
 func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts SyncOptions) (*SyncResult, error) {
@@ -107,8 +151,13 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			result.Status = "success"
 		}
 		syncLog.Status = result.Status
+
 		if len(result.Errors) > 0 {
-			syncLog.ErrorMessage = result.Errors[0]
+			if errBytes, err := json.Marshal(result.Errors); err == nil {
+				syncLog.ErrorMessage = string(errBytes)
+			} else {
+				syncLog.ErrorMessage = result.Errors[0]
+			}
 		}
 
 		if !opts.DryRun {
@@ -147,7 +196,14 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		_ = json.Unmarshal(registry.SyncConfig, &cfg)
 	}
 	if len(cfg.IncludePatterns) == 0 {
-		cfg.IncludePatterns = []string{"**/*.md", "**/SKILL.md", "**/plugin.json", "**/.claude-plugin/plugin.json"}
+		cfg.IncludePatterns = []string{
+			"skills/**/SKILL.md",
+			"commands/**/*.md",
+			"agents/**/*.md",
+			".claude-plugin/plugin.json",
+			"hooks/hooks.json",
+			".mcp.json",
+		}
 	}
 	if cfg.ConflictStrategy == "" {
 		cfg.ConflictStrategy = "keep_remote"
@@ -185,103 +241,127 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			continue
 		}
 
+		if strings.ToLower(filepath.Base(relPath)) == "plugin.json" {
+			if !opts.DryRun {
+				s.applyPluginJSON(content, &registry)
+			}
+			continue
+		}
+
 		contentHash := s.Git.ContentHash(content)
 		seenPaths[relPath] = true
 
-		parsed, err := s.parseFile(content, relPath)
+		parsedItems, err := s.parseFile(content, relPath)
 		if err != nil {
 			result.Failed++
 			result.Errors = append(result.Errors, fmt.Sprintf("parse %s: %v", relPath, err))
 			continue
 		}
-		parsed.ContentHash = contentHash
 
-		existing, exists := existingByPath[relPath]
+		for _, parsed := range parsedItems {
+			parsed.ContentHash = contentHash
 
-		if exists && existing.SourceSHA == contentHash {
-			result.Skipped++
-			continue
-		}
+			itemKey := relPath
+			if len(parsedItems) > 1 {
+				itemKey = relPath + "#" + parsed.Slug
+			}
 
-		if exists && cfg.ConflictStrategy == "keep_local" {
-			localContentHash := s.Git.ContentHash([]byte(existing.Content))
-			if localContentHash != existing.SourceSHA {
+			existing, exists := existingByPath[itemKey]
+			if !exists && len(parsedItems) > 1 {
+				existing = existingByPath[relPath]
+				exists = existing != nil && existing.Slug == parsed.Slug
+			}
+
+			if exists && existing.SourceSHA == contentHash {
 				result.Skipped++
 				continue
 			}
-		}
 
-		if opts.DryRun {
+			if exists && cfg.ConflictStrategy == "keep_local" {
+				localContentHash := s.Git.ContentHash([]byte(existing.Content))
+				if localContentHash != existing.SourceSHA {
+					result.Skipped++
+					continue
+				}
+			}
+
+			if opts.DryRun {
+				if exists {
+					result.Updated++
+				} else {
+					result.Added++
+				}
+				continue
+			}
+
 			if exists {
+				var maxRevision int
+				s.DB.Model(&models.CapabilityVersion{}).Where("item_id = ?", existing.ID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
+
+				existing.Name = parsed.Name
+				existing.Description = parsed.Description
+				existing.Category = parsed.Category
+				existing.Version = parsed.Version
+				existing.Content = parsed.Content
+				existing.Metadata = metadataJSON(parsed.Metadata)
+				existing.SourceSHA = contentHash
+				existing.UpdatedBy = "sync"
+
+				if err := s.DB.Save(existing).Error; err != nil {
+					result.Failed++
+					result.Errors = append(result.Errors, fmt.Sprintf("update %s: %v", relPath, err))
+					continue
+				}
+
+				ver := &models.CapabilityVersion{
+					ID:        uuid.New().String(),
+					ItemID:    existing.ID,
+					Revision:  maxRevision + 1,
+					Content:   parsed.Content,
+					Metadata:  metadataJSON(parsed.Metadata),
+					CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
+					CreatedBy: "sync",
+				}
+				s.DB.Create(ver)
 				result.Updated++
 			} else {
+				newItem := &models.CapabilityItem{
+					ID:          uuid.New().String(),
+					RegistryID:  registryID,
+					Slug:        parsed.Slug,
+					ItemType:    parsed.ItemType,
+					Name:        parsed.Name,
+					Description: parsed.Description,
+					Category:    parsed.Category,
+					Version:     parsed.Version,
+					Content:     parsed.Content,
+					Metadata:    metadataJSON(parsed.Metadata),
+					SourcePath:  relPath,
+					SourceSHA:   contentHash,
+					Status:      "active",
+					CreatedBy:   "sync",
+					UpdatedBy:   "sync",
+				}
+				if err := s.DB.Create(newItem).Error; err != nil {
+					result.Failed++
+					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, err))
+					continue
+				}
+
+				ver := &models.CapabilityVersion{
+					ID:        uuid.New().String(),
+					ItemID:    newItem.ID,
+					Revision:  1,
+					Content:   parsed.Content,
+					Metadata:  metadataJSON(parsed.Metadata),
+					CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
+					CreatedBy: "sync",
+				}
+				s.DB.Create(ver)
+
+				s.syncAssets(cloneResult.LocalPath, relPath, newItem.ID, &result.Errors)
 				result.Added++
 			}
-			continue
-		}
-
-		if exists {
-			var maxVer int
-			s.DB.Model(&models.CapabilityVersion{}).Where("item_id = ?", existing.ID).Select("COALESCE(MAX(version), 0)").Scan(&maxVer)
-
-			existing.Name = parsed.Name
-			existing.Description = parsed.Description
-			existing.Category = parsed.Category
-			existing.Version = parsed.Version
-			existing.Content = parsed.Content
-			existing.SourceSHA = contentHash
-			existing.UpdatedBy = "sync"
-
-			if err := s.DB.Save(existing).Error; err != nil {
-				result.Failed++
-				result.Errors = append(result.Errors, fmt.Sprintf("update %s: %v", relPath, err))
-				continue
-			}
-
-			ver := &models.CapabilityVersion{
-				ID:        uuid.New().String(),
-				ItemID:    existing.ID,
-				Version:   maxVer + 1,
-				Content:   parsed.Content,
-				CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
-				CreatedBy: "sync",
-			}
-			s.DB.Create(ver)
-			result.Updated++
-		} else {
-			newItem := &models.CapabilityItem{
-				ID:          uuid.New().String(),
-				RegistryID:  registryID,
-				Slug:        parsed.Slug,
-				ItemType:    parsed.ItemType,
-				Name:        parsed.Name,
-				Description: parsed.Description,
-				Category:    parsed.Category,
-				Version:     parsed.Version,
-				Content:     parsed.Content,
-				SourcePath:  relPath,
-				SourceSHA:   contentHash,
-				Visibility:  registry.Visibility,
-				Status:      "active",
-				CreatedBy:   "sync",
-				UpdatedBy:   "sync",
-			}
-			if err := s.DB.Create(newItem).Error; err != nil {
-				result.Failed++
-				result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, err))
-				continue
-			}
-
-			ver := &models.CapabilityVersion{
-				ID:        uuid.New().String(),
-				ItemID:    newItem.ID,
-				Version:   1,
-				Content:   parsed.Content,
-				CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
-				CreatedBy: "sync",
-			}
-			s.DB.Create(ver)
-			result.Added++
 		}
 	}
 
@@ -289,6 +369,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		for path, item := range existingByPath {
 			if !seenPaths[path] {
 				s.DB.Model(item).Updates(map[string]any{"status": "archived"})
+				s.DB.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
 				result.Deleted++
 			}
 		}
@@ -305,4 +386,94 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	result.Status = "success"
 
 	return result, nil
+}
+
+// syncAssets collects and upserts non-primary files in the same skill directory.
+func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]string) {
+	dir := filepath.Dir(relPath)
+	if dir == "." {
+		return
+	}
+
+	allFiles, err := s.Git.ListFiles(localPath, []string{dir + "/**"}, nil)
+	if err != nil {
+		return
+	}
+
+	primaryBase := strings.ToUpper(filepath.Base(relPath))
+
+	var existingAssets []models.CapabilityAsset
+	s.DB.Where("item_id = ?", itemID).Find(&existingAssets)
+	assetByPath := make(map[string]*models.CapabilityAsset, len(existingAssets))
+	for i := range existingAssets {
+		assetByPath[existingAssets[i].RelPath] = &existingAssets[i]
+	}
+
+	for _, f := range allFiles {
+		if strings.ToUpper(filepath.Base(f)) == primaryBase {
+			continue
+		}
+		assetRelPath, _ := filepath.Rel(dir, f)
+		assetRelPath = filepath.ToSlash(assetRelPath)
+
+		content, err := s.Git.ReadFile(localPath, f)
+		if err != nil {
+			*errs = append(*errs, fmt.Sprintf("asset read %s: %v", f, err))
+			continue
+		}
+
+		contentSHA := s.Git.ContentHash(content)
+
+		if existing, ok := assetByPath[assetRelPath]; ok {
+			if existing.ContentSHA == contentSHA {
+				continue
+			}
+			text := string(content)
+			s.DB.Model(existing).Updates(map[string]any{
+				"text_content": text,
+				"content_sha":  contentSHA,
+				"file_size":    int64(len(content)),
+			})
+		} else {
+			text := string(content)
+			asset := &models.CapabilityAsset{
+				ID:          uuid.New().String(),
+				ItemID:      itemID,
+				RelPath:     assetRelPath,
+				TextContent: &text,
+				MimeType:    inferMimeType(f),
+				FileSize:    int64(len(content)),
+				ContentSHA:  contentSHA,
+			}
+			s.DB.Create(asset)
+		}
+	}
+}
+
+func inferMimeType(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".md":
+		return "text/markdown"
+	case ".json":
+		return "application/json"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".sh":
+		return "text/x-sh"
+	case ".py":
+		return "text/x-python"
+	case ".js":
+		return "text/javascript"
+	case ".ts":
+		return "text/typescript"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
 }
