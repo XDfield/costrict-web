@@ -2,6 +2,7 @@ package models
 
 import (
 	"time"
+
 	"gorm.io/datatypes"
 )
 
@@ -48,7 +49,8 @@ type CapabilityRegistry struct {
 	Visibility string `gorm:"default:'org'" json:"visibility"`
 	OrgID      string `json:"orgId"`
 	OwnerID    string `gorm:"not null" json:"ownerId"`
-	Items []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
+	Items       []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
+	LastSyncLog *SyncLog         `gorm:"foreignKey:LastSyncLogID;references:ID" json:"lastSyncLog,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -97,21 +99,22 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID         string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID string `gorm:"not null" json:"registryId"`
-	Slug       string `gorm:"not null" json:"slug"`
-	ItemType   string `gorm:"not null" json:"itemType"`
-	Name       string `gorm:"not null" json:"name"`
-	Description string `json:"description"`
-	Category   string `json:"category"`
-	Version    string `gorm:"default:'1.0.0'" json:"version"`
-	Content    string `gorm:"type:text" json:"content"`
-	Metadata   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	SourcePath string `json:"sourcePath"`
-	SourceSHA  string `json:"sourceSha"`
-	Visibility string `json:"visibility"`
-	InstallCount int    `gorm:"default:0" json:"installCount"`
-	Status       string `gorm:"default:'active'" json:"status"`
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID  string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"registryId"`
+	Slug        string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"slug"`
+	ItemType    string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"itemType"`
+	Name        string         `gorm:"not null" json:"name"`
+	Description string         `json:"description"`
+	Category    string         `json:"category"`
+	Version     string         `gorm:"default:'1.0.0'" json:"version"`
+	Content     string         `gorm:"type:text" json:"content"`
+	Metadata    datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	SourcePath  string         `json:"sourcePath"`
+	SourceSHA   string         `json:"sourceSha"`
+	InstallCount int           `gorm:"default:0" json:"installCount"`
+	Status       string        `gorm:"default:'active'" json:"status"`
+	SecurityStatus string      `gorm:"default:'unscanned'" json:"securityStatus"`
+	LastScanID     *string     `json:"lastScanId,omitempty"`
 	CreatedBy string `gorm:"not null" json:"createdBy"`
 	UpdatedBy string `json:"updatedBy"`
 	Registry  *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
@@ -124,8 +127,8 @@ type CapabilityItem struct {
 
 type CapabilityVersion struct {
 	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID    string         `gorm:"not null" json:"itemId"`
-	Version   int            `gorm:"not null" json:"version"`
+	ItemID    string         `gorm:"not null;index" json:"itemId"`
+	Revision  int            `gorm:"not null;column:revision" json:"revision"`
 	Content   string         `gorm:"type:text;not null" json:"content"`
 	Metadata  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	CommitMsg string         `json:"commitMsg"`
@@ -149,7 +152,7 @@ type CapabilityAsset struct {
 
 type CapabilityArtifact struct {
 	ID              string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID          string    `gorm:"not null" json:"itemId"`
+	ItemID          string    `gorm:"not null;index" json:"itemId"`
 	Filename        string    `gorm:"not null" json:"filename"`
 	FileSize        int64     `gorm:"not null" json:"fileSize"`
 	ChecksumSHA256  string    `gorm:"not null" json:"checksumSha256"`
@@ -158,8 +161,25 @@ type CapabilityArtifact struct {
 	StorageKey      string    `gorm:"not null" json:"storageKey"`
 	ArtifactVersion string    `gorm:"not null" json:"artifactVersion"`
 	IsLatest        bool      `gorm:"default:false" json:"isLatest"`
-	SourceType      string    `gorm:"default:'upload'" json:"sourceType"` // upload | sync
+	SourceType      string    `gorm:"default:'upload'" json:"sourceType"`
 	DownloadCount   int       `gorm:"default:0" json:"downloadCount"`
 	UploadedBy      string    `gorm:"not null" json:"uploadedBy"`
 	CreatedAt       time.Time `json:"createdAt"`
+}
+
+type SecurityScan struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID      string         `gorm:"not null;index" json:"itemId"`
+	RevisionID  string         `gorm:"not null" json:"revisionId"`
+	TriggerType string         `gorm:"not null" json:"triggerType"`
+	Status      string         `gorm:"not null;default:'pending'" json:"status"`
+	RiskLevel   string         `json:"riskLevel"`
+	Verdict     string         `json:"verdict"`
+	RedFlags    datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags"`
+	Permissions datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"permissions"`
+	Report      datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"report"`
+	ErrorList   datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"errorList"`
+	ScannedBy   string         `json:"scannedBy"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	FinishedAt  *time.Time     `json:"finishedAt,omitempty"`
 }
