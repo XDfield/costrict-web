@@ -10,7 +10,8 @@
     "build:server": "cd server && go build -o bin/server main.go",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
-    "docker:logs": "docker-compose logs -f"
+    "docker:logs": "docker-compose logs -f",
+    "swagger": "npx serve server/docs -l 8081 --no-clipboard"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
