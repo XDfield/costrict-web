@@ -196,8 +196,8 @@ func TestCreateOrganization_SyncType_Success(t *testing.T) {
 	if body["organization"] == nil {
 		t.Fatal("expected organization field in response")
 	}
-	if body["registry"] == nil {
-		t.Fatal("expected registry field in response")
+	if body["registries"] == nil {
+		t.Fatal("expected registries field in response")
 	}
 }
 
@@ -463,8 +463,8 @@ func TestGetOrganizationRegistry_ExternalRegistryNotReturned(t *testing.T) {
 	})
 
 	w := get(newOrgRouter(""), "/api/organizations/org-gr2/registry")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 (only internal registries returned), got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (external registry returned first), got %d", w.Code)
 	}
 }
 

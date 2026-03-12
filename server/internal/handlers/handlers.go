@@ -126,7 +126,9 @@ func ListOrganizations(c *gin.Context) {
 
 // CreateSyncRegistryInput holds sync configuration for creating a sync-type organization
 type CreateSyncRegistryInput struct {
-	ExternalURL      string   `json:"externalUrl" binding:"required"`
+	Name             string   `json:"name"`
+	Description      string   `json:"description"`
+	ExternalURL      string   `json:"externalUrl"`
 	ExternalBranch   string   `json:"externalBranch"`
 	SyncInterval     int      `json:"syncInterval"`
 	SyncEnabled      bool     `json:"syncEnabled"`
@@ -149,13 +151,14 @@ type CreateSyncRegistryInput struct {
 // @Router       /organizations [post]
 func CreateOrganization(c *gin.Context) {
 	var req struct {
-		Name         string                   `json:"name" binding:"required"`
-		DisplayName  string                   `json:"displayName"`
-		Description  string                   `json:"description"`
-		Visibility   string                   `json:"visibility"`
-		OwnerID      string                   `json:"ownerId" binding:"required"`
-		OrgType      string                   `json:"orgType"`
-		SyncRegistry *CreateSyncRegistryInput `json:"syncRegistry"`
+		Name             string                    `json:"name" binding:"required"`
+		DisplayName      string                    `json:"displayName"`
+		Description      string                    `json:"description"`
+		Visibility       string                    `json:"visibility"`
+		OwnerID          string                    `json:"ownerId" binding:"required"`
+		OrgType          string                    `json:"orgType"`
+		SyncRegistry     *CreateSyncRegistryInput  `json:"syncRegistry"`
+		SyncRegistries   []CreateSyncRegistryInput `json:"syncRegistries"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -168,11 +171,13 @@ func CreateOrganization(c *gin.Context) {
 		orgType = "normal"
 	}
 
-	if orgType == "sync" {
-		if req.SyncRegistry == nil || req.SyncRegistry.ExternalURL == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "syncRegistry.externalUrl is required for sync organizations"})
-			return
-		}
+	if req.SyncRegistry != nil && req.SyncRegistry.ExternalURL != "" {
+		req.SyncRegistries = append([]CreateSyncRegistryInput{*req.SyncRegistry}, req.SyncRegistries...)
+	}
+
+	if orgType == "sync" && len(req.SyncRegistries) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one syncRegistry is required for sync organizations"})
+		return
 	}
 
 	visibility := req.Visibility
@@ -204,45 +209,17 @@ func CreateOrganization(c *gin.Context) {
 	}
 	db.Create(&ownerMember)
 
-	if orgType == "sync" && req.SyncRegistry != nil {
-		sr := req.SyncRegistry
-		branch := sr.ExternalBranch
-		if branch == "" {
-			branch = "main"
+	if orgType == "sync" {
+		var createdRegistries []models.CapabilityRegistry
+		for _, sr := range req.SyncRegistries {
+			reg := buildExternalRegistry(sr, org.ID, req.OwnerID, visibility)
+			db.Create(&reg)
+			if SyncScheduler != nil && sr.SyncEnabled {
+				_ = SyncScheduler.RegisterRegistry(&reg)
+			}
+			createdRegistries = append(createdRegistries, reg)
 		}
-		interval := sr.SyncInterval
-		if interval <= 0 {
-			interval = 3600
-		}
-		conflictStrategy := sr.ConflictStrategy
-		if conflictStrategy == "" {
-			conflictStrategy = "keep_remote"
-		}
-
-		syncConfigJSON := buildSyncConfigJSON(sr.IncludePatterns, sr.ExcludePatterns, conflictStrategy, sr.WebhookSecret)
-
-	orgRegistry := models.CapabilityRegistry{
-		ID:             uuid.New().String(),
-		Name:           org.Name,
-		Description:    "Sync registry for organization " + org.Name,
-		SourceType:     "external",
-		ExternalURL:    sr.ExternalURL,
-		ExternalBranch: branch,
-		SyncEnabled:    sr.SyncEnabled,
-		SyncInterval:   interval,
-		SyncStatus:     "idle",
-		SyncConfig:     syncConfigJSON,
-		Visibility:     visibility,
-		OrgID:          org.ID,
-		OwnerID:        req.OwnerID,
-	}
-		db.Create(&orgRegistry)
-
-		if SyncScheduler != nil && sr.SyncEnabled {
-			_ = SyncScheduler.RegisterRegistry(&orgRegistry)
-		}
-
-		c.JSON(http.StatusCreated, gin.H{"organization": org, "registry": orgRegistry})
+		c.JSON(http.StatusCreated, gin.H{"organization": org, "registries": createdRegistries})
 		return
 	}
 
@@ -258,6 +235,40 @@ func CreateOrganization(c *gin.Context) {
 	db.Create(&orgRegistry)
 
 	c.JSON(http.StatusCreated, org)
+}
+
+func buildExternalRegistry(sr CreateSyncRegistryInput, orgID, ownerID, visibility string) models.CapabilityRegistry {
+	branch := sr.ExternalBranch
+	if branch == "" {
+		branch = "main"
+	}
+	interval := sr.SyncInterval
+	if interval <= 0 {
+		interval = 3600
+	}
+	conflictStrategy := sr.ConflictStrategy
+	if conflictStrategy == "" {
+		conflictStrategy = "keep_remote"
+	}
+	name := sr.Name
+	if name == "" {
+		name = sr.ExternalURL
+	}
+	return models.CapabilityRegistry{
+		ID:             uuid.New().String(),
+		Name:           name,
+		Description:    sr.Description,
+		SourceType:     "external",
+		ExternalURL:    sr.ExternalURL,
+		ExternalBranch: branch,
+		SyncEnabled:    sr.SyncEnabled,
+		SyncInterval:   interval,
+		SyncStatus:     "idle",
+		SyncConfig:     buildSyncConfigJSON(sr.IncludePatterns, sr.ExcludePatterns, conflictStrategy, sr.WebhookSecret),
+		Visibility:     visibility,
+		OrgID:          orgID,
+		OwnerID:        ownerID,
+	}
 }
 
 // GetOrganization godoc
@@ -469,12 +480,182 @@ func GetOrganizationRegistry(c *gin.Context) {
 	orgID := c.Param("id")
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
-	result := db.Where("org_id = ? AND source_type = 'internal'", orgID).First(&registry)
+	result := db.Where("org_id = ?", orgID).Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").First(&registry)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found for this organization"})
 		return
 	}
 	c.JSON(http.StatusOK, registry)
+}
+
+// ListOrgRegistries godoc
+// @Summary      List organization registries
+// @Description  List all capability registries belonging to an organization
+// @Tags         organizations
+// @Produce      json
+// @Param        id  path  string  true  "Organization ID"
+// @Success      200  {object}  object{registries=[]models.CapabilityRegistry}
+// @Router       /organizations/{id}/registries [get]
+func ListOrgRegistries(c *gin.Context) {
+	orgID := c.Param("id")
+	db := database.GetDB()
+	var registries []models.CapabilityRegistry
+	db.Where("org_id = ?", orgID).Order("created_at ASC").Find(&registries)
+	c.JSON(http.StatusOK, gin.H{"registries": registries})
+}
+
+// AddOrgRegistry godoc
+// @Summary      Add registry to organization
+// @Description  Bind a new Git sync registry to an organization
+// @Tags         organizations
+// @Accept       json
+// @Produce      json
+// @Param        id    path  string                  true  "Organization ID"
+// @Param        body  body  CreateSyncRegistryInput true  "Registry config"
+// @Success      201  {object}  models.CapabilityRegistry
+// @Failure      400  {object}  object{error=string}
+// @Router       /organizations/{id}/registries [post]
+func AddOrgRegistry(c *gin.Context) {
+	orgID := c.Param("id")
+	var req CreateSyncRegistryInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.ExternalURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "externalUrl is required"})
+		return
+	}
+
+	db := database.GetDB()
+	var org models.Organization
+	if db.First(&org, "id = ?", orgID).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Organization not found"})
+		return
+	}
+
+	userIDVal, _ := c.Get("userID")
+	ownerID, _ := userIDVal.(string)
+	if ownerID == "" {
+		ownerID = org.OwnerID
+	}
+
+	reg := buildExternalRegistry(req, orgID, ownerID, org.Visibility)
+	if err := db.Create(&reg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
+		return
+	}
+	if SyncScheduler != nil && req.SyncEnabled {
+		_ = SyncScheduler.RegisterRegistry(&reg)
+	}
+	c.JSON(http.StatusCreated, reg)
+}
+
+// UpdateOrgRegistry godoc
+// @Summary      Update organization registry
+// @Description  Update sync configuration of a registry belonging to an organization
+// @Tags         organizations
+// @Accept       json
+// @Produce      json
+// @Param        id     path  string  true  "Organization ID"
+// @Param        regId  path  string  true  "Registry ID"
+// @Success      200  {object}  models.CapabilityRegistry
+// @Failure      404  {object}  object{error=string}
+// @Router       /organizations/{id}/registries/{regId} [put]
+func UpdateOrgRegistry(c *gin.Context) {
+	orgID := c.Param("id")
+	regID := c.Param("regId")
+	db := database.GetDB()
+
+	var reg models.CapabilityRegistry
+	if db.Where("id = ? AND org_id = ?", regID, orgID).First(&reg).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return
+	}
+
+	var req struct {
+		Name             string   `json:"name"`
+		Description      string   `json:"description"`
+		ExternalURL      string   `json:"externalUrl"`
+		ExternalBranch   string   `json:"externalBranch"`
+		SyncEnabled      *bool    `json:"syncEnabled"`
+		SyncInterval     int      `json:"syncInterval"`
+		IncludePatterns  []string `json:"includePatterns"`
+		ExcludePatterns  []string `json:"excludePatterns"`
+		ConflictStrategy string   `json:"conflictStrategy"`
+		WebhookSecret    string   `json:"webhookSecret"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.Name != "" {
+		reg.Name = req.Name
+	}
+	if req.Description != "" {
+		reg.Description = req.Description
+	}
+	if req.ExternalURL != "" {
+		reg.ExternalURL = req.ExternalURL
+	}
+	if req.ExternalBranch != "" {
+		reg.ExternalBranch = req.ExternalBranch
+	}
+	if req.SyncEnabled != nil {
+		reg.SyncEnabled = *req.SyncEnabled
+	}
+	if req.SyncInterval > 0 {
+		reg.SyncInterval = req.SyncInterval
+	}
+	if req.IncludePatterns != nil || req.ExcludePatterns != nil || req.ConflictStrategy != "" {
+		cs := req.ConflictStrategy
+		if cs == "" {
+			cs = "keep_remote"
+		}
+		reg.SyncConfig = buildSyncConfigJSON(req.IncludePatterns, req.ExcludePatterns, cs, req.WebhookSecret)
+	}
+
+	if err := db.Save(&reg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update registry"})
+		return
+	}
+	if SyncScheduler != nil {
+		if reg.SyncEnabled {
+			_ = SyncScheduler.RegisterRegistry(&reg)
+		} else {
+			SyncScheduler.UnregisterRegistry(reg.ID)
+		}
+	}
+	c.JSON(http.StatusOK, reg)
+}
+
+// RemoveOrgRegistry godoc
+// @Summary      Remove registry from organization
+// @Description  Delete a sync registry from an organization
+// @Tags         organizations
+// @Produce      json
+// @Param        id     path  string  true  "Organization ID"
+// @Param        regId  path  string  true  "Registry ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /organizations/{id}/registries/{regId} [delete]
+func RemoveOrgRegistry(c *gin.Context) {
+	orgID := c.Param("id")
+	regID := c.Param("regId")
+	db := database.GetDB()
+
+	var reg models.CapabilityRegistry
+	if db.Where("id = ? AND org_id = ?", regID, orgID).First(&reg).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return
+	}
+
+	if SyncScheduler != nil {
+		SyncScheduler.UnregisterRegistry(reg.ID)
+	}
+	db.Delete(&reg)
+	c.JSON(http.StatusOK, gin.H{"message": "Registry removed"})
 }
 
 // GetMyOrganizations godoc
