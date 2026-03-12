@@ -9,6 +9,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // resolveOrgID resolves an org name to the value stored in capability_registries.org_id.
@@ -241,6 +242,9 @@ func DownloadItem(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
 		return
 	}
+
+	go db.Model(&models.CapabilityItem{}).Where("id = ?", id).
+		UpdateColumn("install_count", gorm.Expr("install_count + 1"))
 
 	filename := contentFilename(item.ItemType, item.Slug)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
