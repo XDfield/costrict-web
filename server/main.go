@@ -52,6 +52,7 @@ func main() {
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
+		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.SyncJob{},
 		&models.SyncLog{},

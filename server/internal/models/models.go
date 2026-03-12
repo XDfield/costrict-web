@@ -116,6 +116,7 @@ type CapabilityItem struct {
 	UpdatedBy string `json:"updatedBy"`
 	Registry  *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
 	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID" json:"versions,omitempty"`
+	Assets    []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
 	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -132,6 +133,20 @@ type CapabilityVersion struct {
 	CreatedAt time.Time      `json:"createdAt"`
 }
 
+type CapabilityAsset struct {
+	ID             string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID         string    `gorm:"not null;index" json:"itemId"`
+	RelPath        string    `gorm:"not null" json:"relPath"`
+	TextContent    *string   `gorm:"type:text" json:"textContent,omitempty"`
+	StorageBackend string    `gorm:"default:'local'" json:"storageBackend"`
+	StorageKey     string    `json:"storageKey,omitempty"`
+	MimeType       string    `json:"mimeType"`
+	FileSize       int64     `gorm:"default:0" json:"fileSize"`
+	ContentSHA     string    `json:"contentSha"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
 type CapabilityArtifact struct {
 	ID              string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID          string    `gorm:"not null" json:"itemId"`
@@ -143,6 +158,7 @@ type CapabilityArtifact struct {
 	StorageKey      string    `gorm:"not null" json:"storageKey"`
 	ArtifactVersion string    `gorm:"not null" json:"artifactVersion"`
 	IsLatest        bool      `gorm:"default:false" json:"isLatest"`
+	SourceType      string    `gorm:"default:'upload'" json:"sourceType"` // upload | sync
 	DownloadCount   int       `gorm:"default:0" json:"downloadCount"`
 	UploadedBy      string    `gorm:"not null" json:"uploadedBy"`
 	CreatedAt       time.Time `json:"createdAt"`

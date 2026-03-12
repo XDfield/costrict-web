@@ -30,6 +30,7 @@ func main() {
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
+		&models.CapabilityAsset{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
