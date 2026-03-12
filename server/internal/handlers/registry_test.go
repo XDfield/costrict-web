@@ -39,6 +39,7 @@ func setupTestDB(t *testing.T) func() {
 			display_name TEXT,
 			description TEXT,
 			visibility  TEXT DEFAULT 'private',
+			org_type    TEXT DEFAULT 'normal',
 			owner_id    TEXT NOT NULL,
 			created_at  DATETIME,
 			updated_at  DATETIME
@@ -51,7 +52,7 @@ func setupTestDB(t *testing.T) func() {
 			role       TEXT DEFAULT 'member',
 			created_at DATETIME
 		)`,
-		`CREATE TABLE IF NOT EXISTS skill_registries (
+		`CREATE TABLE IF NOT EXISTS capability_registries (
 			id               TEXT PRIMARY KEY,
 			name             TEXT NOT NULL,
 			description      TEXT,
@@ -62,13 +63,16 @@ func setupTestDB(t *testing.T) func() {
 			sync_interval    INTEGER DEFAULT 3600,
 			last_synced_at   DATETIME,
 			last_sync_sha    TEXT,
+			sync_status      TEXT DEFAULT 'idle',
+			sync_config      TEXT DEFAULT '{}',
+			last_sync_log_id TEXT,
 			visibility       TEXT DEFAULT 'org',
 			org_id           TEXT,
 			owner_id         TEXT NOT NULL,
 			created_at       DATETIME,
 			updated_at       DATETIME
 		)`,
-		`CREATE TABLE IF NOT EXISTS skill_items (
+		`CREATE TABLE IF NOT EXISTS capability_items (
 			id            TEXT PRIMARY KEY,
 			registry_id   TEXT NOT NULL,
 			slug          TEXT NOT NULL,
@@ -89,7 +93,7 @@ func setupTestDB(t *testing.T) func() {
 			created_at    DATETIME,
 			updated_at    DATETIME
 		)`,
-		`CREATE TABLE IF NOT EXISTS skill_versions (
+		`CREATE TABLE IF NOT EXISTS capability_versions (
 			id         TEXT PRIMARY KEY,
 			item_id    TEXT NOT NULL,
 			version    INTEGER NOT NULL,
@@ -99,7 +103,7 @@ func setupTestDB(t *testing.T) func() {
 			created_by TEXT NOT NULL,
 			created_at DATETIME
 		)`,
-		`CREATE TABLE IF NOT EXISTS skill_artifacts (
+		`CREATE TABLE IF NOT EXISTS capability_artifacts (
 			id               TEXT PRIMARY KEY,
 			item_id          TEXT NOT NULL,
 			filename         TEXT NOT NULL,
@@ -188,7 +192,7 @@ func TestResolveOrgID_Found(t *testing.T) {
 
 func TestRegistryAccess_PublicOrg(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
@@ -222,7 +226,7 @@ func TestRegistryAccess_PrivateOrg(t *testing.T) {
 	defer setupTestDB(t)()
 	org := models.Organization{ID: "org-1", Name: "sangfor", OwnerID: "u1"}
 	database.DB.Create(&org)
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-1", Name: "sangfor-reg",
 		SourceType: "internal", Visibility: "org", OrgID: "org-1", OwnerID: "u1",
 	})
@@ -241,11 +245,11 @@ func TestRegistryAccess_PrivateOrg(t *testing.T) {
 
 func TestRegistryIndex_PublicOrg_Anonymous(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-1", RegistryID: PublicRegistryID,
 		Slug: "code-reviewer", ItemType: "skill",
 		Name: "Code Reviewer", Status: "active", CreatedBy: "system",
@@ -274,11 +278,11 @@ func TestRegistryIndex_PublicOrg_Anonymous(t *testing.T) {
 
 func TestRegistryIndex_CommandFilename_UsesSlug(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-2", RegistryID: PublicRegistryID,
 		Slug: "git-review", ItemType: "command",
 		Name: "Git Review", Status: "active", CreatedBy: "system",
@@ -300,7 +304,7 @@ func TestRegistryIndex_PrivateOrg_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
 	org := models.Organization{ID: "org-2", Name: "internal", OwnerID: "u1"}
 	database.DB.Create(&org)
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-2", Name: "internal-reg",
 		SourceType: "internal", Visibility: "org", OrgID: "org-2", OwnerID: "u1",
 	})
@@ -315,7 +319,7 @@ func TestRegistryIndex_PrivateOrg_NonMember(t *testing.T) {
 	defer setupTestDB(t)()
 	org := models.Organization{ID: "org-3", Name: "secret", OwnerID: "u1"}
 	database.DB.Create(&org)
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-3", Name: "secret-reg",
 		SourceType: "internal", Visibility: "org", OrgID: "org-3", OwnerID: "u1",
 	})
@@ -330,14 +334,14 @@ func TestRegistryIndex_PrivateOrg_Member(t *testing.T) {
 	defer setupTestDB(t)()
 	org := models.Organization{ID: "org-4", Name: "myorg", OwnerID: "u1"}
 	database.DB.Create(&org)
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-4", Name: "myorg-reg",
 		SourceType: "internal", Visibility: "org", OrgID: "org-4", OwnerID: "u1",
 	})
 	database.DB.Create(&models.OrgMember{
 		ID: "mem-1", OrgID: "org-4", UserID: "member-user", Role: "member",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-3", RegistryID: "reg-4",
 		Slug: "internal-tool", ItemType: "subagent",
 		Name: "Internal Tool", Status: "active", CreatedBy: "u1",
@@ -357,12 +361,12 @@ func TestRegistryIndex_PrivateOrg_Member(t *testing.T) {
 
 func TestRegistryIndex_MCPItem_HasMCPField(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
 	meta := `{"hosting_type":"command","command":"npx","args":["-y","@internal/tool"]}`
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-mcp", RegistryID: PublicRegistryID,
 		Slug: "my-tool", ItemType: "mcp",
 		Name: "My Tool", Status: "active", CreatedBy: "system",
@@ -392,11 +396,11 @@ func TestRegistryIndex_MCPItem_HasMCPField(t *testing.T) {
 
 func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl", RegistryID: PublicRegistryID,
 		Slug: "code-reviewer", ItemType: "skill",
 		Name: "Code Reviewer", Status: "active", CreatedBy: "system",
@@ -418,7 +422,7 @@ func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 
 func TestDownloadRegistryFile_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
@@ -433,11 +437,11 @@ func TestDownloadRegistryFile_OrgItem_Forbidden(t *testing.T) {
 	defer setupTestDB(t)()
 	org := models.Organization{ID: "org-5", Name: "corp", OwnerID: "u1"}
 	database.DB.Create(&org)
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-5", Name: "corp-reg",
 		SourceType: "internal", Visibility: "org", OrgID: "org-5", OwnerID: "u1",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-org", RegistryID: "reg-5",
 		Slug: "secret-skill", ItemType: "skill",
 		Name: "Secret", Status: "active", CreatedBy: "u1",
@@ -456,11 +460,11 @@ func TestDownloadRegistryFile_OrgItem_Forbidden(t *testing.T) {
 
 func TestDownloadItem_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.SkillRegistry{
+	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
 	})
-	database.DB.Create(&models.SkillItem{
+	database.DB.Create(&models.CapabilityItem{
 		ID: "item-byid", RegistryID: PublicRegistryID,
 		Slug: "my-skill", ItemType: "skill",
 		Name: "My Skill", Status: "active", CreatedBy: "system",
@@ -489,7 +493,7 @@ func TestDownloadItem_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildMCPConfig_Command(t *testing.T) {
-	si := models.SkillItem{
+	si := models.CapabilityItem{
 		Metadata: datatypes.JSON([]byte(`{"hosting_type":"command","command":"npx","args":["-y","@foo/bar"]}`)),
 	}
 	raw := buildMCPConfig(si)
@@ -507,7 +511,7 @@ func TestBuildMCPConfig_Command(t *testing.T) {
 }
 
 func TestBuildMCPConfig_Remote(t *testing.T) {
-	si := models.SkillItem{
+	si := models.CapabilityItem{
 		Metadata: datatypes.JSON([]byte(`{"hosting_type":"remote","server_type":"sse","url":"https://mcp.example.com"}`)),
 	}
 	raw := buildMCPConfig(si)
@@ -522,7 +526,7 @@ func TestBuildMCPConfig_Remote(t *testing.T) {
 }
 
 func TestBuildMCPConfig_EmptyMetadata(t *testing.T) {
-	si := models.SkillItem{Metadata: datatypes.JSON([]byte{})}
+	si := models.CapabilityItem{Metadata: datatypes.JSON([]byte{})}
 	if buildMCPConfig(si) != nil {
 		t.Fatal("expected nil for empty metadata")
 	}
@@ -530,7 +534,7 @@ func TestBuildMCPConfig_EmptyMetadata(t *testing.T) {
 
 func TestBuildMCPConfig_UnknownHostingType_PassThrough(t *testing.T) {
 	raw := `{"hosting_type":"artifact","package_name":"my-pkg"}`
-	si := models.SkillItem{Metadata: datatypes.JSON([]byte(raw))}
+	si := models.CapabilityItem{Metadata: datatypes.JSON([]byte(raw))}
 	out := buildMCPConfig(si)
 	if string(out) != raw {
 		t.Fatalf("expected passthrough, got %s", string(out))

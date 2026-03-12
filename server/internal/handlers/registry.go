@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// resolveOrgID resolves an org name to the value stored in skill_registries.org_id.
+// resolveOrgID resolves an org name to the value stored in capability_registries.org_id.
 // "public" is a reserved virtual org backed by the default public registry (org_id = "public").
 // For all other names the Organization table is consulted.
 // Returns ("", false) when the org does not exist.
@@ -44,7 +44,7 @@ func RegistryAccess(c *gin.Context) {
 
 	db := database.GetDB()
 	var count int64
-	db.Model(&models.SkillRegistry{}).
+	db.Model(&models.CapabilityRegistry{}).
 		Where("org_id = ? AND visibility = 'public'", orgID).
 		Count(&count)
 
@@ -87,7 +87,7 @@ func RegistryIndex(c *gin.Context) {
 	db := database.GetDB()
 
 	var publicCount int64
-	db.Model(&models.SkillRegistry{}).
+	db.Model(&models.CapabilityRegistry{}).
 		Where("org_id = ? AND visibility = 'public'", orgID).
 		Count(&publicCount)
 
@@ -104,7 +104,7 @@ func RegistryIndex(c *gin.Context) {
 	var registryIDs []string
 
 	if isPublic {
-		db.Model(&models.SkillRegistry{}).
+		db.Model(&models.CapabilityRegistry{}).
 			Where("org_id = ? AND visibility = 'public'", orgID).
 			Pluck("id", &registryIDs)
 	}
@@ -122,7 +122,7 @@ func RegistryIndex(c *gin.Context) {
 
 		if isMember > 0 {
 			var orgRegIDs []string
-			db.Model(&models.SkillRegistry{}).
+			db.Model(&models.CapabilityRegistry{}).
 				Where("org_id = ? AND visibility IN ('public','org')", orgID).
 				Pluck("id", &orgRegIDs)
 			registryIDs = mergeUnique(registryIDs, orgRegIDs)
@@ -134,11 +134,11 @@ func RegistryIndex(c *gin.Context) {
 		return
 	}
 
-	var skillItems []models.SkillItem
-	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&skillItems)
+	var capabilityItems []models.CapabilityItem
+	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&capabilityItems)
 
-	items := make([]indexItem, 0, len(skillItems))
-	for _, si := range skillItems {
+	items := make([]indexItem, 0, len(capabilityItems))
+	for _, si := range capabilityItems {
 		entry := indexItem{
 			Slug:        si.Slug,
 			Type:        si.ItemType,
@@ -163,11 +163,11 @@ func RegistryIndex(c *gin.Context) {
 	c.JSON(http.StatusOK, indexJSON{Version: 1, Items: items})
 }
 
-// buildMCPConfig constructs the mcp config object from a SkillItem's metadata.
+// buildMCPConfig constructs the mcp config object from a CapabilityItem's metadata.
 // For hosting_type=command it returns {"type":"local","command":[...]}
 // For hosting_type=remote  it returns {"type":"remote","url":"..."}
 // Falls back to raw metadata if the structure is unrecognised.
-func buildMCPConfig(si models.SkillItem) json.RawMessage {
+func buildMCPConfig(si models.CapabilityItem) json.RawMessage {
 	if len(si.Metadata) == 0 {
 		return nil
 	}
@@ -216,7 +216,7 @@ func buildMCPConfig(si models.SkillItem) json.RawMessage {
 
 // DownloadItem godoc
 // @Summary      Download item content
-// @Description  Download the Markdown content of a skill/subagent/command item as a file. Respects visibility rules.
+// @Description  Download the Markdown content of a capability item (skill/subagent/command) as a file. Respects visibility rules.
 // @Tags         items
 // @Produce      text/plain
 // @Param        id  path      string  true  "Item ID"
@@ -228,7 +228,7 @@ func DownloadItem(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 
-	var item models.SkillItem
+	var item models.CapabilityItem
 	if result := db.Preload("Registry").First(&item, "id = ?", id); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
@@ -260,7 +260,7 @@ func contentFilename(itemType, slug string) string {
 	}
 }
 
-func canAccessItem(item *models.SkillItem, userID string) bool {
+func canAccessItem(item *models.CapabilityItem, userID string) bool {
 	reg := item.Registry
 	if reg == nil {
 		return false
@@ -313,7 +313,7 @@ func DownloadRegistryFile(c *gin.Context) {
 	db := database.GetDB()
 
 	var registryIDs []string
-	db.Model(&models.SkillRegistry{}).
+	db.Model(&models.CapabilityRegistry{}).
 		Where("org_id = ?", orgID).
 		Pluck("id", &registryIDs)
 
@@ -322,7 +322,7 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
-	var item models.SkillItem
+	var item models.CapabilityItem
 	result := db.Preload("Registry").
 		Where("registry_id IN ? AND slug = ?", registryIDs, slug).
 		First(&item)

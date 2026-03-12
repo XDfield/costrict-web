@@ -55,7 +55,7 @@ func UploadArtifact(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	var item models.SkillItem
+	var item models.CapabilityItem
 	if result := db.Preload("Registry").First(&item, "id = ?", itemID); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
@@ -86,12 +86,12 @@ func UploadArtifact(c *gin.Context) {
 
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	var artifact models.SkillArtifact
+	var artifact models.CapabilityArtifact
 	err = db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.SkillArtifact{}).Where("item_id = ?", itemID).Update("is_latest", false).Error; err != nil {
+		if err := tx.Model(&models.CapabilityArtifact{}).Where("item_id = ?", itemID).Update("is_latest", false).Error; err != nil {
 			return err
 		}
-		artifact = models.SkillArtifact{
+		artifact = models.CapabilityArtifact{
 			ID:              uuid.New().String(),
 			ItemID:          itemID,
 			Filename:        filename,
@@ -129,7 +129,7 @@ func UploadArtifact(c *gin.Context) {
 func DownloadArtifact(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	var artifact models.SkillArtifact
+	var artifact models.CapabilityArtifact
 	if result := db.First(&artifact, "id = ?", id); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Artifact not found"})
 		return
@@ -151,7 +151,7 @@ func DownloadArtifact(c *gin.Context) {
 	}
 
 	go func() {
-		db.Model(&models.SkillArtifact{}).Where("id = ?", id).UpdateColumn("download_count", gorm.Expr("download_count + 1"))
+		db.Model(&models.CapabilityArtifact{}).Where("id = ?", id).UpdateColumn("download_count", gorm.Expr("download_count + 1"))
 	}()
 
 	io.Copy(c.Writer, reader)
@@ -169,7 +169,7 @@ func DownloadArtifact(c *gin.Context) {
 func ListArtifacts(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	var artifacts []models.SkillArtifact
+	var artifacts []models.CapabilityArtifact
 	result := db.Where("item_id = ?", id).Order("created_at DESC").Find(&artifacts)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch artifacts"})
@@ -191,7 +191,7 @@ func ListArtifacts(c *gin.Context) {
 func DeleteArtifact(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	var artifact models.SkillArtifact
+	var artifact models.CapabilityArtifact
 	if result := db.First(&artifact, "id = ?", id); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Artifact not found"})
 		return

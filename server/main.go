@@ -49,17 +49,12 @@ func main() {
 	err = db.AutoMigrate(
 		&models.Organization{},
 		&models.OrgMember{},
-		&models.SkillRepository{},
-		&models.Skill{},
-		&models.Agent{},
-		&models.Command{},
-		&models.MCPServer{},
-		&models.SkillRating{},
-		&models.UserPreference{},
-		&models.SkillRegistry{},
-		&models.SkillItem{},
-		&models.SkillVersion{},
-		&models.SkillArtifact{},
+		&models.CapabilityRegistry{},
+		&models.CapabilityItem{},
+		&models.CapabilityVersion{},
+		&models.CapabilityArtifact{},
+		&models.SyncJob{},
+		&models.SyncLog{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -122,68 +117,6 @@ func main() {
 			orgs.POST("/:id/members", handlers.AddOrganizationMember)
 			orgs.DELETE("/:id/members/:userId", handlers.RemoveOrganizationMember)
 			orgs.GET("/:id/registry", handlers.GetOrganizationRegistry)
-		}
-
-		// Repository routes
-		repos := api.Group("/repositories")
-		{
-			repos.GET("", handlers.ListRepositories)
-			repos.POST("", handlers.CreateRepository)
-			repos.GET("/:id", handlers.GetRepository)
-			repos.PUT("/:id", handlers.UpdateRepository)
-			repos.DELETE("/:id", handlers.DeleteRepository)
-			repos.POST("/:id/members", handlers.AddRepositoryMember)
-			repos.DELETE("/:id/members/:userId", handlers.RemoveRepositoryMember)
-		}
-
-		// Skill routes
-		skills := api.Group("/skills")
-		{
-			skills.GET("", handlers.ListSkills)
-			skills.POST("", handlers.CreateSkill)
-			skills.GET("/:id", handlers.GetSkill)
-			skills.PUT("/:id", handlers.UpdateSkill)
-			skills.DELETE("/:id", handlers.DeleteSkill)
-			skills.POST("/:id/install", handlers.InstallSkill)
-			skills.POST("/:id/rating", handlers.RateSkill)
-		}
-
-		// Agent routes
-		agents := api.Group("/agents")
-		{
-			agents.GET("", handlers.ListAgents)
-			agents.POST("", handlers.CreateAgent)
-			agents.GET("/:id", handlers.GetAgent)
-			agents.PUT("/:id", handlers.UpdateAgent)
-			agents.DELETE("/:id", handlers.DeleteAgent)
-		}
-
-		// Command routes
-		commands := api.Group("/commands")
-		{
-			commands.GET("", handlers.ListCommands)
-			commands.POST("", handlers.CreateCommand)
-			commands.GET("/:id", handlers.GetCommand)
-			commands.PUT("/:id", handlers.UpdateCommand)
-			commands.DELETE("/:id", handlers.DeleteCommand)
-		}
-
-		// MCP Server routes
-		mcpServers := api.Group("/mcp-servers")
-		{
-			mcpServers.GET("", handlers.ListMCPServers)
-			mcpServers.POST("", handlers.CreateMCPServer)
-			mcpServers.GET("/:id", handlers.GetMCPServer)
-			mcpServers.PUT("/:id", handlers.UpdateMCPServer)
-			mcpServers.DELETE("/:id", handlers.DeleteMCPServer)
-		}
-
-		// Marketplace routes
-		marketplace := api.Group("/marketplace")
-		{
-			marketplace.GET("/skills", handlers.ListMarketplaceSkills)
-			marketplace.GET("/categories", handlers.ListCategories)
-			marketplace.GET("/skills/trending", handlers.GetTrendingSkills)
 		}
 
 		// Skill Registries

@@ -11,13 +11,13 @@ const PublicRegistryID = "00000000-0000-0000-0000-000000000001"
 
 func EnsurePublicRegistry() {
 	db := database.GetDB()
-	var registry models.SkillRegistry
+	var registry models.CapabilityRegistry
 	result := db.First(&registry, "id = ?", PublicRegistryID)
 	if result.Error == nil {
 		return
 	}
 
-	registry = models.SkillRegistry{
+	registry = models.CapabilityRegistry{
 		ID:          PublicRegistryID,
 		Name:        "public",
 		Description: "Default public registry — anyone can browse and contribute",

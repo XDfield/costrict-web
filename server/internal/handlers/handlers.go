@@ -1,13 +1,27 @@
-package handlers
+﻿package handlers
 
 import (
+	"encoding/json"
 	"net/http"
-	"github.com/gin-gonic/gin"
+
 	"github.com/costrict/costrict-web/server/internal/casdoor"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
+
+func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookSecret string) datatypes.JSON {
+	cfg := map[string]any{
+		"includePatterns":  includes,
+		"excludePatterns":  excludes,
+		"conflictStrategy": conflictStrategy,
+		"webhookSecret":    webhookSecret,
+	}
+	b, _ := json.Marshal(cfg)
+	return datatypes.JSON(b)
+}
 
 // Login godoc
 // @Summary      OAuth login
@@ -110,29 +124,55 @@ func ListOrganizations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }
 
+// CreateSyncRegistryInput holds sync configuration for creating a sync-type organization
+type CreateSyncRegistryInput struct {
+	ExternalURL      string   `json:"externalUrl" binding:"required"`
+	ExternalBranch   string   `json:"externalBranch"`
+	SyncInterval     int      `json:"syncInterval"`
+	SyncEnabled      bool     `json:"syncEnabled"`
+	IncludePatterns  []string `json:"includePatterns"`
+	ExcludePatterns  []string `json:"excludePatterns"`
+	ConflictStrategy string   `json:"conflictStrategy"`
+	WebhookSecret    string   `json:"webhookSecret"`
+}
+
 // CreateOrganization godoc
 // @Summary      Create organization
-// @Description  Create a new organization
+// @Description  Create a new organization. Set orgType=sync to create a Git-synced organization.
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
-// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string}  true  "Organization data"
+// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string,orgType=string}  true  "Organization data"
 // @Success      201  {object}  models.Organization
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /organizations [post]
 func CreateOrganization(c *gin.Context) {
 	var req struct {
-		Name        string `json:"name" binding:"required"`
-		DisplayName string `json:"displayName"`
-		Description string `json:"description"`
-		Visibility  string `json:"visibility"`
-		OwnerID     string `json:"ownerId" binding:"required"`
+		Name         string                   `json:"name" binding:"required"`
+		DisplayName  string                   `json:"displayName"`
+		Description  string                   `json:"description"`
+		Visibility   string                   `json:"visibility"`
+		OwnerID      string                   `json:"ownerId" binding:"required"`
+		OrgType      string                   `json:"orgType"`
+		SyncRegistry *CreateSyncRegistryInput `json:"syncRegistry"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
+	}
+
+	orgType := req.OrgType
+	if orgType == "" {
+		orgType = "normal"
+	}
+
+	if orgType == "sync" {
+		if req.SyncRegistry == nil || req.SyncRegistry.ExternalURL == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "syncRegistry.externalUrl is required for sync organizations"})
+			return
+		}
 	}
 
 	visibility := req.Visibility
@@ -146,6 +186,7 @@ func CreateOrganization(c *gin.Context) {
 		DisplayName: req.DisplayName,
 		Description: req.Description,
 		Visibility:  visibility,
+		OrgType:     orgType,
 		OwnerID:     req.OwnerID,
 	}
 
@@ -163,7 +204,49 @@ func CreateOrganization(c *gin.Context) {
 	}
 	db.Create(&ownerMember)
 
-	orgRegistry := models.SkillRegistry{
+	if orgType == "sync" && req.SyncRegistry != nil {
+		sr := req.SyncRegistry
+		branch := sr.ExternalBranch
+		if branch == "" {
+			branch = "main"
+		}
+		interval := sr.SyncInterval
+		if interval <= 0 {
+			interval = 3600
+		}
+		conflictStrategy := sr.ConflictStrategy
+		if conflictStrategy == "" {
+			conflictStrategy = "keep_remote"
+		}
+
+		syncConfigJSON := buildSyncConfigJSON(sr.IncludePatterns, sr.ExcludePatterns, conflictStrategy, sr.WebhookSecret)
+
+	orgRegistry := models.CapabilityRegistry{
+		ID:             uuid.New().String(),
+		Name:           org.Name,
+		Description:    "Sync registry for organization " + org.Name,
+		SourceType:     "external",
+		ExternalURL:    sr.ExternalURL,
+		ExternalBranch: branch,
+		SyncEnabled:    sr.SyncEnabled,
+		SyncInterval:   interval,
+		SyncStatus:     "idle",
+		SyncConfig:     syncConfigJSON,
+		Visibility:     visibility,
+		OrgID:          org.ID,
+		OwnerID:        req.OwnerID,
+	}
+		db.Create(&orgRegistry)
+
+		if SyncScheduler != nil && sr.SyncEnabled {
+			_ = SyncScheduler.RegisterRegistry(&orgRegistry)
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"organization": org, "registry": orgRegistry})
+		return
+	}
+
+	orgRegistry := models.CapabilityRegistry{
 		ID:          uuid.New().String(),
 		Name:        org.Name,
 		Description: "Registry for organization " + org.Name,
@@ -375,17 +458,17 @@ func ListOrganizationMembers(c *gin.Context) {
 
 // GetOrganizationRegistry godoc
 // @Summary      Get organization registry
-// @Description  Get the internal skill registry for an organization
+// @Description  Get the internal capability registry for an organization
 // @Tags         organizations
 // @Produce      json
 // @Param        id   path      string  true  "Organization ID"
-// @Success      200  {object}  models.SkillRegistry
+// @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
 // @Router       /organizations/{id}/registry [get]
 func GetOrganizationRegistry(c *gin.Context) {
 	orgID := c.Param("id")
 	db := database.GetDB()
-	var registry models.SkillRegistry
+	var registry models.CapabilityRegistry
 	result := db.Where("org_id = ? AND source_type = 'internal'", orgID).First(&registry)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found for this organization"})
@@ -421,964 +504,4 @@ func GetMyOrganizations(c *gin.Context) {
 		db.Where("id IN ?", orgIDs).Find(&orgs)
 	}
 	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
-}
-
-// ListRepositories godoc
-// @Summary      List repositories
-// @Description  Get all skill repositories
-// @Tags         repositories
-// @Produce      json
-// @Success      200  {object}  object{repositories=[]models.SkillRepository}
-// @Failure      500  {object}  object{error=string}
-// @Router       /repositories [get]
-func ListRepositories(c *gin.Context) {
-	db := database.GetDB()
-	var repos []models.SkillRepository
-	result := db.Find(&repos)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch repositories"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"repositories": repos})
-}
-
-// CreateRepository godoc
-// @Summary      Create repository
-// @Description  Create a new skill repository
-// @Tags         repositories
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{name=string,description=string,visibility=string,ownerId=string,organizationId=string,groupId=string}  true  "Repository data"
-// @Success      201   {object}  models.SkillRepository
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /repositories [post]
-func CreateRepository(c *gin.Context) {
-	var req struct {
-		Name         string `json:"name" binding:"required"`
-		Description  string `json:"description"`
-		Visibility   string `json:"visibility"`
-		OwnerID      string `json:"ownerId" binding:"required"`
-		OrganizationID *string `json:"organizationId"`
-		GroupID      *string `json:"groupId"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	repo := models.SkillRepository{
-		ID:             uuid.New().String(),
-		Name:           req.Name,
-		Description:    req.Description,
-		Visibility:     req.Visibility,
-		OwnerID:        req.OwnerID,
-		OrganizationID: req.OrganizationID,
-		GroupID:        req.GroupID,
-	}
-
-	db := database.GetDB()
-	if result := db.Create(&repo); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create repository"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, repo)
-}
-
-// GetRepository godoc
-// @Summary      Get repository
-// @Description  Get skill repository by ID
-// @Tags         repositories
-// @Produce      json
-// @Param        id   path      string  true  "Repository ID"
-// @Success      200  {object}  models.SkillRepository
-// @Failure      404  {object}  object{error=string}
-// @Router       /repositories/{id} [get]
-func GetRepository(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var repo models.SkillRepository
-	result := db.Preload("Skills").Preload("Agents").Preload("Commands").Preload("MCPServers").First(&repo, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, repo)
-}
-
-// UpdateRepository godoc
-// @Summary      Update repository
-// @Description  Update skill repository by ID
-// @Tags         repositories
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Repository ID"
-// @Param        body  body      object{name=string,description=string,visibility=string}  false  "Repository data"
-// @Success      200   {object}  models.SkillRepository
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /repositories/{id} [put]
-func UpdateRepository(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Visibility  string `json:"visibility"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var repo models.SkillRepository
-	result := db.First(&repo, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
-		return
-	}
-
-	if req.Name != "" {
-		repo.Name = req.Name
-	}
-	if req.Description != "" {
-		repo.Description = req.Description
-	}
-	if req.Visibility != "" {
-		repo.Visibility = req.Visibility
-	}
-
-	if result := db.Save(&repo); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update repository"})
-		return
-	}
-
-	c.JSON(http.StatusOK, repo)
-}
-
-// DeleteRepository godoc
-// @Summary      Delete repository
-// @Description  Delete skill repository by ID
-// @Tags         repositories
-// @Produce      json
-// @Param        id   path      string  true  "Repository ID"
-// @Success      200  {object}  object{message=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /repositories/{id} [delete]
-func DeleteRepository(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	result := db.Delete(&models.SkillRepository{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete repository"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Repository deleted"})
-}
-
-// AddRepositoryMember godoc
-// @Summary      Add repository member
-// @Description  Add a user to a repository
-// @Tags         repositories
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Repository ID"
-// @Param        body  body      object{userId=string,role=string}  true  "Member data"
-// @Success      200   {object}  object{message=string}
-// @Failure      400   {object}  object{error=string}
-// @Router       /repositories/{id}/members [post]
-func AddRepositoryMember(c *gin.Context) {
-	_ = c.Param("id")
-	var req struct {
-		UserID string `json:"userId" binding:"required"`
-		Role   string `json:"role"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	// TODO: Add member to repository
-	c.JSON(http.StatusOK, gin.H{"message": "Member added"})
-}
-
-// RemoveRepositoryMember godoc
-// @Summary      Remove repository member
-// @Description  Remove a user from a repository
-// @Tags         repositories
-// @Produce      json
-// @Param        id      path      string  true  "Repository ID"
-// @Param        userId  path      string  true  "User ID"
-// @Success      200     {object}  object{message=string}
-// @Router       /repositories/{id}/members/{userId} [delete]
-func RemoveRepositoryMember(c *gin.Context) {
-	_ = c.Param("id")
-	_ = c.Param("userId")
-	_ = database.GetDB()
-	// TODO: Remove member from repository
-	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
-}
-
-// ListSkills godoc
-// @Summary      List skills
-// @Description  Get all skills
-// @Tags         skills
-// @Produce      json
-// @Success      200  {object}  object{skills=[]models.Skill}
-// @Failure      500  {object}  object{error=string}
-// @Router       /skills [get]
-func ListSkills(c *gin.Context) {
-	db := database.GetDB()
-	var skills []models.Skill
-	result := db.Find(&skills)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch skills"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"skills": skills})
-}
-
-// CreateSkill godoc
-// @Summary      Create skill
-// @Description  Create a new skill
-// @Tags         skills
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{name=string,description=string,version=string,repoId=string,isPublic=boolean}  true  "Skill data"
-// @Success      201   {object}  models.Skill
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /skills [post]
-func CreateSkill(c *gin.Context) {
-	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		Version     string `json:"version"`
-		RepoID      string `json:"repoId" binding:"required"`
-		IsPublic    bool   `json:"isPublic"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	skill := models.Skill{
-		ID:        uuid.New().String(),
-		Name:      req.Name,
-		Description: req.Description,
-		Version:   req.Version,
-		RepoID:    req.RepoID,
-		IsPublic:  req.IsPublic,
-	}
-
-	db := database.GetDB()
-	if result := db.Create(&skill); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create skill"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, skill)
-}
-
-// GetSkill godoc
-// @Summary      Get skill
-// @Description  Get skill by ID
-// @Tags         skills
-// @Produce      json
-// @Param        id   path      string  true  "Skill ID"
-// @Success      200  {object}  models.Skill
-// @Failure      404  {object}  object{error=string}
-// @Router       /skills/{id} [get]
-func GetSkill(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var skill models.Skill
-	result := db.Preload("Repository").First(&skill, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Skill not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, skill)
-}
-
-// UpdateSkill godoc
-// @Summary      Update skill
-// @Description  Update skill by ID
-// @Tags         skills
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Skill ID"
-// @Param        body  body      object{name=string,description=string,version=string,isPublic=boolean}  false  "Skill data"
-// @Success      200   {object}  models.Skill
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /skills/{id} [put]
-func UpdateSkill(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Version     string `json:"version"`
-		IsPublic    bool   `json:"isPublic"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var skill models.Skill
-	result := db.First(&skill, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Skill not found"})
-		return
-	}
-
-	if req.Name != "" {
-		skill.Name = req.Name
-	}
-	if req.Description != "" {
-		skill.Description = req.Description
-	}
-	if req.Version != "" {
-		skill.Version = req.Version
-	}
-	skill.IsPublic = req.IsPublic
-
-	if result := db.Save(&skill); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update skill"})
-		return
-	}
-
-	c.JSON(http.StatusOK, skill)
-}
-
-// DeleteSkill godoc
-// @Summary      Delete skill
-// @Description  Delete skill by ID
-// @Tags         skills
-// @Produce      json
-// @Param        id   path      string  true  "Skill ID"
-// @Success      200  {object}  object{message=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /skills/{id} [delete]
-func DeleteSkill(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	result := db.Delete(&models.Skill{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete skill"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Skill deleted"})
-}
-
-// InstallSkill godoc
-// @Summary      Install skill
-// @Description  Increment install count for a skill
-// @Tags         skills
-// @Produce      json
-// @Param        id   path      string  true  "Skill ID"
-// @Success      200  {object}  object{message=string,installCount=integer}
-// @Failure      404  {object}  object{error=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /skills/{id}/install [post]
-func InstallSkill(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var skill models.Skill
-	result := db.First(&skill, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Skill not found"})
-		return
-	}
-
-	skill.InstallCount++
-	if result := db.Save(&skill); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update skill"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Skill installed", "installCount": skill.InstallCount})
-}
-
-// RateSkill godoc
-// @Summary      Rate skill
-// @Description  Submit a rating for a skill
-// @Tags         skills
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Skill ID"
-// @Param        body  body      object{rating=integer,comment=string}  true  "Rating data"
-// @Success      200   {object}  object{message=string,rating=number}
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /skills/{id}/rating [post]
-func RateSkill(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Rating int    `json:"rating" binding:"required,min=1,max=5"`
-		Comment string `json:"comment"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var skill models.Skill
-	result := db.First(&skill, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Skill not found"})
-		return
-	}
-
-	// Calculate new rating
-	// TODO: Implement proper rating calculation
-	skill.Rating = float64(req.Rating)
-
-	if result := db.Save(&skill); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update skill"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Skill rated", "rating": skill.Rating})
-}
-
-// ListAgents godoc
-// @Summary      List agents
-// @Description  Get all agents
-// @Tags         agents
-// @Produce      json
-// @Success      200  {object}  object{agents=[]models.Agent}
-// @Failure      500  {object}  object{error=string}
-// @Router       /agents [get]
-func ListAgents(c *gin.Context) {
-	db := database.GetDB()
-	var agents []models.Agent
-	result := db.Find(&agents)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch agents"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"agents": agents})
-}
-
-// CreateAgent godoc
-// @Summary      Create agent
-// @Description  Create a new agent
-// @Tags         agents
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{name=string,description=string,version=string,repoId=string,isPublic=boolean}  true  "Agent data"
-// @Success      201   {object}  models.Agent
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /agents [post]
-func CreateAgent(c *gin.Context) {
-	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		Version     string `json:"version"`
-		RepoID      string `json:"repoId" binding:"required"`
-		IsPublic    bool   `json:"isPublic"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	agent := models.Agent{
-		ID:       uuid.New().String(),
-		Name:     req.Name,
-		Description: req.Description,
-		Version:  req.Version,
-		RepoID:   req.RepoID,
-		IsPublic: req.IsPublic,
-	}
-
-	db := database.GetDB()
-	if result := db.Create(&agent); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create agent"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, agent)
-}
-
-// GetAgent godoc
-// @Summary      Get agent
-// @Description  Get agent by ID
-// @Tags         agents
-// @Produce      json
-// @Param        id   path      string  true  "Agent ID"
-// @Success      200  {object}  models.Agent
-// @Failure      404  {object}  object{error=string}
-// @Router       /agents/{id} [get]
-func GetAgent(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var agent models.Agent
-	result := db.Preload("Repository").First(&agent, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Agent not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, agent)
-}
-
-// UpdateAgent godoc
-// @Summary      Update agent
-// @Description  Update agent by ID
-// @Tags         agents
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Agent ID"
-// @Param        body  body      object{name=string,description=string,version=string,isPublic=boolean}  false  "Agent data"
-// @Success      200   {object}  models.Agent
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /agents/{id} [put]
-func UpdateAgent(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Version     string `json:"version"`
-		IsPublic    bool   `json:"isPublic"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var agent models.Agent
-	result := db.First(&agent, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Agent not found"})
-		return
-	}
-
-	if req.Name != "" {
-		agent.Name = req.Name
-	}
-	if req.Description != "" {
-		agent.Description = req.Description
-	}
-	if req.Version != "" {
-		agent.Version = req.Version
-	}
-	agent.IsPublic = req.IsPublic
-
-	if result := db.Save(&agent); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update agent"})
-		return
-	}
-
-	c.JSON(http.StatusOK, agent)
-}
-
-// DeleteAgent godoc
-// @Summary      Delete agent
-// @Description  Delete agent by ID
-// @Tags         agents
-// @Produce      json
-// @Param        id   path      string  true  "Agent ID"
-// @Success      200  {object}  object{message=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /agents/{id} [delete]
-func DeleteAgent(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	result := db.Delete(&models.Agent{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete agent"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Agent deleted"})
-}
-
-// ListCommands godoc
-// @Summary      List commands
-// @Description  Get all commands
-// @Tags         commands
-// @Produce      json
-// @Success      200  {object}  object{commands=[]models.Command}
-// @Failure      500  {object}  object{error=string}
-// @Router       /commands [get]
-func ListCommands(c *gin.Context) {
-	db := database.GetDB()
-	var commands []models.Command
-	result := db.Find(&commands)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch commands"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"commands": commands})
-}
-
-// CreateCommand godoc
-// @Summary      Create command
-// @Description  Create a new command
-// @Tags         commands
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{name=string,description=string,repoId=string}  true  "Command data"
-// @Success      201   {object}  models.Command
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /commands [post]
-func CreateCommand(c *gin.Context) {
-	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		RepoID      string `json:"repoId" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	command := models.Command{
-		ID:   uuid.New().String(),
-		Name: req.Name,
-		Description: req.Description,
-		RepoID: req.RepoID,
-	}
-
-	db := database.GetDB()
-	if result := db.Create(&command); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create command"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, command)
-}
-
-// GetCommand godoc
-// @Summary      Get command
-// @Description  Get command by ID
-// @Tags         commands
-// @Produce      json
-// @Param        id   path      string  true  "Command ID"
-// @Success      200  {object}  models.Command
-// @Failure      404  {object}  object{error=string}
-// @Router       /commands/{id} [get]
-func GetCommand(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var command models.Command
-	result := db.Preload("Repository").First(&command, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Command not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, command)
-}
-
-// UpdateCommand godoc
-// @Summary      Update command
-// @Description  Update command by ID
-// @Tags         commands
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "Command ID"
-// @Param        body  body      object{name=string,description=string}  false  "Command data"
-// @Success      200   {object}  models.Command
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /commands/{id} [put]
-func UpdateCommand(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var command models.Command
-	result := db.First(&command, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Command not found"})
-		return
-	}
-
-	if req.Name != "" {
-		command.Name = req.Name
-	}
-	if req.Description != "" {
-		command.Description = req.Description
-	}
-
-	if result := db.Save(&command); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update command"})
-		return
-	}
-
-	c.JSON(http.StatusOK, command)
-}
-
-// DeleteCommand godoc
-// @Summary      Delete command
-// @Description  Delete command by ID
-// @Tags         commands
-// @Produce      json
-// @Param        id   path      string  true  "Command ID"
-// @Success      200  {object}  object{message=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /commands/{id} [delete]
-func DeleteCommand(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	result := db.Delete(&models.Command{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete command"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Command deleted"})
-}
-
-// ListMCPServers godoc
-// @Summary      List MCP servers
-// @Description  Get all MCP servers
-// @Tags         mcp-servers
-// @Produce      json
-// @Success      200  {object}  object{mcpServers=[]models.MCPServer}
-// @Failure      500  {object}  object{error=string}
-// @Router       /mcp-servers [get]
-func ListMCPServers(c *gin.Context) {
-	db := database.GetDB()
-	var mcpServers []models.MCPServer
-	result := db.Find(&mcpServers)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch MCP servers"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"mcpServers": mcpServers})
-}
-
-// CreateMCPServer godoc
-// @Summary      Create MCP server
-// @Description  Create a new MCP server
-// @Tags         mcp-servers
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{name=string,description=string,repoId=string}  true  "MCP server data"
-// @Success      201   {object}  models.MCPServer
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /mcp-servers [post]
-func CreateMCPServer(c *gin.Context) {
-	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		RepoID      string `json:"repoId" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	mcpServer := models.MCPServer{
-		ID:   uuid.New().String(),
-		Name: req.Name,
-		Description: req.Description,
-		RepoID: req.RepoID,
-	}
-
-	db := database.GetDB()
-	if result := db.Create(&mcpServer); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create MCP server"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, mcpServer)
-}
-
-// GetMCPServer godoc
-// @Summary      Get MCP server
-// @Description  Get MCP server by ID
-// @Tags         mcp-servers
-// @Produce      json
-// @Param        id   path      string  true  "MCP server ID"
-// @Success      200  {object}  models.MCPServer
-// @Failure      404  {object}  object{error=string}
-// @Router       /mcp-servers/{id} [get]
-func GetMCPServer(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	var mcpServer models.MCPServer
-	result := db.Preload("Repository").First(&mcpServer, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, mcpServer)
-}
-
-// UpdateMCPServer godoc
-// @Summary      Update MCP server
-// @Description  Update MCP server by ID
-// @Tags         mcp-servers
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string  true  "MCP server ID"
-// @Param        body  body      object{name=string,description=string}  false  "MCP server data"
-// @Success      200   {object}  models.MCPServer
-// @Failure      400   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /mcp-servers/{id} [put]
-func UpdateMCPServer(c *gin.Context) {
-	id := c.Param("id")
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	db := database.GetDB()
-	var mcpServer models.MCPServer
-	result := db.First(&mcpServer, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
-		return
-	}
-
-	if req.Name != "" {
-		mcpServer.Name = req.Name
-	}
-	if req.Description != "" {
-		mcpServer.Description = req.Description
-	}
-
-	if result := db.Save(&mcpServer); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update MCP server"})
-		return
-	}
-
-	c.JSON(http.StatusOK, mcpServer)
-}
-
-// DeleteMCPServer godoc
-// @Summary      Delete MCP server
-// @Description  Delete MCP server by ID
-// @Tags         mcp-servers
-// @Produce      json
-// @Param        id   path      string  true  "MCP server ID"
-// @Success      200  {object}  object{message=string}
-// @Failure      500  {object}  object{error=string}
-// @Router       /mcp-servers/{id} [delete]
-func DeleteMCPServer(c *gin.Context) {
-	id := c.Param("id")
-	db := database.GetDB()
-	result := db.Delete(&models.MCPServer{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete MCP server"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "MCP server deleted"})
-}
-
-// ListMarketplaceSkills godoc
-// @Summary      List marketplace skills
-// @Description  Get all public skills available in the marketplace
-// @Tags         marketplace
-// @Produce      json
-// @Success      200  {object}  object{skills=[]models.Skill}
-// @Failure      500  {object}  object{error=string}
-// @Router       /marketplace/skills [get]
-func ListMarketplaceSkills(c *gin.Context) {
-	db := database.GetDB()
-	var skills []models.Skill
-	result := db.Where("is_public = ?", true).Find(&skills)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch marketplace skills"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"skills": skills})
-}
-
-// ListCategories godoc
-// @Summary      List categories
-// @Description  Get all skill categories
-// @Tags         marketplace
-// @Produce      json
-// @Success      200  {object}  object{categories=[]string}
-// @Router       /marketplace/categories [get]
-func ListCategories(c *gin.Context) {
-	categories := []string{
-		"Development",
-		"AI & ML",
-		"DevOps",
-		"Security",
-		"Data",
-		"Testing",
-		"Documentation",
-		"Utilities",
-	}
-
-	c.JSON(http.StatusOK, gin.H{"categories": categories})
-}
-
-// GetTrendingSkills godoc
-// @Summary      Get trending skills
-// @Description  Get top 10 most installed public skills
-// @Tags         marketplace
-// @Produce      json
-// @Success      200  {object}  object{skills=[]models.Skill}
-// @Failure      500  {object}  object{error=string}
-// @Router       /marketplace/skills/trending [get]
-func GetTrendingSkills(c *gin.Context) {
-	db := database.GetDB()
-	var skills []models.Skill
-	result := db.Where("is_public = ?", true).Order("install_count DESC").Limit(10).Find(&skills)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch trending skills"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"skills": skills})
 }

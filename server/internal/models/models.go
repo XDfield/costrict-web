@@ -12,6 +12,7 @@ type Organization struct {
 	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
 	Description string    `gorm:"type:text" json:"description"`
 	Visibility  string    `gorm:"type:varchar(32);default:'private'" json:"visibility"` // public | private
+	OrgType     string    `gorm:"type:varchar(32);default:'normal'" json:"orgType"`     // normal | sync
 	OwnerID     string    `gorm:"type:varchar(191);not null" json:"ownerId"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
@@ -29,109 +30,8 @@ type OrgMember struct {
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
 }
 
-// SkillRepository represents a repository that contains skills/agents/commands
-type SkillRepository struct {
-	ID             string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Name           string    `gorm:"type:varchar(255);not null" json:"name"`
-	Description    string    `gorm:"type:text" json:"description"`
-	Visibility     string    `gorm:"type:varchar(50);default:'private'" json:"visibility"` // 'public' or 'private'
-	OwnerID        string    `gorm:"type:varchar(191);not null" json:"ownerId"`
-	OrganizationID *string   `gorm:"type:varchar(191)" json:"organizationId,omitempty"`
-	GroupID        *string   `gorm:"type:varchar(191)" json:"groupId,omitempty"`
-	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-}
 
-// Skill represents a skill
-type Skill struct {
-	ID           string  `gorm:"type:uuid;primaryKey" json:"id"`
-	Name         string  `gorm:"type:varchar(255);not null" json:"name"`
-	Description  string  `gorm:"type:text" json:"description"`
-	Version      string  `gorm:"type:varchar(50)" json:"version"`
-	Author       string  `gorm:"type:varchar(191)" json:"author"`
-	RepoID       string  `gorm:"type:uuid;not null" json:"repoId"`
-	IsPublic     bool    `gorm:"default:false" json:"isPublic"`
-	InstallCount int     `gorm:"default:0" json:"installCount"`
-	Rating       float64 `gorm:"default:0.00" json:"rating"`
-	CreatedAt    time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt    time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-	// Relationships
-	Repository *SkillRepository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
-}
-
-// Agent represents an AI agent
-type Agent struct {
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Name      string    `gorm:"type:varchar(255);not null" json:"name"`
-	Description string    `gorm:"type:text" json:"description"`
-	Version   string    `gorm:"type:varchar(50)" json:"version"`
-	Author    string    `gorm:"type:varchar(191)" json:"author"`
-	RepoID    string    `gorm:"type:uuid;not null" json:"repoId"`
-	IsPublic bool      `gorm:"default:false" json:"isPublic"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-	// Relationships
-	Repository *SkillRepository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
-}
-
-// Command represents a command
-type Command struct {
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Name      string    `gorm:"type:varchar(255);not null" json:"name"`
-	Description string    `gorm:"type:text" json:"description"`
-	RepoID    string    `gorm:"type:uuid;not null" json:"repoId"`
-	Author    string    `gorm:"type:varchar(191)" json:"author"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-	// Relationships
-	Repository *SkillRepository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
-}
-
-// MCPServer represents an MCP server
-type MCPServer struct {
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	Name      string    `gorm:"type:varchar(255);not null" json:"name"`
-	Description string    `gorm:"type:text" json:"description"`
-	RepoID    string    `gorm:"type:uuid;not null" json:"repoId"`
-	Author    string    `gorm:"type:varchar(191)" json:"author"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-	// Relationships
-	Repository *SkillRepository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
-}
-
-// SkillRating represents a skill rating
-type SkillRating struct {
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	SkillID   string    `gorm:"type:uuid;not null" json:"skillId"`
-	UserID    string    `gorm:"type:varchar(191);not null" json:"userId"`
-	Rating    int       `gorm:"not null" json:"rating"` // 1-5
-	Comment    string    `gorm:"type:text" json:"comment"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-
-	// Relationships
-	Skill *Skill `gorm:"foreignKey:SkillID" json:"skill,omitempty"`
-}
-
-// UserPreference represents user preferences
-type UserPreference struct {
-	ID                  string  `gorm:"type:uuid;primaryKey" json:"id"`
-	UserID              string  `gorm:"type:varchar(191);uniqueIndex" json:"userId"`
-	DefaultRepositoryID *string `gorm:"type:uuid" json:"defaultRepositoryId,omitempty"`
-	FavoriteSkills      string  `gorm:"type:text" json:"favoriteSkills"` // JSON array
-	SkillPermissions    string  `gorm:"type:text" json:"skillPermissions"` // JSON object
-	CreatedAt           time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt           time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-	// Relationships
-	DefaultRepository *SkillRepository `gorm:"foreignKey:DefaultRepositoryID" json:"defaultRepository,omitempty"`
-}
-
-type SkillRegistry struct {
+type CapabilityRegistry struct {
 	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Name        string     `gorm:"not null" json:"name"`
 	Description string     `json:"description"`
@@ -142,15 +42,61 @@ type SkillRegistry struct {
 	SyncInterval   int        `gorm:"default:3600" json:"syncInterval"`
 	LastSyncedAt   *time.Time `json:"lastSyncedAt"`
 	LastSyncSHA    string     `json:"lastSyncSha"`
+	SyncStatus     string         `gorm:"default:'idle'" json:"syncStatus"` // idle | syncing | error | paused
+	SyncConfig     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"syncConfig" swaggertype:"object"`
+	LastSyncLogID  *string        `json:"lastSyncLogId"`
 	Visibility string `gorm:"default:'org'" json:"visibility"`
 	OrgID      string `json:"orgId"`
 	OwnerID    string `gorm:"not null" json:"ownerId"`
-	Items []SkillItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
+	Items []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type SkillItem struct {
+type SyncJob struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID  string         `gorm:"not null;index" json:"registryId"`
+	TriggerType string         `gorm:"not null" json:"triggerType"` // scheduled | manual | webhook
+	TriggerUser string         `json:"triggerUser"`
+	Priority    int            `gorm:"not null;default:5" json:"priority"`
+	Status      string         `gorm:"not null;default:'pending';index" json:"status"` // pending | running | success | failed | cancelled
+	Payload     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"payload" swaggertype:"object"`
+	RetryCount  int            `gorm:"default:0" json:"retryCount"`
+	MaxAttempts int            `gorm:"default:3" json:"maxAttempts"`
+	LastError   string         `gorm:"type:text" json:"lastError"`
+	ScheduledAt time.Time      `gorm:"not null;index" json:"scheduledAt"`
+	StartedAt   *time.Time     `json:"startedAt"`
+	FinishedAt  *time.Time     `json:"finishedAt"`
+	SyncLogID   *string        `json:"syncLogId"`
+	CreatedAt   time.Time      `json:"createdAt"`
+
+	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+}
+
+type SyncLog struct {
+	ID           string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID   string     `gorm:"not null;index" json:"registryId"`
+	TriggerType  string     `gorm:"not null" json:"triggerType"` // scheduled | manual | webhook
+	TriggerUser  string     `json:"triggerUser"`
+	Status       string     `gorm:"not null;default:'running'" json:"status"` // running | success | failed | cancelled
+	CommitSHA    string     `json:"commitSha"`
+	PreviousSHA  string     `json:"previousSha"`
+	TotalItems   int        `gorm:"default:0" json:"totalItems"`
+	AddedItems   int        `gorm:"default:0" json:"addedItems"`
+	UpdatedItems int        `gorm:"default:0" json:"updatedItems"`
+	DeletedItems int        `gorm:"default:0" json:"deletedItems"`
+	SkippedItems int        `gorm:"default:0" json:"skippedItems"`
+	FailedItems  int        `gorm:"default:0" json:"failedItems"`
+	ErrorMessage string     `gorm:"type:text" json:"errorMessage"`
+	DurationMs   int64      `json:"durationMs"`
+	StartedAt    time.Time  `gorm:"not null" json:"startedAt"`
+	FinishedAt   *time.Time `json:"finishedAt"`
+	CreatedAt    time.Time  `json:"createdAt"`
+
+	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+}
+
+type CapabilityItem struct {
 	ID         string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	RegistryID string `gorm:"not null" json:"registryId"`
 	Slug       string `gorm:"not null" json:"slug"`
@@ -168,14 +114,14 @@ type SkillItem struct {
 	Status       string `gorm:"default:'active'" json:"status"`
 	CreatedBy string `gorm:"not null" json:"createdBy"`
 	UpdatedBy string `json:"updatedBy"`
-	Registry  *SkillRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions  []SkillVersion  `gorm:"foreignKey:ItemID" json:"versions,omitempty"`
-	Artifacts []SkillArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	Registry  *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID" json:"versions,omitempty"`
+	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type SkillVersion struct {
+type CapabilityVersion struct {
 	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID    string         `gorm:"not null" json:"itemId"`
 	Version   int            `gorm:"not null" json:"version"`
@@ -186,7 +132,7 @@ type SkillVersion struct {
 	CreatedAt time.Time      `json:"createdAt"`
 }
 
-type SkillArtifact struct {
+type CapabilityArtifact struct {
 	ID              string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID          string    `gorm:"not null" json:"itemId"`
 	Filename        string    `gorm:"not null" json:"filename"`
