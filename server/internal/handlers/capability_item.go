@@ -22,7 +22,7 @@ import (
 // @Param        type    query     string  false  "Filter by item type"
 // @Param        status  query     string  false  "Filter by status"
 // @Param        search  query     string  false  "Search by name or description"
-// @Success      200     {object}  object{items=[]models.SkillItem}
+// @Success      200     {object}  object{items=[]models.CapabilityItem}
 // @Failure      500     {object}  object{error=string}
 // @Router       /registries/{id}/items [get]
 func ListItems(c *gin.Context) {
@@ -55,7 +55,7 @@ func ListItems(c *gin.Context) {
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
 // @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,visibility=string,createdBy=string}  true  "Item data"
-// @Success      201   {object}  models.SkillItem
+// @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /registries/{id}/items [post]
@@ -121,7 +121,7 @@ func CreateItem(c *gin.Context) {
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  models.SkillItem
+// @Success      200  {object}  models.CapabilityItem
 // @Failure      404  {object}  object{error=string}
 // @Router       /items/{id} [get]
 func GetItem(c *gin.Context) {
@@ -144,7 +144,7 @@ func GetItem(c *gin.Context) {
 // @Produce      json
 // @Param        id    path      string  true  "Item ID"
 // @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,visibility=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data"
-// @Success      200   {object}  models.SkillItem
+// @Success      200   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -254,7 +254,7 @@ func DeleteItem(c *gin.Context) {
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  object{versions=[]models.SkillVersion}
+// @Success      200  {object}  object{versions=[]models.CapabilityVersion}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/versions [get]
 func ListItemVersions(c *gin.Context) {
@@ -276,7 +276,7 @@ func ListItemVersions(c *gin.Context) {
 // @Produce      json
 // @Param        id       path      string  true  "Item ID"
 // @Param        version  path      integer true  "Version number"
-// @Success      200      {object}  models.SkillVersion
+// @Success      200      {object}  models.CapabilityVersion
 // @Failure      400      {object}  object{error=string}
 // @Failure      404      {object}  object{error=string}
 // @Router       /items/{id}/versions/{version} [get]
@@ -342,7 +342,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        limit       query     integer  false  "Page size (default: 24, max: 100)"
 // @Param        offset      query     integer  false  "Page offset (default: 0)"
-// @Success      200         {object}  object{items=[]models.SkillItem,total=integer,hasMore=boolean}
+// @Success      200         {object}  object{items=[]models.CapabilityItem,total=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
 // @Router       /items [get]
 func ListAllItems(c *gin.Context) {
@@ -408,7 +408,7 @@ func ListAllItems(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,visibility=string,createdBy=string}  true  "Item data"
-// @Success      201   {object}  models.SkillItem
+// @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items [post]
@@ -518,7 +518,7 @@ func slugify(name string) string {
 // @Description  Get the global public skill registry
 // @Tags         registries
 // @Produce      json
-// @Success      200  {object}  models.SkillRegistry
+// @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
 // @Router       /registries/public [get]
 func GetPublicRegistry(c *gin.Context) {

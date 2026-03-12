@@ -16,7 +16,7 @@ import (
 // @Tags         registries
 // @Produce      json
 // @Param        orgId  query     string  false  "Filter by organization ID"
-// @Success      200    {object}  object{registries=[]models.SkillRegistry}
+// @Success      200    {object}  object{registries=[]models.CapabilityRegistry}
 // @Router       /registries [get]
 func ListRegistries(c *gin.Context) {
 	db := database.GetDB()
@@ -58,7 +58,7 @@ func ListRegistries(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,visibility=string,orgId=string,ownerId=string}  true  "Registry data"
-// @Success      201   {object}  models.SkillRegistry
+// @Success      201   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /registries [post]
@@ -110,7 +110,7 @@ func CreateRegistry(c *gin.Context) {
 // @Tags         registries
 // @Produce      json
 // @Param        id   path      string  true  "Registry ID"
-// @Success      200  {object}  models.SkillRegistry
+// @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
 // @Router       /registries/{id} [get]
 func GetRegistry(c *gin.Context) {
@@ -133,7 +133,7 @@ func GetRegistry(c *gin.Context) {
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
 // @Param        body  body      object{name=string,description=string,visibility=string}  false  "Registry data"
-// @Success      200   {object}  models.SkillRegistry
+// @Success      200   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -233,8 +233,8 @@ func DeleteRegistry(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        body  body      object{ownerId=string,username=string}  true  "Owner data"
-// @Success      200   {object}  models.SkillRegistry
-// @Success      201   {object}  models.SkillRegistry
+// @Success      200   {object}  models.CapabilityRegistry
+// @Success      201   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /registries/ensure-personal [post]
@@ -281,7 +281,7 @@ func EnsurePersonalRegistry(c *gin.Context) {
 // @Tags         registries
 // @Produce      json
 // @Param        ownerId  query     string  true  "Owner user ID"
-// @Success      200      {object}  object{registries=[]models.SkillRegistry}
+// @Success      200      {object}  object{registries=[]models.CapabilityRegistry}
 // @Failure      400      {object}  object{error=string}
 // @Router       /registries/my [get]
 func ListMyRegistries(c *gin.Context) {
@@ -303,7 +303,7 @@ func ListMyRegistries(c *gin.Context) {
 // @Produce      json
 // @Param        ownerId  query     string  true   "Owner user ID"
 // @Param        type     query     string  false  "Filter by item type"
-// @Success      200      {object}  object{items=[]models.SkillItem}
+// @Success      200      {object}  object{items=[]models.CapabilityItem}
 // @Failure      400      {object}  object{error=string}
 // @Router       /items/my [get]
 func ListMyItems(c *gin.Context) {

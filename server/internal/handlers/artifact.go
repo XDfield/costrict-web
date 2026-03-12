@@ -32,7 +32,7 @@ var StorageBackend storage.Backend
 // @Param        item_id     formData  string  true   "Item ID"
 // @Param        version     formData  string  false  "Artifact version"
 // @Param        uploaded_by formData  string  false  "Uploader user ID"
-// @Success      201         {object}  models.SkillArtifact
+// @Success      201         {object}  models.CapabilityArtifact
 // @Failure      400         {object}  object{error=string}
 // @Failure      404         {object}  object{error=string}
 // @Failure      500         {object}  object{error=string}
@@ -163,7 +163,7 @@ func DownloadArtifact(c *gin.Context) {
 // @Tags         artifacts
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  object{artifacts=[]models.SkillArtifact}
+// @Success      200  {object}  object{artifacts=[]models.CapabilityArtifact}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/artifacts [get]
 func ListArtifacts(c *gin.Context) {
