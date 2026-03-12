@@ -295,7 +295,7 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-1", ItemID: "item-ui2", Version: 1, Content: "v1", CreatedBy: "u1",
+		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: "v1", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -353,11 +353,11 @@ func TestListItemVersions(t *testing.T) {
 		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-lv1", ItemID: "item-lv1", Version: 1, Content: "v1", CreatedBy: "u1",
+		ID: "ver-lv1", ItemID: "item-lv1", Revision: 1, Content: "v1", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-lv2", ItemID: "item-lv1", Version: 2, Content: "v2", CreatedBy: "u1",
+		ID: "ver-lv2", ItemID: "item-lv1", Revision: 2, Content: "v2", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -387,7 +387,7 @@ func TestGetItemVersion_Found(t *testing.T) {
 		Name: "GV Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-gv1", ItemID: "item-gv1", Version: 1, Content: "v1 content", CreatedBy: "u1",
+		ID: "ver-gv1", ItemID: "item-gv1", Revision: 1, Content: "v1 content", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 

@@ -70,7 +70,6 @@ func CreateItem(c *gin.Context) {
 		Version     string `json:"version"`
 		Content     string `json:"content"`
 		SourcePath  string `json:"sourcePath"`
-		Visibility  string `json:"visibility"`
 		CreatedBy   string `json:"createdBy" binding:"required"`
 	}
 
@@ -91,7 +90,6 @@ func CreateItem(c *gin.Context) {
 		Content:     req.Content,
 		Metadata:    datatypes.JSON([]byte("{}")),
 		SourcePath:  req.SourcePath,
-		Visibility:  req.Visibility,
 		CreatedBy:   req.CreatedBy,
 	}
 
@@ -104,7 +102,7 @@ func CreateItem(c *gin.Context) {
 	version := models.CapabilityVersion{
 		ID:        uuid.New().String(),
 		ItemID:    item.ID,
-		Version:   1,
+		Revision:  1,
 		Content:   item.Content,
 		Metadata:  datatypes.JSON([]byte("{}")),
 		CommitMsg: "Initial version",
@@ -157,7 +155,6 @@ func UpdateItem(c *gin.Context) {
 		Category    string `json:"category"`
 		Version     string `json:"version"`
 		Content     string `json:"content"`
-		Visibility  string `json:"visibility"`
 		Status      string `json:"status"`
 		UpdatedBy   string `json:"updatedBy"`
 		CommitMsg   string `json:"commitMsg"`
@@ -191,9 +188,6 @@ func UpdateItem(c *gin.Context) {
 	if req.Content != "" {
 		item.Content = req.Content
 	}
-	if req.Visibility != "" {
-		item.Visibility = req.Visibility
-	}
 	if req.Status != "" {
 		item.Status = req.Status
 	}
@@ -207,22 +201,27 @@ func UpdateItem(c *gin.Context) {
 	}
 
 	if req.Content != "" {
-		var maxVersion int
-		db.Model(&models.CapabilityVersion{}).Where("item_id = ?", id).Select("COALESCE(MAX(version), 0)").Scan(&maxVersion)
 		createdBy := item.UpdatedBy
 		if createdBy == "" {
 			createdBy = item.CreatedBy
 		}
-		sv := models.CapabilityVersion{
-			ID:        uuid.New().String(),
-			ItemID:    item.ID,
-			Version:   maxVersion + 1,
-			Content:   item.Content,
-			Metadata:  datatypes.JSON([]byte("{}")),
-			CommitMsg: req.CommitMsg,
-			CreatedBy: createdBy,
-		}
-		db.Create(&sv)
+		commitMsg := req.CommitMsg
+		itemID := item.ID
+		itemContent := item.Content
+		_ = db.Transaction(func(tx *gorm.DB) error {
+			var maxRevision int
+			tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
+			sv := models.CapabilityVersion{
+				ID:        uuid.New().String(),
+				ItemID:    itemID,
+				Revision:  maxRevision + 1,
+				Content:   itemContent,
+				Metadata:  datatypes.JSON([]byte("{}")),
+				CommitMsg: commitMsg,
+				CreatedBy: createdBy,
+			}
+			return tx.Create(&sv).Error
+		})
 	}
 
 	c.JSON(http.StatusOK, item)
@@ -290,7 +289,7 @@ func GetItemVersion(c *gin.Context) {
 	}
 	db := database.GetDB()
 	var version models.CapabilityVersion
-	result := db.Where("item_id = ? AND version = ?", id, versionNum).First(&version)
+	result := db.Where("item_id = ? AND revision = ?", id, versionNum).First(&version)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
@@ -422,7 +421,6 @@ func CreateItemDirect(c *gin.Context) {
 		Category    string `json:"category"`
 		Version     string `json:"version"`
 		Content     string `json:"content"`
-		Visibility  string `json:"visibility"`
 		CreatedBy   string `json:"createdBy"`
 	}
 
@@ -461,15 +459,11 @@ func CreateItemDirect(c *gin.Context) {
 		Version:     req.Version,
 		Content:     req.Content,
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Visibility:  req.Visibility,
 		Status:      "active",
 		CreatedBy:   req.CreatedBy,
 	}
 	if item.Version == "" {
 		item.Version = "1.0.0"
-	}
-	if item.Visibility == "" {
-		item.Visibility = "public"
 	}
 
 	if result := db.Create(&item); result.Error != nil {
@@ -480,7 +474,7 @@ func CreateItemDirect(c *gin.Context) {
 	sv := models.CapabilityVersion{
 		ID:        uuid.New().String(),
 		ItemID:    item.ID,
-		Version:   1,
+		Revision:  1,
 		Content:   item.Content,
 		Metadata:  datatypes.JSON([]byte("{}")),
 		CommitMsg: "Initial version",
