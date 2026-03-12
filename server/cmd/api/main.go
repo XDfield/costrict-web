@@ -20,6 +20,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -43,6 +45,10 @@ func main() {
 	db, err := database.Initialize(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	if err := runPreMigrations(db); err != nil {
+		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
 
 	err = db.AutoMigrate(
@@ -55,12 +61,17 @@ func main() {
 		&models.CapabilityArtifact{},
 		&models.SyncJob{},
 		&models.SyncLog{},
+		&models.SecurityScan{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
 	log.Println("Database migrated successfully")
+
+	db.Model(&models.CapabilityRegistry{}).
+		Where("sync_status = ?", "syncing").
+		Update("sync_status", "error")
 
 	handlers.EnsurePublicRegistry()
 
@@ -123,6 +134,10 @@ func main() {
 			orgs.POST("/:id/members", handlers.AddOrganizationMember)
 			orgs.DELETE("/:id/members/:userId", handlers.RemoveOrganizationMember)
 			orgs.GET("/:id/registry", handlers.GetOrganizationRegistry)
+			orgs.GET("/:id/registries", handlers.ListOrgRegistries)
+			orgs.POST("/:id/registries", handlers.AddOrgRegistry)
+			orgs.PUT("/:id/registries/:regId", handlers.UpdateOrgRegistry)
+			orgs.DELETE("/:id/registries/:regId", handlers.RemoveOrgRegistry)
 			orgs.POST("/:id/sync", handlers.TriggerOrgSync)
 			orgs.POST("/:id/sync/cancel", handlers.CancelOrgSync)
 			orgs.GET("/:id/sync-status", handlers.GetOrgSyncStatus)
@@ -175,4 +190,41 @@ func main() {
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+}
+
+func runPreMigrations(db *gorm.DB) error {
+	migrations := []struct {
+		check string
+		stmts []string
+	}{
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_versions' AND column_name='version'`,
+			stmts: []string{
+				`ALTER TABLE capability_versions ADD COLUMN IF NOT EXISTS revision bigint`,
+				`UPDATE capability_versions SET revision = version WHERE revision IS NULL`,
+				`ALTER TABLE capability_versions ALTER COLUMN revision SET NOT NULL`,
+				`ALTER TABLE capability_versions ALTER COLUMN revision SET DEFAULT 1`,
+			},
+		},
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
+			stmts: []string{
+				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
+			},
+		},
+	}
+
+	for _, m := range migrations {
+		var exists int
+		db.Raw(m.check).Scan(&exists)
+		if exists != 1 {
+			continue
+		}
+		for _, stmt := range m.stmts {
+			if err := db.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("pre-migration failed (%s): %w", stmt, err)
+			}
+		}
+	}
+	return nil
 }
