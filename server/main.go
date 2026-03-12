@@ -20,15 +20,19 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -55,6 +59,9 @@ func main() {
 		&models.CapabilityArtifact{},
 		&models.SyncJob{},
 		&models.SyncLog{},
+		&models.BehaviorLog{},
+		&models.ExperienceCandidate{},
+		&models.ExperiencePromotion{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -73,6 +80,45 @@ func main() {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
 	handlers.StorageBackend = storageBackend
+
+	// Initialize services
+	ctx := context.Background()
+
+	// LLM Client
+	llmClient := llm.NewClient(&cfg.LLM)
+
+	// Embedding Service
+	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
+
+	// Indexer Service
+	indexerSvc := services.NewIndexerService(db, embeddingSvc)
+
+	// Search Service
+	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
+
+	// Behavior Service
+	behaviorSvc := services.NewBehaviorService(db)
+
+	// Generate Service
+	generateSvc := services.NewGenerateService(llmClient, indexerSvc)
+
+	// Recommend Service
+	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
+
+	// Evolution Service
+	evolutionSvc := services.NewEvolutionService(db, llmClient, behaviorSvc)
+
+	// Start background indexing (every hour)
+	indexerSvc.StartBackgroundIndexing(ctx, time.Hour)
+
+	// Start background experience analysis (every 6 hours)
+	evolutionSvc.StartBackgroundAnalysis(ctx, 6*time.Hour)
+
+	// Initialize handlers
+	searchHandler := handlers.NewSearchHandler(searchSvc)
+	generateHandler := handlers.NewGenerateHandler(generateSvc)
+	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+	experienceHandler := handlers.NewExperienceHandler(evolutionSvc)
 
 	// Initialize Gin router
 	r := gin.Default()
@@ -160,6 +206,47 @@ func main() {
 		api.GET("/registry/:org/access", handlers.RegistryAccess)
 		api.GET("/registry/:org/index.json", handlers.RegistryIndex)
 		api.GET("/registry/:org/:slug/:file", handlers.DownloadRegistryFile)
+
+		// === NEW AI-POWERED APIS ===
+
+		// Marketplace Search & Discovery
+		marketplace := api.Group("/marketplace")
+		{
+			// Semantic Search
+			marketplace.POST("/items/search", searchHandler.SemanticSearch)
+			marketplace.POST("/items/hybrid-search", searchHandler.HybridSearch)
+
+			// Recommendations
+			marketplace.POST("/items/recommend", recommendHandler.GetRecommendations)
+			marketplace.GET("/items/trending", recommendHandler.GetTrending)
+			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
+
+			// AI Generation
+			marketplace.POST("/items/generate", generateHandler.GenerateSkill)
+		}
+
+		// Item Enhanced APIs
+		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.POST("/items/:id/analyze", generateHandler.AnalyzeSkill)
+		api.POST("/items/:id/improve", generateHandler.ImproveSkill)
+		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
+		api.POST("/items/:id/analyze-patterns", experienceHandler.AnalyzeItemPatterns)
+		api.GET("/items/:id/promotion-history", experienceHandler.GetPromotionHistory)
+
+		// User Behavior
+		api.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
+
+		// Admin Experience Management
+		admin := api.Group("/admin")
+		admin.Use(middleware.RequireAuth(casdoorEndpoint))
+		{
+			admin.GET("/experiences/pending", experienceHandler.GetPendingExperiences)
+			admin.GET("/experiences/:id", experienceHandler.GetExperienceByID)
+			admin.POST("/experiences/:id/approve", experienceHandler.ApproveExperience)
+			admin.POST("/experiences/:id/reject", experienceHandler.RejectExperience)
+			admin.POST("/experiences/run-analysis", experienceHandler.RunAnalysis)
+		}
 	}
 
 	// Start server

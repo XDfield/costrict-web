@@ -97,19 +97,19 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID         string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID string `gorm:"not null" json:"registryId"`
-	Slug       string `gorm:"not null" json:"slug"`
-	ItemType   string `gorm:"not null" json:"itemType"`
-	Name       string `gorm:"not null" json:"name"`
+	ID          string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID  string `gorm:"not null" json:"registryId"`
+	Slug        string `gorm:"not null" json:"slug"`
+	ItemType    string `gorm:"not null" json:"itemType"`
+	Name        string `gorm:"not null" json:"name"`
 	Description string `json:"description"`
-	Category   string `json:"category"`
-	Version    string `gorm:"default:'1.0.0'" json:"version"`
-	Content    string `gorm:"type:text" json:"content"`
-	Metadata   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	SourcePath string `json:"sourcePath"`
-	SourceSHA  string `json:"sourceSha"`
-	Visibility string `json:"visibility"`
+	Category    string `json:"category"`
+	Version     string `gorm:"default:'1.0.0'" json:"version"`
+	Content     string `gorm:"type:text" json:"content"`
+	Metadata    datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	SourcePath  string `json:"sourcePath"`
+	SourceSHA   string `json:"sourceSha"`
+	Visibility  string `json:"visibility"`
 	InstallCount int    `gorm:"default:0" json:"installCount"`
 	Status       string `gorm:"default:'active'" json:"status"`
 	CreatedBy string `gorm:"not null" json:"createdBy"`
@@ -119,6 +119,11 @@ type CapabilityItem struct {
 	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Vector embedding for semantic search
+	Embedding         string     `gorm:"type:vector(1024)" json:"-"`
+	ExperienceScore   float64    `gorm:"default:0" json:"experienceScore"`
+	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
 }
 
 type CapabilityVersion struct {
