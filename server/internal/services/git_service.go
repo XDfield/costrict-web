@@ -171,6 +171,10 @@ func matchGlob(pattern, name string) (bool, error) {
 		if suffix == "" {
 			return true, nil
 		}
+
+		if strings.Contains(suffix, "/") {
+			return strings.HasSuffix(checkName, "/"+suffix) || checkName == suffix, nil
+		}
 		return filepath.Match(suffix, filepath.Base(checkName))
 	}
 	return filepath.Match(pattern, name)
