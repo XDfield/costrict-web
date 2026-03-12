@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL 数据库
+  # PostgreSQL 数据库 (with pgvector)
   postgres:
     image: pgvector/pgvector:pg16
     container_name: costrict-postgres
@@ -11,6 +11,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U costrict"]
       interval: 10s

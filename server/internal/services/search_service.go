@@ -72,7 +72,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 
 	// Base query for items with embeddings
 	query := s.db.Model(&models.CapabilityItem{}).
-		Where("embedding IS NOT NULL AND embedding != '' AND embedding != '[]'").
+		Where("embedding IS NOT NULL").
 		Where("status = ?", "active")
 
 	// Apply filters
@@ -89,7 +89,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	// Count total matching items
 	var total int64
 	countQuery := s.db.Model(&models.CapabilityItem{}).
-		Where("embedding IS NOT NULL AND embedding != '' AND embedding != '[]'").
+		Where("embedding IS NOT NULL").
 		Where("status = ?", "active")
 	if len(req.Types) > 0 {
 		countQuery = countQuery.Where("item_type IN ?", req.Types)
@@ -107,14 +107,15 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	var items []SearchResultItem
 
 	sql := `
-		SELECT id, registry_id, slug, item_type, name, description, category, version,
-		       content, metadata, source_path, source_sha, visibility, install_count,
-		       status, created_by, updated_by, created_at, updated_at,
-		       embedding_updated_at, experience_score,
-		       1 - (embedding <=> ?) as score
-		FROM capability_items
-		WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
-		  AND status = 'active'
+		SELECT * FROM (
+			SELECT id, registry_id, slug, item_type, name, description, category, version,
+			       content, metadata, source_path, source_sha, visibility, install_count,
+			       status, created_by, updated_by, created_at, updated_at,
+			       embedding_updated_at, experience_score,
+			       1 - (embedding <=> ?) as score
+			FROM capability_items
+			WHERE embedding IS NOT NULL
+			  AND status = 'active'
 	`
 
 	args := []interface{}{vectorStr}
@@ -149,8 +150,8 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 		sql += " AND " + strings.Join(whereClauses, " AND ")
 	}
 
-	sql += " HAVING 1 - (embedding <=> ?) >= ? ORDER BY score DESC LIMIT ? OFFSET ?"
-	args = append(args, vectorStr, req.MinScore, req.Limit, req.Offset)
+	sql += ` ) AS sub WHERE score >= ? ORDER BY score DESC LIMIT ? OFFSET ?`
+	args = append(args, req.MinScore, req.Limit, req.Offset)
 
 	result := database.GetDB().Raw(sql, args...).Scan(&items)
 	if result.Error != nil {
@@ -330,7 +331,7 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 		       embedding_updated_at, experience_score,
 		       1 - (embedding <=> ?) as score
 		FROM capability_items
-		WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
+		WHERE embedding IS NOT NULL
 		  AND status = 'active'
 		  AND id != ?
 		ORDER BY score DESC

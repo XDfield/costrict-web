@@ -208,6 +208,65 @@
         <div class="response" id="stats-response"></div>
     </div>
 
+    <!-- Create Skill API -->
+    <div class="api-section">
+        <h3><span class="post">POST</span>/api/items - Create Skill/Item</h3>
+        <div class="row">
+            <div>
+                <label>Name (required)</label>
+                <input type="text" id="createItemName" value="Code Review Assistant" placeholder="Item name">
+            </div>
+            <div>
+                <label>Item Type (required)</label>
+                <select id="createItemType">
+                    <option value="skill" selected>skill</option>
+                    <option value="agent">agent</option>
+                    <option value="command">command</option>
+                    <option value="mcp_server">mcp_server</option>
+                </select>
+            </div>
+        </div>
+        <label>Description</label>
+        <textarea id="createItemDesc">A skill that helps developers perform code reviews following best practices</textarea>
+        <div class="row">
+            <div>
+                <label>Category</label>
+                <input type="text" id="createItemCategory" value="code-quality">
+            </div>
+            <div>
+                <label>Version</label>
+                <input type="text" id="createItemVersion" value="1.0.0">
+            </div>
+        </div>
+        <label>Content (skill definition)</label>
+        <textarea id="createItemContent" style="min-height: 120px;"># Code Review Assistant
+
+## Purpose
+Help developers perform thorough code reviews.
+
+## Instructions
+1. Analyze code for potential bugs
+2. Check for code style consistency
+3. Suggest improvements
+4. Identify security issues
+
+## Example Usage
+Use this skill when reviewing pull requests.</textarea>
+        <label>Registry ID (optional, defaults to public registry)</label>
+        <input type="text" id="createItemRegistryId" placeholder="Leave empty for public registry">
+        <button onclick="callAPI('POST', '/api/items', {
+            name: document.getElementById('createItemName').value,
+            itemType: document.getElementById('createItemType').value,
+            description: document.getElementById('createItemDesc').value,
+            category: document.getElementById('createItemCategory').value,
+            version: document.getElementById('createItemVersion').value,
+            content: document.getElementById('createItemContent').value,
+            registryId: document.getElementById('createItemRegistryId').value || undefined,
+            visibility: 'public'
+        }, this)">Create</button>
+        <div class="response" id="-api-items-response"></div>
+    </div>
+
     <!-- Admin APIs -->
     <div class="api-section">
         <h3><span class="get">GET</span>/api/admin/experiences/pending - Pending Experiences</h3>

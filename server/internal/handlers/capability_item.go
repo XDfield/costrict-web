@@ -1,17 +1,34 @@
 package handlers
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// ItemHandler handles item operations with indexing support
+type ItemHandler struct {
+	db         *gorm.DB
+	indexerSvc *services.IndexerService
+}
+
+// NewItemHandler creates a new item handler
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService) *ItemHandler {
+	return &ItemHandler{
+		db:         db,
+		indexerSvc: indexerSvc,
+	}
+}
 
 // ListItems godoc
 // @Summary      List registry items
@@ -94,7 +111,7 @@ func CreateItem(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	if result := db.Create(&item); result.Error != nil {
+	if result := db.Omit("Embedding").Create(&item); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}
@@ -411,7 +428,7 @@ func ListAllItems(c *gin.Context) {
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items [post]
-func CreateItemDirect(c *gin.Context) {
+func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 	var req struct {
 		RegistryID  string `json:"registryId"`
 		Slug        string `json:"slug"`
@@ -447,7 +464,6 @@ func CreateItemDirect(c *gin.Context) {
 		req.Slug = slugify(req.Name)
 	}
 
-	db := database.GetDB()
 	item := models.CapabilityItem{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
@@ -466,7 +482,7 @@ func CreateItemDirect(c *gin.Context) {
 		item.Version = "1.0.0"
 	}
 
-	if result := db.Create(&item); result.Error != nil {
+	if result := h.db.Omit("Embedding").Create(&item); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}
@@ -480,7 +496,19 @@ func CreateItemDirect(c *gin.Context) {
 		CommitMsg: "Initial version",
 		CreatedBy: item.CreatedBy,
 	}
-	db.Create(&sv)
+	h.db.Create(&sv)
+
+	// Async index the item for semantic search
+	if h.indexerSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.indexerSvc.IndexItem(ctx, &item); err != nil {
+				log.Printf("Failed to index item %s: %v", item.ID, err)
+			} else {
+				log.Printf("Successfully indexed item %s", item.ID)
+			}
+		}()
+	}
 
 	c.JSON(http.StatusCreated, item)
 }

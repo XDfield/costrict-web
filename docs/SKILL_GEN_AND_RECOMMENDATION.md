@@ -465,18 +465,77 @@ flowchart LR
 
 **用户需求：** 在对话过程中，希望系统主动推荐相关技能
 
-**解决方案：** 会话实时推荐 + 反馈闭环
+**解决方案：** 多策略融合推荐 + 行为反馈闭环
 
-| 能力 | 说明 | 技术实现 |
-|------|------|----------|
-| 实时推荐 | 分析对话内容，Chat Sidebar 自动推荐相关技能 | WebSocket 推送 + Vector Search |
-| 反馈闭环 | 埋点用户行为（点击/忽略/成功/失败），优化推荐模型 | 扩展 `capability_item.metadata` 字段 |
+#### 推荐策略架构
 
-**推荐数据来源：**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GetRecommendations()                         │
+│                  (recommend_service.go)                         │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+         ┌──────────────────┼──────────────────┐
+         │                  │                  │
+         ▼                  ▼                  ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ 协同过滤         │ │ 内容过滤         │ │ 热门推荐         │
+│ collaborative   │ │ content_based   │ │ popularity      │
+│ _filtering      │ │                 │ │                 │
+│ Score: 0.8      │ │ Score: 0.7      │ │ Score: 0.6      │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+         │                  │                  │
+         └──────────────────┼──────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────┐
+              │ 上下文推荐               │
+              │ context_based           │
+              │ (基于会话中浏览的项)      │
+              │ Score: 0.75             │
+              └─────────────────────────┘
+                            │
+                            ▼
+              ┌─────────────────────────┐
+              │ rankAndDedupe()         │
+              │ 去重 + 按分数排序        │
+              └─────────────────────────┘
+```
 
-- `capability_item` 表：能力项基本信息
-- `capability_item.metadata` 字段：评分和反馈
-- `capability_item.install_count` 字段：安装/使用统计
+#### 四种推荐策略
+
+| 策略 | 分数 | 逻辑 | 数据来源 |
+|------|------|------|----------|
+| **协同过滤** | 0.8 | 找相似用户（共同使用≥2项），推荐他们用过但当前用户没用过的 | `behavior_logs.user_id` |
+| **内容过滤** | 0.7 | 根据用户历史偏好分类，推荐同类目下的高分项 | `behavior_logs` + `category` |
+| **热门推荐** | 0.6 | 最近30天安装数高的项 | `behavior_logs` + `install_count` |
+| **上下文推荐** | 0.75 | 基于当前会话浏览项的分类，推荐相关项 | `sessionItems` + `category` |
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/marketplace/items/recommend` | 获取个性化推荐 |
+| GET | `/api/marketplace/items/trending` | 获取热门项（7天活动量排序） |
+| GET | `/api/marketplace/items/new` | 获取新上架优质项（30天内） |
+| POST | `/api/items/{id}/behavior` | 记录用户行为 |
+| GET | `/api/items/{id}/stats` | 获取能力项统计 |
+| GET | `/api/users/me/behavior/summary` | 获取用户行为摘要 |
+
+#### 推荐数据来源
+
+- `capability_item` 表：能力项基本信息、分类、安装数、评分
+- `behavior_logs` 表：用户行为日志（view/install/use/rate）
+- 请求参数：`sessionItems`（当前会话浏览项）
+
+#### 用户行为埋点
+
+| 行为类型 | 说明 | 用途 |
+|----------|------|------|
+| `view` | 查看详情 | 协同过滤、内容过滤 |
+| `install` | 安装/使用 | 热门排序、协同过滤 |
+| `use` | 实际调用 | 有效性评估 |
+| `rate` | 评分反馈 | 质量评估 |
 
 ---
 
@@ -654,15 +713,45 @@ flowchart LR
 
 ## 三、新增 API 设计
 
-### 能力项搜索 API（扩展）
+### 3.1 能力市场搜索 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/marketplace/items/search` | 语义搜索能力项 |
+| POST | `/api/marketplace/items/hybrid-search` | 混合搜索（语义+关键词） |
+| GET | `/api/marketplace/items/trending` | 获取热门能力项 |
+| GET | `/api/marketplace/items/new` | 获取新上架能力项 |
+
+### 3.2 能力推荐 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
 | POST | `/api/marketplace/items/recommend` | 获取推荐能力项 |
-| POST | `/api/marketplace/items/generate` | 智能生成能力项 |
-| GET | `/api/marketplace/items/{id}/versions` | 获取能力项版本列表 |
-| GET | `/api/marketplace/items/{id}/artifacts` | 获取能力项制品列表 |
+
+### 3.3 能力生成 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/marketplace/items/generate` | AI 智能生成能力项 |
+
+### 3.4 能力项操作 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/items/{id}/similar` | 查找相似能力项 |
+| POST | `/api/items/{id}/analyze` | 分析能力项 |
+| POST | `/api/items/{id}/improve` | 改进能力项 |
+| POST | `/api/items/{id}/behavior` | 记录用户行为 |
+| GET | `/api/items/{id}/stats` | 获取能力项统计信息 |
+| GET | `/api/items/{id}/versions` | 获取能力项版本列表 |
+| GET | `/api/items/{id}/artifacts` | 获取能力项制品列表 |
+
+### 3.5 管理员 API（经验审核）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/experiences/pending` | 获取待审核经验列表 |
+| POST | `/api/admin/experiences/{id}/approve` | 批准经验晋升 |
 
 ---
 

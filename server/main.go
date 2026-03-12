@@ -20,58 +20,54 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
-	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"gorm.io/gorm"
 )
 
 func main() {
+	// Load configuration
 	cfg := config.Load()
 
+	// Initialize database
 	db, err := database.Initialize(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	if err := runPreMigrations(db); err != nil {
-		log.Fatalf("Failed to run pre-migrations: %v", err)
-	}
-
+	// Auto migrate database schema
 	err = db.AutoMigrate(
 		&models.Organization{},
 		&models.OrgMember{},
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
-		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.SyncJob{},
 		&models.SyncLog{},
-		&models.SecurityScan{},
+		&models.BehaviorLog{},
+		&models.ExperienceCandidate{},
+		&models.ExperiencePromotion{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
 	log.Println("Database migrated successfully")
-
-	db.Model(&models.CapabilityRegistry{}).
-		Where("sync_status = ?", "syncing").
-		Update("sync_status", "error")
 
 	handlers.EnsurePublicRegistry()
 
@@ -85,43 +81,69 @@ func main() {
 	}
 	handlers.StorageBackend = storageBackend
 
-	jobSvc := &services.JobService{DB: db}
-	handlers.JobService = jobSvc
+	// Initialize services
+	ctx := context.Background()
 
-	// Embedding and Indexer Services
+	// LLM Client
+	llmClient := llm.NewClient(&cfg.LLM)
+
+	// Embedding Service
 	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
+
+	// Indexer Service
 	indexerSvc := services.NewIndexerService(db, embeddingSvc)
 
-	sched := &scheduler.Scheduler{
-		JobService: jobSvc,
-		DB:         db,
-	}
-	if err := sched.Start(); err != nil {
-		log.Fatalf("Failed to start scheduler: %v", err)
-	}
-	defer sched.Stop()
-	handlers.SyncScheduler = sched
+	// Search Service
+	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
 
-	// Initialize ItemHandler with indexer
+	// Behavior Service
+	behaviorSvc := services.NewBehaviorService(db)
+
+	// Generate Service
+	generateSvc := services.NewGenerateService(llmClient, indexerSvc)
+
+	// Recommend Service
+	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
+
+	// Evolution Service
+	evolutionSvc := services.NewEvolutionService(db, llmClient, behaviorSvc)
+
+	// Start background indexing (every hour)
+	indexerSvc.StartBackgroundIndexing(ctx, time.Hour)
+
+	// Start background experience analysis (every 6 hours)
+	evolutionSvc.StartBackgroundAnalysis(ctx, 6*time.Hour)
+
+	// Initialize handlers
+	searchHandler := handlers.NewSearchHandler(searchSvc)
+	generateHandler := handlers.NewGenerateHandler(generateSvc)
+	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+	experienceHandler := handlers.NewExperienceHandler(evolutionSvc)
 	itemHandler := handlers.NewItemHandler(db, indexerSvc)
 
+	// Initialize Gin router
 	r := gin.Default()
 
 	casdoorEndpoint := cfg.Casdoor.Endpoint
 
+	// Middleware
 	r.Use(middleware.CORS())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.OptionalAuth(casdoorEndpoint))
 
+	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Swagger UI
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
+	// API routes
 	api := r.Group("/api")
 	{
+		// Auth routes
 		auth := api.Group("/auth")
 		{
 			auth.GET("/login", handlers.Login)
@@ -129,6 +151,7 @@ func main() {
 			auth.GET("/me", handlers.GetCurrentUser)
 		}
 
+		// Organization routes
 		orgs := api.Group("/organizations")
 		{
 			orgs.GET("", handlers.ListOrganizations)
@@ -141,17 +164,9 @@ func main() {
 			orgs.POST("/:id/members", handlers.AddOrganizationMember)
 			orgs.DELETE("/:id/members/:userId", handlers.RemoveOrganizationMember)
 			orgs.GET("/:id/registry", handlers.GetOrganizationRegistry)
-			orgs.GET("/:id/registries", handlers.ListOrgRegistries)
-			orgs.POST("/:id/registries", handlers.AddOrgRegistry)
-			orgs.PUT("/:id/registries/:regId", handlers.UpdateOrgRegistry)
-			orgs.DELETE("/:id/registries/:regId", handlers.RemoveOrgRegistry)
-			orgs.POST("/:id/sync", handlers.TriggerOrgSync)
-			orgs.POST("/:id/sync/cancel", handlers.CancelOrgSync)
-			orgs.GET("/:id/sync-status", handlers.GetOrgSyncStatus)
-			orgs.GET("/:id/sync-logs", handlers.ListOrgSyncLogs)
-			orgs.GET("/:id/sync-jobs", handlers.ListOrgSyncJobs)
 		}
 
+		// Skill Registries
 		api.GET("/registries", handlers.ListRegistries)
 		api.GET("/registries/my", handlers.ListMyRegistries)
 		api.GET("/registries/public", handlers.GetPublicRegistry)
@@ -162,15 +177,17 @@ func main() {
 		api.DELETE("/registries/:id", handlers.DeleteRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)
 		api.POST("/registries/:id/items", handlers.CreateItem)
-		api.POST("/registries/:id/sync", handlers.TriggerRegistrySync)
-		api.POST("/registries/:id/sync/cancel", handlers.CancelRegistrySync)
-		api.GET("/registries/:id/sync-status", handlers.GetRegistrySyncStatus)
-		api.GET("/registries/:id/sync-logs", handlers.ListRegistrySyncLogs)
-		api.GET("/registries/:id/sync-jobs", handlers.ListRegistrySyncJobs)
 
+		// My items
 		api.GET("/items/my", handlers.ListMyItems)
+
+		// Global items query (with visibility filtering)
 		api.GET("/items", handlers.ListAllItems)
+
+		// Convenient item creation (auto-selects public registry)
 		api.POST("/items", itemHandler.CreateItemDirect)
+
+		// Skill Items
 		api.GET("/items/:id", handlers.GetItem)
 		api.PUT("/items/:id", handlers.UpdateItem)
 		api.DELETE("/items/:id", handlers.DeleteItem)
@@ -178,60 +195,64 @@ func main() {
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
 
+		// Artifacts
 		api.POST("/artifacts/upload", handlers.UploadArtifact)
 		api.GET("/artifacts/:id/download", handlers.DownloadArtifact)
 		api.DELETE("/artifacts/:id", handlers.DeleteArtifact)
 
+		// Item content download
 		api.GET("/items/:id/download", handlers.DownloadItem)
 
+		// Plugin Registry
 		api.GET("/registry/:org/access", handlers.RegistryAccess)
 		api.GET("/registry/:org/index.json", handlers.RegistryIndex)
 		api.GET("/registry/:org/:slug/:file", handlers.DownloadRegistryFile)
 
-		api.GET("/sync-logs/:id", handlers.GetSyncLogDetail)
-		api.GET("/sync-jobs/:id", handlers.GetSyncJobDetail)
-		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
+		// === NEW AI-POWERED APIS ===
+
+		// Marketplace Search & Discovery
+		marketplace := api.Group("/marketplace")
+		{
+			// Semantic Search
+			marketplace.POST("/items/search", searchHandler.SemanticSearch)
+			marketplace.POST("/items/hybrid-search", searchHandler.HybridSearch)
+
+			// Recommendations
+			marketplace.POST("/items/recommend", recommendHandler.GetRecommendations)
+			marketplace.GET("/items/trending", recommendHandler.GetTrending)
+			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
+
+			// AI Generation
+			marketplace.POST("/items/generate", generateHandler.GenerateSkill)
+		}
+
+		// Item Enhanced APIs
+		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.POST("/items/:id/analyze", generateHandler.AnalyzeSkill)
+		api.POST("/items/:id/improve", generateHandler.ImproveSkill)
+		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
+		api.POST("/items/:id/analyze-patterns", experienceHandler.AnalyzeItemPatterns)
+		api.GET("/items/:id/promotion-history", experienceHandler.GetPromotionHistory)
+
+		// User Behavior
+		api.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
+
+		// Admin Experience Management
+		admin := api.Group("/admin")
+		admin.Use(middleware.RequireAuth(casdoorEndpoint))
+		{
+			admin.GET("/experiences/pending", experienceHandler.GetPendingExperiences)
+			admin.GET("/experiences/:id", experienceHandler.GetExperienceByID)
+			admin.POST("/experiences/:id/approve", experienceHandler.ApproveExperience)
+			admin.POST("/experiences/:id/reject", experienceHandler.RejectExperience)
+			admin.POST("/experiences/run-analysis", experienceHandler.RunAnalysis)
+		}
 	}
 
+	// Start server
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
-}
-
-func runPreMigrations(db *gorm.DB) error {
-	migrations := []struct {
-		check string
-		stmts []string
-	}{
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_versions' AND column_name='version'`,
-			stmts: []string{
-				`ALTER TABLE capability_versions ADD COLUMN IF NOT EXISTS revision bigint`,
-				`UPDATE capability_versions SET revision = version WHERE revision IS NULL`,
-				`ALTER TABLE capability_versions ALTER COLUMN revision SET NOT NULL`,
-				`ALTER TABLE capability_versions ALTER COLUMN revision SET DEFAULT 1`,
-			},
-		},
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
-			stmts: []string{
-				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
-			},
-		},
-	}
-
-	for _, m := range migrations {
-		var exists int
-		db.Raw(m.check).Scan(&exists)
-		if exists != 1 {
-			continue
-		}
-		for _, stmt := range m.stmts {
-			if err := db.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("pre-migration failed (%s): %w", stmt, err)
-			}
-		}
-	}
-	return nil
 }
