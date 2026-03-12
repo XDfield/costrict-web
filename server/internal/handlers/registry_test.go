@@ -103,6 +103,19 @@ func setupTestDB(t *testing.T) func() {
 			created_by TEXT NOT NULL,
 			created_at DATETIME
 		)`,
+		`CREATE TABLE IF NOT EXISTS capability_assets (
+			id              TEXT PRIMARY KEY,
+			item_id         TEXT NOT NULL,
+			rel_path        TEXT NOT NULL,
+			text_content    TEXT,
+			storage_backend TEXT DEFAULT 'local',
+			storage_key     TEXT,
+			mime_type       TEXT,
+			file_size       INTEGER DEFAULT 0,
+			content_sha     TEXT,
+			created_at      DATETIME,
+			updated_at      DATETIME
+		)`,
 		`CREATE TABLE IF NOT EXISTS capability_artifacts (
 			id               TEXT PRIMARY KEY,
 			item_id          TEXT NOT NULL,
@@ -114,6 +127,7 @@ func setupTestDB(t *testing.T) func() {
 			storage_key      TEXT NOT NULL,
 			artifact_version TEXT NOT NULL,
 			is_latest        INTEGER DEFAULT 0,
+			source_type      TEXT DEFAULT 'upload',
 			download_count   INTEGER DEFAULT 0,
 			uploaded_by      TEXT NOT NULL,
 			created_at       DATETIME
