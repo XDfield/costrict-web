@@ -2,46 +2,46 @@
 
 # dependencies
 /node_modules
- /.pnp
- .pnp.js
- .yarn/install-state.gz
+/.pnp
+.pnp.js
+.yarn/install-state.gz
 
 # testing
- /coverage
+/coverage
 
 # next.js
- /.next/
- /out/
+/.next/
+/out/
 
 # production
- /build
+/build
 
 # misc
 .DS_Store
- *.pem
+*.pem
 
 # debug
- npm-debug.log*
- yarn-debug.log*
- yarn-error.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # local env files
- .env*.local
- .env
+.env*.local
+.env
 server/.env
 
 # vercel
- .vercel
+.vercel
 
 # typescript
- *.tsbuildinfo
- next-env.d.ts
+*.tsbuildinfo
+next-env.d.ts
 
 # Generated registry (no longer needed - data comes from database)
- /public/registry.json
+/public/registry.json
 
 # Trigger.dev
- .trigger/
+.trigger/
 
 # Go
 server/bin/
