@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -25,15 +26,34 @@ var (
 	}
 )
 
+func getRegistryIDsForOrg(orgID string) ([]string, error) {
+	db := database.GetDB()
+	var ids []string
+	db.Model(&models.CapabilityRegistry{}).
+		Where("org_id = ? AND source_type = 'external'", orgID).
+		Pluck("id", &ids)
+	if len(ids) > 0 {
+		return ids, nil
+	}
+	db.Model(&models.CapabilityRegistry{}).
+		Where("org_id = ?", orgID).
+		Pluck("id", &ids)
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no registry found for org %s", orgID)
+	}
+	return ids, nil
+}
+
 func getRegistryIDForOrg(orgID string) (string, error) {
 	db := database.GetDB()
-	var registry models.CapabilityRegistry
-	if err := db.Where("org_id = ? AND source_type = 'external'", orgID).First(&registry).Error; err != nil {
-		if err2 := db.Where("org_id = ?", orgID).First(&registry).Error; err2 != nil {
-			return "", err2
-		}
+	var reg models.CapabilityRegistry
+	err := db.Where("org_id = ?", orgID).
+		Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").
+		First(&reg).Error
+	if err != nil {
+		return "", fmt.Errorf("no registry found for org %s", orgID)
 	}
-	return registry.ID, nil
+	return reg.ID, nil
 }
 
 // TriggerOrgSync godoc
@@ -49,80 +69,201 @@ func getRegistryIDForOrg(orgID string) (string, error) {
 // @Router       /organizations/{id}/sync [post]
 func TriggerOrgSync(c *gin.Context) {
 	orgID := c.Param("id")
-	registryID, err := getRegistryIDForOrg(orgID)
+	registryID := c.Query("registryId")
+	if registryID != "" {
+		triggerSync(c, registryID)
+		return
+	}
+	ids, err := getRegistryIDsForOrg(orgID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No registry found for this organization"})
 		return
 	}
-	triggerSync(c, registryID)
+	if len(ids) == 1 {
+		triggerSync(c, ids[0])
+		return
+	}
+	if JobService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Sync service not available"})
+		return
+	}
+	dryRun := c.Query("dryRun") == "true"
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	userID, _ := userIDVal.(string)
+	var jobs []gin.H
+	for _, id := range ids {
+		job, err := JobService.Enqueue(id, "manual", userID, services.EnqueueOptions{Priority: 1, DryRun: dryRun})
+		if err == nil && job != nil {
+			jobs = append(jobs, gin.H{"jobId": job.ID, "registryId": id, "status": job.Status})
+		}
+	}
+	c.JSON(http.StatusAccepted, gin.H{"jobs": jobs})
 }
 
 // CancelOrgSync godoc
 // @Summary      Cancel org sync
 // @Tags         sync
 // @Produce      json
-// @Param        id  path  string  true  "Organization ID"
+// @Param        id          path   string  true   "Organization ID"
+// @Param        registryId  query  string  false  "Registry ID (cancel specific registry)"
 // @Success      200  {object}  object{message=string}
 // @Router       /organizations/{id}/sync/cancel [post]
 func CancelOrgSync(c *gin.Context) {
 	orgID := c.Param("id")
-	registryID, err := getRegistryIDForOrg(orgID)
+	registryID := c.Query("registryId")
+	if registryID != "" {
+		cancelSync(c, registryID)
+		return
+	}
+	ids, err := getRegistryIDsForOrg(orgID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No registry found for this organization"})
 		return
 	}
-	cancelSync(c, registryID)
+	for _, id := range ids {
+		if JobService != nil {
+			_ = JobService.CancelByRegistry(id)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Pending sync jobs cancelled"})
 }
 
 // GetOrgSyncStatus godoc
 // @Summary      Get org sync status
 // @Tags         sync
 // @Produce      json
-// @Param        id  path  string  true  "Organization ID"
+// @Param        id          path   string  true   "Organization ID"
+// @Param        registryId  query  string  false  "Registry ID (get specific registry status)"
 // @Success      200  {object}  object{}
 // @Router       /organizations/{id}/sync-status [get]
 func GetOrgSyncStatus(c *gin.Context) {
 	orgID := c.Param("id")
-	registryID, err := getRegistryIDForOrg(orgID)
+	registryID := c.Query("registryId")
+	if registryID != "" {
+		getSyncStatus(c, registryID)
+		return
+	}
+	ids, err := getRegistryIDsForOrg(orgID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No registry found for this organization"})
 		return
 	}
-	getSyncStatus(c, registryID)
+	if len(ids) == 1 {
+		getSyncStatus(c, ids[0])
+		return
+	}
+	db := database.GetDB()
+	var registries []models.CapabilityRegistry
+	db.Where("id IN ?", ids).Find(&registries)
+	type regStatus struct {
+		RegistryID   string     `json:"registryId"`
+		Name         string     `json:"name"`
+		ExternalURL  string     `json:"externalUrl"`
+		SyncStatus   string     `json:"syncStatus"`
+		LastSyncedAt *string    `json:"lastSyncedAt"`
+		LastSyncSha  string     `json:"lastSyncSha"`
+		PendingJobs  int64      `json:"pendingJobs"`
+	}
+	var statuses []regStatus
+	for _, reg := range registries {
+		var pending int64
+		if JobService != nil {
+			pending, _ = JobService.GetPendingCount(reg.ID)
+		}
+		var lastSyncedAt *string
+		if reg.LastSyncedAt != nil {
+			s := reg.LastSyncedAt.Format("2006-01-02T15:04:05Z07:00")
+			lastSyncedAt = &s
+		}
+		statuses = append(statuses, regStatus{
+			RegistryID:   reg.ID,
+			Name:         reg.Name,
+			ExternalURL:  reg.ExternalURL,
+			SyncStatus:   reg.SyncStatus,
+			LastSyncedAt: lastSyncedAt,
+			LastSyncSha:  reg.LastSyncSHA,
+			PendingJobs:  pending,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"registries": statuses})
 }
 
 // ListOrgSyncLogs godoc
 // @Summary      List org sync logs
 // @Tags         sync
 // @Produce      json
-// @Param        id  path  string  true  "Organization ID"
+// @Param        id          path   string  true   "Organization ID"
+// @Param        registryId  query  string  false  "Registry ID (filter by registry)"
 // @Success      200  {object}  object{logs=[]models.SyncLog,total=integer}
 // @Router       /organizations/{id}/sync-logs [get]
 func ListOrgSyncLogs(c *gin.Context) {
 	orgID := c.Param("id")
-	registryID, err := getRegistryIDForOrg(orgID)
+	registryID := c.Query("registryId")
+	if registryID != "" {
+		listSyncLogs(c, registryID)
+		return
+	}
+	ids, err := getRegistryIDsForOrg(orgID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No registry found for this organization"})
 		return
 	}
-	listSyncLogs(c, registryID)
+	if len(ids) == 1 {
+		listSyncLogs(c, ids[0])
+		return
+	}
+	db := database.GetDB()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if page < 1 { page = 1 }
+	if pageSize < 1 || pageSize > 100 { pageSize = 20 }
+	var logs []models.SyncLog
+	var total int64
+	db.Model(&models.SyncLog{}).Where("registry_id IN ?", ids).Count(&total)
+	db.Where("registry_id IN ?", ids).Order("created_at DESC").
+		Offset((page-1)*pageSize).Limit(pageSize).Find(&logs)
+	c.JSON(http.StatusOK, gin.H{"logs": logs, "total": total})
 }
 
 // ListOrgSyncJobs godoc
 // @Summary      List org sync jobs
 // @Tags         sync
 // @Produce      json
-// @Param        id  path  string  true  "Organization ID"
+// @Param        id          path   string  true   "Organization ID"
+// @Param        registryId  query  string  false  "Registry ID (filter by registry)"
 // @Success      200  {object}  object{jobs=[]models.SyncJob,total=integer}
 // @Router       /organizations/{id}/sync-jobs [get]
 func ListOrgSyncJobs(c *gin.Context) {
 	orgID := c.Param("id")
-	registryID, err := getRegistryIDForOrg(orgID)
+	registryID := c.Query("registryId")
+	if registryID != "" {
+		listSyncJobs(c, registryID)
+		return
+	}
+	ids, err := getRegistryIDsForOrg(orgID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No registry found for this organization"})
 		return
 	}
-	listSyncJobs(c, registryID)
+	if len(ids) == 1 {
+		listSyncJobs(c, ids[0])
+		return
+	}
+	if JobService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Sync service not available"})
+		return
+	}
+	db := database.GetDB()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if page < 1 { page = 1 }
+	if pageSize < 1 || pageSize > 100 { pageSize = 20 }
+	var jobs []models.SyncJob
+	var total int64
+	db.Model(&models.SyncJob{}).Where("registry_id IN ?", ids).Count(&total)
+	db.Where("registry_id IN ?", ids).Order("created_at DESC").
+		Offset((page-1)*pageSize).Limit(pageSize).Find(&jobs)
+	c.JSON(http.StatusOK, gin.H{"jobs": jobs, "total": total})
 }
 
 // TriggerRegistrySync godoc
