@@ -6,29 +6,46 @@ import (
 	"gorm.io/datatypes"
 )
 
-// Organization represents an organization
-type Organization struct {
+// Repository represents a repository
+type Repository struct {
 	ID          string    `gorm:"type:uuid;primaryKey" json:"id"`
 	Name        string    `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"`
 	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
 	Description string    `gorm:"type:text" json:"description"`
 	Visibility  string    `gorm:"type:varchar(32);default:'private'" json:"visibility"` // public | private
-	OrgType     string    `gorm:"type:varchar(32);default:'normal'" json:"orgType"`     // normal | sync
+	RepoType    string    `gorm:"type:varchar(32);default:'normal'" json:"repoType"`    // normal | sync
 	OwnerID     string    `gorm:"type:varchar(191);not null" json:"ownerId"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 
-	Members []OrgMember `gorm:"foreignKey:OrgID" json:"members,omitempty"`
+	Members []RepoMember `gorm:"foreignKey:RepoID" json:"members,omitempty"`
 }
 
-// OrgMember represents a user's membership in an organization
-type OrgMember struct {
+// RepoMember represents a user's membership in a repository
+type RepoMember struct {
 	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	OrgID     string    `gorm:"type:uuid;not null;index" json:"orgId"`
+	RepoID    string    `gorm:"type:uuid;not null;index" json:"repoId"`
 	UserID    string    `gorm:"type:varchar(191);not null" json:"userId"`
 	Username  string    `gorm:"type:varchar(255)" json:"username"`
 	Role      string    `gorm:"type:varchar(32);default:'member'" json:"role"` // owner | admin | member
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
+}
+
+// RepoInvitation represents an invitation to join a repository
+type RepoInvitation struct {
+	ID              string     `gorm:"type:uuid;primaryKey" json:"id"`
+	RepoID          string     `gorm:"type:uuid;not null;index" json:"repoId"`
+	InviterID       string     `gorm:"type:varchar(191);not null" json:"inviterId"`
+	InviterUsername string     `gorm:"type:varchar(255)" json:"inviterUsername"`
+	InviteeID       string     `gorm:"type:varchar(191);index" json:"inviteeId"`
+	InviteeUsername string     `gorm:"type:varchar(255);not null" json:"inviteeUsername"`
+	Role            string     `gorm:"type:varchar(32);default:'member'" json:"role"`                  // admin | member
+	Status          string     `gorm:"type:varchar(32);default:'pending';index" json:"status"`         // pending | accepted | declined | cancelled
+	ExpiresAt       time.Time  `gorm:"not null" json:"expiresAt"`
+	CreatedAt       time.Time  `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt       time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
+
+	Repository *Repository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
 }
 
 
@@ -45,9 +62,9 @@ type CapabilityRegistry struct {
 	LastSyncSHA    string     `json:"lastSyncSha"`
 	SyncStatus     string         `gorm:"default:'idle'" json:"syncStatus"` // idle | syncing | error | paused
 	SyncConfig     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"syncConfig" swaggertype:"object"`
-	LastSyncLogID  *string        `json:"lastSyncLogId"`
-	Visibility string `gorm:"default:'org'" json:"visibility"`
-	OrgID      string `json:"orgId"`
+	LastSyncLogID  *string        `gorm:"type:uuid" json:"lastSyncLogId"`
+	Visibility string `gorm:"default:'repo'" json:"visibility"`
+	RepoID     string `json:"repoId"`
 	OwnerID    string `gorm:"not null" json:"ownerId"`
 	Items       []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
 	LastSyncLog *SyncLog         `gorm:"foreignKey:LastSyncLogID;references:ID" json:"lastSyncLog,omitempty"`
@@ -72,7 +89,7 @@ type SyncJob struct {
 	SyncLogID   *string        `json:"syncLogId"`
 	CreatedAt   time.Time      `json:"createdAt"`
 
-	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID;constraint:false" json:"registry,omitempty"`
 }
 
 type SyncLog struct {
@@ -95,7 +112,7 @@ type SyncLog struct {
 	FinishedAt   *time.Time `json:"finishedAt"`
 	CreatedAt    time.Time  `json:"createdAt"`
 
-	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Registry *CapabilityRegistry `gorm:"foreignKey:RegistryID;constraint:false" json:"registry,omitempty"`
 }
 
 type CapabilityItem struct {
@@ -125,7 +142,7 @@ type CapabilityItem struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Vector embedding for semantic search
-	Embedding         string     `gorm:"type:vector(1024)" json:"-"`
+	Embedding         *string    `gorm:"type:vector(1024)" json:"-"`
 	ExperienceScore   float64    `gorm:"default:0" json:"experienceScore"`
 	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
 }

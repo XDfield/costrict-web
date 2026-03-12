@@ -24,11 +24,11 @@ func newSyncRouter() *gin.Engine {
 	r.GET("/api/registries/:id/sync-jobs", ListRegistrySyncJobs)
 	r.POST("/api/registries/:id/sync", TriggerRegistrySync)
 	r.POST("/api/registries/:id/sync/cancel", CancelRegistrySync)
-	r.GET("/api/organizations/:id/sync-status", GetOrgSyncStatus)
-	r.GET("/api/organizations/:id/sync-logs", ListOrgSyncLogs)
-	r.GET("/api/organizations/:id/sync-jobs", ListOrgSyncJobs)
-	r.POST("/api/organizations/:id/sync", TriggerOrgSync)
-	r.POST("/api/organizations/:id/sync/cancel", CancelOrgSync)
+	r.GET("/api/repositories/:id/sync-status", GetRepoSyncStatus)
+	r.GET("/api/repositories/:id/sync-logs", ListRepoSyncLogs)
+	r.GET("/api/repositories/:id/sync-jobs", ListRepoSyncJobs)
+	r.POST("/api/repositories/:id/sync", TriggerRepoSync)
+	r.POST("/api/repositories/:id/sync/cancel", CancelRepoSync)
 	return r
 }
 
@@ -126,19 +126,19 @@ func TestVerifyGitHubSignature_WrongSecret(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getRegistryIDForOrg
+// getRegistryIDForRepo
 // ---------------------------------------------------------------------------
 
-func TestGetRegistryIDForOrg_ExternalFirst(t *testing.T) {
+func TestGetRegistryIDForRepo_ExternalFirst(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg", Name: "ext", SourceType: "external", Visibility: "org", OrgID: "org-ext", OwnerID: "u1",
+		ID: "ext-reg", Name: "ext", SourceType: "external", Visibility: "repo", RepoID: "repo-ext", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "int-reg", Name: "int", SourceType: "internal", Visibility: "org", OrgID: "org-ext", OwnerID: "u1",
+		ID: "int-reg", Name: "int", SourceType: "internal", Visibility: "repo", RepoID: "repo-ext", OwnerID: "u1",
 	})
 
-	id, err := getRegistryIDForOrg("org-ext")
+	id, err := getRegistryIDForRepo("repo-ext")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,13 +147,13 @@ func TestGetRegistryIDForOrg_ExternalFirst(t *testing.T) {
 	}
 }
 
-func TestGetRegistryIDForOrg_FallbackToInternal(t *testing.T) {
+func TestGetRegistryIDForRepo_FallbackToInternal(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "int-only", Name: "int-only", SourceType: "internal", Visibility: "org", OrgID: "org-int", OwnerID: "u1",
+		ID: "int-only", Name: "int-only", SourceType: "internal", Visibility: "repo", RepoID: "repo-int", OwnerID: "u1",
 	})
 
-	id, err := getRegistryIDForOrg("org-int")
+	id, err := getRegistryIDForRepo("repo-int")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,11 +162,11 @@ func TestGetRegistryIDForOrg_FallbackToInternal(t *testing.T) {
 	}
 }
 
-func TestGetRegistryIDForOrg_NotFound(t *testing.T) {
+func TestGetRegistryIDForRepo_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	_, err := getRegistryIDForOrg("no-such-org")
+	_, err := getRegistryIDForRepo("no-such-repo")
 	if err == nil {
-		t.Fatal("expected error for non-existent org")
+		t.Fatal("expected error for non-existent repo")
 	}
 }
 
@@ -234,7 +234,7 @@ func TestGetRegistrySyncStatus_Found(t *testing.T) {
 	defer setupSyncDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-ss1", Name: "sync-reg", SourceType: "internal", Visibility: "public",
-		OrgID: "org-1", OwnerID: "u1", SyncStatus: "idle",
+		RepoID: "repo-1", OwnerID: "u1", SyncStatus: "idle",
 	})
 
 	w := get(newSyncRouter(), "/api/registries/reg-ss1/sync-status")
@@ -358,44 +358,44 @@ func TestCancelRegistrySync_NoJobService(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Org-level sync delegation (404 when no registry)
+// Repo-level sync delegation (404 when no registry)
 // ---------------------------------------------------------------------------
 
-func TestTriggerOrgSync_NoRegistry(t *testing.T) {
+func TestTriggerRepoSync_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := postJSON(newSyncRouter(), "/api/organizations/no-org/sync", nil)
+	w := postJSON(newSyncRouter(), "/api/repositories/no-repo/sync", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestCancelOrgSync_NoRegistry(t *testing.T) {
+func TestCancelRepoSync_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := postJSON(newSyncRouter(), "/api/organizations/no-org/sync/cancel", nil)
+	w := postJSON(newSyncRouter(), "/api/repositories/no-repo/sync/cancel", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestGetOrgSyncStatus_NoRegistry(t *testing.T) {
+func TestGetRepoSyncStatus_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := get(newSyncRouter(), "/api/organizations/no-org/sync-status")
+	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-status")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestListOrgSyncLogs_NoRegistry(t *testing.T) {
+func TestListRepoSyncLogs_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := get(newSyncRouter(), "/api/organizations/no-org/sync-logs")
+	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-logs")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestListOrgSyncJobs_NoRegistry(t *testing.T) {
+func TestListRepoSyncJobs_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := get(newSyncRouter(), "/api/organizations/no-org/sync-jobs")
+	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-jobs")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}

@@ -317,7 +317,7 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 		return nil, fmt.Errorf("item not found: %w", result.Error)
 	}
 
-	if item.Embedding == "" || item.Embedding == "[]" {
+	if item.Embedding == nil || *item.Embedding == "" || *item.Embedding == "[]" {
 		return nil, fmt.Errorf("item has no embedding")
 	}
 
@@ -337,7 +337,7 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 		LIMIT ?
 	`
 
-	result = database.GetDB().Raw(sql, item.Embedding, itemID, limit).Scan(&similarItems)
+	result = database.GetDB().Raw(sql, *item.Embedding, itemID, limit).Scan(&similarItems)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to find similar items: %w", result.Error)
 	}

@@ -12,32 +12,32 @@ import (
 	"gorm.io/gorm"
 )
 
-// resolveOrgID resolves an org name to the value stored in capability_registries.org_id.
-// "public" is a reserved virtual org backed by the default public registry (org_id = "public").
-// For all other names the Organization table is consulted.
-// Returns ("", false) when the org does not exist.
-func resolveOrgID(orgName string) (string, bool) {
-	if orgName == "public" {
+// resolveRepoID resolves a repo name to the value stored in capability_registries.repo_id.
+// "public" is a reserved virtual repo backed by the default public registry (repo_id = "public").
+// For all other names the Repository table is consulted.
+// Returns ("", false) when the repo does not exist.
+func resolveRepoID(repoName string) (string, bool) {
+	if repoName == "public" {
 		return "public", true
 	}
 	db := database.GetDB()
-	var org models.Organization
-	if db.Select("id").Where("name = ?", orgName).First(&org).Error != nil {
+	var repo models.Repository
+	if db.Select("id").Where("name = ?", repoName).First(&repo).Error != nil {
 		return "", false
 	}
-	return org.ID, true
+	return repo.ID, true
 }
 
 // RegistryAccess godoc
 // @Summary      Check registry access
-// @Description  Probe whether a registry requires authentication. Returns {"public":false} for non-existent orgs to avoid leaking org existence.
+// @Description  Probe whether a registry requires authentication. Returns {"public":false} for non-existent repos to avoid leaking repo existence.
 // @Tags         registry
 // @Produce      json
-// @Param        org  path      string  true  "Organization name"
+// @Param        repo  path      string  true  "Repository name"
 // @Success      200  {object}  object{public=boolean}
-// @Router       /registry/{org}/access [get]
+// @Router       /registry/{repo}/access [get]
 func RegistryAccess(c *gin.Context) {
-	orgID, ok := resolveOrgID(c.Param("org"))
+	repoID, ok := resolveRepoID(c.Param("repo"))
 	if !ok {
 		c.JSON(http.StatusOK, gin.H{"public": false})
 		return
@@ -46,7 +46,7 @@ func RegistryAccess(c *gin.Context) {
 	db := database.GetDB()
 	var count int64
 	db.Model(&models.CapabilityRegistry{}).
-		Where("org_id = ? AND visibility = 'public'", orgID).
+		Where("repo_id = ? AND visibility = 'public'", repoID).
 		Count(&count)
 
 	c.JSON(http.StatusOK, gin.H{"public": count > 0})
@@ -70,16 +70,16 @@ type indexJSON struct {
 
 // RegistryIndex godoc
 // @Summary      Get registry index
-// @Description  Return the index.json for an org's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.
+// @Description  Return the index.json for a repo's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.
 // @Tags         registry
 // @Produce      json
-// @Param        org  path      string  true  "Organization name"
+// @Param        repo  path      string  true  "Repository name"
 // @Success      200  {object}  object{version=integer,items=[]object}
 // @Failure      401  {object}  object{error=string}
 // @Failure      403  {object}  object{error=string}
-// @Router       /registry/{org}/index.json [get]
+// @Router       /registry/{repo}/index.json [get]
 func RegistryIndex(c *gin.Context) {
-	orgID, ok := resolveOrgID(c.Param("org"))
+	repoID, ok := resolveRepoID(c.Param("repo"))
 	if !ok {
 		c.JSON(http.StatusOK, indexJSON{Version: 1, Items: []indexItem{}})
 		return
@@ -89,7 +89,7 @@ func RegistryIndex(c *gin.Context) {
 
 	var publicCount int64
 	db.Model(&models.CapabilityRegistry{}).
-		Where("org_id = ? AND visibility = 'public'", orgID).
+		Where("repo_id = ? AND visibility = 'public'", repoID).
 		Count(&publicCount)
 
 	isPublic := publicCount > 0
@@ -106,14 +106,14 @@ func RegistryIndex(c *gin.Context) {
 
 	if isPublic {
 		db.Model(&models.CapabilityRegistry{}).
-			Where("org_id = ? AND visibility = 'public'", orgID).
+			Where("repo_id = ? AND visibility = 'public'", repoID).
 			Pluck("id", &registryIDs)
 	}
 
-	if userID != "" && orgID != "public" {
+	if userID != "" && repoID != "public" {
 		var isMember int64
-		db.Model(&models.OrgMember{}).
-			Where("user_id = ? AND org_id = ?", userID, orgID).
+		db.Model(&models.RepoMember{}).
+			Where("user_id = ? AND repo_id = ?", userID, repoID).
 			Count(&isMember)
 
 		if !isPublic && isMember == 0 {
@@ -122,11 +122,11 @@ func RegistryIndex(c *gin.Context) {
 		}
 
 		if isMember > 0 {
-			var orgRegIDs []string
+			var repoRegIDs []string
 			db.Model(&models.CapabilityRegistry{}).
-				Where("org_id = ? AND visibility IN ('public','org')", orgID).
-				Pluck("id", &orgRegIDs)
-			registryIDs = mergeUnique(registryIDs, orgRegIDs)
+				Where("repo_id = ? AND visibility IN ('public','repo')", repoID).
+				Pluck("id", &repoRegIDs)
+			registryIDs = mergeUnique(registryIDs, repoRegIDs)
 		}
 	}
 
@@ -282,11 +282,11 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 		return reg.OwnerID == userID
 	}
 
-	if reg.Visibility == "org" {
+	if reg.Visibility == "repo" {
 		db := database.GetDB()
 		var count int64
-		db.Model(&models.OrgMember{}).
-			Where("org_id = ? AND user_id = ?", reg.OrgID, userID).
+		db.Model(&models.RepoMember{}).
+			Where("repo_id = ? AND user_id = ?", reg.RepoID, userID).
 			Count(&count)
 		return count > 0
 	}
@@ -296,18 +296,18 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by org/slug/filename. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/slug/filename. Respects visibility rules.
 // @Tags         registry
 // @Produce      text/plain
-// @Param        org   path      string  true  "Organization name"
+// @Param        repo  path      string  true  "Repository name"
 // @Param        slug  path      string  true  "Item slug"
 // @Param        file  path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
 // @Success      200   {string}  string  "File content"
 // @Failure      403   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
-// @Router       /registry/{org}/{slug}/{file} [get]
+// @Router       /registry/{repo}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
-	orgID, ok := resolveOrgID(c.Param("org"))
+	repoID, ok := resolveRepoID(c.Param("repo"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
@@ -318,7 +318,7 @@ func DownloadRegistryFile(c *gin.Context) {
 
 	var registryIDs []string
 	db.Model(&models.CapabilityRegistry{}).
-		Where("org_id = ?", orgID).
+		Where("repo_id = ?", repoID).
 		Pluck("id", &registryIDs)
 
 	if len(registryIDs) == 0 {

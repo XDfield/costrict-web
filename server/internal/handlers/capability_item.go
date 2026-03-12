@@ -305,12 +305,12 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 	ids = append(ids, publicIDs...)
 
 	if userID != "" {
-		var orgIDs []string
-		db.Model(&models.OrgMember{}).Where("user_id = ?", userID).Pluck("org_id", &orgIDs)
-		if len(orgIDs) > 0 {
-			var orgRegs []string
-			db.Model(&models.CapabilityRegistry{}).Where("org_id IN ? AND visibility = 'org'", orgIDs).Pluck("id", &orgRegs)
-			ids = append(ids, orgRegs...)
+		var repoIDs []string
+		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
+		if len(repoIDs) > 0 {
+			var repoRegs []string
+			db.Model(&models.CapabilityRegistry{}).Where("repo_id IN ? AND visibility = 'repo'", repoIDs).Pluck("id", &repoRegs)
+			ids = append(ids, repoRegs...)
 		}
 
 		var personalRegs []string
