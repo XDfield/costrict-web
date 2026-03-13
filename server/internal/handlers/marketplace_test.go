@@ -59,7 +59,7 @@ func newMarketplaceRouter(userID string) *gin.Engine {
 func TestSemanticSearch_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-search", Name: "search-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-search", Name: "search-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-search1",
@@ -71,7 +71,6 @@ func TestSemanticSearch_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   "[0.1,0.2,0.3]",
 	})
 
 	r := newMarketplaceRouter("")
@@ -98,7 +97,7 @@ func TestSemanticSearch_MissingQuery(t *testing.T) {
 func TestSemanticSearch_WithFilters(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-filter", Name: "filter-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-filter", Name: "filter-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-filter1",
@@ -111,7 +110,6 @@ func TestSemanticSearch_WithFilters(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   "[0.1,0.2,0.3]",
 	})
 
 	r := newMarketplaceRouter("")
@@ -133,7 +131,7 @@ func TestSemanticSearch_WithFilters(t *testing.T) {
 func TestHybridSearch_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-hybrid", Name: "hybrid-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-hybrid", Name: "hybrid-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-hybrid",
@@ -145,7 +143,6 @@ func TestHybridSearch_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   "[0.1,0.2,0.3]",
 	})
 
 	r := newMarketplaceRouter("")
@@ -176,7 +173,7 @@ func TestHybridSearch_MissingQuery(t *testing.T) {
 func TestGetRecommendations_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rec", Name: "rec-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-rec", Name: "rec-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-rec1",
@@ -202,7 +199,7 @@ func TestGetRecommendations_Success(t *testing.T) {
 func TestGetRecommendations_WithTypes(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rec2", Name: "rec-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-rec2", Name: "rec-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-rec-skill",
@@ -242,7 +239,7 @@ func TestGetRecommendations_WithTypes(t *testing.T) {
 func TestGetTrending_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-trend", Name: "trend-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-trend", Name: "trend-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-trend1",
@@ -266,7 +263,7 @@ func TestGetTrending_Success(t *testing.T) {
 func TestGetTrending_WithLimit(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-trend2", Name: "trend-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-trend2", Name: "trend-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	for i := 0; i < 5; i++ {
 		database.DB.Create(&models.CapabilityItem{
@@ -295,7 +292,7 @@ func TestGetTrending_WithLimit(t *testing.T) {
 func TestGetNewAndNoteworthy_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-new", Name: "new-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-new", Name: "new-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-new1",
@@ -319,7 +316,7 @@ func TestGetNewAndNoteworthy_Success(t *testing.T) {
 func TestGetNewAndNoteworthy_WithLimit(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-new2", Name: "new-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-new2", Name: "new-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	for i := 0; i < 5; i++ {
 		database.DB.Create(&models.CapabilityItem{
@@ -347,8 +344,10 @@ func TestGetNewAndNoteworthy_WithLimit(t *testing.T) {
 
 func TestFindSimilar_Success(t *testing.T) {
 	defer setupTestDB(t)()
+	embedding := "[0.1,0.2,0.3]"
+	embedding2 := "[0.2,0.3,0.4]"
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-similar", Name: "similar-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-similar", Name: "similar-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-similar1",
@@ -360,7 +359,7 @@ func TestFindSimilar_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   "[0.1,0.2,0.3]",
+		Embedding:   &embedding,
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-similar2",
@@ -372,7 +371,7 @@ func TestFindSimilar_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   "[0.2,0.3,0.4]",
+		Embedding:   &embedding2,
 	})
 
 	r := newMarketplaceRouter("")
@@ -398,7 +397,7 @@ func TestFindSimilar_ItemNotFound(t *testing.T) {
 func TestLogBehavior_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-behavior", Name: "behavior-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-behavior", Name: "behavior-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-behavior",
@@ -424,7 +423,7 @@ func TestLogBehavior_Success(t *testing.T) {
 func TestLogBehavior_MissingActionType(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-beh2", Name: "beh-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-beh2", Name: "beh-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-beh2",
@@ -465,7 +464,7 @@ func TestLogBehavior_ItemNotFound(t *testing.T) {
 func TestGetItemStats_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-stats", Name: "stats-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-stats", Name: "stats-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-stats",
@@ -515,7 +514,7 @@ func TestGetItemStats_Success(t *testing.T) {
 func TestGetItemStats_NoData(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-stats2", Name: "stats-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-stats2", Name: "stats-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-stats2",

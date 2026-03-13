@@ -27,10 +27,11 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
+	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
-	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
@@ -66,6 +67,8 @@ func main() {
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.SecurityScan{},
+		&models.ScanJob{},
+		&models.Device{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -76,6 +79,8 @@ func main() {
 	}
 
 	log.Println("Database migrated successfully")
+
+	db.Model(&models.Device{}).Where("status = ?", "online").Update("status", "offline")
 
 	db.Model(&models.CapabilityRegistry{}).
 		Where("sync_status = ?", "syncing").
@@ -100,20 +105,16 @@ func main() {
 	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
 	indexerSvc := services.NewIndexerService(db, embeddingSvc)
 
-	// LLM Client
-	llmClient := llm.NewClient(&cfg.LLM)
-
 	// Search Service
 	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
 
 	// Behavior Service
 	behaviorSvc := services.NewBehaviorService(db)
 
-	// Generate Service
-	generateSvc := services.NewGenerateService(llmClient, indexerSvc)
-
 	// Recommend Service
 	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
+	scanJobSvc := &services.ScanJobService{DB: db}
+	handlers.ScanJobService = scanJobSvc
 
 	sched := &scheduler.Scheduler{
 		JobService: jobSvc,
@@ -130,7 +131,6 @@ func main() {
 
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
-	generateHandler := handlers.NewGenerateHandler(generateSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
 
 	// Start background indexing (every hour)
@@ -150,6 +150,8 @@ func main() {
 	})
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	deviceSvc := &services.DeviceService{DB: db}
 
 	api := r.Group("/api")
 	{
@@ -213,6 +215,11 @@ func main() {
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
+		api.POST("/items/:id/scan", handlers.TriggerItemScan)
+		api.GET("/items/:id/scan-status", handlers.GetItemScanStatus)
+		api.GET("/items/:id/scan-results", handlers.ListItemScanResults)
+		api.GET("/scan-results/:id", handlers.GetScanResult)
+		api.POST("/scan-jobs/:id/cancel", handlers.CancelScanJob)
 
 		api.POST("/artifacts/upload", handlers.UploadArtifact)
 		api.GET("/artifacts/:id/download", handlers.DownloadArtifact)
@@ -249,8 +256,6 @@ func main() {
 
 		// Item Enhanced APIs
 		api.GET("/items/:id/similar", searchHandler.FindSimilar)
-		api.POST("/items/:id/analyze", generateHandler.AnalyzeSkill)
-		api.POST("/items/:id/improve", generateHandler.ImproveSkill)
 		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
 		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
 
@@ -263,7 +268,29 @@ func main() {
 		{
 			// Reserved for future admin functionality
 		}
+		devices := api.Group("/devices")
+		devices.POST("/register", handlers.RegisterDeviceHandler(deviceSvc))
+		devices.GET("", handlers.ListDevicesHandler(deviceSvc))
+		devices.GET("/:deviceID", handlers.GetDeviceHandler(deviceSvc))
+		devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
+		devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
+		devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
+		api.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
 	}
+
+	store := gateway.NewMemoryStore()
+	gatewayRegistry := gateway.NewGatewayRegistry(store)
+	gatewayClient := gateway.NewClient()
+
+	internalGroup := r.Group("/internal")
+	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
+
+	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry))
+
+	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
+	cloudGroup := r.Group("/cloud")
+	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint))
+	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
@@ -373,6 +400,12 @@ func runPreMigrations(db *gorm.DB) error {
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
 			stmts: []string{
 				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
+			},
+		},
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
+			stmts: []string{
+				`ALTER TABLE security_scans DROP COLUMN IF EXISTS revision_id`,
 			},
 		},
 	}

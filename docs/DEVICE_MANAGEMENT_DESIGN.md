@@ -12,6 +12,7 @@
 - [认证集成](#认证集成)
 - [与 SSE 模块集成](#与-sse-模块集成)
 - [错误处理](#错误处理)
+- [客户端设计（opencode CLI）](#客户端设计opencode-cli)
 - [实施计划](#实施计划)
 
 ---
@@ -586,28 +587,182 @@ opencode CLI
 
 ---
 
+## 客户端设计（opencode CLI）
+
+### 设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| Daemon 进程模型 | 合并单进程 | daemon 即增强版 cs serve，同一进程运行本地 AI 服务 + 云端 SSE，无 IPC 复杂度 |
+| 设备标识（deviceId） | 复用 `machine_id` | SHA256(platform+hostname+username)，同机唯一且稳定，已有实现（`credentials.ts`），天然幂等 |
+| 注册时机 | daemon 启动时自动注册 | `cs device start` 时检查并按需完成注册，按需触发，语义清晰 |
+| SSE 认证方式 | device token | 长期有效，不需要频繁刷新，设备级独立认证；需服务端同步实现 token 认证中间件 |
+| 本地存储位置 | 独立 `device.json` | 与现有 `auth.json` 隔离，不影响 IDE 插件读取凭证结构 |
+| Daemon 启动方式 | spawn detach | `cs device start` fork 子进程后父进程退出，Bun 原生支持，跨平台 |
+| 进程间通信 | PID 文件 + HTTP 健康检查 | daemon 写入 PID 和端口，`cs device status` 读取后发 HTTP 请求查询详细状态 |
+| 注册幂等性 | 409 + 客户端本地检测 | 服务端返回 409 时，客户端检查本地 `device.json` 是否存在，存在则直接复用 |
+| 断线重连 | 指数退避 | 1s → 2s → 4s → … → 上限 60s，成功后重置，避免服务端压力 |
+
+### 架构总览
+
+```
+cs device start
+    │
+    ├── 读取 ~/.costrict/share/device.json
+    │   ├── 存在 → 跳过注册，直接启动
+    │   └── 不存在 → POST /api/devices/register（携带 Casdoor JWT）
+    │           ├── 201 → 写入 device.json（含 device_token）
+    │           └── 409 → 再次检查本地 device.json → 存在则复用，否则报错
+    │
+    ├── spawn detach 自身（作为 daemon）
+    │   ├── 写入 PID + 端口到 {xdg-state}/costrict/device-daemon.json
+    │   ├── 启动 Hono server（合并 cs serve，追加 /health 端点）
+    │   └── 启动 SSE 连接循环（并发，不阻塞 Hono）
+    │           └── 断线 → 指数退避重连（1s → 2s → 4s → … → 60s）
+    │
+cs device status
+    └── 读取 device-daemon.json → HTTP GET /health → 打印状态
+
+cs device stop
+    └── 读取 device-daemon.json 中的 PID → kill → 清理文件
+
+cs device token rotate
+    └── POST /api/devices/:deviceId/token/rotate → 更新 device.json
+```
+
+### 本地文件结构
+
+**`~/.costrict/share/device.json`**（持久化，设备身份）
+
+```json
+{
+  "device_id": "sha256-of-platform-hostname-username",
+  "device_token": "base64url-32-bytes-random-token",
+  "registered_at": "2026-03-13T00:00:00Z",
+  "base_url": "https://zgsm.sangfor.com"
+}
+```
+
+**`{xdg-state}/costrict/device-daemon.json`**（运行时，进程信息）
+
+```json
+{
+  "pid": 12345,
+  "port": 4096,
+  "started_at": "2026-03-13T00:00:00Z",
+  "sse_status": "connected"
+}
+```
+
+### CLI 命令设计
+
+```
+cs device start              # 注册（如需）+ spawn detach daemon
+cs device stop               # 读 PID → kill → 清理 daemon.json
+cs device status             # 读 daemon.json → HTTP /health → 打印状态
+cs device token rotate       # 轮换 device token
+```
+
+### 新增文件（opencode 侧）
+
+```
+packages/opencode/src/
+├── cli/cmd/device.ts              # 4 个子命令入口（yargs）
+└── costrict/device/
+    ├── client.ts                  # 注册/轮换 token 的 HTTP 客户端
+    ├── daemon.ts                  # spawn detach、PID 管理、/health 端点
+    └── sse.ts                     # SSE 连接维持、指数退避重连、云端指令处理
+```
+
+### 关键流程
+
+#### 注册流程（`client.ts`）
+
+```
+1. 读取 device.json → 存在则直接返回（幂等）
+2. 读取 auth.json → 取 access_token（用于注册鉴权，仅注册时使用 JWT）
+3. POST /api/devices/register
+   {
+     deviceId: machine_id,   // SHA256(platform+hostname+username)
+     displayName: hostname,
+     platform: process.platform,
+     version: Installation.VERSION
+   }
+4. 409 → 再次读取 device.json → 存在则复用，否则提示用户
+5. 201 → 写入 device.json（权限 0o600）
+```
+
+#### Daemon 启动（`daemon.ts`）
+
+```
+1. 写入 device-daemon.json（PID, port）
+2. 注册进程退出钩子 → 清理 device-daemon.json
+3. 启动 Hono server（复用 Server.listen，追加 GET /health 端点）
+4. 并发启动 sse.ts 连接循环
+```
+
+#### SSE 连接（`sse.ts`）
+
+```
+1. 读取 device.json → 取 device_token 和 device_id
+2. GET {base_url}/cloud/device/{device_id}/event
+   Header: Authorization: Bearer {device_token}
+3. 解析事件类型：
+   - heartbeat → 更新 device-daemon.json 中的 last_seen_at
+   - control   → HTTP 请求转发到 localhost:{port}（本地 Hono server）
+4. 连接断开 → 指数退避重连
+   delay = min(initialDelay * 2^attempt, 60000ms)
+   成功连接后 attempt 重置为 0
+```
+
+### 服务端配合改动
+
+SSE 认证选择 device token，需要在提案阶段三**提前实现**以下内容：
+
+- `DeviceSSEHandler` 支持从 `Authorization: Bearer {token}` 提取设备身份，替代 Casdoor JWT
+- `DeviceService` 新增 `VerifyDeviceToken(token string) (*models.Device, error)` 方法，查库验证 token 归属
+- 注册接口（`POST /api/devices/register`）仍使用 Casdoor JWT 鉴权，仅 SSE 连接改用 device token
+
+---
+
 ## 实施计划
 
-### 阶段一：核心功能（P0，配合 SSE 模块同步实施）
+### 阶段一：核心功能（P0，服务端 + 客户端同步实施）
+
+**服务端（costrict-web）：**
 
 1. **`models/models.go`** — 追加 `Device` 模型，更新 `AutoMigrate`
 2. **`internal/device/service.go`** — 实现 `DeviceService`（注册、查询、状态更新、token 管理）
 3. **`internal/device/handlers.go`** — 实现 6 个 HTTP Handler
 4. **`internal/device/device.go`** — 模块初始化，`RegisterRoutes`
 5. **`cmd/api/main.go`** — 注册设备模块路由（约 5 行）
-6. **`cloud/handlers.go`** — `DeviceSSEHandler` 接入 `DeviceService` 归属校验
+6. **`cloud/handlers.go`** — `DeviceSSEHandler` 接入 `DeviceService`，支持 device token 认证（`Authorization: Bearer {token}`）
+7. **`internal/device/service.go`** — 新增 `VerifyDeviceToken(token string)` 方法
+
+**客户端（opencode CLI）：**
+
+8. **`src/costrict/device/client.ts`** — 注册/轮换 token 的 HTTP 客户端
+9. **`src/costrict/device/daemon.ts`** — spawn detach、PID 文件管理、`/health` 端点
+10. **`src/costrict/device/sse.ts`** — SSE 连接维持、指数退避重连、云端指令转发
+11. **`src/cli/cmd/device.ts`** — `cs device start/stop/status/token` 四个子命令
+12. **`src/index.ts`** — 注册 `DeviceCommand`
 
 ### 阶段二：稳定性增强（P1）
 
+**服务端：**
 - 设备注册幂等性：相同 `deviceId` 重复注册时返回 409，而非静默覆盖
 - 工作空间设备列表的分页支持（`?page=1&pageSize=20`）
 - 设备在线状态的定期清理（进程重启时将所有 `status=online` 重置为 `offline`）
 
+**客户端：**
+- daemon 崩溃后自动重启（`cs device start` 检测到 daemon 不存活时自动拉起）
+- `cs device status` 展示 SSE 连接状态、最后心跳时间、本地服务端口
+
 ### 阶段三：安全增强（P2）
 
-- deviceToken 认证：SSE 连接时支持 `X-Device-Token` 头替代 Casdoor JWT，实现设备级别独立认证
 - token 存储加密：数据库中存储 token 的 bcrypt hash，而非明文
 - 设备操作审计日志
+- `cs device start --install-service`：将 daemon 注册为系统服务（systemd / launchd / Windows Service），支持开机自启
 
 ### main.go 修改点（最小侵入）
 
@@ -625,6 +780,7 @@ apiGroup.GET("/workspaces/:workspaceID/devices",
 
 ---
 
-**文档版本：** 1.0.0
+**文档版本：** 1.1.0
 **创建日期：** 2026-03-12
+**更新日期：** 2026-03-13
 **维护者：** CoStrict Team
