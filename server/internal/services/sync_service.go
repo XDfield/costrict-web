@@ -375,10 +375,11 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		}
 
 		now := time.Now()
-		s.DB.Model(&registry).Updates(map[string]any{
-			"last_sync_sha":  cloneResult.CommitSHA,
-			"last_synced_at": now,
-		})
+		shaUpdates := map[string]any{"last_synced_at": now}
+		if result.Failed == 0 {
+			shaUpdates["last_sync_sha"] = cloneResult.CommitSHA
+		}
+		s.DB.Model(&registry).Updates(shaUpdates)
 	}
 
 	total := result.Added + result.Updated + result.Deleted + result.Skipped + result.Failed

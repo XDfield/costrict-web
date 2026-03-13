@@ -33,20 +33,20 @@ func setupTestDB(t *testing.T) func() {
 	}
 
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS organizations (
+		`CREATE TABLE IF NOT EXISTS repositories (
 			id          TEXT PRIMARY KEY,
 			name        TEXT NOT NULL UNIQUE,
 			display_name TEXT,
 			description TEXT,
 			visibility  TEXT DEFAULT 'private',
-			org_type    TEXT DEFAULT 'normal',
+			repo_type   TEXT DEFAULT 'normal',
 			owner_id    TEXT NOT NULL,
 			created_at  DATETIME,
 			updated_at  DATETIME
 		)`,
-		`CREATE TABLE IF NOT EXISTS org_members (
+		`CREATE TABLE IF NOT EXISTS repo_members (
 			id         TEXT PRIMARY KEY,
-			org_id     TEXT NOT NULL,
+			repo_id    TEXT NOT NULL,
 			user_id    TEXT NOT NULL,
 			username   TEXT,
 			role       TEXT DEFAULT 'member',
@@ -66,8 +66,8 @@ func setupTestDB(t *testing.T) func() {
 			sync_status      TEXT DEFAULT 'idle',
 			sync_config      TEXT DEFAULT '{}',
 			last_sync_log_id TEXT,
-			visibility       TEXT DEFAULT 'org',
-			org_id           TEXT,
+			visibility       TEXT DEFAULT 'repo',
+			repo_id          TEXT,
 			owner_id         TEXT NOT NULL,
 			created_at       DATETIME,
 			updated_at       DATETIME
@@ -221,9 +221,9 @@ func newRouter(userID string) *gin.Engine {
 		}
 		c.Next()
 	}
-	r.GET("/api/registry/:org/access", injectUser, RegistryAccess)
-	r.GET("/api/registry/:org/index.json", injectUser, RegistryIndex)
-	r.GET("/api/registry/:org/:slug/:file", injectUser, DownloadRegistryFile)
+	r.GET("/api/registry/:repo/access", injectUser, RegistryAccess)
+	r.GET("/api/registry/:repo/index.json", injectUser, RegistryIndex)
+	r.GET("/api/registry/:repo/:slug/:file", injectUser, DownloadRegistryFile)
 	r.GET("/api/items/:id/download", injectUser, DownloadItem)
 	return r
 }
@@ -236,32 +236,32 @@ func get(r *gin.Engine, path string) *httptest.ResponseRecorder {
 }
 
 // ---------------------------------------------------------------------------
-// resolveOrgID
+// resolveRepoID
 // ---------------------------------------------------------------------------
 
-func TestResolveOrgID_Public(t *testing.T) {
-	id, ok := resolveOrgID("public")
+func TestResolveRepoID_Public(t *testing.T) {
+	id, ok := resolveRepoID("public")
 	if !ok || id != "public" {
 		t.Fatalf("expected (\"public\", true), got (%q, %v)", id, ok)
 	}
 }
 
-func TestResolveOrgID_NotFound(t *testing.T) {
+func TestResolveRepoID_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	_, ok := resolveOrgID("nonexistent")
+	_, ok := resolveRepoID("nonexistent")
 	if ok {
-		t.Fatal("expected false for unknown org")
+		t.Fatal("expected false for unknown repo")
 	}
 }
 
-func TestResolveOrgID_Found(t *testing.T) {
+func TestResolveRepoID_Found(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-uuid-1", Name: "acme", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-uuid-1", Name: "acme", OwnerID: "u1"}
+	database.DB.Create(&repo)
 
-	id, ok := resolveOrgID("acme")
-	if !ok || id != "org-uuid-1" {
-		t.Fatalf("expected (\"org-uuid-1\", true), got (%q, %v)", id, ok)
+	id, ok := resolveRepoID("acme")
+	if !ok || id != "repo-uuid-1" {
+		t.Fatalf("expected (\"repo-uuid-1\", true), got (%q, %v)", id, ok)
 	}
 }
 
@@ -269,11 +269,11 @@ func TestResolveOrgID_Found(t *testing.T) {
 // RegistryAccess
 // ---------------------------------------------------------------------------
 
-func TestRegistryAccess_PublicOrg(t *testing.T) {
+func TestRegistryAccess_PublicRepo(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := get(newRouter(""), "/api/registry/public/access")
@@ -287,7 +287,7 @@ func TestRegistryAccess_PublicOrg(t *testing.T) {
 	}
 }
 
-func TestRegistryAccess_NonExistentOrg(t *testing.T) {
+func TestRegistryAccess_NonExistentRepo(t *testing.T) {
 	defer setupTestDB(t)()
 
 	w := get(newRouter(""), "/api/registry/ghost/access")
@@ -297,24 +297,24 @@ func TestRegistryAccess_NonExistentOrg(t *testing.T) {
 	var body map[string]bool
 	json.NewDecoder(w.Body).Decode(&body)
 	if body["public"] {
-		t.Fatal("expected public=false for non-existent org")
+		t.Fatal("expected public=false for non-existent repo")
 	}
 }
 
-func TestRegistryAccess_PrivateOrg(t *testing.T) {
+func TestRegistryAccess_PrivateRepo(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-1", Name: "sangfor", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-1", Name: "sangfor", OwnerID: "u1"}
+	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-1", Name: "sangfor-reg",
-		SourceType: "internal", Visibility: "org", OrgID: "org-1", OwnerID: "u1",
+		SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := get(newRouter(""), "/api/registry/sangfor/access")
 	var body map[string]bool
 	json.NewDecoder(w.Body).Decode(&body)
 	if body["public"] {
-		t.Fatal("expected public=false for org-visibility registry")
+		t.Fatal("expected public=false for repo-visibility registry")
 	}
 }
 
@@ -322,11 +322,11 @@ func TestRegistryAccess_PrivateOrg(t *testing.T) {
 // RegistryIndex
 // ---------------------------------------------------------------------------
 
-func TestRegistryIndex_PublicOrg_Anonymous(t *testing.T) {
+func TestRegistryIndex_PublicRepo_Anonymous(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-1", RegistryID: PublicRegistryID,
@@ -359,7 +359,7 @@ func TestRegistryIndex_CommandFilename_UsesSlug(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-2", RegistryID: PublicRegistryID,
@@ -379,13 +379,13 @@ func TestRegistryIndex_CommandFilename_UsesSlug(t *testing.T) {
 	}
 }
 
-func TestRegistryIndex_PrivateOrg_Unauthenticated(t *testing.T) {
+func TestRegistryIndex_PrivateRepo_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-2", Name: "internal", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-2", Name: "internal", OwnerID: "u1"}
+	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-2", Name: "internal-reg",
-		SourceType: "internal", Visibility: "org", OrgID: "org-2", OwnerID: "u1",
+		SourceType: "internal", Visibility: "repo", RepoID: "repo-2", OwnerID: "u1",
 	})
 
 	w := get(newRouter(""), "/api/registry/internal/index.json")
@@ -394,13 +394,13 @@ func TestRegistryIndex_PrivateOrg_Unauthenticated(t *testing.T) {
 	}
 }
 
-func TestRegistryIndex_PrivateOrg_NonMember(t *testing.T) {
+func TestRegistryIndex_PrivateRepo_NonMember(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-3", Name: "secret", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-3", Name: "secret", OwnerID: "u1"}
+	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-3", Name: "secret-reg",
-		SourceType: "internal", Visibility: "org", OrgID: "org-3", OwnerID: "u1",
+		SourceType: "internal", Visibility: "repo", RepoID: "repo-3", OwnerID: "u1",
 	})
 
 	w := get(newRouter("stranger"), "/api/registry/secret/index.json")
@@ -409,16 +409,16 @@ func TestRegistryIndex_PrivateOrg_NonMember(t *testing.T) {
 	}
 }
 
-func TestRegistryIndex_PrivateOrg_Member(t *testing.T) {
+func TestRegistryIndex_PrivateRepo_Member(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-4", Name: "myorg", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-4", Name: "myrepo", OwnerID: "u1"}
+	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-4", Name: "myorg-reg",
-		SourceType: "internal", Visibility: "org", OrgID: "org-4", OwnerID: "u1",
+		ID: "reg-4", Name: "myrepo-reg",
+		SourceType: "internal", Visibility: "repo", RepoID: "repo-4", OwnerID: "u1",
 	})
-	database.DB.Create(&models.OrgMember{
-		ID: "mem-1", OrgID: "org-4", UserID: "member-user", Role: "member",
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-1", RepoID: "repo-4", UserID: "member-user", Role: "member",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-3", RegistryID: "reg-4",
@@ -427,7 +427,7 @@ func TestRegistryIndex_PrivateOrg_Member(t *testing.T) {
 		Content: "# Internal", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRouter("member-user"), "/api/registry/myorg/index.json")
+	w := get(newRouter("member-user"), "/api/registry/myrepo/index.json")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -442,7 +442,7 @@ func TestRegistryIndex_MCPItem_HasMCPField(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	meta := `{"hosting_type":"command","command":"npx","args":["-y","@internal/tool"]}`
 	database.DB.Create(&models.CapabilityItem{
@@ -477,7 +477,7 @@ func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl", RegistryID: PublicRegistryID,
@@ -503,7 +503,7 @@ func TestDownloadRegistryFile_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := get(newRouter(""), "/api/registry/public/nonexistent/SKILL.md")
@@ -512,16 +512,16 @@ func TestDownloadRegistryFile_NotFound(t *testing.T) {
 	}
 }
 
-func TestDownloadRegistryFile_OrgItem_Forbidden(t *testing.T) {
+func TestDownloadRegistryFile_RepoItem_Forbidden(t *testing.T) {
 	defer setupTestDB(t)()
-	org := models.Organization{ID: "org-5", Name: "corp", OwnerID: "u1"}
-	database.DB.Create(&org)
+	repo := models.Repository{ID: "repo-5", Name: "corp", OwnerID: "u1"}
+	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-5", Name: "corp-reg",
-		SourceType: "internal", Visibility: "org", OrgID: "org-5", OwnerID: "u1",
+		SourceType: "internal", Visibility: "repo", RepoID: "repo-5", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-org", RegistryID: "reg-5",
+		ID: "item-repo", RegistryID: "reg-5",
 		Slug: "secret-skill", ItemType: "skill",
 		Name: "Secret", Status: "active", CreatedBy: "u1",
 		Content: "secret", Metadata: datatypes.JSON([]byte("{}")),
@@ -541,7 +541,7 @@ func TestDownloadItem_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-byid", RegistryID: PublicRegistryID,

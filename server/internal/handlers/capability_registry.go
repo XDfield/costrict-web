@@ -12,10 +12,10 @@ import (
 
 // ListRegistries godoc
 // @Summary      List registries
-// @Description  Get registries visible to the current user (public + org + personal)
+// @Description  Get registries visible to the current user (public + repo + personal)
 // @Tags         registries
 // @Produce      json
-// @Param        orgId  query     string  false  "Filter by organization ID"
+// @Param        repoId  query     string  false  "Filter by repository ID"
 // @Success      200    {object}  object{registries=[]models.CapabilityRegistry}
 // @Router       /registries [get]
 func ListRegistries(c *gin.Context) {
@@ -26,8 +26,8 @@ func ListRegistries(c *gin.Context) {
 
 	var registries []models.CapabilityRegistry
 
-	if orgId := c.Query("orgId"); orgId != "" {
-		db.Where("org_id = ?", orgId).Find(&registries)
+	if repoId := c.Query("repoId"); repoId != "" {
+		db.Where("repo_id = ?", repoId).Find(&registries)
 		c.JSON(http.StatusOK, gin.H{"registries": registries})
 		return
 	}
@@ -35,12 +35,12 @@ func ListRegistries(c *gin.Context) {
 	db.Where("visibility = 'public'").Find(&registries)
 
 	if userID != "" {
-		var orgIDs []string
-		db.Model(&models.OrgMember{}).Where("user_id = ?", userID).Pluck("org_id", &orgIDs)
-		if len(orgIDs) > 0 {
-			var orgRegs []models.CapabilityRegistry
-			db.Where("org_id IN ? AND visibility = 'org'", orgIDs).Find(&orgRegs)
-			registries = append(registries, orgRegs...)
+		var repoIDs []string
+		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
+		if len(repoIDs) > 0 {
+			var repoRegs []models.CapabilityRegistry
+			db.Where("repo_id IN ? AND visibility = 'repo'", repoIDs).Find(&repoRegs)
+			registries = append(registries, repoRegs...)
 		}
 
 		var personalRegs []models.CapabilityRegistry
@@ -57,7 +57,7 @@ func ListRegistries(c *gin.Context) {
 // @Tags         registries
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,visibility=string,orgId=string,ownerId=string}  true  "Registry data"
+// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,visibility=string,repoId=string,ownerId=string}  true  "Registry data"
 // @Success      201   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -72,7 +72,7 @@ func CreateRegistry(c *gin.Context) {
 		SyncEnabled    bool   `json:"syncEnabled"`
 		SyncInterval   int    `json:"syncInterval"`
 		Visibility     string `json:"visibility"`
-		OrgID          string `json:"orgId"`
+		RepoID         string `json:"repoId"`
 		OwnerID        string `json:"ownerId" binding:"required"`
 	}
 
@@ -91,7 +91,7 @@ func CreateRegistry(c *gin.Context) {
 		SyncEnabled:    req.SyncEnabled,
 		SyncInterval:   req.SyncInterval,
 		Visibility:     req.Visibility,
-		OrgID:          req.OrgID,
+		RepoID:         req.RepoID,
 		OwnerID:        req.OwnerID,
 	}
 
@@ -226,6 +226,85 @@ func DeleteRegistry(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Registry deleted"})
 }
 
+// TransferRegistry godoc
+// @Summary      Transfer registry to another repository
+// @Description  Transfer a registry's ownership to a different repository. Caller must be the registry owner_id or an admin/owner of the current repo, and at least a member of the target repo. Sync registries cannot be transferred while syncing.
+// @Tags         registries
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Registry ID"
+// @Param        body  body      object{targetRepoId=string}  true  "Target repository ID"
+// @Success      200   {object}  models.CapabilityRegistry
+// @Failure      400   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /registries/{id}/transfer [put]
+func TransferRegistry(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		TargetRepoID string `json:"targetRepoId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	callerIDVal, _ := c.Get(middleware.UserIDKey)
+	callerID, _ := callerIDVal.(string)
+	if callerID == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	db := database.GetDB()
+
+	var registry models.CapabilityRegistry
+	if db.First(&registry, "id = ?", id).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return
+	}
+
+	isOwner := registry.OwnerID == callerID
+	isSourceRepoAdmin := registry.RepoID != "" && isRepoAdmin(getCallerRepoRole(c, registry.RepoID))
+	if !isOwner && !isSourceRepoAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the registry owner or source repo admin can transfer this registry"})
+		return
+	}
+
+	var targetMember models.RepoMember
+	if db.Where("repo_id = ? AND user_id = ?", req.TargetRepoID, callerID).First(&targetMember).Error != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You must be a member of the target repository"})
+		return
+	}
+
+	var targetRepo models.Repository
+	if db.First(&targetRepo, "id = ?", req.TargetRepoID).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Target repository not found"})
+		return
+	}
+
+	if registry.RepoID == req.TargetRepoID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Registry already belongs to the target repository"})
+		return
+	}
+
+	if registry.SyncStatus == "syncing" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot transfer a registry while it is syncing"})
+		return
+	}
+
+	if err := db.Model(&registry).Updates(map[string]interface{}{
+		"repo_id": req.TargetRepoID,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer registry"})
+		return
+	}
+
+	c.JSON(http.StatusOK, registry)
+}
+
 // EnsurePersonalRegistry godoc
 // @Summary      Ensure personal registry
 // @Description  Get or create the personal registry for a user
@@ -250,7 +329,7 @@ func EnsurePersonalRegistry(c *gin.Context) {
 
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
-	result := db.Where("owner_id = ? AND source_type = 'internal' AND org_id = ''", req.OwnerID).Limit(1).Find(&registry)
+	result := db.Where("owner_id = ? AND source_type = 'internal' AND repo_id = ''", req.OwnerID).Limit(1).Find(&registry)
 	if result.Error == nil && registry.ID != "" {
 		c.JSON(http.StatusOK, registry)
 		return

@@ -61,15 +61,15 @@ func UploadArtifact(c *gin.Context) {
 		return
 	}
 
-	orgID := ""
+	repoID := ""
 	if item.Registry != nil {
-		orgID = item.Registry.OrgID
+		repoID = item.Registry.RepoID
 	}
 
 	filename := filepath.Base(header.Filename)
 	var storageKey string
-	if orgID != "" {
-		storageKey = fmt.Sprintf("%s/%s/v%s/%s", orgID, itemID, version, filename)
+	if repoID != "" {
+		storageKey = fmt.Sprintf("%s/%s/v%s/%s", repoID, itemID, version, filename)
 	} else {
 		storageKey = fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
 	}

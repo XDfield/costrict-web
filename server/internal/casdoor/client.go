@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 )
@@ -165,6 +166,50 @@ func (c *CasdoorClient) GetOrganizations(accessToken string) ([]byte, error) {
 // GetUsers retrieves users from Casdoor
 func (c *CasdoorClient) GetUsers(accessToken string) ([]byte, error) {
 	return c.CallCasdoorAPI("GET", "/api/get-users", accessToken, nil)
+}
+
+// SearchUsers searches users in Casdoor by username or email keyword
+func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser, error) {
+	apiURL := fmt.Sprintf("%s/api/get-users", c.endpoint)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if accessToken != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search users: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var users []CasdoorUser
+	if err := json.Unmarshal(body, &users); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal users: %w", err)
+	}
+
+	if keyword == "" {
+		return users, nil
+	}
+
+	lower := strings.ToLower(keyword)
+	var matched []CasdoorUser
+	for _, u := range users {
+		if strings.Contains(strings.ToLower(u.Name), lower) ||
+			strings.Contains(strings.ToLower(u.Email), lower) {
+			matched = append(matched, u)
+		}
+	}
+	return matched, nil
 }
 
 // GetGroups retrieves groups from Casdoor

@@ -103,7 +103,7 @@ func TestSlugify(t *testing.T) {
 func TestListItems_Empty(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-list", Name: "test-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-list", Name: "test-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := get(newItemRouter(""), "/api/registries/reg-list/items")
@@ -121,7 +121,7 @@ func TestListItems_Empty(t *testing.T) {
 func TestListItems_WithItems(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-li2", Name: "test-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-li2", Name: "test-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-a", RegistryID: "reg-li2", Slug: "skill-a", ItemType: "skill",
@@ -147,7 +147,7 @@ func TestListItems_WithItems(t *testing.T) {
 func TestListItems_FilterByType(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-li3", Name: "test-reg3", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-li3", Name: "test-reg3", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-c", RegistryID: "reg-li3", Slug: "skill-c", ItemType: "skill",
@@ -170,7 +170,7 @@ func TestListItems_FilterByType(t *testing.T) {
 func TestListItems_FilterByStatus(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-li4", Name: "test-reg4", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-li4", Name: "test-reg4", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-e", RegistryID: "reg-li4", Slug: "skill-e", ItemType: "skill",
@@ -197,7 +197,7 @@ func TestListItems_FilterByStatus(t *testing.T) {
 func TestCreateItem_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-ci1", Name: "ci-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-ci1", Name: "ci-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := postJSON(newItemRouter("u1"), "/api/registries/reg-ci1/items", map[string]interface{}{
@@ -231,7 +231,7 @@ func TestCreateItem_MissingRequired(t *testing.T) {
 func TestGetItem_Found(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-gi1", Name: "gi-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-gi1", Name: "gi-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-gi1", RegistryID: "reg-gi1", Slug: "get-me", ItemType: "skill",
@@ -264,7 +264,7 @@ func TestGetItem_NotFound(t *testing.T) {
 func TestUpdateItem_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-ui1", Name: "ui-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-ui1", Name: "ui-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui1", RegistryID: "reg-ui1", Slug: "update-me", ItemType: "skill",
@@ -297,7 +297,7 @@ func TestUpdateItem_NotFound(t *testing.T) {
 func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-ui2", Name: "ui-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-ui2", Name: "ui-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui2", RegistryID: "reg-ui2", Slug: "versioned", ItemType: "skill",
@@ -329,7 +329,7 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 func TestDeleteItem_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-di1", Name: "di-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-di1", Name: "di-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-di1", RegistryID: "reg-di1", Slug: "delete-me", ItemType: "skill",
@@ -355,7 +355,7 @@ func TestDeleteItem_Success(t *testing.T) {
 func TestListItemVersions(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-lv1", Name: "lv-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-lv1", Name: "lv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-lv1", RegistryID: "reg-lv1", Slug: "versioned", ItemType: "skill",
@@ -389,7 +389,7 @@ func TestListItemVersions(t *testing.T) {
 func TestGetItemVersion_Found(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-gv1", Name: "gv-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-gv1", Name: "gv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-gv1", RegistryID: "reg-gv1", Slug: "gv-item", ItemType: "skill",
@@ -434,10 +434,10 @@ func TestGetItemVersion_InvalidVersion(t *testing.T) {
 func TestBuildVisibleRegistryIDs_Anonymous(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "pub-reg", Name: "public-r", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: "pub-reg", Name: "public-r", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "priv-reg", Name: "private-r", SourceType: "internal", Visibility: "org", OrgID: "org-1", OwnerID: "u1",
+		ID: "priv-reg", Name: "private-r", SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	ids := buildVisibleRegistryIDs(database.DB, "")
@@ -449,13 +449,13 @@ func TestBuildVisibleRegistryIDs_Anonymous(t *testing.T) {
 func TestBuildVisibleRegistryIDs_MemberUser(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "pub-reg2", Name: "public-r2", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: "pub-reg2", Name: "public-r2", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "org-reg2", Name: "org-r2", SourceType: "internal", Visibility: "org", OrgID: "org-x", OwnerID: "u2",
+		ID: "repo-reg2", Name: "repo-r2", SourceType: "internal", Visibility: "repo", RepoID: "repo-x", OwnerID: "u2",
 	})
-	database.DB.Create(&models.OrgMember{
-		ID: "mem-x", OrgID: "org-x", UserID: "u-member", Role: "member",
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-x", RepoID: "repo-x", UserID: "u-member", Role: "member",
 	})
 
 	ids := buildVisibleRegistryIDs(database.DB, "u-member")
@@ -463,15 +463,15 @@ func TestBuildVisibleRegistryIDs_MemberUser(t *testing.T) {
 	for _, id := range ids {
 		found[id] = true
 	}
-	if !found["pub-reg2"] || !found["org-reg2"] {
-		t.Fatalf("expected both public and org registry, got %v", ids)
+	if !found["pub-reg2"] || !found["repo-reg2"] {
+		t.Fatalf("expected both public and repo registry, got %v", ids)
 	}
 }
 
 func TestBuildVisibleRegistryIDs_PersonalOwner(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "personal-reg", Name: "my-skills", SourceType: "internal", Visibility: "private", OrgID: "", OwnerID: "u-owner",
+		ID: "personal-reg", Name: "my-skills", SourceType: "internal", Visibility: "private", RepoID: "", OwnerID: "u-owner",
 	})
 
 	ids := buildVisibleRegistryIDs(database.DB, "u-owner")
@@ -493,7 +493,7 @@ func TestBuildVisibleRegistryIDs_PersonalOwner(t *testing.T) {
 func TestGetPublicRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := get(newItemRouter(""), "/api/registries/public")
@@ -522,7 +522,7 @@ func TestGetPublicRegistry_NotFound(t *testing.T) {
 func TestCreateItemDirect_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
@@ -544,7 +544,7 @@ func TestCreateItemDirect_Success(t *testing.T) {
 func TestCreateItemDirect_AutoSlugify(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
@@ -563,7 +563,7 @@ func TestCreateItemDirect_AutoSlugify(t *testing.T) {
 func TestCreateItemDirect_DefaultVersion(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
@@ -593,7 +593,7 @@ func TestCreateItemDirect_MissingRequired(t *testing.T) {
 func TestCreateItemDirect_AnonymousCreatedBy(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", OrgID: "public", OwnerID: "system",
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
 	w := postJSON(newItemRouter(""), "/api/items", map[string]interface{}{

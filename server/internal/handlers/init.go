@@ -23,7 +23,7 @@ func EnsurePublicRegistry() {
 		Description: "Default public registry — anyone can browse and contribute",
 		SourceType:  "internal",
 		Visibility:  "public",
-		OrgID:       "public",
+		RepoID:      "public",
 		OwnerID:     "system",
 	}
 	if err := db.Create(&registry).Error; err != nil {

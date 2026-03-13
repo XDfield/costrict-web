@@ -119,7 +119,7 @@ func TestUploadArtifact_Success(t *testing.T) {
 	backend := newMemBackend()
 
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-art1", Name: "art-reg", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-art1", Name: "art-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-art1", RegistryID: "reg-art1", Slug: "art-skill", ItemType: "skill",
@@ -171,7 +171,7 @@ func TestUploadArtifact_PreviousIsLatestCleared(t *testing.T) {
 	backend := newMemBackend()
 
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-art2", Name: "art-reg2", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-art2", Name: "art-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-art2", RegistryID: "reg-art2", Slug: "art-skill2", ItemType: "skill",
@@ -197,7 +197,7 @@ func TestUploadArtifact_ChecksumSet(t *testing.T) {
 	backend := newMemBackend()
 
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-art3", Name: "art-reg3", SourceType: "internal", OrgID: "org-1", OwnerID: "u1",
+		ID: "reg-art3", Name: "art-reg3", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-art3", RegistryID: "reg-art3", Slug: "art-skill3", ItemType: "skill",

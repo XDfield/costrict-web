@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func newOrgRouter(userID string) *gin.Engine {
+func newRepoRouter(userID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	injectUser := func(c *gin.Context) {
@@ -20,16 +20,16 @@ func newOrgRouter(userID string) *gin.Engine {
 		}
 		c.Next()
 	}
-	r.GET("/api/organizations", injectUser, ListOrganizations)
-	r.POST("/api/organizations", injectUser, CreateOrganization)
-	r.GET("/api/organizations/:id", injectUser, GetOrganization)
-	r.PUT("/api/organizations/:id", injectUser, UpdateOrganization)
-	r.DELETE("/api/organizations/:id", injectUser, DeleteOrganization)
-	r.GET("/api/organizations/:id/members", injectUser, ListOrganizationMembers)
-	r.POST("/api/organizations/:id/members", injectUser, AddOrganizationMember)
-	r.DELETE("/api/organizations/:id/members/:userId", injectUser, RemoveOrganizationMember)
-	r.GET("/api/organizations/:id/registry", injectUser, GetOrganizationRegistry)
-	r.GET("/api/organizations/my", injectUser, GetMyOrganizations)
+	r.GET("/api/repositories", injectUser, ListRepositories)
+	r.POST("/api/repositories", injectUser, CreateRepository)
+	r.GET("/api/repositories/:id", injectUser, GetRepository)
+	r.PUT("/api/repositories/:id", injectUser, UpdateRepository)
+	r.DELETE("/api/repositories/:id", injectUser, DeleteRepository)
+	r.GET("/api/repositories/:id/members", injectUser, ListRepositoryMembers)
+	r.POST("/api/repositories/:id/members", injectUser, AddRepositoryMember)
+	r.DELETE("/api/repositories/:id/members/:userId", injectUser, RemoveRepositoryMember)
+	r.GET("/api/repositories/:id/registry", injectUser, GetRepositoryRegistry)
+	r.GET("/api/repositories/my", injectUser, GetMyRepositories)
 	return r
 }
 
@@ -56,71 +56,71 @@ func TestBuildSyncConfigJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListOrganizations
+// ListRepositories
 // ---------------------------------------------------------------------------
 
-func TestListOrganizations_Empty(t *testing.T) {
+func TestListRepositories_Empty(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := get(newOrgRouter(""), "/api/organizations")
+	w := get(newRepoRouter(""), "/api/repositories")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	orgs := body["organizations"].([]interface{})
-	if len(orgs) != 0 {
-		t.Fatalf("expected 0 orgs, got %d", len(orgs))
+	repos := body["repositories"].([]interface{})
+	if len(repos) != 0 {
+		t.Fatalf("expected 0 repos, got %d", len(repos))
 	}
 }
 
-func TestListOrganizations_WithData(t *testing.T) {
+func TestListRepositories_WithData(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-l1", Name: "alpha", OwnerID: "u1"})
-	database.DB.Create(&models.Organization{ID: "org-l2", Name: "beta", OwnerID: "u2"})
+	database.DB.Create(&models.Repository{ID: "repo-l1", Name: "alpha", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-l2", Name: "beta", OwnerID: "u2"})
 
-	w := get(newOrgRouter(""), "/api/organizations")
+	w := get(newRepoRouter(""), "/api/repositories")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	orgs := body["organizations"].([]interface{})
-	if len(orgs) != 2 {
-		t.Fatalf("expected 2 orgs, got %d", len(orgs))
+	repos := body["repositories"].([]interface{})
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// CreateOrganization
+// CreateRepository
 // ---------------------------------------------------------------------------
 
-func TestCreateOrganization_Success(t *testing.T) {
+func TestCreateRepository_Success(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
-		"name": "my-org", "ownerId": "u1",
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
+		"name": "my-repo", "ownerId": "u1",
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	if org["name"] != "my-org" {
-		t.Fatalf("unexpected name: %v", org["name"])
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	if repo["name"] != "my-repo" {
+		t.Fatalf("unexpected name: %v", repo["name"])
 	}
-	if org["orgType"] != "normal" {
-		t.Fatalf("expected orgType=normal, got %v", org["orgType"])
+	if repo["repoType"] != "normal" {
+		t.Fatalf("expected repoType=normal, got %v", repo["repoType"])
 	}
-	if org["visibility"] != "private" {
-		t.Fatalf("expected visibility=private, got %v", org["visibility"])
+	if repo["visibility"] != "private" {
+		t.Fatalf("expected visibility=private, got %v", repo["visibility"])
 	}
 }
 
-func TestCreateOrganization_MissingRequired(t *testing.T) {
+func TestCreateRepository_MissingRequired(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
 		"name": "no-owner",
 	})
 	if w.Code != http.StatusBadRequest {
@@ -128,50 +128,50 @@ func TestCreateOrganization_MissingRequired(t *testing.T) {
 	}
 }
 
-func TestCreateOrganization_DefaultsVisibilityAndType(t *testing.T) {
+func TestCreateRepository_DefaultsVisibilityAndType(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
-		"name": "defaults-org", "ownerId": "u1",
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
+		"name": "defaults-repo", "ownerId": "u1",
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	if org["visibility"] != "private" {
-		t.Fatalf("expected default visibility=private, got %v", org["visibility"])
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	if repo["visibility"] != "private" {
+		t.Fatalf("expected default visibility=private, got %v", repo["visibility"])
 	}
-	if org["orgType"] != "normal" {
-		t.Fatalf("expected default orgType=normal, got %v", org["orgType"])
+	if repo["repoType"] != "normal" {
+		t.Fatalf("expected default repoType=normal, got %v", repo["repoType"])
 	}
 }
 
-func TestCreateOrganization_OwnerAddedAsMember(t *testing.T) {
+func TestCreateRepository_OwnerAddedAsMember(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
-		"name": "member-org", "ownerId": "u1",
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
+		"name": "member-repo", "ownerId": "u1",
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	orgID := org["id"].(string)
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	repoID := repo["id"].(string)
 
 	var count int64
-	database.DB.Model(&models.OrgMember{}).Where("org_id = ? AND user_id = ? AND role = 'owner'", orgID, "u1").Count(&count)
+	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ? AND role = 'owner'", repoID, "u1").Count(&count)
 	if count != 1 {
 		t.Fatalf("expected owner to be added as member, got count=%d", count)
 	}
 }
 
-func TestCreateOrganization_SyncType_MissingExternalURL(t *testing.T) {
+func TestCreateRepository_SyncType_MissingExternalURL(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
-		"name": "sync-org", "ownerId": "u1", "orgType": "sync",
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
+		"name": "sync-repo", "ownerId": "u1", "repoType": "sync",
 		"syncRegistry": map[string]interface{}{},
 	})
 	if w.Code != http.StatusBadRequest {
@@ -179,11 +179,11 @@ func TestCreateOrganization_SyncType_MissingExternalURL(t *testing.T) {
 	}
 }
 
-func TestCreateOrganization_SyncType_Success(t *testing.T) {
+func TestCreateRepository_SyncType_Success(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations", map[string]interface{}{
-		"name": "sync-org2", "ownerId": "u1", "orgType": "sync",
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
+		"name": "sync-repo2", "ownerId": "u1", "repoType": "sync",
 		"syncRegistry": map[string]interface{}{
 			"externalUrl": "https://github.com/example/repo",
 		},
@@ -193,8 +193,8 @@ func TestCreateOrganization_SyncType_Success(t *testing.T) {
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	if body["organization"] == nil {
-		t.Fatal("expected organization field in response")
+	if body["repository"] == nil {
+		t.Fatal("expected repository field in response")
 	}
 	if body["registries"] == nil {
 		t.Fatal("expected registries field in response")
@@ -202,59 +202,59 @@ func TestCreateOrganization_SyncType_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetOrganization
+// GetRepository
 // ---------------------------------------------------------------------------
 
-func TestGetOrganization_Found(t *testing.T) {
+func TestGetRepository_Found(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-g1", Name: "get-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-g1", Name: "get-repo", OwnerID: "u1"})
 
-	w := get(newOrgRouter(""), "/api/organizations/org-g1")
+	w := get(newRepoRouter(""), "/api/repositories/repo-g1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	if org["id"] != "org-g1" {
-		t.Fatalf("unexpected id: %v", org["id"])
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	if repo["id"] != "repo-g1" {
+		t.Fatalf("unexpected id: %v", repo["id"])
 	}
 }
 
-func TestGetOrganization_NotFound(t *testing.T) {
+func TestGetRepository_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	w := get(newOrgRouter(""), "/api/organizations/no-such-org")
+	w := get(newRepoRouter(""), "/api/repositories/no-such-repo")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// UpdateOrganization
+// UpdateRepository
 // ---------------------------------------------------------------------------
 
-func TestUpdateOrganization_Success(t *testing.T) {
+func TestUpdateRepository_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-u1", Name: "old-name", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.Repository{ID: "repo-u1", Name: "old-name", OwnerID: "u1", Visibility: "private"})
 
-	w := putJSON(newOrgRouter("u1"), "/api/organizations/org-u1", map[string]interface{}{
+	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u1", map[string]interface{}{
 		"name": "new-name", "visibility": "public",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	if org["name"] != "new-name" {
-		t.Fatalf("expected name=new-name, got %v", org["name"])
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	if repo["name"] != "new-name" {
+		t.Fatalf("expected name=new-name, got %v", repo["name"])
 	}
-	if org["visibility"] != "public" {
-		t.Fatalf("expected visibility=public, got %v", org["visibility"])
+	if repo["visibility"] != "public" {
+		t.Fatalf("expected visibility=public, got %v", repo["visibility"])
 	}
 }
 
-func TestUpdateOrganization_NotFound(t *testing.T) {
+func TestUpdateRepository_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	w := putJSON(newOrgRouter("u1"), "/api/organizations/no-such", map[string]interface{}{
+	w := putJSON(newRepoRouter("u1"), "/api/repositories/no-such", map[string]interface{}{
 		"name": "x",
 	})
 	if w.Code != http.StatusNotFound {
@@ -262,54 +262,54 @@ func TestUpdateOrganization_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateOrganization_PartialUpdate(t *testing.T) {
+func TestUpdateRepository_PartialUpdate(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-u2", Name: "partial-org", DisplayName: "Old Display", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-u2", Name: "partial-repo", DisplayName: "Old Display", OwnerID: "u1"})
 
-	w := putJSON(newOrgRouter("u1"), "/api/organizations/org-u2", map[string]interface{}{
+	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u2", map[string]interface{}{
 		"displayName": "New Display",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var org map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&org)
-	if org["name"] != "partial-org" {
-		t.Fatalf("name should not change, got %v", org["name"])
+	var repo map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&repo)
+	if repo["name"] != "partial-repo" {
+		t.Fatalf("name should not change, got %v", repo["name"])
 	}
-	if org["displayName"] != "New Display" {
-		t.Fatalf("expected displayName=New Display, got %v", org["displayName"])
+	if repo["displayName"] != "New Display" {
+		t.Fatalf("expected displayName=New Display, got %v", repo["displayName"])
 	}
 }
 
 // ---------------------------------------------------------------------------
-// DeleteOrganization
+// DeleteRepository
 // ---------------------------------------------------------------------------
 
-func TestDeleteOrganization_Success(t *testing.T) {
+func TestDeleteRepository_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-d1", Name: "del-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-d1", Name: "del-repo", OwnerID: "u1"})
 
-	w := deleteReq(newOrgRouter("u1"), "/api/organizations/org-d1")
+	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-d1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
 	var count int64
-	database.DB.Model(&models.Organization{}).Where("id = ?", "org-d1").Count(&count)
+	database.DB.Model(&models.Repository{}).Where("id = ?", "repo-d1").Count(&count)
 	if count != 0 {
-		t.Fatal("organization should have been deleted")
+		t.Fatal("repository should have been deleted")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ListOrganizationMembers
+// ListRepositoryMembers
 // ---------------------------------------------------------------------------
 
-func TestListOrganizationMembers_Empty(t *testing.T) {
+func TestListRepositoryMembers_Empty(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := get(newOrgRouter(""), "/api/organizations/org-no-members/members")
+	w := get(newRepoRouter(""), "/api/repositories/repo-no-members/members")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -321,13 +321,13 @@ func TestListOrganizationMembers_Empty(t *testing.T) {
 	}
 }
 
-func TestListOrganizationMembers_WithMembers(t *testing.T) {
+func TestListRepositoryMembers_WithMembers(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-m1", Name: "member-org", OwnerID: "u1"})
-	database.DB.Create(&models.OrgMember{ID: "mem-m1", OrgID: "org-m1", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.OrgMember{ID: "mem-m2", OrgID: "org-m1", UserID: "u2", Role: "member"})
+	database.DB.Create(&models.Repository{ID: "repo-m1", Name: "member-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-m1", RepoID: "repo-m1", UserID: "u1", Role: "owner"})
+	database.DB.Create(&models.RepoMember{ID: "mem-m2", RepoID: "repo-m1", UserID: "u2", Role: "member"})
 
-	w := get(newOrgRouter(""), "/api/organizations/org-m1/members")
+	w := get(newRepoRouter(""), "/api/repositories/repo-m1/members")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -340,14 +340,14 @@ func TestListOrganizationMembers_WithMembers(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// AddOrganizationMember
+// AddRepositoryMember
 // ---------------------------------------------------------------------------
 
-func TestAddOrganizationMember_Success(t *testing.T) {
+func TestAddRepositoryMember_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-am1", Name: "add-member-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-am1", Name: "add-member-repo", OwnerID: "u1"})
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations/org-am1/members", map[string]interface{}{
+	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am1/members", map[string]interface{}{
 		"userId": "u-new", "username": "newuser", "role": "member",
 	})
 	if w.Code != http.StatusCreated {
@@ -363,11 +363,11 @@ func TestAddOrganizationMember_Success(t *testing.T) {
 	}
 }
 
-func TestAddOrganizationMember_DefaultRole(t *testing.T) {
+func TestAddRepositoryMember_DefaultRole(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-am2", Name: "default-role-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-am2", Name: "default-role-repo", OwnerID: "u1"})
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations/org-am2/members", map[string]interface{}{
+	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am2/members", map[string]interface{}{
 		"userId": "u-default",
 	})
 	if w.Code != http.StatusCreated {
@@ -380,10 +380,10 @@ func TestAddOrganizationMember_DefaultRole(t *testing.T) {
 	}
 }
 
-func TestAddOrganizationMember_MissingUserID(t *testing.T) {
+func TestAddRepositoryMember_MissingUserID(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations/org-am3/members", map[string]interface{}{
+	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am3/members", map[string]interface{}{
 		"username": "no-user-id",
 	})
 	if w.Code != http.StatusBadRequest {
@@ -391,12 +391,12 @@ func TestAddOrganizationMember_MissingUserID(t *testing.T) {
 	}
 }
 
-func TestAddOrganizationMember_Duplicate(t *testing.T) {
+func TestAddRepositoryMember_Duplicate(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-am4", Name: "dup-org", OwnerID: "u1"})
-	database.DB.Create(&models.OrgMember{ID: "mem-dup1", OrgID: "org-am4", UserID: "u-dup", Role: "member"})
+	database.DB.Create(&models.Repository{ID: "repo-am4", Name: "dup-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-dup1", RepoID: "repo-am4", UserID: "u-dup", Role: "member"})
 
-	w := postJSON(newOrgRouter("u1"), "/api/organizations/org-am4/members", map[string]interface{}{
+	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am4/members", map[string]interface{}{
 		"userId": "u-dup",
 	})
 	if w.Code != http.StatusConflict {
@@ -405,111 +405,111 @@ func TestAddOrganizationMember_Duplicate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RemoveOrganizationMember
+// RemoveRepositoryMember
 // ---------------------------------------------------------------------------
 
-func TestRemoveOrganizationMember_Success(t *testing.T) {
+func TestRemoveRepositoryMember_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-rm1", Name: "remove-org", OwnerID: "u1"})
-	database.DB.Create(&models.OrgMember{ID: "mem-rm1", OrgID: "org-rm1", UserID: "u-remove", Role: "member"})
+	database.DB.Create(&models.Repository{ID: "repo-rm1", Name: "remove-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-rm1", RepoID: "repo-rm1", UserID: "u-remove", Role: "member"})
 
-	w := deleteReq(newOrgRouter("u1"), "/api/organizations/org-rm1/members/u-remove")
+	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-rm1/members/u-remove")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
 	var count int64
-	database.DB.Model(&models.OrgMember{}).Where("org_id = ? AND user_id = ?", "org-rm1", "u-remove").Count(&count)
+	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ?", "repo-rm1", "u-remove").Count(&count)
 	if count != 0 {
 		t.Fatal("member should have been removed")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// GetOrganizationRegistry
+// GetRepositoryRegistry
 // ---------------------------------------------------------------------------
 
-func TestGetOrganizationRegistry_Found(t *testing.T) {
+func TestGetRepositoryRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-gr1", Name: "reg-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-for-org", Name: "reg-org", SourceType: "internal", Visibility: "org", OrgID: "org-gr1", OwnerID: "u1",
+		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", Visibility: "repo", RepoID: "repo-gr1", OwnerID: "u1",
 	})
 
-	w := get(newOrgRouter(""), "/api/organizations/org-gr1/registry")
+	w := get(newRepoRouter(""), "/api/repositories/repo-gr1/registry")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var reg map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["id"] != "reg-for-org" {
+	if reg["id"] != "reg-for-repo" {
 		t.Fatalf("unexpected id: %v", reg["id"])
 	}
 }
 
-func TestGetOrganizationRegistry_NotFound(t *testing.T) {
+func TestGetRepositoryRegistry_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
-	w := get(newOrgRouter(""), "/api/organizations/no-such-org/registry")
+	w := get(newRepoRouter(""), "/api/repositories/no-such-repo/registry")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
 
-func TestGetOrganizationRegistry_ExternalRegistryNotReturned(t *testing.T) {
+func TestGetRepositoryRegistry_ExternalRegistryNotReturned(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-gr2", Name: "ext-reg-org", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg-for-org", Name: "ext-reg-org", SourceType: "external", Visibility: "org", OrgID: "org-gr2", OwnerID: "u1",
+		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", Visibility: "repo", RepoID: "repo-gr2", OwnerID: "u1",
 	})
 
-	w := get(newOrgRouter(""), "/api/organizations/org-gr2/registry")
+	w := get(newRepoRouter(""), "/api/repositories/repo-gr2/registry")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (external registry returned first), got %d", w.Code)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// GetMyOrganizations
+// GetMyRepositories
 // ---------------------------------------------------------------------------
 
-func TestGetMyOrganizations_Success(t *testing.T) {
+func TestGetMyRepositories_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Organization{ID: "org-my1", Name: "my-org-1", OwnerID: "u1"})
-	database.DB.Create(&models.Organization{ID: "org-my2", Name: "my-org-2", OwnerID: "u2"})
-	database.DB.Create(&models.OrgMember{ID: "mem-my1", OrgID: "org-my1", UserID: "u-me", Role: "member"})
-	database.DB.Create(&models.OrgMember{ID: "mem-my2", OrgID: "org-my2", UserID: "u-me", Role: "admin"})
+	database.DB.Create(&models.Repository{ID: "repo-my1", Name: "my-repo-1", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-my2", Name: "my-repo-2", OwnerID: "u2"})
+	database.DB.Create(&models.RepoMember{ID: "mem-my1", RepoID: "repo-my1", UserID: "u-me", Role: "member"})
+	database.DB.Create(&models.RepoMember{ID: "mem-my2", RepoID: "repo-my2", UserID: "u-me", Role: "admin"})
 
-	w := get(newOrgRouter(""), "/api/organizations/my?userId=u-me")
+	w := get(newRepoRouter(""), "/api/repositories/my?userId=u-me")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	orgs := body["organizations"].([]interface{})
-	if len(orgs) != 2 {
-		t.Fatalf("expected 2 orgs, got %d", len(orgs))
+	repos := body["repositories"].([]interface{})
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
 	}
 }
 
-func TestGetMyOrganizations_MissingUserID(t *testing.T) {
+func TestGetMyRepositories_MissingUserID(t *testing.T) {
 	defer setupTestDB(t)()
-	w := get(newOrgRouter(""), "/api/organizations/my")
+	w := get(newRepoRouter(""), "/api/repositories/my")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
-func TestGetMyOrganizations_NoMemberships(t *testing.T) {
+func TestGetMyRepositories_NoMemberships(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := get(newOrgRouter(""), "/api/organizations/my?userId=u-nobody")
+	w := get(newRepoRouter(""), "/api/repositories/my?userId=u-nobody")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
-	orgs, _ := body["organizations"].([]interface{})
-	if len(orgs) != 0 {
-		t.Fatalf("expected 0 orgs, got %d", len(orgs))
+	repos, _ := body["repositories"].([]interface{})
+	if len(repos) != 0 {
+		t.Fatalf("expected 0 repos, got %d", len(repos))
 	}
 }

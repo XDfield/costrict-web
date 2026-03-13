@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"encoding/json"
@@ -104,27 +104,27 @@ func GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userInfo.User)
 }
 
-// ListOrganizations godoc
-// @Summary      List organizations
-// @Description  Get all organizations
-// @Tags         organizations
+// ListRepositories godoc
+// @Summary      List repositories
+// @Description  Get all repositories
+// @Tags         repositories
 // @Produce      json
-// @Success      200  {object}  object{organizations=[]models.Organization}
+// @Success      200  {object}  object{repositories=[]models.Repository}
 // @Failure      500  {object}  object{error=string}
-// @Router       /organizations [get]
-func ListOrganizations(c *gin.Context) {
+// @Router       /repositories [get]
+func ListRepositories(c *gin.Context) {
 	db := database.GetDB()
-	var orgs []models.Organization
-	result := db.Find(&orgs)
+	var repos []models.Repository
+	result := db.Find(&repos)
 	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch organizations"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch repositories"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
+	c.JSON(http.StatusOK, gin.H{"repositories": repos})
 }
 
-// CreateSyncRegistryInput holds sync configuration for creating a sync-type organization
+// CreateSyncRegistryInput holds sync configuration for creating a sync-type repository
 type CreateSyncRegistryInput struct {
 	Name             string   `json:"name"`
 	Description      string   `json:"description"`
@@ -138,25 +138,25 @@ type CreateSyncRegistryInput struct {
 	WebhookSecret    string   `json:"webhookSecret"`
 }
 
-// CreateOrganization godoc
-// @Summary      Create organization
-// @Description  Create a new organization. Set orgType=sync to create a Git-synced organization.
-// @Tags         organizations
+// CreateRepository godoc
+// @Summary      Create repository
+// @Description  Create a new repository. Set repoType=sync to create a Git-synced repository.
+// @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string,orgType=string}  true  "Organization data"
-// @Success      201  {object}  models.Organization
+// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string,repoType=string}  true  "Repository data"
+// @Success      201  {object}  models.Repository
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
-// @Router       /organizations [post]
-func CreateOrganization(c *gin.Context) {
+// @Router       /repositories [post]
+func CreateRepository(c *gin.Context) {
 	var req struct {
 		Name             string                    `json:"name" binding:"required"`
 		DisplayName      string                    `json:"displayName"`
 		Description      string                    `json:"description"`
 		Visibility       string                    `json:"visibility"`
 		OwnerID          string                    `json:"ownerId" binding:"required"`
-		OrgType          string                    `json:"orgType"`
+		RepoType         string                    `json:"repoType"`
 		SyncRegistry     *CreateSyncRegistryInput  `json:"syncRegistry"`
 		SyncRegistries   []CreateSyncRegistryInput `json:"syncRegistries"`
 	}
@@ -166,17 +166,17 @@ func CreateOrganization(c *gin.Context) {
 		return
 	}
 
-	orgType := req.OrgType
-	if orgType == "" {
-		orgType = "normal"
+	repoType := req.RepoType
+	if repoType == "" {
+		repoType = "normal"
 	}
 
 	if req.SyncRegistry != nil && req.SyncRegistry.ExternalURL != "" {
 		req.SyncRegistries = append([]CreateSyncRegistryInput{*req.SyncRegistry}, req.SyncRegistries...)
 	}
 
-	if orgType == "sync" && len(req.SyncRegistries) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one syncRegistry is required for sync organizations"})
+	if repoType == "sync" && len(req.SyncRegistries) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one syncRegistry is required for sync repositories"})
 		return
 	}
 
@@ -185,59 +185,59 @@ func CreateOrganization(c *gin.Context) {
 		visibility = "private"
 	}
 
-	org := models.Organization{
+	repo := models.Repository{
 		ID:          uuid.New().String(),
 		Name:        req.Name,
 		DisplayName: req.DisplayName,
 		Description: req.Description,
 		Visibility:  visibility,
-		OrgType:     orgType,
+		RepoType:    repoType,
 		OwnerID:     req.OwnerID,
 	}
 
 	db := database.GetDB()
-	if result := db.Create(&org); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create organization"})
+	if result := db.Create(&repo); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create repository"})
 		return
 	}
 
-	ownerMember := models.OrgMember{
+	ownerMember := models.RepoMember{
 		ID:     uuid.New().String(),
-		OrgID:  org.ID,
+		RepoID: repo.ID,
 		UserID: req.OwnerID,
 		Role:   "owner",
 	}
 	db.Create(&ownerMember)
 
-	if orgType == "sync" {
+	if repoType == "sync" {
 		var createdRegistries []models.CapabilityRegistry
 		for _, sr := range req.SyncRegistries {
-			reg := buildExternalRegistry(sr, org.ID, req.OwnerID, visibility)
+			reg := buildExternalRegistry(sr, repo.ID, req.OwnerID, visibility)
 			db.Create(&reg)
 			if SyncScheduler != nil && sr.SyncEnabled {
 				_ = SyncScheduler.RegisterRegistry(&reg)
 			}
 			createdRegistries = append(createdRegistries, reg)
 		}
-		c.JSON(http.StatusCreated, gin.H{"organization": org, "registries": createdRegistries})
+		c.JSON(http.StatusCreated, gin.H{"repository": repo, "registries": createdRegistries})
 		return
 	}
 
-	orgRegistry := models.CapabilityRegistry{
+	repoRegistry := models.CapabilityRegistry{
 		ID:          uuid.New().String(),
-		Name:        org.Name,
-		Description: "Registry for organization " + org.Name,
+		Name:        repo.Name,
+		Description: "Registry for repository " + repo.Name,
 		SourceType:  "internal",
 		Visibility:  visibility,
-		OrgID:       org.ID,
+		RepoID:      repo.ID,
 		OwnerID:     req.OwnerID,
 	}
-	db.Create(&orgRegistry)
+	db.Create(&repoRegistry)
 
-	c.JSON(http.StatusCreated, org)
+	c.JSON(http.StatusCreated, repo)
 }
 
-func buildExternalRegistry(sr CreateSyncRegistryInput, orgID, ownerID, visibility string) models.CapabilityRegistry {
+func buildExternalRegistry(sr CreateSyncRegistryInput, repoID, ownerID, visibility string) models.CapabilityRegistry {
 	branch := sr.ExternalBranch
 	if branch == "" {
 		branch = "main"
@@ -266,47 +266,47 @@ func buildExternalRegistry(sr CreateSyncRegistryInput, orgID, ownerID, visibilit
 		SyncStatus:     "idle",
 		SyncConfig:     buildSyncConfigJSON(sr.IncludePatterns, sr.ExcludePatterns, conflictStrategy, sr.WebhookSecret),
 		Visibility:     visibility,
-		OrgID:          orgID,
+		RepoID:         repoID,
 		OwnerID:        ownerID,
 	}
 }
 
-// GetOrganization godoc
-// @Summary      Get organization
-// @Description  Get organization by ID
-// @Tags         organizations
+// GetRepository godoc
+// @Summary      Get repository
+// @Description  Get repository by ID
+// @Tags         repositories
 // @Produce      json
-// @Param        id   path      string  true  "Organization ID"
-// @Success      200  {object}  models.Organization
+// @Param        id   path      string  true  "Repository ID"
+// @Success      200  {object}  models.Repository
 // @Failure      404  {object}  object{error=string}
-// @Router       /organizations/{id} [get]
-func GetOrganization(c *gin.Context) {
+// @Router       /repositories/{id} [get]
+func GetRepository(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	var org models.Organization
-	result := db.First(&org, "id = ?", id)
+	var repo models.Repository
+	result := db.First(&repo, "id = ?", id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Organization not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
 		return
 	}
 
-	c.JSON(http.StatusOK, org)
+	c.JSON(http.StatusOK, repo)
 }
 
-// UpdateOrganization godoc
-// @Summary      Update organization
-// @Description  Update organization by ID
-// @Tags         organizations
+// UpdateRepository godoc
+// @Summary      Update repository
+// @Description  Update repository by ID
+// @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        id    path      string  true  "Organization ID"
-// @Param        body  body      object{name=string,displayName=string,description=string,visibility=string}  false  "Organization data"
-// @Success      200   {object}  models.Organization
+// @Param        id    path      string  true  "Repository ID"
+// @Param        body  body      object{name=string,displayName=string,description=string,visibility=string}  false  "Repository data"
+// @Success      200   {object}  models.Repository
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
-// @Router       /organizations/{id} [put]
-func UpdateOrganization(c *gin.Context) {
+// @Router       /repositories/{id} [put]
+func UpdateRepository(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
 		Name        string `json:"name"`
@@ -321,70 +321,100 @@ func UpdateOrganization(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	var org models.Organization
-	result := db.First(&org, "id = ?", id)
+	var repo models.Repository
+	result := db.First(&repo, "id = ?", id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Organization not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
 		return
 	}
 
 	if req.Name != "" {
-		org.Name = req.Name
+		repo.Name = req.Name
 	}
 	if req.DisplayName != "" {
-		org.DisplayName = req.DisplayName
+		repo.DisplayName = req.DisplayName
 	}
 	if req.Description != "" {
-		org.Description = req.Description
+		repo.Description = req.Description
 	}
 	if req.Visibility != "" {
-		org.Visibility = req.Visibility
+		repo.Visibility = req.Visibility
 	}
 
-	if result := db.Save(&org); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update organization"})
+	if result := db.Save(&repo); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update repository"})
 		return
 	}
 
-	c.JSON(http.StatusOK, org)
+	c.JSON(http.StatusOK, repo)
 }
 
-// DeleteOrganization godoc
-// @Summary      Delete organization
-// @Description  Delete organization by ID
-// @Tags         organizations
+// DeleteRepository godoc
+// @Summary      Delete repository
+// @Description  Delete repository by ID
+// @Tags         repositories
 // @Produce      json
-// @Param        id   path      string  true  "Organization ID"
+// @Param        id   path      string  true  "Repository ID"
 // @Success      200  {object}  object{message=string}
 // @Failure      500  {object}  object{error=string}
-// @Router       /organizations/{id} [delete]
-func DeleteOrganization(c *gin.Context) {
+// @Router       /repositories/{id} [delete]
+func DeleteRepository(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	result := db.Delete(&models.Organization{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete organization"})
+
+	if err := db.Where("repo_id = ?", id).Delete(&models.RepoMember{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete repository members"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Organization deleted"})
+	result := db.Delete(&models.Repository{}, "id = ?", id)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete repository"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Repository deleted"})
 }
 
-// AddOrganizationMember godoc
-// @Summary      Add organization member
-// @Description  Add a user to an organization
-// @Tags         organizations
+func getCallerRepoRole(c *gin.Context, repoID string) string {
+	callerID, _ := c.Get("userId")
+	if callerID == nil {
+		return ""
+	}
+	db := database.GetDB()
+	var m models.RepoMember
+	if db.Where("repo_id = ? AND user_id = ?", repoID, callerID.(string)).First(&m).Error != nil {
+		return ""
+	}
+	return m.Role
+}
+
+func isRepoAdmin(role string) bool {
+	return role == "owner" || role == "admin"
+}
+
+// AddRepositoryMember godoc
+// @Summary      Add repository member
+// @Description  Add a user to a repository (requires owner or admin role)
+// @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        id    path      string  true  "Organization ID"
+// @Param        id    path      string  true  "Repository ID"
 // @Param        body  body      object{userId=string,username=string,role=string}  true  "Member data"
-// @Success      201   {object}  models.OrgMember
+// @Success      201   {object}  models.RepoMember
 // @Failure      400   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
-// @Router       /organizations/{id}/members [post]
-func AddOrganizationMember(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/members [post]
+func AddRepositoryMember(c *gin.Context) {
+	repoID := c.Param("id")
+
+	if !isRepoAdmin(getCallerRepoRole(c, repoID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only repo owner or admin can add members"})
+		return
+	}
+
 	var req struct {
 		UserID   string `json:"userId" binding:"required"`
 		Username string `json:"username"`
@@ -400,20 +430,24 @@ func AddOrganizationMember(c *gin.Context) {
 	if role == "" {
 		role = "member"
 	}
+	if role == "owner" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot assign owner role directly"})
+		return
+	}
 
 	db := database.GetDB()
-	var existing models.OrgMember
-	if db.Where("org_id = ? AND user_id = ?", orgID, req.UserID).First(&existing).Error == nil {
+	var existing models.RepoMember
+	if db.Where("repo_id = ? AND user_id = ?", repoID, req.UserID).First(&existing).Error == nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member"})
 		return
 	}
 
-	member := models.OrgMember{
-		ID:       uuid.New().String(),
-		OrgID:    orgID,
-		UserID:   req.UserID,
+	member := models.RepoMember{
+		ID:     uuid.New().String(),
+		RepoID: repoID,
+		UserID: req.UserID,
 		Username: req.Username,
-		Role:     role,
+		Role:   role,
 	}
 
 	if result := db.Create(&member); result.Error != nil {
@@ -424,21 +458,98 @@ func AddOrganizationMember(c *gin.Context) {
 	c.JSON(http.StatusCreated, member)
 }
 
-// RemoveOrganizationMember godoc
-// @Summary      Remove organization member
-// @Description  Remove a user from an organization
-// @Tags         organizations
+// UpdateRepositoryMember godoc
+// @Summary      Update repository member role
+// @Description  Update a member's role in a repository (requires owner or admin role)
+// @Tags         repositories
+// @Accept       json
 // @Produce      json
-// @Param        id      path      string  true  "Organization ID"
+// @Param        id      path      string  true  "Repository ID"
+// @Param        userId  path      string  true  "User ID"
+// @Param        body    body      object{role=string}  true  "Role data"
+// @Success      200     {object}  models.RepoMember
+// @Failure      400     {object}  object{error=string}
+// @Failure      403     {object}  object{error=string}
+// @Failure      404     {object}  object{error=string}
+// @Failure      500     {object}  object{error=string}
+// @Router       /repositories/{id}/members/{userId} [put]
+func UpdateRepositoryMember(c *gin.Context) {
+	repoID := c.Param("id")
+	targetUserID := c.Param("userId")
+
+	if !isRepoAdmin(getCallerRepoRole(c, repoID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only repo owner or admin can update member roles"})
+		return
+	}
+
+	var req struct {
+		Role string `json:"role" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.Role == "owner" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot assign owner role"})
+		return
+	}
+	if req.Role != "admin" && req.Role != "member" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Role must be admin or member"})
+		return
+	}
+
+	db := database.GetDB()
+	var member models.RepoMember
+	if db.Where("repo_id = ? AND user_id = ?", repoID, targetUserID).First(&member).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Member not found"})
+		return
+	}
+	if member.Role == "owner" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot change owner's role"})
+		return
+	}
+
+	member.Role = req.Role
+	if err := db.Save(&member).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update member role"})
+		return
+	}
+
+	c.JSON(http.StatusOK, member)
+}
+
+// RemoveRepositoryMember godoc
+// @Summary      Remove repository member
+// @Description  Remove a user from a repository (requires owner or admin role)
+// @Tags         repositories
+// @Produce      json
+// @Param        id      path      string  true  "Repository ID"
 // @Param        userId  path      string  true  "User ID"
 // @Success      200     {object}  object{message=string}
+// @Failure      403     {object}  object{error=string}
 // @Failure      500     {object}  object{error=string}
-// @Router       /organizations/{id}/members/{userId} [delete]
-func RemoveOrganizationMember(c *gin.Context) {
-	orgID := c.Param("id")
-	userID := c.Param("userId")
+// @Router       /repositories/{id}/members/{userId} [delete]
+func RemoveRepositoryMember(c *gin.Context) {
+	repoID := c.Param("id")
+	targetUserID := c.Param("userId")
+
+	callerID, _ := c.Get("userId")
+	callerRole := getCallerRepoRole(c, repoID)
+
+	if callerID != nil && callerID.(string) == targetUserID {
+		db := database.GetDB()
+		var m models.RepoMember
+		if db.Where("repo_id = ? AND user_id = ?", repoID, targetUserID).First(&m).Error == nil && m.Role == "owner" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Owner cannot leave the repository"})
+			return
+		}
+	} else if !isRepoAdmin(callerRole) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only repo owner or admin can remove members"})
+		return
+	}
+
 	db := database.GetDB()
-	result := db.Where("org_id = ? AND user_id = ?", orgID, userID).Delete(&models.OrgMember{})
+	result := db.Where("repo_id = ? AND user_id = ?", repoID, targetUserID).Delete(&models.RepoMember{})
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
 		return
@@ -446,20 +557,20 @@ func RemoveOrganizationMember(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }
 
-// ListOrganizationMembers godoc
-// @Summary      List organization members
-// @Description  Get all members of an organization
-// @Tags         organizations
+// ListRepositoryMembers godoc
+// @Summary      List repository members
+// @Description  Get all members of a repository
+// @Tags         repositories
 // @Produce      json
-// @Param        id   path      string  true  "Organization ID"
-// @Success      200  {object}  object{members=[]models.OrgMember}
+// @Param        id   path      string  true  "Repository ID"
+// @Success      200  {object}  object{members=[]models.RepoMember}
 // @Failure      500  {object}  object{error=string}
-// @Router       /organizations/{id}/members [get]
-func ListOrganizationMembers(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/members [get]
+func ListRepositoryMembers(c *gin.Context) {
+	repoID := c.Param("id")
 	db := database.GetDB()
-	var members []models.OrgMember
-	result := db.Where("org_id = ?", orgID).Find(&members)
+	var members []models.RepoMember
+	result := db.Where("repo_id = ?", repoID).Find(&members)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch members"})
 		return
@@ -467,56 +578,56 @@ func ListOrganizationMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"members": members})
 }
 
-// GetOrganizationRegistry godoc
-// @Summary      Get organization registry
-// @Description  Get the internal capability registry for an organization
-// @Tags         organizations
+// GetRepositoryRegistry godoc
+// @Summary      Get repository registry
+// @Description  Get the internal capability registry for a repository
+// @Tags         repositories
 // @Produce      json
-// @Param        id   path      string  true  "Organization ID"
+// @Param        id   path      string  true  "Repository ID"
 // @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
-// @Router       /organizations/{id}/registry [get]
-func GetOrganizationRegistry(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/registry [get]
+func GetRepositoryRegistry(c *gin.Context) {
+	repoID := c.Param("id")
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
-	result := db.Where("org_id = ?", orgID).Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").First(&registry)
+	result := db.Where("repo_id = ?", repoID).Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").First(&registry)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found for this organization"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found for this repository"})
 		return
 	}
 	c.JSON(http.StatusOK, registry)
 }
 
-// ListOrgRegistries godoc
-// @Summary      List organization registries
-// @Description  List all capability registries belonging to an organization
-// @Tags         organizations
+// ListRepoRegistries godoc
+// @Summary      List repository registries
+// @Description  List all capability registries belonging to a repository
+// @Tags         repositories
 // @Produce      json
-// @Param        id  path  string  true  "Organization ID"
+// @Param        id  path  string  true  "Repository ID"
 // @Success      200  {object}  object{registries=[]models.CapabilityRegistry}
-// @Router       /organizations/{id}/registries [get]
-func ListOrgRegistries(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/registries [get]
+func ListRepoRegistries(c *gin.Context) {
+	repoID := c.Param("id")
 	db := database.GetDB()
 	var registries []models.CapabilityRegistry
-	db.Where("org_id = ?", orgID).Order("created_at ASC").Find(&registries)
+	db.Where("repo_id = ?", repoID).Order("created_at ASC").Find(&registries)
 	c.JSON(http.StatusOK, gin.H{"registries": registries})
 }
 
-// AddOrgRegistry godoc
-// @Summary      Add registry to organization
-// @Description  Bind a new Git sync registry to an organization
-// @Tags         organizations
+// AddRepoRegistry godoc
+// @Summary      Add registry to repository
+// @Description  Bind a new Git sync registry to a repository
+// @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        id    path  string                  true  "Organization ID"
+// @Param        id    path  string                  true  "Repository ID"
 // @Param        body  body  CreateSyncRegistryInput true  "Registry config"
 // @Success      201  {object}  models.CapabilityRegistry
 // @Failure      400  {object}  object{error=string}
-// @Router       /organizations/{id}/registries [post]
-func AddOrgRegistry(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/registries [post]
+func AddRepoRegistry(c *gin.Context) {
+	repoID := c.Param("id")
 	var req CreateSyncRegistryInput
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -528,19 +639,19 @@ func AddOrgRegistry(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	var org models.Organization
-	if db.First(&org, "id = ?", orgID).Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Organization not found"})
+	var repo models.Repository
+	if db.First(&repo, "id = ?", repoID).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
 		return
 	}
 
 	userIDVal, _ := c.Get("userID")
 	ownerID, _ := userIDVal.(string)
 	if ownerID == "" {
-		ownerID = org.OwnerID
+		ownerID = repo.OwnerID
 	}
 
-	reg := buildExternalRegistry(req, orgID, ownerID, org.Visibility)
+	reg := buildExternalRegistry(req, repoID, ownerID, repo.Visibility)
 	if err := db.Create(&reg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
 		return
@@ -551,24 +662,24 @@ func AddOrgRegistry(c *gin.Context) {
 	c.JSON(http.StatusCreated, reg)
 }
 
-// UpdateOrgRegistry godoc
-// @Summary      Update organization registry
-// @Description  Update sync configuration of a registry belonging to an organization
-// @Tags         organizations
+// UpdateRepoRegistry godoc
+// @Summary      Update repository registry
+// @Description  Update sync configuration of a registry belonging to a repository
+// @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        id     path  string  true  "Organization ID"
+// @Param        id     path  string  true  "Repository ID"
 // @Param        regId  path  string  true  "Registry ID"
 // @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
-// @Router       /organizations/{id}/registries/{regId} [put]
-func UpdateOrgRegistry(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/registries/{regId} [put]
+func UpdateRepoRegistry(c *gin.Context) {
+	repoID := c.Param("id")
 	regID := c.Param("regId")
 	db := database.GetDB()
 
 	var reg models.CapabilityRegistry
-	if db.Where("id = ? AND org_id = ?", regID, orgID).First(&reg).Error != nil {
+	if db.Where("id = ? AND repo_id = ?", regID, repoID).First(&reg).Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
 		return
 	}
@@ -630,23 +741,23 @@ func UpdateOrgRegistry(c *gin.Context) {
 	c.JSON(http.StatusOK, reg)
 }
 
-// RemoveOrgRegistry godoc
-// @Summary      Remove registry from organization
-// @Description  Delete a sync registry from an organization
-// @Tags         organizations
+// RemoveRepoRegistry godoc
+// @Summary      Remove registry from repository
+// @Description  Delete a sync registry from a repository
+// @Tags         repositories
 // @Produce      json
-// @Param        id     path  string  true  "Organization ID"
+// @Param        id     path  string  true  "Repository ID"
 // @Param        regId  path  string  true  "Registry ID"
 // @Success      200  {object}  object{message=string}
 // @Failure      404  {object}  object{error=string}
-// @Router       /organizations/{id}/registries/{regId} [delete]
-func RemoveOrgRegistry(c *gin.Context) {
-	orgID := c.Param("id")
+// @Router       /repositories/{id}/registries/{regId} [delete]
+func RemoveRepoRegistry(c *gin.Context) {
+	repoID := c.Param("id")
 	regID := c.Param("regId")
 	db := database.GetDB()
 
 	var reg models.CapabilityRegistry
-	if db.Where("id = ? AND org_id = ?", regID, orgID).First(&reg).Error != nil {
+	if db.Where("id = ? AND repo_id = ?", regID, repoID).First(&reg).Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
 		return
 	}
@@ -654,35 +765,51 @@ func RemoveOrgRegistry(c *gin.Context) {
 	if SyncScheduler != nil {
 		SyncScheduler.UnregisterRegistry(reg.ID)
 	}
+
+	if err := db.Model(&models.CapabilityRegistry{}).Where("id = ?", reg.ID).Update("last_sync_log_id", nil).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear last sync log reference"})
+		return
+	}
+
+	if err := db.Where("registry_id = ?", reg.ID).Delete(&models.SyncLog{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete sync logs"})
+		return
+	}
+
+	if err := db.Where("registry_id = ?", reg.ID).Delete(&models.SyncJob{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete sync jobs"})
+		return
+	}
+
 	db.Delete(&reg)
 	c.JSON(http.StatusOK, gin.H{"message": "Registry removed"})
 }
 
-// GetMyOrganizations godoc
-// @Summary      Get my organizations
-// @Description  Get all organizations the user belongs to
-// @Tags         organizations
+// GetMyRepositories godoc
+// @Summary      Get my repositories
+// @Description  Get all repositories the user belongs to
+// @Tags         repositories
 // @Produce      json
 // @Param        userId  query     string  true  "User ID"
-// @Success      200     {object}  object{organizations=[]models.Organization}
+// @Success      200     {object}  object{repositories=[]models.Repository}
 // @Failure      400     {object}  object{error=string}
-// @Router       /organizations/my [get]
-func GetMyOrganizations(c *gin.Context) {
+// @Router       /repositories/my [get]
+func GetMyRepositories(c *gin.Context) {
 	userID := c.Query("userId")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "userId is required"})
 		return
 	}
 	db := database.GetDB()
-	var members []models.OrgMember
+	var members []models.RepoMember
 	db.Where("user_id = ?", userID).Find(&members)
-	orgIDs := make([]string, 0, len(members))
+	repoIDs := make([]string, 0, len(members))
 	for _, m := range members {
-		orgIDs = append(orgIDs, m.OrgID)
+		repoIDs = append(repoIDs, m.RepoID)
 	}
-	var orgs []models.Organization
-	if len(orgIDs) > 0 {
-		db.Where("id IN ?", orgIDs).Find(&orgs)
+	var repos []models.Repository
+	if len(repoIDs) > 0 {
+		db.Where("id IN ?", repoIDs).Find(&repos)
 	}
-	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
+	c.JSON(http.StatusOK, gin.H{"repositories": repos})
 }
