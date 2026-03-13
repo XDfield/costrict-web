@@ -25,7 +25,9 @@ import (
 	"os"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
+	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -63,6 +65,7 @@ func main() {
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.SecurityScan{},
+		&models.Device{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -73,6 +76,8 @@ func main() {
 	}
 
 	log.Println("Database migrated successfully")
+
+	db.Model(&models.Device{}).Where("status = ?", "online").Update("status", "offline")
 
 	db.Model(&models.CapabilityRegistry{}).
 		Where("sync_status = ?", "syncing").
@@ -117,6 +122,8 @@ func main() {
 	})
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	deviceSvc := &services.DeviceService{DB: db}
 
 	api := r.Group("/api")
 	{
@@ -199,7 +206,30 @@ func main() {
 		api.GET("/sync-logs/:id", handlers.GetSyncLogDetail)
 		api.GET("/sync-jobs/:id", handlers.GetSyncJobDetail)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
+
+		devices := api.Group("/devices")
+		devices.POST("/register", handlers.RegisterDeviceHandler(deviceSvc))
+		devices.GET("", handlers.ListDevicesHandler(deviceSvc))
+		devices.GET("/:deviceID", handlers.GetDeviceHandler(deviceSvc))
+		devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
+		devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
+		devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
+		api.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
 	}
+
+	store := gateway.NewMemoryStore()
+	gatewayRegistry := gateway.NewGatewayRegistry(store)
+	gatewayClient := gateway.NewClient()
+
+	internalGroup := r.Group("/internal")
+	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
+
+	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry))
+
+	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
+	cloudGroup := r.Group("/cloud")
+	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint))
+	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
