@@ -113,36 +113,6 @@
         <div class="response" id="new-response"></div>
     </div>
 
-    <!-- Generate API -->
-    <div class="api-section">
-        <h3><span class="post">POST</span>/api/marketplace/items/generate - AI Skill Generation</h3>
-        <label>Prompt (required)</label>
-        <textarea id="genPrompt">Create a skill that helps developers write better commit messages following conventional commits specification</textarea>
-        <div class="row">
-            <div>
-                <label>Item Type</label>
-                <select id="genType">
-                    <option value="skill">skill</option>
-                    <option value="agent">agent</option>
-                    <option value="command">command</option>
-                </select>
-            </div>
-            <div>
-                <label>Category</label>
-                <input type="text" id="genCategory" value="version-control">
-            </div>
-        </div>
-        <label>Context (optional)</label>
-        <input type="text" id="genContext" placeholder="Additional context">
-        <button onclick="callAPI('POST', '/api/marketplace/items/generate', {
-            prompt: document.getElementById('genPrompt').value,
-            itemType: document.getElementById('genType').value,
-            category: document.getElementById('genCategory').value,
-            context: document.getElementById('genContext').value
-        }, this)">Generate</button>
-        <div class="response" id="generate-response"></div>
-    </div>
-
     <!-- Item APIs -->
     <div class="api-section">
         <h3><span class="get">GET</span>/api/items/:id/similar - Find Similar Items</h3>

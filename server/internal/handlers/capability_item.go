@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -464,6 +465,17 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 		req.Slug = slugify(req.Name)
 	}
 
+	// Check if slug already exists
+	var existingCount int64
+	if err := h.db.Model(&models.CapabilityItem{}).Where("slug = ?", req.Slug).Count(&existingCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing items"})
+		return
+	}
+	if existingCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
+		return
+	}
+
 	item := models.CapabilityItem{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
@@ -483,6 +495,11 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 	}
 
 	if result := h.db.Omit("Embedding").Create(&item); result.Error != nil {
+		// Handle duplicate key error (race condition)
+		if strings.Contains(result.Error.Error(), "duplicate key value violates unique constraint") {
+			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}

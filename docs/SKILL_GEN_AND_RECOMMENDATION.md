@@ -261,69 +261,66 @@ erDiagram
 
 ```mermaid
 flowchart TB
-    subgraph USER[用户层]
+    subgraph CLIENT[客户端]
         U[用户]
-        W[Web控制台]
-        C[Chat Sidebar]
+        CLI[CLI/IDE Client]
+        LLM_LOCAL[本地 LLM]
+        LEARN[(.learnings/)]
+        SKILL[(.opencode/skill/)]
     end
 
-    subgraph APP[应用层]
+    subgraph APP[服务端应用层]
         CAP[Capability API]
-        MARKET[Marketplace API]
         SEARCH[Search API]
         REC[Recommend Service]
     end
 
-    subgraph AI[智能层]
-        LLM[Eino Agent]
+    subgraph AI[服务端智能层]
         VEC[Vector Search]
-        EVO[Evolution Engine]
     end
 
-    subgraph DATA[数据层]
+    subgraph DATA[服务端数据层]
         PG[(PostgreSQL<br/>+ pgvector)]
         LOG[(Behavior Log)]
     end
 
-    %% 能力项创建流程
-    U -->|描述需求| W
-    W -->|生成请求| CAP
-    CAP -->|调用| LLM
-    LLM -->|生成定义| CAP
+    %% 客户端 Skill 生成流程
+    U -->|描述需求| CLI
+    CLI -->|行为记录| LEARN
+    LEARN -->|模式检测| CLI
+    CLI -->|调用本地 LLM| LLM_LOCAL
+    LLM_LOCAL -->|生成定义| SKILL
+
+    %% 客户端推送流程（可选）
+    SKILL -->|用户确认推送| CAP
     CAP -->|存储| PG
 
     %% 能力项发现流程
-    U -->|自然语言搜索| C
-    C -->|搜索请求| SEARCH
+    U -->|自然语言搜索| CLI
+    CLI -->|搜索请求| SEARCH
     SEARCH -->|Embedding| VEC
     VEC -->|pgvector相似度| PG
     PG -->|item_id列表| SEARCH
-    SEARCH -->|完整数据| C
-    PG -->|完整信息| C
+    SEARCH -->|完整数据| CLI
 
     %% 能力项推荐流程
-    C -->|对话上下文| REC
+    CLI -->|对话上下文| REC
     REC -->|分析意图| VEC
     VEC -->|推荐候选| REC
     REC -->|用户偏好| PG
-    REC -->|推荐结果| C
+    REC -->|推荐结果| CLI
 
-    %% 进化流程
-    PG -->|使用数据| LOG
-    LOG -->|模式分析| EVO
-    EVO -->|自动生成| LLM
-    EVO -->|更新能力项| PG
-
-    %% 向量索引 (pgvector 统一存储)
-    PG -->|pgvector索引| PG
+    %% 行为上报（可选）
+    CLI -->|使用行为| LOG
+    LOG -->|优化推荐| REC
 
     %% 样式定义
-    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef clientStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
     classDef appStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef aiStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef dataStyle fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
 
-    class USER userStyle
+    class CLIENT clientStyle
     class APP appStyle
     class AI aiStyle
     class DATA dataStyle
@@ -335,67 +332,76 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph SOURCE[数据源]
+    subgraph CLIENT[客户端]
+        CLI[CLI/IDE]
+        LEARN[(.learnings/)]
+        LLM[本地 LLM]
+        SKILL[(.opencode/skill/)]
+    end
+
+    subgraph SOURCE[服务端数据源]
         S1[capability_item表]
         S2[capability_registry表]
         S3[capability_version表]
         S4[organization表]
     end
 
-    subgraph INDEX[索引服务]
+    subgraph INDEX[服务端索引服务]
         IDX[Indexer]
         EMB[Embedding]
         PGVEC[(PostgreSQL<br/>pgvector)]
     end
 
-    subgraph SEARCH[搜索服务]
+    subgraph SEARCH[服务端搜索服务]
         SEA[Search Engine]
         REL[Relevance Ranker]
     end
 
-    subgraph RECOMMEND[推荐服务]
+    subgraph RECOMMEND[服务端推荐服务]
         RC[Recommender]
         CTR[CTR Model]
         FILTER[Filter]
     end
 
-    subgraph GENERATE[生成服务]
-        GEN[Generator]
-        EINO[Eino Framework]
-        VAL[Validator]
-    end
+    %% 客户端生成流程
+    CLI -->|行为记录| LEARN
+    LEARN -->|模式检测| LLM
+    LLM -->|生成 Skill| SKILL
+    SKILL -->|用户确认推送| S1
 
+    %% 服务端索引流程
     S1 --> IDX
     S2 --> IDX
     IDX --> EMB
     EMB --> PGVEC
 
+    %% 搜索流程
+    CLI -->|搜索请求| SEA
     PGVEC --> SEA
     SEA --> REL
     S3 --> REL
+    REL -->|搜索结果| CLI
 
+    %% 推荐流程
     PGVEC --> RC
     S3 --> CTR
     S4 --> FILTER
     CTR --> RC
     FILTER --> RC
-
-    GEN --> EINO
-    EINO --> VAL
-    VAL --> S1
+    RC -->|推荐结果| CLI
 
     %% 样式定义
-    classDef sourceStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef indexStyle fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef clientStyle fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef sourceStyle fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef indexStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef searchStyle fill:#f1f8e9,stroke:#558b2f,stroke-width:2px
     classDef recStyle fill:#fff8e1,stroke:#ff8f00,stroke-width:2px
-    classDef genStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
 
+    class CLIENT clientStyle
     class SOURCE sourceStyle
     class INDEX indexStyle
     class SEARCH searchStyle
     class RECOMMEND recStyle
-    class GENERATE genStyle
 ```
 
 ---
@@ -425,49 +431,13 @@ flowchart LR
 
 ---
 
-### 场景2：技能创建
-
-**用户需求：** 想创建一个新的自动化技能，但不知道如何编写
-
-**解决方案：** 技能生成助手（扩展现有 `POST /api/skills` 接口）
-
-| 步骤 | 说明 | 技术实现 |
-|------|------|----------|
-| 用户输入 | 技能名称、需求描述、依赖工具、输入参数、输出结果 | 前端表单收集 |
-| 系统生成 | SKILL.md / skill.json / 调用示例 | LLM 自动生成 |
-| 数据存储 | 写入 `capability_item` 表，关联 `capability_registry` | 复用现有数据模型 |
-| 后续流程 | 一键提交审核 → 审核通过后自动上线 | 复用 Casdoor 权限验证 |
-
-**CapabilityItem 数据结构：**
-
-```json
-{
-  "name": "web_scraper",
-  "slug": "web-scraper",
-  "description": "爬取网页内容并解析",
-  "item_type": "skill",
-  "version": "1.0.0",
-  "registry_id": "registry-uuid",
-  "created_by": "user-uuid",
-  "visibility": "org",
-  "status": "active",
-  "metadata": {
-    "inputs": ["url"],
-    "outputs": ["title", "content"],
-    "dependencies": ["http_request", "html_parser"]
-  }
-}
-```
-
----
-
-### 场景3：智能推荐
+#### 场景2：智能推荐
 
 **用户需求：** 在对话过程中，希望系统主动推荐相关技能
 
 **解决方案：** 多策略融合推荐 + 行为反馈闭环
 
-#### 推荐策略架构
+##### 推荐策略架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -502,7 +472,7 @@ flowchart LR
               └─────────────────────────┘
 ```
 
-#### 四种推荐策略
+##### 四种推荐策略
 
 | 策略 | 分数 | 逻辑 | 数据来源 |
 |------|------|------|----------|
@@ -511,7 +481,7 @@ flowchart LR
 | **热门推荐** | 0.6 | 最近30天安装数高的项 | `behavior_logs` + `install_count` |
 | **上下文推荐** | 0.75 | 基于当前会话浏览项的分类，推荐相关项 | `sessionItems` + `category` |
 
-#### API 端点
+##### API 端点
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -522,13 +492,13 @@ flowchart LR
 | GET | `/api/items/{id}/stats` | 获取能力项统计 |
 | GET | `/api/users/me/behavior/summary` | 获取用户行为摘要 |
 
-#### 推荐数据来源
+##### 推荐数据来源
 
 - `capability_item` 表：能力项基本信息、分类、安装数、评分
 - `behavior_logs` 表：用户行为日志（view/install/use/rate）
 - 请求参数：`sessionItems`（当前会话浏览项）
 
-#### 用户行为埋点
+##### 用户行为埋点
 
 | 行为类型 | 说明 | 用途 |
 |----------|------|------|
@@ -539,23 +509,24 @@ flowchart LR
 
 ---
 
-### 场景4：能力沉淀
+#### 场景3：能力沉淀
 
 **用户需求：** 发现团队经常重复执行某些操作，希望自动化
 
-**解决方案：** 自动技能生成
+**解决方案：** 客户端模式识别 + 本地 Skill 生成（服务端仅作为可选的存储协作方）
 
 | 步骤 | 说明 | 技术实现 |
 |------|------|----------|
-| 行为识别 | 分析用户行为日志，挖掘重复模式 | 扩展 `capability_item.metadata` 存储行为数据 |
-| 自动生成 | LLM 根据模式生成 Skill 定义 | 写入 `capability_item` 表，`visibility: org` |
-| 人工审核 | 提交审核后上线 | 复用 Casdoor 权限流程 |
+| 行为识别 | 客户端分析用户行为，检测重复模式 | `.learnings/` 目录记录学习数据 |
+| 模式晋升 | 重复模式达到阈值后晋升为 Skill 候选 | `recurrenceCount >= 3` 触发生成 |
+| 本地生成 | 客户端 LLM 生成 Skill 定义 | 存储到 `.opencode/skill/` |
+| 可选推送 | 用户确认后推送到服务端 | `POST /api/items` |
 
-**示例：** 下载报表 → 解析 → 统计 → 发送邮件 → 自动生成 Report Automation Skill
+**示例：** 下载报表 → 解析 → 统计 → 发送邮件 → 客户端检测到重复模式 → 生成本地 Skill → 用户选择推送到服务端
 
 ---
 
-### 场景5：跨团队复用
+#### 场景4：跨团队复用
 
 **用户需求：** A 团队的优秀实践希望推广到 B 团队
 
@@ -568,7 +539,7 @@ flowchart LR
 
 ---
 
-### 2.3 自我进化机制（客户端优先）
+### 2.5 自我进化机制（客户端优先）
 
 参考 [self-improving-agent](https://github.com/peterskoett/self-improving-agent) 的设计理念，采用 **客户端优先** 的进化架构。
 
@@ -583,7 +554,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    subgraph CLIENT["客户端 (OpenCode)"]
+    subgraph CLIENT["客户端 (cs)"]
         subgraph DETECT["检测层"]
             A1[用户对话] -->|触发词检测| D1[纠正检测]
             A2[命令执行] -->|错误模式| D2[错误检测]
@@ -791,7 +762,7 @@ Output JSON format:
 ```mermaid
 sequenceDiagram
     participant User
-    participant Client as OpenCode Client
+    participant Client as cs Client
     participant Server as CoStrict Server
 
     Client->>Client: 1. 生成 Skill 候选
@@ -842,7 +813,7 @@ POST /api/items
 
 ---
 
-### 2.4 服务端协作 API（可选）
+### 2.6 服务端协作 API（可选）
 
 当用户选择将本地 Skill 推送到服务端时，服务端提供以下协作 API：
 
@@ -924,13 +895,7 @@ POST /api/items
 |------|------|------|
 | POST | `/api/marketplace/items/recommend` | 获取推荐能力项 |
 
-### 3.3 能力生成 API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/marketplace/items/generate` | AI 智能生成能力项 |
-
-### 3.4 能力项操作 API
+### 3.3 能力项操作 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -942,7 +907,7 @@ POST /api/items
 | GET | `/api/items/{id}/versions` | 获取能力项版本列表 |
 | GET | `/api/items/{id}/artifacts` | 获取能力项制品列表 |
 
-### 3.5 管理员 API
+### 3.4 管理员 API
 
 > 注：自我进化主要在客户端完成，服务端管理员 API 仅用于审核客户端推送的 Skill
 

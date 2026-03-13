@@ -212,9 +212,6 @@ func main() {
 			marketplace.POST("/items/recommend", recommendHandler.GetRecommendations)
 			marketplace.GET("/items/trending", recommendHandler.GetTrending)
 			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
-
-			// AI Generation
-			marketplace.POST("/items/generate", generateHandler.GenerateSkill)
 		}
 
 		// Item Enhanced APIs
