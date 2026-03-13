@@ -57,6 +57,20 @@ func (s *EmbeddingService) GetEmbedding(ctx context.Context, texts []string) ([]
 		return nil, nil
 	}
 
+	// Handle mock provider for testing
+	if s.cfg.Provider == "mock" {
+		embeddings := make([][]float64, len(texts))
+		for i := range texts {
+			// Generate deterministic mock embedding based on text length
+			embedding := make([]float64, s.cfg.Dimensions)
+			for j := range embedding {
+				embedding[j] = float64(len(texts[i])%100) / 100.0 * float64(j%10) / 10.0
+			}
+			embeddings[i] = embedding
+		}
+		return embeddings, nil
+	}
+
 	req := EmbeddingRequest{
 		Model:      s.cfg.Model,
 		Input:      texts,

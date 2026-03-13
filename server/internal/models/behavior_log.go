@@ -34,8 +34,8 @@ const (
 type BehaviorLog struct {
 	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	UserID     string         `gorm:"type:varchar(191);index" json:"userId"`
-	ItemID     string         `gorm:"type:uuid;index" json:"itemId"`
-	RegistryID string         `gorm:"type:uuid;index" json:"registryId"`
+	ItemID     string         `gorm:"type:uuid;index;default:null" json:"itemId"`
+	RegistryID string         `gorm:"type:uuid;index;default:null" json:"registryId"`
 	ActionType ActionType     `gorm:"type:varchar(32);not null;index" json:"actionType"`
 	Context    ContextType    `gorm:"type:varchar(32)" json:"context"`
 	SearchQuery string        `json:"searchQuery"`

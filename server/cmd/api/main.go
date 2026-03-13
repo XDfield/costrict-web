@@ -20,9 +20,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/cloud"
@@ -99,6 +101,18 @@ func main() {
 	jobSvc := &services.JobService{DB: db}
 	handlers.JobService = jobSvc
 
+	// Embedding and Indexer Services
+	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
+	indexerSvc := services.NewIndexerService(db, embeddingSvc)
+
+	// Search Service
+	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
+
+	// Behavior Service
+	behaviorSvc := services.NewBehaviorService(db)
+
+	// Recommend Service
+	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
 	scanJobSvc := &services.ScanJobService{DB: db}
 	handlers.ScanJobService = scanJobSvc
 
@@ -111,6 +125,16 @@ func main() {
 	}
 	defer sched.Stop()
 	handlers.SyncScheduler = sched
+
+	// Initialize ItemHandler with indexer
+	itemHandler := handlers.NewItemHandler(db, indexerSvc)
+
+	// Initialize AI-powered handlers
+	searchHandler := handlers.NewSearchHandler(searchSvc)
+	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+
+	// Start background indexing (every hour)
+	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
 
 	r := gin.Default()
 
@@ -184,7 +208,7 @@ func main() {
 
 		api.GET("/items/my", handlers.ListMyItems)
 		api.GET("/items", handlers.ListAllItems)
-		api.POST("/items", handlers.CreateItemDirect)
+		api.POST("/items", itemHandler.CreateItemDirect)
 		api.GET("/items/:id", handlers.GetItem)
 		api.PUT("/items/:id", handlers.UpdateItem)
 		api.DELETE("/items/:id", handlers.DeleteItem)
@@ -216,6 +240,34 @@ func main() {
 		api.GET("/sync-jobs/:id", handlers.GetSyncJobDetail)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
+		// === AI-POWERED MARKETPLACE APIS ===
+
+		// Marketplace Search & Discovery
+		marketplace := api.Group("/marketplace")
+		{
+			marketplace.POST("/items/search", searchHandler.SemanticSearch)
+			marketplace.POST("/items/hybrid-search", searchHandler.HybridSearch)
+
+			// Recommendations
+			marketplace.POST("/items/recommend", recommendHandler.GetRecommendations)
+			marketplace.GET("/items/trending", recommendHandler.GetTrending)
+			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
+		}
+
+		// Item Enhanced APIs
+		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
+
+		// User Behavior
+		api.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
+
+		// Admin Management
+		admin := api.Group("/admin")
+		admin.Use(middleware.RequireAuth(casdoorEndpoint))
+		{
+			// Reserved for future admin functionality
+		}
 		devices := api.Group("/devices")
 		devices.POST("/register", handlers.RegisterDeviceHandler(deviceSvc))
 		devices.GET("", handlers.ListDevicesHandler(deviceSvc))

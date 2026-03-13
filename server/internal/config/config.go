@@ -92,6 +92,11 @@ func Load() *Config {
 }
 
 func getEnv(key, defaultValue string) string {
+	// First check viper (reads from .env file)
+	if value := viper.GetString(key); value != "" {
+		return value
+	}
+	// Then check system environment variable
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
@@ -99,6 +104,13 @@ func getEnv(key, defaultValue string) string {
 }
 
 func getEnvInt(key string, defaultValue int) int {
+	// First check viper
+	if value := viper.GetString(key); value != "" {
+		if n, err := strconv.Atoi(value); err == nil {
+			return n
+		}
+	}
+	// Then check system environment variable
 	if value := os.Getenv(key); value != "" {
 		if n, err := strconv.Atoi(value); err == nil {
 			return n
@@ -108,6 +120,13 @@ func getEnvInt(key string, defaultValue int) int {
 }
 
 func getEnvFloat(key string, defaultValue float64) float64 {
+	// First check viper
+	if value := viper.GetString(key); value != "" {
+		if n, err := strconv.ParseFloat(value, 64); err == nil {
+			return n
+		}
+	}
+	// Then check system environment variable
 	if value := os.Getenv(key); value != "" {
 		if n, err := strconv.ParseFloat(value, 64); err == nil {
 			return n

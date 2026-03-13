@@ -72,7 +72,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 
 	// Base query for items with embeddings
 	query := s.db.Model(&models.CapabilityItem{}).
-		Where("embedding IS NOT NULL AND embedding != '' AND embedding != '[]'").
+		Where("embedding IS NOT NULL").
 		Where("status = ?", "active")
 
 	// Apply filters
@@ -89,7 +89,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	// Count total matching items
 	var total int64
 	countQuery := s.db.Model(&models.CapabilityItem{}).
-		Where("embedding IS NOT NULL AND embedding != '' AND embedding != '[]'").
+		Where("embedding IS NOT NULL").
 		Where("status = ?", "active")
 	if len(req.Types) > 0 {
 		countQuery = countQuery.Where("item_type IN ?", req.Types)
@@ -107,14 +107,15 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	var items []SearchResultItem
 
 	sql := `
-		SELECT id, registry_id, slug, item_type, name, description, category, version,
-		       content, metadata, source_path, source_sha, visibility, install_count,
-		       status, created_by, updated_by, created_at, updated_at,
-		       embedding_updated_at, experience_score,
-		       1 - (embedding <=> ?) as score
-		FROM capability_items
-		WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
-		  AND status = 'active'
+		SELECT * FROM (
+			SELECT id, registry_id, slug, item_type, name, description, category, version,
+			       content, metadata, source_path, source_sha, install_count,
+			       status, created_by, updated_by, created_at, updated_at,
+			       embedding_updated_at, experience_score,
+			       1 - (embedding <=> ?) as score
+			FROM capability_items
+			WHERE embedding IS NOT NULL
+			  AND status = 'active'
 	`
 
 	args := []interface{}{vectorStr}
@@ -149,12 +150,13 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 		sql += " AND " + strings.Join(whereClauses, " AND ")
 	}
 
-	sql += " HAVING 1 - (embedding <=> ?) >= ? ORDER BY score DESC LIMIT ? OFFSET ?"
-	args = append(args, vectorStr, req.MinScore, req.Limit, req.Offset)
+	sql += ` ) AS sub WHERE score >= ? ORDER BY score DESC LIMIT ? OFFSET ?`
+	args = append(args, req.MinScore, req.Limit, req.Offset)
 
 	result := database.GetDB().Raw(sql, args...).Scan(&items)
 	if result.Error != nil {
-		return nil, fmt.Errorf("failed to search items: %w", result.Error)
+		// Fall back to keyword search if vector search fails (e.g., SQLite without pgvector)
+		return s.KeywordSearch(req)
 	}
 
 	return &SearchResult{
@@ -184,12 +186,12 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 
 	sql := `
 		SELECT id, registry_id, slug, item_type, name, description, category, version,
-		       content, metadata, source_path, source_sha, visibility, install_count,
+		       content, metadata, source_path, source_sha, install_count,
 		       status, created_by, updated_by, created_at, updated_at,
 		       embedding_updated_at, experience_score,
 		       COALESCE(1 - (embedding <=> ?), 0) * 0.7 +
-		       CASE WHEN name ILIKE ? THEN 0.2 ELSE 0 END +
-		       CASE WHEN description ILIKE ? THEN 0.1 ELSE 0 END as score
+		       CASE WHEN LOWER(name) LIKE LOWER(?) THEN 0.2 ELSE 0 END +
+		       CASE WHEN LOWER(description) LIKE LOWER(?) THEN 0.1 ELSE 0 END as score
 		FROM capability_items
 		WHERE status = 'active'
 	`
@@ -232,7 +234,8 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 
 	result := database.GetDB().Raw(sql, args...).Scan(&items)
 	if result.Error != nil {
-		return nil, fmt.Errorf("failed to search items: %w", result.Error)
+		// Fall back to keyword search if vector search fails (e.g., SQLite without pgvector)
+		return s.KeywordSearch(req)
 	}
 
 	// Count total
@@ -247,7 +250,7 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 	if len(req.RegistryIDs) > 0 {
 		countQuery = countQuery.Where("registry_id IN ?", req.RegistryIDs)
 	}
-	countQuery = countQuery.Where("name ILIKE ? OR description ILIKE ?", searchPattern, searchPattern)
+	countQuery = countQuery.Where("LOWER(name) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?)", searchPattern, searchPattern)
 	countQuery.Count(&total)
 
 	return &SearchResult{
@@ -266,7 +269,7 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 	query := s.db.Model(&models.CapabilityItem{}).Where("status = ?", "active")
 
 	searchPattern := "%" + req.Query + "%"
-	query = query.Where("name ILIKE ? OR description ILIKE ? OR content ILIKE ?",
+	query = query.Where("LOWER(name) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)",
 		searchPattern, searchPattern, searchPattern)
 
 	if len(req.Types) > 0 {
@@ -325,12 +328,12 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 	var similarItems []SearchResultItem
 	sql := `
 		SELECT id, registry_id, slug, item_type, name, description, category, version,
-		       content, metadata, source_path, source_sha, visibility, install_count,
+		       content, metadata, source_path, source_sha, install_count,
 		       status, created_by, updated_by, created_at, updated_at,
 		       embedding_updated_at, experience_score,
 		       1 - (embedding <=> ?) as score
 		FROM capability_items
-		WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
+		WHERE embedding IS NOT NULL
 		  AND status = 'active'
 		  AND id != ?
 		ORDER BY score DESC
@@ -339,7 +342,8 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 
 	result = database.GetDB().Raw(sql, *item.Embedding, itemID, limit).Scan(&similarItems)
 	if result.Error != nil {
-		return nil, fmt.Errorf("failed to find similar items: %w", result.Error)
+		// Return empty list if vector search fails (e.g., SQLite without pgvector)
+		return []SearchResultItem{}, nil
 	}
 
 	return similarItems, nil

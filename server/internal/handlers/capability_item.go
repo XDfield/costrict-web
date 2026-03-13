@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -14,6 +16,20 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// ItemHandler handles item operations with indexing support
+type ItemHandler struct {
+	db         *gorm.DB
+	indexerSvc *services.IndexerService
+}
+
+// NewItemHandler creates a new item handler
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService) *ItemHandler {
+	return &ItemHandler{
+		db:         db,
+		indexerSvc: indexerSvc,
+	}
+}
 
 func enqueueScanAsync(itemID string, revision int, triggerType string) {
 	svc, ok := any(ScanJobService).(*services.ScanJobService)
@@ -108,7 +124,7 @@ func CreateItem(c *gin.Context) {
 	}
 
 	db := database.GetDB()
-	if result := db.Create(&item); result.Error != nil {
+	if result := db.Omit("Embedding").Create(&item); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}
@@ -430,7 +446,7 @@ func ListAllItems(c *gin.Context) {
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items [post]
-func CreateItemDirect(c *gin.Context) {
+func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 	var req struct {
 		RegistryID  string `json:"registryId"`
 		Slug        string `json:"slug"`
@@ -466,7 +482,17 @@ func CreateItemDirect(c *gin.Context) {
 		req.Slug = slugify(req.Name)
 	}
 
-	db := database.GetDB()
+	// Check if slug already exists
+	var existingCount int64
+	if err := h.db.Model(&models.CapabilityItem{}).Where("slug = ?", req.Slug).Count(&existingCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing items"})
+		return
+	}
+	if existingCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
+		return
+	}
+
 	item := models.CapabilityItem{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
@@ -485,7 +511,12 @@ func CreateItemDirect(c *gin.Context) {
 		item.Version = "1.0.0"
 	}
 
-	if result := db.Create(&item); result.Error != nil {
+	if result := h.db.Omit("Embedding").Create(&item); result.Error != nil {
+		// Handle duplicate key error (race condition)
+		if strings.Contains(result.Error.Error(), "duplicate key value violates unique constraint") {
+			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}
@@ -499,7 +530,19 @@ func CreateItemDirect(c *gin.Context) {
 		CommitMsg: "Initial version",
 		CreatedBy: item.CreatedBy,
 	}
-	db.Create(&sv)
+	h.db.Create(&sv)
+
+	// Async index the item for semantic search
+	if h.indexerSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.indexerSvc.IndexItem(ctx, &item); err != nil {
+				log.Printf("Failed to index item %s: %v", item.ID, err)
+			} else {
+				log.Printf("Successfully indexed item %s", item.ID)
+			}
+		}()
+	}
 
 	enqueueScanAsync(item.ID, 1, "create")
 
