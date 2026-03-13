@@ -60,8 +60,6 @@ func main() {
 		&models.SyncJob{},
 		&models.SyncLog{},
 		&models.BehaviorLog{},
-		&models.ExperienceCandidate{},
-		&models.ExperiencePromotion{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -105,20 +103,13 @@ func main() {
 	// Recommend Service
 	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
 
-	// Evolution Service
-	evolutionSvc := services.NewEvolutionService(db, llmClient, behaviorSvc)
-
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(ctx, time.Hour)
-
-	// Start background experience analysis (every 6 hours)
-	evolutionSvc.StartBackgroundAnalysis(ctx, 6*time.Hour)
 
 	// Initialize handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	generateHandler := handlers.NewGenerateHandler(generateSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
-	experienceHandler := handlers.NewExperienceHandler(evolutionSvc)
 	itemHandler := handlers.NewItemHandler(db, indexerSvc)
 
 	// Initialize Gin router
@@ -232,22 +223,9 @@ func main() {
 		api.POST("/items/:id/improve", generateHandler.ImproveSkill)
 		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
 		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
-		api.POST("/items/:id/analyze-patterns", experienceHandler.AnalyzeItemPatterns)
-		api.GET("/items/:id/promotion-history", experienceHandler.GetPromotionHistory)
 
 		// User Behavior
 		api.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
-
-		// Admin Experience Management
-		admin := api.Group("/admin")
-		admin.Use(middleware.RequireAuth(casdoorEndpoint))
-		{
-			admin.GET("/experiences/pending", experienceHandler.GetPendingExperiences)
-			admin.GET("/experiences/:id", experienceHandler.GetExperienceByID)
-			admin.POST("/experiences/:id/approve", experienceHandler.ApproveExperience)
-			admin.POST("/experiences/:id/reject", experienceHandler.RejectExperience)
-			admin.POST("/experiences/run-analysis", experienceHandler.RunAnalysis)
-		}
 	}
 
 	// Start server

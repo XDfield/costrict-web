@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 )
@@ -24,6 +26,13 @@ func newItemRouter(userID string) *gin.Engine {
 		}
 		c.Next()
 	}
+
+	// Create ItemHandler for CreateItemDirect
+	db := database.GetDB()
+	embeddingSvc := services.NewEmbeddingService(&config.EmbeddingConfig{Provider: "mock", Dimensions: 1024})
+	indexerSvc := services.NewIndexerService(db, embeddingSvc)
+	itemHandler := NewItemHandler(db, indexerSvc)
+
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
 	r.GET("/api/items/:id", injectUser, GetItem)
@@ -32,7 +41,7 @@ func newItemRouter(userID string) *gin.Engine {
 	r.GET("/api/items/:id/versions", injectUser, ListItemVersions)
 	r.GET("/api/items/:id/versions/:version", injectUser, GetItemVersion)
 	r.GET("/api/items", injectUser, ListAllItems)
-	r.POST("/api/items", injectUser, CreateItemDirect)
+	r.POST("/api/items", injectUser, itemHandler.CreateItemDirect)
 	r.GET("/api/registries/public", injectUser, GetPublicRegistry)
 	return r
 }

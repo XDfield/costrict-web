@@ -267,21 +267,6 @@ Use this skill when reviewing pull requests.</textarea>
         <div class="response" id="-api-items-response"></div>
     </div>
 
-    <!-- Admin APIs -->
-    <div class="api-section">
-        <h3><span class="get">GET</span>/api/admin/experiences/pending - Pending Experiences</h3>
-        <button onclick="callAPI('GET', '/api/admin/experiences/pending', null, this)">Get Pending</button>
-        <div class="response" id="pending-response"></div>
-    </div>
-
-    <div class="api-section">
-        <h3><span class="post">POST</span>/api/admin/experiences/:id/approve - Approve Experience</h3>
-        <label>Experience ID</label>
-        <input type="text" id="approveId" value="exp-123" placeholder="Experience ID">
-        <button onclick="callAPI('POST', '/api/admin/experiences/' + document.getElementById('approveId').value + '/approve', null, this)">Approve</button>
-        <div class="response" id="approve-response"></div>
-    </div>
-
     <script>
         async function callAPI(method, path, body, btn) {
             const baseUrl = document.getElementById('baseUrl').value;

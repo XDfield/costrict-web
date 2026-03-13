@@ -20,14 +20,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
@@ -92,6 +95,21 @@ func main() {
 	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
 	indexerSvc := services.NewIndexerService(db, embeddingSvc)
 
+	// LLM Client
+	llmClient := llm.NewClient(&cfg.LLM)
+
+	// Search Service
+	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
+
+	// Behavior Service
+	behaviorSvc := services.NewBehaviorService(db)
+
+	// Generate Service
+	generateSvc := services.NewGenerateService(llmClient, indexerSvc)
+
+	// Recommend Service
+	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
+
 	sched := &scheduler.Scheduler{
 		JobService: jobSvc,
 		DB:         db,
@@ -104,6 +122,14 @@ func main() {
 
 	// Initialize ItemHandler with indexer
 	itemHandler := handlers.NewItemHandler(db, indexerSvc)
+
+	// Initialize AI-powered handlers
+	searchHandler := handlers.NewSearchHandler(searchSvc)
+	generateHandler := handlers.NewGenerateHandler(generateSvc)
+	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+
+	// Start background indexing (every hour)
+	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
 
 	r := gin.Default()
 
@@ -191,6 +217,40 @@ func main() {
 		api.GET("/sync-logs/:id", handlers.GetSyncLogDetail)
 		api.GET("/sync-jobs/:id", handlers.GetSyncJobDetail)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
+
+		// === AI-POWERED MARKETPLACE APIS ===
+
+		// Marketplace Search & Discovery
+		marketplace := api.Group("/marketplace")
+		{
+			marketplace.POST("/items/search", searchHandler.SemanticSearch)
+			marketplace.POST("/items/hybrid-search", searchHandler.HybridSearch)
+
+			// Recommendations
+			marketplace.POST("/items/recommend", recommendHandler.GetRecommendations)
+			marketplace.GET("/items/trending", recommendHandler.GetTrending)
+			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
+
+			// AI Generation
+			marketplace.POST("/items/generate", generateHandler.GenerateSkill)
+		}
+
+		// Item Enhanced APIs
+		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.POST("/items/:id/analyze", generateHandler.AnalyzeSkill)
+		api.POST("/items/:id/improve", generateHandler.ImproveSkill)
+		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
+
+		// User Behavior
+		api.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
+
+		// Admin Management
+		admin := api.Group("/admin")
+		admin.Use(middleware.RequireAuth(casdoorEndpoint))
+		{
+			// Reserved for future admin functionality
+		}
 	}
 
 	log.Printf("Server starting on port %s", cfg.Port)

@@ -48,11 +48,15 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		metadataJSON = datatypes.JSON([]byte("{}"))
 	}
 
+	// Handle empty strings for UUID fields - convert to valid format or skip
+	userID := req.UserID
+	if userID == "" {
+		userID = "anonymous" // Use a placeholder for anonymous users
+	}
+
 	log := &models.BehaviorLog{
 		ID:          uuid.New().String(),
-		UserID:      req.UserID,
-		ItemID:      req.ItemID,
-		RegistryID:  req.RegistryID,
+		UserID:      userID,
 		ActionType:  req.ActionType,
 		Context:     req.Context,
 		SearchQuery: req.SearchQuery,
@@ -63,8 +67,32 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		Metadata:    metadataJSON,
 	}
 
-	if result := s.db.Create(log); result.Error != nil {
+	// Only set ItemID if it's a valid UUID
+	if req.ItemID != "" {
+		if _, err := uuid.Parse(req.ItemID); err == nil {
+			log.ItemID = req.ItemID
+		}
+	}
+
+	// Only set RegistryID if it's a valid UUID
+	if req.RegistryID != "" {
+		if _, err := uuid.Parse(req.RegistryID); err == nil {
+			log.RegistryID = req.RegistryID
+		}
+	}
+
+	// Use Omit to skip empty UUID fields
+	result := s.db.Omit("ItemID", "RegistryID").Create(log)
+	if result.Error != nil {
 		return nil, result.Error
+	}
+
+	// Manually set ItemID and RegistryID if they have valid values
+	if log.ItemID != "" {
+		s.db.Model(log).Update("item_id", log.ItemID)
+	}
+	if log.RegistryID != "" {
+		s.db.Model(log).Update("registry_id", log.RegistryID)
 	}
 
 	// Update item statistics

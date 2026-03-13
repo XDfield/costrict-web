@@ -107,60 +107,6 @@ Query: %s
 Generate expanded search terms and related concepts.`
 )
 
-// Experience evolution prompts
-const (
-	// SystemPromptExperienceAnalysis is used to analyze behavior patterns
-	SystemPromptExperienceAnalysis = `You are an expert at analyzing usage patterns and extracting actionable insights.
-
-Analyze the provided behavior logs and identify:
-1. Common error patterns
-2. Usage trends
-3. Best practices that emerge from successful uses
-4. Potential improvements or feature requests
-
-Output should be valid JSON:
-{
-  "patterns": [
-    {
-      "type": "error|success|usage_trend",
-      "description": "Description of the pattern",
-      "frequency": "How often this occurs",
-      "impact": "low|medium|high",
-      "suggestedAction": "What to do about this pattern"
-    }
-  ],
-  "recommendations": [
-    {
-      "priority": "high|medium|low",
-      "action": "Recommended action",
-      "reason": "Why this is important"
-    }
-  ],
-  "candidateExperiences": [
-    {
-      "type": "best_practice|behavior_rule|feature_request",
-      "title": "Title for this experience",
-      "description": "What was learned",
-      "context": "When this applies",
-      "frequency": 0,
-      "impactScore": 0.0
-    }
-  ]
-}`
-
-	// UserPromptExperienceAnalysis is the user prompt for experience analysis
-	UserPromptExperienceAnalysis = `Analyze the following behavior logs and usage patterns for this skill:
-
-Skill Name: %s
-Skill Type: %s
-Skill Description: %s
-
-Behavior Logs:
-%s
-
-Extract patterns and generate candidate experiences for knowledge evolution.`
-)
-
 // BuildSkillGeneratePrompt builds the skill generation prompt
 func BuildSkillGeneratePrompt(request, context string) (string, string) {
 	systemPrompt := SystemPromptSkillGenerate
@@ -179,12 +125,5 @@ func BuildSkillImprovePrompt(name, itemType, description, content, metadata stri
 func BuildQueryExpansionPrompt(query string) (string, string) {
 	systemPrompt := SystemPromptQueryExpansion
 	userPrompt := fmt.Sprintf(UserPromptQueryExpansion, query)
-	return systemPrompt, userPrompt
-}
-
-// BuildExperienceAnalysisPrompt builds the experience analysis prompt
-func BuildExperienceAnalysisPrompt(name, itemType, description string, logs string) (string, string) {
-	systemPrompt := SystemPromptExperienceAnalysis
-	userPrompt := fmt.Sprintf(UserPromptExperienceAnalysis, name, itemType, description, logs)
 	return systemPrompt, userPrompt
 }
