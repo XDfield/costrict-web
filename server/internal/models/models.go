@@ -4,7 +4,26 @@ import (
 	"time"
 
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
+
+type Device struct {
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	DeviceID        string         `gorm:"uniqueIndex;not null"                           json:"deviceId"`
+	DisplayName     string         `gorm:"not null"                                       json:"displayName"`
+	Platform        string         `gorm:"not null"                                       json:"platform"`
+	Version         string         `gorm:"not null"                                       json:"version"`
+	UserID          string         `gorm:"not null;index"                                 json:"userId"`
+	WorkspaceID     string         `gorm:"index"                                          json:"workspaceId"`
+	Status          string         `gorm:"not null;default:'offline'"                     json:"status"`
+	Token           string         `gorm:"not null"                                       json:"-"`
+	TokenRotatedAt  *time.Time     `                                                      json:"tokenRotatedAt,omitempty"`
+	LastConnectedAt *time.Time     `                                                      json:"lastConnectedAt,omitempty"`
+	LastSeenAt      *time.Time     `                                                      json:"lastSeenAt,omitempty"`
+	CreatedAt       time.Time      `                                                      json:"createdAt"`
+	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
 
 // Repository represents a repository
 type Repository struct {
