@@ -15,9 +15,10 @@ import (
 )
 
 type SyncService struct {
-	DB     *gorm.DB
-	Git    *GitService
-	Parser *ParserService
+	DB             *gorm.DB
+	Git            *GitService
+	Parser         *ParserService
+	ScanJobService *ScanJobService
 }
 
 type SyncOptions struct {
@@ -94,6 +95,15 @@ func (s *SyncService) parseFile(content []byte, relPath string) ([]*ParsedItem, 
 		}
 		return []*ParsedItem{item}, nil
 	}
+}
+
+func (s *SyncService) enqueueScan(itemID string, revision int) {
+	if s.ScanJobService == nil {
+		return
+	}
+	go func() {
+		_, _ = s.ScanJobService.Enqueue(itemID, revision, "sync", "", ScanEnqueueOptions{})
+	}()
 }
 
 func metadataJSON(m map[string]any) datatypes.JSON {
@@ -323,6 +333,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					CreatedBy: "sync",
 				}
 				s.DB.Create(ver)
+				s.enqueueScan(existing.ID, maxRevision+1)
 				result.Updated++
 			} else {
 				newItem := &models.CapabilityItem{
@@ -360,6 +371,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				s.DB.Create(ver)
 
 				s.syncAssets(cloneResult.LocalPath, relPath, newItem.ID, &result.Errors)
+				s.enqueueScan(newItem.ID, 1)
 				result.Added++
 			}
 		}

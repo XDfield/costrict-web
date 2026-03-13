@@ -1,17 +1,31 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+func enqueueScanAsync(itemID string, revision int, triggerType string) {
+	svc, ok := any(ScanJobService).(*services.ScanJobService)
+	if !ok || svc == nil {
+		return
+	}
+	go func() {
+		if _, err := svc.Enqueue(itemID, revision, triggerType, "", services.ScanEnqueueOptions{}); err != nil {
+			log.Printf("scan enqueue failed for item %s: %v", itemID, err)
+		}
+	}()
+}
 
 // ListItems godoc
 // @Summary      List registry items
@@ -109,6 +123,8 @@ func CreateItem(c *gin.Context) {
 		CreatedBy: item.CreatedBy,
 	}
 	db.Create(&version)
+
+	enqueueScanAsync(item.ID, 1, "create")
 
 	c.JSON(http.StatusCreated, item)
 }
@@ -208,13 +224,15 @@ func UpdateItem(c *gin.Context) {
 		commitMsg := req.CommitMsg
 		itemID := item.ID
 		itemContent := item.Content
+		newRevision := 1
 		_ = db.Transaction(func(tx *gorm.DB) error {
 			var maxRevision int
 			tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
+			newRevision = maxRevision + 1
 			sv := models.CapabilityVersion{
 				ID:        uuid.New().String(),
 				ItemID:    itemID,
-				Revision:  maxRevision + 1,
+				Revision:  newRevision,
 				Content:   itemContent,
 				Metadata:  datatypes.JSON([]byte("{}")),
 				CommitMsg: commitMsg,
@@ -222,6 +240,7 @@ func UpdateItem(c *gin.Context) {
 			}
 			return tx.Create(&sv).Error
 		})
+		enqueueScanAsync(itemID, newRevision, "update")
 	}
 
 	c.JSON(http.StatusOK, item)
@@ -481,6 +500,8 @@ func CreateItemDirect(c *gin.Context) {
 		CreatedBy: item.CreatedBy,
 	}
 	db.Create(&sv)
+
+	enqueueScanAsync(item.ID, 1, "create")
 
 	c.JSON(http.StatusCreated, item)
 }

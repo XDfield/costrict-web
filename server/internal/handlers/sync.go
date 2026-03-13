@@ -19,8 +19,9 @@ import (
 )
 
 var (
-	JobService    *services.JobService
-	SyncScheduler interface {
+	JobService     *services.JobService
+	ScanJobService *services.ScanJobService
+	SyncScheduler  interface {
 		RegisterRegistry(registry *models.CapabilityRegistry) error
 		UnregisterRegistry(registryID string)
 	}

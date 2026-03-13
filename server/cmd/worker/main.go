@@ -12,6 +12,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/worker"
@@ -26,6 +27,10 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
+	if err := runPreMigrations(db); err != nil {
+		log.Fatalf("Failed to run pre-migrations: %v", err)
+	}
+
 	err = db.AutoMigrate(
 		&models.SyncLog{},
 		&models.SyncJob{},
@@ -33,6 +38,8 @@ func main() {
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
 		&models.CapabilityAsset{},
+		&models.SecurityScan{},
+		&models.ScanJob{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -72,6 +79,43 @@ func main() {
 		PollInterval: pollInterval,
 	}
 
+	scanEnabled := os.Getenv("SCAN_ENABLED")
+	var scanPool *worker.ScanWorkerPool
+	if scanEnabled != "false" {
+		llmCfg := cfg.LLM
+		if model := os.Getenv("SCAN_LLM_MODEL"); model != "" {
+			llmCfg.Model = model
+		}
+		if timeoutStr := os.Getenv("SCAN_LLM_TIMEOUT_SECONDS"); timeoutStr != "" {
+			if secs, err := strconv.Atoi(timeoutStr); err == nil && secs > 0 {
+				llmCfg.MaxTokens = secs
+			}
+		}
+
+		scanLLMClient := llm.NewClient(&llmCfg)
+		scanSvc := &services.ScanService{
+			DB:        db,
+			LLMClient: scanLLMClient,
+			ModelName: llmCfg.Model,
+		}
+
+		scanConcurrency, _ := strconv.Atoi(os.Getenv("SCAN_WORKER_CONCURRENCY"))
+		if scanConcurrency <= 0 {
+			scanConcurrency = 2
+		}
+
+		scanPool = &worker.ScanWorkerPool{
+			DB:           db,
+			ScanService:  scanSvc,
+			Concurrency:  scanConcurrency,
+			PollInterval: 3 * time.Second,
+		}
+		scanPool.Start()
+		log.Printf("Scan worker pool started with %d workers", scanConcurrency)
+	} else {
+		log.Println("Scan worker pool disabled (SCAN_ENABLED=false)")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -79,9 +123,39 @@ func main() {
 	log.Printf("Worker pool started with %d workers, polling every %s", concurrency, pollInterval)
 
 	<-ctx.Done()
-	log.Println("Shutting down worker pool...")
+	log.Println("Shutting down worker pools...")
 	pool.Stop()
-	log.Println("Worker pool stopped")
+	if scanPool != nil {
+		scanPool.Stop()
+	}
+	log.Println("Worker pools stopped")
+}
+
+func runPreMigrations(db *gorm.DB) error {
+	stmts := []struct {
+		check string
+		stmts []string
+	}{
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
+			stmts: []string{
+				`ALTER TABLE security_scans DROP COLUMN IF EXISTS revision_id`,
+			},
+		},
+	}
+	for _, m := range stmts {
+		var exists int
+		db.Raw(m.check).Scan(&exists)
+		if exists != 1 {
+			continue
+		}
+		for _, stmt := range m.stmts {
+			if err := db.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("pre-migration failed (%s): %w", stmt, err)
+			}
+		}
+	}
+	return nil
 }
 
 func runPostMigrations(db *gorm.DB) error {

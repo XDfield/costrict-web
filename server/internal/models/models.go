@@ -209,18 +209,37 @@ type CapabilityArtifact struct {
 }
 
 type SecurityScan struct {
-	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID      string         `gorm:"not null;index" json:"itemId"`
-	RevisionID  string         `gorm:"not null" json:"revisionId"`
-	TriggerType string         `gorm:"not null" json:"triggerType"`
-	Status      string         `gorm:"not null;default:'pending'" json:"status"`
-	RiskLevel   string         `json:"riskLevel"`
-	Verdict     string         `json:"verdict"`
-	RedFlags    datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags"`
-	Permissions datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"permissions"`
-	Report      datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"report"`
-	ErrorList   datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"errorList"`
-	ScannedBy   string         `json:"scannedBy"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	FinishedAt  *time.Time     `json:"finishedAt,omitempty"`
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID          string         `gorm:"not null;index" json:"itemId"`
+	ItemRevision    int            `gorm:"not null;default:0" json:"itemRevision"`
+	TriggerType     string         `gorm:"not null" json:"triggerType"` // create | update | sync | manual
+	ScanModel       string         `json:"scanModel"`
+	RiskLevel       string         `gorm:"default:''" json:"riskLevel"` // clean | low | medium | high | extreme
+	Verdict         string         `gorm:"default:''" json:"verdict"`   // safe | caution | reject
+	RedFlags        datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags"`
+	Permissions     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"permissions"`
+	Summary         string         `gorm:"type:text" json:"summary"`
+	Recommendations datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"recommendations"`
+	RawOutput       string         `gorm:"type:text" json:"-"`
+	DurationMs      int64          `json:"durationMs"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	FinishedAt      *time.Time     `json:"finishedAt,omitempty"`
+}
+
+type ScanJob struct {
+	ID           string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID       string     `gorm:"not null;index" json:"itemId"`
+	ItemRevision int        `gorm:"not null;default:0" json:"itemRevision"`
+	TriggerType  string     `gorm:"not null" json:"triggerType"` // create | update | sync | manual
+	TriggerUser  string     `json:"triggerUser"`
+	Priority     int        `gorm:"not null;default:5" json:"priority"`
+	Status       string     `gorm:"not null;default:'pending';index" json:"status"` // pending | running | success | failed | cancelled
+	RetryCount   int        `gorm:"default:0" json:"retryCount"`
+	MaxAttempts  int        `gorm:"default:2" json:"maxAttempts"`
+	LastError    string     `gorm:"type:text" json:"lastError"`
+	ScheduledAt  time.Time  `gorm:"not null;index" json:"scheduledAt"`
+	StartedAt    *time.Time `json:"startedAt"`
+	FinishedAt   *time.Time `json:"finishedAt"`
+	ScanResultID *string    `gorm:"type:uuid" json:"scanResultId"`
+	CreatedAt    time.Time  `json:"createdAt"`
 }

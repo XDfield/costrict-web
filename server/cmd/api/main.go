@@ -65,6 +65,7 @@ func main() {
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.SecurityScan{},
+		&models.ScanJob{},
 		&models.Device{},
 	)
 	if err != nil {
@@ -97,6 +98,9 @@ func main() {
 
 	jobSvc := &services.JobService{DB: db}
 	handlers.JobService = jobSvc
+
+	scanJobSvc := &services.ScanJobService{DB: db}
+	handlers.ScanJobService = scanJobSvc
 
 	sched := &scheduler.Scheduler{
 		JobService: jobSvc,
@@ -187,6 +191,11 @@ func main() {
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
+		api.POST("/items/:id/scan", handlers.TriggerItemScan)
+		api.GET("/items/:id/scan-status", handlers.GetItemScanStatus)
+		api.GET("/items/:id/scan-results", handlers.ListItemScanResults)
+		api.GET("/scan-results/:id", handlers.GetScanResult)
+		api.POST("/scan-jobs/:id/cancel", handlers.CancelScanJob)
 
 		api.POST("/artifacts/upload", handlers.UploadArtifact)
 		api.GET("/artifacts/:id/download", handlers.DownloadArtifact)
@@ -339,6 +348,12 @@ func runPreMigrations(db *gorm.DB) error {
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
 			stmts: []string{
 				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
+			},
+		},
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
+			stmts: []string{
+				`ALTER TABLE security_scans DROP COLUMN IF EXISTS revision_id`,
 			},
 		},
 	}
