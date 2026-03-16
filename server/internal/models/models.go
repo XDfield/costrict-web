@@ -3,9 +3,67 @@ package models
 import (
 	"time"
 
+	"github.com/lib/pq"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// SystemNotificationChannel 系统通知渠道（管理员配置）
+// 每种渠道类型由管理员统一开关，并可配置系统级参数
+type SystemNotificationChannel struct {
+	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Type         string         `gorm:"not null;index"                                 json:"type"`         // "wecom" | "feishu" | "webhook"
+	Name         string         `gorm:"not null"                                       json:"name"`         // 显示名，如"企业微信"
+	WorkspaceID  string         `gorm:"index"                                          json:"workspaceId"`  // 空=全局
+	Enabled      bool           `gorm:"not null;default:true"                          json:"enabled"`
+	SystemConfig datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"systemConfig"` // 系统级配置
+	CreatedBy    string         `gorm:"not null"                                       json:"createdBy"`
+	CreatedAt    time.Time      `                                                      json:"createdAt"`
+	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
+	DeletedAt    gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
+
+// UserNotificationChannel 用户通知渠道配置
+// 用户在管理员启用的渠道基础上填写自己的配置（如 Webhook URL）
+type UserNotificationChannel struct {
+	ID               string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID           string         `gorm:"not null;index"                                 json:"userId"`
+	SystemChannelID  string         `gorm:"index"                                          json:"systemChannelId"` // 关联系统渠道（webhook 类型可为空）
+	ChannelType      string         `gorm:"not null;index"                                 json:"channelType"`     // "wecom" | "feishu" | "webhook"
+	Name             string         `gorm:"not null"                                       json:"name"`
+	Enabled          bool           `gorm:"not null;default:true"                          json:"enabled"`
+	UserConfig       datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"userConfig"`  // 用户自己的配置
+	TriggerEvents    pq.StringArray `gorm:"type:text[]"                                    json:"triggerEvents,omitempty"`
+	LastUsedAt       *time.Time     `                                                      json:"lastUsedAt,omitempty"`
+	LastError        string         `                                                      json:"lastError,omitempty"`
+	CreatedAt        time.Time      `                                                      json:"createdAt"`
+	UpdatedAt        time.Time      `                                                      json:"updatedAt"`
+	DeletedAt        gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
+
+// UserConfig 通用用户配置（KV 存储，供其他模块使用）
+type UserConfig struct {
+	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID    string         `gorm:"not null;uniqueIndex:idx_user_config_key"       json:"userId"`
+	Key       string         `gorm:"not null;uniqueIndex:idx_user_config_key"       json:"key"`
+	Value     datatypes.JSON `gorm:"not null"                                       json:"value"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+// NotificationLog 通知发送记录
+type NotificationLog struct {
+	ID            string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserChannelID string     `gorm:"not null;index"                                 json:"userChannelId"`
+	UserID        string     `gorm:"not null;index"                                 json:"userId"`
+	ChannelType   string     `gorm:"not null"                                       json:"channelType"`
+	EventType     string     `gorm:"not null"                                       json:"eventType"`
+	SessionID     string     `gorm:"index"                                          json:"sessionId,omitempty"`
+	DeviceID      string     `gorm:"index"                                          json:"deviceId,omitempty"`
+	Status        string     `gorm:"not null"                                       json:"status"`
+	Error         string     `                                                      json:"error,omitempty"`
+	SentAt        *time.Time `                                                      json:"sentAt,omitempty"`
+	CreatedAt     time.Time  `                                                      json:"createdAt"`
+}
 
 type Device struct {
 	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
@@ -16,6 +74,8 @@ type Device struct {
 	UserID          string         `gorm:"not null;index"                                 json:"userId"`
 	WorkspaceID     string         `gorm:"index"                                          json:"workspaceId"`
 	Status          string         `gorm:"not null;default:'offline'"                     json:"status"`
+	Label           string         `                                                      json:"label"`
+	Description     string         `gorm:"type:text"                                      json:"description"`
 	Token           string         `gorm:"not null"                                       json:"-"`
 	TokenRotatedAt  *time.Time     `                                                      json:"tokenRotatedAt,omitempty"`
 	LastConnectedAt *time.Time     `                                                      json:"lastConnectedAt,omitempty"`
