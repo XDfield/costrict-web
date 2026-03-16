@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	gw "github.com/costrict/costrict-web/gateway/internal"
@@ -13,14 +18,38 @@ func main() {
 
 	registerWithRetry(cfg)
 
-	go heartbeatLoop(cfg, manager)
+	stopHeartbeat := make(chan struct{})
+	go heartbeatLoop(cfg, manager, stopHeartbeat)
 
 	r := gw.SetupRouter(manager, cfg)
 
-	log.Printf("[Gateway] starting on port %s", cfg.Port)
-	if err := r.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("[Gateway] failed to start: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + cfg.Port,
+		Handler: r,
 	}
+
+	go func() {
+		log.Printf("[Gateway] starting on port %s", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("[Gateway] failed to start: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+	<-quit
+
+	log.Printf("[Gateway] shutting down gracefully...")
+	close(stopHeartbeat)
+	manager.NotifyAllOffline(cfg.ServerURL, cfg.GatewayID)
+	if err := gw.Deregister(cfg.ServerURL, cfg.GatewayID); err != nil {
+		log.Printf("[Gateway] deregister failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+	log.Printf("[Gateway] shutdown complete")
 }
 
 func registerWithRetry(cfg *gw.Config) {
@@ -35,11 +64,16 @@ func registerWithRetry(cfg *gw.Config) {
 	}
 }
 
-func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager) {
+func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, stop <-chan struct{}) {
 	ticker := time.NewTicker(gw.HeartbeatInterval * time.Second)
 	defer ticker.Stop()
 	var lastEpoch int64
-	for range ticker.C {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
 		epoch, err := gw.Heartbeat(cfg.ServerURL, cfg.GatewayID, manager.Count())
 		if err != nil {
 			log.Printf("[Gateway] heartbeat failed: %v, re-registering...", err)

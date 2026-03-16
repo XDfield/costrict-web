@@ -89,3 +89,32 @@ func NotifyOffline(serverURL, gatewayID, deviceID string) error {
 	defer resp.Body.Close()
 	return nil
 }
+
+func (m *TunnelManager) NotifyAllOffline(serverURL, gatewayID string) {
+	m.mu.RLock()
+	deviceIDs := make([]string, 0, len(m.sessions))
+	for id := range m.sessions {
+		deviceIDs = append(deviceIDs, id)
+	}
+	m.mu.RUnlock()
+
+	for _, deviceID := range deviceIDs {
+		if err := NotifyOffline(serverURL, gatewayID, deviceID); err != nil {
+			log.Printf("[Gateway] notify offline failed for device %s: %v", deviceID, err)
+		}
+	}
+}
+
+func Deregister(serverURL, gatewayID string) error {
+	url := fmt.Sprintf("%s/internal/gateway/%s", serverURL, gatewayID)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("deregister failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return nil
+}
