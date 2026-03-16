@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"time"
 )
 
 func Register(serverURL, gatewayID, endpoint, internalURL, region string, capacity int) error {
@@ -29,19 +29,39 @@ func Register(serverURL, gatewayID, endpoint, internalURL, region string, capaci
 	return nil
 }
 
-func StartHeartbeat(serverURL, gatewayID string, manager *ConnectionManager) {
-	ticker := time.NewTicker(HeartbeatInterval * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		body := map[string]any{"currentConns": manager.Count()}
-		data, _ := json.Marshal(body)
-		url := fmt.Sprintf("%s/internal/gateway/%s/heartbeat", serverURL, gatewayID)
-		resp, err := http.Post(url, "application/json", bytes.NewReader(data))
-		if err != nil {
-			log.Printf("[Gateway] heartbeat failed: %v", err)
-			continue
+func Heartbeat(serverURL, gatewayID string, currentConns int) (int64, error) {
+	body := map[string]any{"currentConns": currentConns}
+	data, _ := json.Marshal(body)
+	url := fmt.Sprintf("%s/internal/gateway/%s/heartbeat", serverURL, gatewayID)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, fmt.Errorf("gateway not registered (status 404)")
+	}
+	var result struct {
+		ServerEpoch int64 `json:"serverEpoch"`
+	}
+	if raw, err := io.ReadAll(resp.Body); err == nil {
+		json.Unmarshal(raw, &result)
+	}
+	return result.ServerEpoch, nil
+}
+
+func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID string) {
+	m.mu.RLock()
+	deviceIDs := make([]string, 0, len(m.sessions))
+	for id := range m.sessions {
+		deviceIDs = append(deviceIDs, id)
+	}
+	m.mu.RUnlock()
+
+	for _, deviceID := range deviceIDs {
+		if err := NotifyOnline(serverURL, gatewayID, deviceID); err != nil {
+			log.Printf("[Gateway] re-notify online failed for device %s: %v", deviceID, err)
 		}
-		resp.Body.Close()
 	}
 }
 
@@ -53,6 +73,9 @@ func NotifyOnline(serverURL, gatewayID, deviceID string) error {
 		return fmt.Errorf("notify online failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("notify online failed with status %d", resp.StatusCode)
+	}
 	return nil
 }
 
