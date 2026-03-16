@@ -27,8 +27,9 @@ import (
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
-	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/gateway"
+	"github.com/redis/go-redis/v9"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -77,8 +78,6 @@ func main() {
 	}
 
 	log.Println("Database migrated successfully")
-
-	db.Model(&models.Device{}).Where("status = ?", "online").Update("status", "offline")
 
 	db.Model(&models.CapabilityRegistry{}).
 		Where("sync_status = ?", "syncing").
@@ -226,7 +225,18 @@ func main() {
 		api.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
 	}
 
-	store := gateway.NewMemoryStore()
+	var store gateway.Store
+	if cfg.RedisURL != "" {
+		opt, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("Invalid REDIS_URL: %v", err)
+		}
+		store = gateway.NewRedisStore(redis.NewClient(opt))
+		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
+	} else {
+		store = gateway.NewMemoryStore()
+		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
+	}
 	gatewayRegistry := gateway.NewGatewayRegistry(store)
 	gatewayClient := gateway.NewClient()
 
@@ -239,6 +249,9 @@ func main() {
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
+
+	// TODO: 打通链路后加认证
+	r.Any("/cloud/device/:deviceID/proxy/*path", gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient))
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
