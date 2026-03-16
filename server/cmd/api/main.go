@@ -35,6 +35,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
@@ -70,6 +71,10 @@ func main() {
 		&models.SecurityScan{},
 		&models.ScanJob{},
 		&models.Device{},
+		&models.SystemNotificationChannel{},
+		&models.UserNotificationChannel{},
+		&models.UserConfig{},
+		&models.NotificationLog{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -275,6 +280,10 @@ func main() {
 		devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 		devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
 		api.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
+
+		notificationModule := notification.New(db, cfg.CloudBaseURL)
+		notificationModule.RegisterRoutes(api)
+		_ = notificationModule
 	}
 
 	var store gateway.Store
@@ -297,10 +306,16 @@ func main() {
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry))
 
+	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
+
 	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
+	cloudModule.NotificationService = notificationSvc
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
+
+	deviceCloudGroup := r.Group("/cloud")
+	cloudModule.RegisterDeviceRoutes(deviceCloudGroup, deviceSvc)
 
 	// TODO: 打通链路后加认证
 	r.Any("/cloud/device/:deviceID/proxy/*path", gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient))
