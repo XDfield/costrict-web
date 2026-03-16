@@ -1,3 +1,11 @@
+> **实现状态：已完成**
+>
+> - 状态：✅ 已完成
+> - 实现位置：`server/internal/gateway/`（`registry.go`, `store.go`, `store_redis.go`, `client.go`, `handlers.go`, `types.go`）；独立网关服务：`gateway/`
+> - 说明：提案中设计的设备网关架构已完整实现，包括服务端注册中心、Redis 存储、网关客户端，以及独立部署的 Gateway 服务。
+
+---
+
 # Device Gateway 架构设计文档
 
 ## 目录

@@ -1,3 +1,11 @@
+> **实现状态：服务端已完成，客户端待确认**
+>
+> - 状态：✅ 服务端已完成 / ⚠️ 客户端（opencode CLI）状态未知
+> - 实现位置：`server/internal/services/device_service.go`、`server/internal/handlers/device.go`、`server/internal/models/models.go`（`Device` 模型）
+> - 说明：服务端设备管理功能已完整实现。客户端侧（opencode CLI 设备注册/心跳逻辑）属于独立仓库，未在本仓库中验证。
+
+---
+
 # 设备管理模块技术提案
 
 ## 目录

@@ -1,3 +1,12 @@
+> **实现状态：已完成**
+>
+> - 状态：✅ 已完成
+> - 实现位置：`gateway/internal/`（`tunnel.go`, `tunnel_handler.go`, `proxy_handler.go`, `manager.go`）；服务端代理：`server/internal/gateway/client.go`（`ProxyRequest()` 方法）
+> - 依赖：`gateway/go.mod` 已引入 `hashicorp/yamux v0.1.2` 和 `gorilla/websocket v1.5.3`
+> - 说明：基于 yamux over WebSocket 的 HTTP 隧道已完整实现，包括网关侧的隧道管理和服务端侧的代理转发。
+
+---
+
 # HTTP 隧道设计文档（yamux over WebSocket）
 
 ## 目录

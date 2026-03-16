@@ -1,3 +1,11 @@
+> **实现状态：已完成**
+>
+> - 状态：✅ 已完成
+> - 实现位置：`server/internal/cloud/`（`cloud.go`, `connection_manager.go`, `event_router.go`, `handlers.go`, `types.go`）
+> - 说明：提案中设计的 Cloud SSE 服务端已完整实现，包括连接管理、事件路由和处理器。
+
+---
+
 # Cloud SSE Server 实现设计文档
 
 ## 目录

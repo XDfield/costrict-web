@@ -1,3 +1,11 @@
+> **实现状态：大部分已完成**
+>
+> - 状态：✅ 大部分已完成
+> - 实现位置：`server/internal/models/models.go`（`capability_registries`, `capability_items`, `capability_versions`, `capability_assets`, `capability_artifacts` 表）；`server/internal/handlers/`（artifact、registry、item 相关处理器）
+> - 说明：提案中的技能数据模型已完整落地，核心 CRUD 接口均已实现。部分高级特性（如精细化权限控制、多租户隔离策略）需结合业务需求进一步确认。
+
+---
+
 # 技能中心数据托管方案
 
 ## 背景与诉求

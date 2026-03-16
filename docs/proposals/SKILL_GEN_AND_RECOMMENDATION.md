@@ -1,3 +1,11 @@
+> **实现状态：服务端已完成，客户端自演化待确认**
+>
+> - 状态：✅ 服务端已完成 / ⚠️ 客户端自演化（`.learnings/`）属于 opencode CLI 独立仓库，未在本仓库验证
+> - 实现位置：`server/internal/services/`（`recommend_service.go`, `search_service.go`, `embedding_service.go`, `behavior_service.go`, `generate_service.go`）
+> - 说明：智能技能生成与推荐系统的服务端部分已完整实现，包括向量嵌入、行为分析、搜索和推荐。客户端侧的技能自演化功能（`.learnings/` 目录管理）属于 opencode CLI 范畴，不在本仓库中。
+
+---
+
 [TOC]
 
 # CoStrict 平台能力落地方案

@@ -1,3 +1,11 @@
+> **实现状态：已完成**
+>
+> - 状态：✅ 已完成
+> - 实现位置：`server/internal/services/`（`scan_service.go`, `scan_job_service.go`）；`server/internal/worker/scan_worker.go`；`server/internal/handlers/scan.go`；`server/internal/models/models.go`（`ScanJob` 模型）
+> - 说明：能力项安全扫描模块已完整实现，包括扫描任务调度、异步 Worker 执行和 HTTP 接口。
+
+---
+
 # 能力项安全扫描技术方案
 
 ## 一、背景与目标

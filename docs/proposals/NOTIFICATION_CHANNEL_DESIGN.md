@@ -1,3 +1,12 @@
+> **实现状态：已完成**
+>
+> - 状态：✅ 已完成
+> - 实现位置：`server/internal/notification/`（`handlers.go`, `service.go`, `notification.go`, `types.go`, `sender/`）
+> - 数据模型：`SystemNotificationChannel`、`UserNotificationChannel`、`NotificationLog`、`UserConfig` 均已在 `server/internal/models/models.go` 中定义
+> - 说明：通知渠道模块已完整实现，包括系统通知渠道、用户通知渠道、通知日志及发送器子模块。
+
+---
+
 # 通知渠道模块技术提案
 
 ## 目录
