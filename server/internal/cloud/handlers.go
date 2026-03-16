@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/notification"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
@@ -185,6 +187,72 @@ func StatsHandler(manager *ConnectionManager) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, manager.Stats())
+	}
+}
+
+func isNotifiableEvent(eventType string) bool {
+	switch eventType {
+	case "session.completed", "session.failed", "session.aborted":
+		return true
+	}
+	return false
+}
+
+func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceService, notificationSvc *notification.NotificationService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := ""
+		auth := c.GetHeader("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			token = auth[7:]
+		}
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
+			return
+		}
+
+		device, err := deviceSvc.VerifyDeviceToken(token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
+			return
+		}
+
+		var body struct {
+			DeviceID  string `json:"deviceID"`
+			Type      string `json:"type" binding:"required"`
+			SessionID string `json:"sessionID" binding:"required"`
+			Data      any    `json:"data"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		event := Event{
+			Type: EventInterventionRequired,
+			Properties: map[string]any{
+				"type":      body.Type,
+				"sessionID": body.SessionID,
+				"data":      body.Data,
+				"deviceID":  device.DeviceID,
+			},
+		}
+
+		manager.mu.RLock()
+		connIDs := make([]string, 0)
+		for id, conn := range manager.connections {
+			if conn.UserID == device.UserID {
+				connIDs = append(connIDs, id)
+			}
+		}
+		manager.mu.RUnlock()
+
+		manager.RouteEvent(event, connIDs)
+
+		if notificationSvc != nil && isNotifiableEvent(body.Type) {
+			notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true, "routedTo": len(connIDs)})
 	}
 }
 

@@ -31,18 +31,19 @@ type ManagerStats struct {
 }
 
 const (
-	EventCloudConnected     = "cloud.connected"
-	EventDeviceConnected    = "device.connected"
-	EventHeartbeat          = "heartbeat"
-	EventSessionStatus      = "session.status"
-	EventSessionCreated     = "session.created"
-	EventSessionUpdated     = "session.updated"
-	EventMessagePartUpdated = "message.part.updated"
-	EventMessagePartDelta   = "message.part.delta"
-	EventDeviceStatus       = "device.status"
-	EventSessionAbort       = "session.abort"
-	EventSessionMessage     = "session.message"
-	EventBatch              = "batch"
+	EventCloudConnected        = "cloud.connected"
+	EventDeviceConnected       = "device.connected"
+	EventHeartbeat             = "heartbeat"
+	EventSessionStatus         = "session.status"
+	EventSessionCreated        = "session.created"
+	EventSessionUpdated        = "session.updated"
+	EventMessagePartUpdated    = "message.part.updated"
+	EventMessagePartDelta      = "message.part.delta"
+	EventDeviceStatus          = "device.status"
+	EventSessionAbort          = "session.abort"
+	EventSessionMessage        = "session.message"
+	EventBatch                 = "batch"
+	EventInterventionRequired  = "intervention.required"
 )
 
 const (
