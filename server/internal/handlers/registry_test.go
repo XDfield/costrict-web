@@ -153,6 +153,50 @@ func setupTestDB(t *testing.T) func() {
 			uploaded_by      TEXT NOT NULL,
 			created_at       DATETIME
 		)`,
+		`CREATE TABLE IF NOT EXISTS behavior_logs (
+			id           TEXT PRIMARY KEY,
+			user_id      TEXT,
+			item_id      TEXT,
+			registry_id  TEXT,
+			action_type  TEXT NOT NULL,
+			context      TEXT,
+			search_query TEXT,
+			session_id   TEXT,
+			metadata     TEXT DEFAULT '{}',
+			duration_ms  INTEGER DEFAULT 0,
+			rating       INTEGER DEFAULT 0,
+			feedback     TEXT,
+			created_at   DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS experience_candidates (
+			id             TEXT PRIMARY KEY,
+			item_id        TEXT,
+			type           TEXT NOT NULL,
+			title          TEXT NOT NULL,
+			description    TEXT,
+			context        TEXT,
+			resolution     TEXT,
+			source_type    TEXT NOT NULL,
+			source_log_id  TEXT,
+			frequency      INTEGER DEFAULT 1,
+			impact_score   REAL DEFAULT 0,
+			status         TEXT DEFAULT 'pending',
+			promotion_type TEXT,
+			promoted_at    DATETIME,
+			promoted_by    TEXT,
+			created_at     DATETIME,
+			updated_at     DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS experience_promotions (
+			id              TEXT PRIMARY KEY,
+			candidate_id    TEXT NOT NULL,
+			item_id         TEXT NOT NULL,
+			promotion_type  TEXT NOT NULL,
+			promoted_by     TEXT NOT NULL,
+			metadata_before TEXT DEFAULT '{}',
+			metadata_after  TEXT DEFAULT '{}',
+			created_at      DATETIME
+		)`,
 	}
 
 	for _, s := range stmts {

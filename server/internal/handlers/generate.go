@@ -3,12 +3,11 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
-// GenerateHandler handles skill generation requests
+// GenerateHandler handles skill analysis and improvement requests
 type GenerateHandler struct {
 	generateSvc *services.GenerateService
 }
@@ -16,55 +15,6 @@ type GenerateHandler struct {
 // NewGenerateHandler creates a new generate handler
 func NewGenerateHandler(generateSvc *services.GenerateService) *GenerateHandler {
 	return &GenerateHandler{generateSvc: generateSvc}
-}
-
-// GenerateSkill godoc
-// @Summary      Generate a skill using AI
-// @Description  Generate a skill definition based on a natural language prompt
-// @Tags         generate
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{prompt=string,context=string,itemType=string,category=string,registryId=string,saveItem=boolean}  true  "Generation request"
-// @Success      200   {object}  services.GenerateResponse
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /marketplace/items/generate [post]
-func (h *GenerateHandler) GenerateSkill(c *gin.Context) {
-	var req struct {
-		Prompt     string `json:"prompt" binding:"required"`
-		Context    string `json:"context"`
-		ItemType   string `json:"itemType"`
-		Category   string `json:"category"`
-		RegistryID string `json:"registryId"`
-		SaveItem   bool   `json:"saveItem"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
-		return
-	}
-
-	// Get user ID
-	userID, _ := c.Get(middleware.UserIDKey)
-	uid, _ := userID.(string)
-
-	genReq := services.GenerateRequest{
-		Prompt:     req.Prompt,
-		Context:    req.Context,
-		ItemType:   req.ItemType,
-		Category:   req.Category,
-		RegistryID: req.RegistryID,
-		CreatedBy:  uid,
-		SaveItem:   req.SaveItem,
-	}
-
-	result, err := h.generateSvc.GenerateSkill(c.Request.Context(), genReq)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, result)
 }
 
 // AnalyzeSkill godoc
@@ -118,17 +68,10 @@ func (h *GenerateHandler) ImproveSkill(c *gin.Context) {
 		return
 	}
 
-	// Get user ID
-	userID, _ := c.Get(middleware.UserIDKey)
-	uid, _ := userID.(string)
+	// Convert improvements (not used in service currently, kept for future use)
+	_ = req.Improvements
 
-	// Convert improvements
-	improvements := make([]interface{}, len(req.Improvements))
-	for i, imp := range req.Improvements {
-		improvements[i] = imp
-	}
-
-	item, err := h.generateSvc.ImproveSkill(c.Request.Context(), itemID, nil, uid)
+	item, err := h.generateSvc.ImproveSkill(c.Request.Context(), itemID, nil, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
