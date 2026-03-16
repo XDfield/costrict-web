@@ -135,10 +135,22 @@ func DeviceProxyHandler(registry *GatewayRegistry, client *Client) gin.HandlerFu
 	}
 }
 
+func GatewayDeregisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		gatewayID := c.Param("gatewayID")
+		if err := registry.Deregister(gatewayID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to deregister gateway"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
 func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
 	gatewayGroup.POST("/:gatewayID/heartbeat", GatewayHeartbeatHandler(registry))
+	gatewayGroup.DELETE("/:gatewayID", GatewayDeregisterHandler(registry))
 	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, deviceSvc))
 	gatewayGroup.POST("/device/offline", DeviceOfflineHandler(registry, deviceSvc))
 }

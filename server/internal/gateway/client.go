@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type Client struct {
@@ -17,7 +18,9 @@ type Client struct {
 
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -39,9 +42,20 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 
 	resp, err := c.httpClient.Do(proxyReq)
 	if err != nil {
-		return fmt.Errorf("gateway unreachable: %w", err)
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"gateway unreachable, please retry"}`))
+		return nil
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write(body)
+		return nil
+	}
 
 	skipHeaders := map[string]bool{
 		"Access-Control-Allow-Origin":      true,
@@ -100,9 +114,12 @@ func (c *Client) proxyWebSocket(target string, r *http.Request, w http.ResponseW
 		}
 	}
 
-	conn, err := net.Dial("tcp", host)
+	conn, err := net.DialTimeout("tcp", host, 10*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to connect to gateway: %w", err)
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"gateway unreachable, please retry"}`))
+		return nil
 	}
 	defer conn.Close()
 
