@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -21,6 +25,10 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 	target := fmt.Sprintf("%s/device/%s/proxy%s", gatewayInternalURL, deviceID, r.URL.Path)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
+	}
+
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return c.proxyWebSocket(target, r, w)
 	}
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
@@ -74,5 +82,85 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 	}
 
 	io.Copy(w, resp.Body)
+	return nil
+}
+
+func (c *Client) proxyWebSocket(target string, r *http.Request, w http.ResponseWriter) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid target url: %w", err)
+	}
+
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
+	}
+
+	conn, err := net.Dial("tcp", host)
+	if err != nil {
+		return fmt.Errorf("failed to connect to gateway: %w", err)
+	}
+	defer conn.Close()
+
+	var reqBuf bytes.Buffer
+	fmt.Fprintf(&reqBuf, "%s %s HTTP/1.1\r\n", r.Method, u.RequestURI())
+	fmt.Fprintf(&reqBuf, "Host: %s\r\n", u.Host)
+	for k, vs := range r.Header {
+		for _, v := range vs {
+			fmt.Fprintf(&reqBuf, "%s: %s\r\n", k, v)
+		}
+	}
+	fmt.Fprintf(&reqBuf, "\r\n")
+
+	if _, err := conn.Write(reqBuf.Bytes()); err != nil {
+		return fmt.Errorf("failed to write ws upgrade: %w", err)
+	}
+
+	bufReader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(bufReader, r)
+	if err != nil {
+		return fmt.Errorf("failed to read ws upgrade response: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return nil
+	}
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		return fmt.Errorf("hijack not supported")
+	}
+	clientConn, bufrw, err := hijacker.Hijack()
+	if err != nil {
+		return fmt.Errorf("hijack failed: %w", err)
+	}
+	defer clientConn.Close()
+
+	fmt.Fprintf(bufrw, "HTTP/1.1 101 Switching Protocols\r\n")
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			fmt.Fprintf(bufrw, "%s: %s\r\n", k, v)
+		}
+	}
+	fmt.Fprintf(bufrw, "\r\n")
+	bufrw.Flush()
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(conn, bufrw)
+		conn.Close()
+		close(done)
+	}()
+	io.Copy(bufrw, bufReader)
+	bufrw.Flush()
+	clientConn.Close()
+	<-done
 	return nil
 }
