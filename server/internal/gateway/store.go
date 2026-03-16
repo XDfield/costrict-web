@@ -17,6 +17,9 @@ type Store interface {
 	GetDeviceGateway(deviceID string) (string, error)
 
 	TryLock(key string, ttl time.Duration) (bool, error)
+
+	// GetOrInitEpoch 返回集群共享 epoch：若不存在则以 initVal 初始化并返回 initVal，否则返回已有值。
+	GetOrInitEpoch(initVal int64) (int64, error)
 }
 
 type MemoryStore struct {
@@ -24,6 +27,7 @@ type MemoryStore struct {
 	gateways      map[string]*GatewayInfo
 	heartbeats    map[string]int64
 	deviceGateway map[string]string
+	epoch         int64
 }
 
 func NewMemoryStore() Store {
@@ -105,4 +109,13 @@ func (s *MemoryStore) GetDeviceGateway(deviceID string) (string, error) {
 
 func (s *MemoryStore) TryLock(key string, ttl time.Duration) (bool, error) {
 	return true, nil
+}
+
+func (s *MemoryStore) GetOrInitEpoch(initVal int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.epoch == 0 {
+		s.epoch = initVal
+	}
+	return s.epoch, nil
 }

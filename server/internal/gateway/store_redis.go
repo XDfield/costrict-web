@@ -124,3 +124,17 @@ func (s *RedisStore) GetDeviceGateway(deviceID string) (string, error) {
 func (s *RedisStore) TryLock(key string, ttl time.Duration) (bool, error) {
 	return s.client.SetNX(context.Background(), key, "1", ttl).Result()
 }
+
+func (s *RedisStore) GetOrInitEpoch(initVal int64) (int64, error) {
+	ctx := context.Background()
+	const key = "server:epoch"
+	set, err := s.client.SetNX(ctx, key, initVal, 0).Result()
+	if err != nil {
+		return 0, err
+	}
+	if set {
+		return initVal, nil
+	}
+	val, err := s.client.Get(ctx, key).Int64()
+	return val, err
+}

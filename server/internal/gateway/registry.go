@@ -12,7 +12,13 @@ type GatewayRegistry struct {
 }
 
 func NewGatewayRegistry(store Store) *GatewayRegistry {
-	r := &GatewayRegistry{store: store, epoch: time.Now().UnixMilli()}
+	initVal := time.Now().UnixMilli()
+	epoch, err := store.GetOrInitEpoch(initVal)
+	if err != nil {
+		log.Printf("[GatewayRegistry] failed to get epoch from store, using local: %v", err)
+		epoch = initVal
+	}
+	r := &GatewayRegistry{store: store, epoch: epoch}
 	go r.startCleanup()
 	return r
 }
@@ -80,6 +86,10 @@ func (r *GatewayRegistry) UnbindDevice(deviceID string) {
 	if err := r.store.UnbindDevice(deviceID); err != nil {
 		log.Printf("[GatewayRegistry] UnbindDevice failed: %v", err)
 	}
+}
+
+func (r *GatewayRegistry) Deregister(gatewayID string) error {
+	return r.store.RemoveGateway(gatewayID)
 }
 
 func (r *GatewayRegistry) GetDeviceGateway(deviceID string) (*GatewayInfo, error) {
