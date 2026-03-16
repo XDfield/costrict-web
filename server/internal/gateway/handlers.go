@@ -54,7 +54,7 @@ func GatewayHeartbeatHandler(registry *GatewayRegistry) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		c.JSON(http.StatusOK, gin.H{"success": true, "serverEpoch": registry.Epoch()})
 	}
 }
 
@@ -115,6 +115,23 @@ func GatewayAssignHandler(registry *GatewayRegistry) gin.HandlerFunc {
 			GatewayID:  gw.ID,
 			GatewayURL: gw.Endpoint,
 		})
+	}
+}
+
+func DeviceProxyHandler(registry *GatewayRegistry, client *Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		deviceID := c.Param("deviceID")
+
+		gw, err := registry.GetDeviceGateway(deviceID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
+			return
+		}
+
+		c.Request.URL.Path = c.Param("path")
+		if err := client.ProxyRequest(gw.InternalURL, deviceID, c.Request, c.Writer); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		}
 	}
 }
 

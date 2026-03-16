@@ -1,11 +1,10 @@
 package gateway
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"time"
+	"strings"
 )
 
 type Client struct {
@@ -14,34 +13,66 @@ type Client struct {
 
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{},
 	}
 }
 
-type Event struct {
-	Type       string         `json:"type"`
-	Properties map[string]any `json:"properties,omitempty"`
-}
+func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Request, w http.ResponseWriter) error {
+	target := fmt.Sprintf("%s/device/%s/proxy%s", gatewayInternalURL, deviceID, r.URL.Path)
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
 
-func (c *Client) SendToDevice(gatewayInternalURL, deviceID string, event Event) error {
-	body := map[string]any{"event": event}
-	data, err := json.Marshal(body)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
 	if err != nil {
-		return fmt.Errorf("marshal failed: %w", err)
+		return err
 	}
+	proxyReq.Header = r.Header.Clone()
 
-	url := fmt.Sprintf("%s/internal/device/%s/send", gatewayInternalURL, deviceID)
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := c.httpClient.Do(proxyReq)
 	if err != nil {
 		return fmt.Errorf("gateway unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("device not connected")
+	skipHeaders := map[string]bool{
+		"Access-Control-Allow-Origin":      true,
+		"Access-Control-Allow-Headers":     true,
+		"Access-Control-Allow-Methods":     true,
+		"Access-Control-Allow-Credentials": true,
+		"Access-Control-Expose-Headers":    true,
+		"Access-Control-Max-Age":           true,
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("gateway returned status %d", resp.StatusCode)
+	for k, vs := range resp.Header {
+		if skipHeaders[k] {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
 	}
+	w.WriteHeader(resp.StatusCode)
+
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			io.Copy(w, resp.Body)
+			return nil
+		}
+		buf := make([]byte, 4096)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+				flusher.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+		return nil
+	}
+
+	io.Copy(w, resp.Body)
 	return nil
 }
