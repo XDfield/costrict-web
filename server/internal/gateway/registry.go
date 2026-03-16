@@ -8,12 +8,17 @@ import (
 
 type GatewayRegistry struct {
 	store Store
+	epoch int64
 }
 
 func NewGatewayRegistry(store Store) *GatewayRegistry {
-	r := &GatewayRegistry{store: store}
+	r := &GatewayRegistry{store: store, epoch: time.Now().UnixMilli()}
 	go r.startCleanup()
 	return r
+}
+
+func (r *GatewayRegistry) Epoch() int64 {
+	return r.epoch
 }
 
 func (r *GatewayRegistry) Register(info *GatewayInfo) error {
