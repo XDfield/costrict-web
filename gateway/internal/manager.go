@@ -1,108 +1,47 @@
 package internal
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
 	"sync"
-	"time"
+
+	"github.com/hashicorp/yamux"
 )
 
-type ConnectionManager struct {
-	mu          sync.RWMutex
-	connections map[string]*DeviceConnection
+type TunnelManager struct {
+	mu       sync.RWMutex
+	sessions map[string]*yamux.Session
 }
 
-func NewConnectionManager() *ConnectionManager {
-	m := &ConnectionManager{
-		connections: make(map[string]*DeviceConnection),
-	}
-	go m.startHeartbeat()
-	return m
+func NewTunnelManager() *TunnelManager {
+	return &TunnelManager{sessions: make(map[string]*yamux.Session)}
 }
 
-func (m *ConnectionManager) Register(deviceID string) *DeviceConnection {
+func (m *TunnelManager) Register(deviceID string, session *yamux.Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if old, ok := m.connections[deviceID]; ok {
-		select {
-		case <-old.Done:
-		default:
-			close(old.Done)
-		}
+	if old, ok := m.sessions[deviceID]; ok {
+		old.Close()
 	}
-
-	conn := &DeviceConnection{
-		DeviceID:     deviceID,
-		Send:         make(chan []byte, SendChannelCapacity),
-		Done:         make(chan struct{}),
-		LastActivity: time.Now().UnixMilli(),
-	}
-	m.connections[deviceID] = conn
-	return conn
+	m.sessions[deviceID] = session
 }
 
-func (m *ConnectionManager) Close(deviceID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	conn, ok := m.connections[deviceID]
-	if !ok {
-		return
-	}
-	select {
-	case <-conn.Done:
-	default:
-		close(conn.Done)
-	}
-	delete(m.connections, deviceID)
-}
-
-func (m *ConnectionManager) Send(deviceID string, data []byte) error {
-	m.mu.RLock()
-	conn, ok := m.connections[deviceID]
-	m.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("device not connected")
-	}
-
-	select {
-	case conn.Send <- data:
-		conn.LastActivity = time.Now().UnixMilli()
-	default:
-		log.Printf("[Gateway] WARN: send buffer full for device %s, dropping event", deviceID)
-	}
-	return nil
-}
-
-func (m *ConnectionManager) Count() int {
+func (m *TunnelManager) Get(deviceID string) (*yamux.Session, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.connections)
+	s, ok := m.sessions[deviceID]
+	return s, ok
 }
 
-func (m *ConnectionManager) startHeartbeat() {
-	ticker := time.NewTicker(HeartbeatInterval * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now().UnixMilli()
-		event := Event{
-			Type:       "heartbeat",
-			Properties: map[string]any{"timestamp": now},
-		}
-		data, _ := json.Marshal(event)
-		payload := fmt.Sprintf("event: message\ndata: %s\n\n", data)
-
-		m.mu.RLock()
-		for _, conn := range m.connections {
-			select {
-			case conn.Send <- []byte(payload):
-				conn.LastActivity = now
-			default:
-			}
-		}
-		m.mu.RUnlock()
+func (m *TunnelManager) Close(deviceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sessions[deviceID]; ok {
+		s.Close()
+		delete(m.sessions, deviceID)
 	}
+}
+
+func (m *TunnelManager) Count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
 }
