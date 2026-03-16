@@ -1,7 +1,10 @@
 package cloud
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -61,12 +64,50 @@ func (r *EventRouter) RouteUserCommand(deviceID string, event Event) error {
 	if err != nil {
 		return fmt.Errorf("device not connected")
 	}
-	gwEvent := gateway.Event{
-		Type:       event.Type,
-		Properties: event.Properties,
+
+	path := eventTypeToPath(event.Type, event.Properties)
+	if path == "" {
+		return fmt.Errorf("unsupported event type: %s", event.Type)
 	}
-	return r.gatewayClient.SendToDevice(gw.InternalURL, deviceID, gwEvent)
+
+	body, err := json.Marshal(event.Properties)
+	if err != nil {
+		return fmt.Errorf("marshal failed: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://placeholder"+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	rw := &discardResponseWriter{header: make(http.Header)}
+	return r.gatewayClient.ProxyRequest(gw.InternalURL, deviceID, req, rw)
 }
+
+func eventTypeToPath(eventType string, props map[string]any) string {
+	sessionID, _ := props["sessionID"].(string)
+	switch eventType {
+	case EventSessionAbort:
+		if sessionID != "" {
+			return "/api/session/" + sessionID + "/abort"
+		}
+	case EventSessionMessage:
+		if sessionID != "" {
+			return "/api/session/" + sessionID + "/message"
+		}
+	}
+	return ""
+}
+
+type discardResponseWriter struct {
+	header     http.Header
+	statusCode int
+}
+
+func (w *discardResponseWriter) Header() http.Header        { return w.header }
+func (w *discardResponseWriter) WriteHeader(statusCode int) { w.statusCode = statusCode }
+func (w *discardResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 
 func (r *EventRouter) startBatchFlush() {
 	ticker := time.NewTicker(BatchFlushIntervalMs * time.Millisecond)
