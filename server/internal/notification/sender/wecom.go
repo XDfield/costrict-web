@@ -92,6 +92,12 @@ func eventIcon(eventType string) string {
 		return "⚠️"
 	case "device.offline":
 		return "📴"
+	case "permission":
+		return "🔐"
+	case "question":
+		return "❓"
+	case "idle":
+		return "⏸️"
 	default:
 		return "🔔"
 	}

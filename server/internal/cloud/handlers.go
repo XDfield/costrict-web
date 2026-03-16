@@ -192,7 +192,8 @@ func StatsHandler(manager *ConnectionManager) gin.HandlerFunc {
 
 func isNotifiableEvent(eventType string) bool {
 	switch eventType {
-	case "session.completed", "session.failed", "session.aborted":
+	case "session.completed", "session.failed", "session.aborted",
+		"permission", "question", "idle":
 		return true
 	}
 	return false

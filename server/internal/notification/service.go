@@ -157,6 +157,9 @@ func buildMessage(eventType, sessionID, deviceID, cloudBaseURL string) sender.No
 		"session.failed":    "会话执行失败",
 		"session.aborted":   "会话已中止",
 		"device.offline":    "设备已离线",
+		"permission":        "需要授权确认",
+		"question":          "需要回答问题",
+		"idle":              "会话等待中",
 	}
 
 	title, ok := titles[eventType]
