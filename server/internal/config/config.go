@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	RedisURL    string
-	Casdoor     CasdoorConfig
-	LLM         LLMConfig
-	Embedding   EmbeddingConfig
-	Search      SearchConfig
+	Port           string
+	DatabaseURL    string
+	RedisURL       string
+	CloudBaseURL   string
+	Casdoor        CasdoorConfig
+	LLM            LLMConfig
+	Embedding      EmbeddingConfig
+	Search         SearchConfig
 }
 
 type CasdoorConfig struct {
@@ -62,9 +63,10 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:        getEnv("PORT", "8080"),
-		DatabaseURL: getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
-		RedisURL:    getEnv("REDIS_URL", ""),
+		Port:         getEnv("PORT", "8080"),
+		DatabaseURL:  getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		RedisURL:     getEnv("REDIS_URL", ""),
+		CloudBaseURL: getEnv("COSTRICT_CLOUD_BASE_URL", "https://app.costrict.ai"),
 		Casdoor: CasdoorConfig{
 			Endpoint:    getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			ClientID:    getEnv("CASDOOR_CLIENT_ID", ""),
