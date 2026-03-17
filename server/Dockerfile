@@ -33,10 +33,19 @@ ARG HTTP_PROXY
 
 RUN apk --no-cache add ca-certificates
 
-WORKDIR /root/
+# Create non-root user for security
+RUN addgroup -g 1000 -S appgroup && \
+    adduser -u 1000 -S appuser -G appgroup
 
-# Copy binary from builder
-COPY --from=builder /app/server .
+WORKDIR /app
+
+# Copy binary from builder with execute permission
+COPY --from=builder --chmod=755 /app/server ./server
+
+# Change ownership to non-root user
+RUN chown -R appuser:appgroup /app
+
+USER appuser
 
 # Expose port
 EXPOSE 8080
