@@ -1,0 +1,3342 @@
+basePath: /api
+definitions:
+  llm.BehaviorPattern:
+    properties:
+      description:
+        type: string
+      frequency:
+        type: string
+      impact:
+        type: string
+      suggestedAction:
+        type: string
+      type:
+        type: string
+    type: object
+  llm.CandidateExperience:
+    properties:
+      context:
+        type: string
+      description:
+        type: string
+      frequency:
+        type: integer
+      impactScore:
+        type: number
+      title:
+        type: string
+      type:
+        type: string
+    type: object
+  llm.ExperienceAnalysisResult:
+    properties:
+      candidateExperiences:
+        items:
+          $ref: '#/definitions/llm.CandidateExperience'
+        type: array
+      patterns:
+        items:
+          $ref: '#/definitions/llm.BehaviorPattern'
+        type: array
+      recommendations:
+        items:
+          $ref: '#/definitions/llm.ExperienceRecommendation'
+        type: array
+    type: object
+  llm.ExperienceRecommendation:
+    properties:
+      action:
+        type: string
+      priority:
+        type: string
+      reason:
+        type: string
+    type: object
+  llm.GeneratedSkill:
+    properties:
+      category:
+        type: string
+      content:
+        type: string
+      description:
+        type: string
+      itemType:
+        type: string
+      metadata:
+        $ref: '#/definitions/llm.GeneratedSkillMetadata'
+      name:
+        type: string
+      slug:
+        type: string
+    type: object
+  llm.GeneratedSkillMetadata:
+    properties:
+      examples:
+        items:
+          type: string
+        type: array
+      prerequisites:
+        items:
+          type: string
+        type: array
+      tags:
+        items:
+          type: string
+        type: array
+      version:
+        type: string
+    type: object
+  llm.SkillAnalysis:
+    properties:
+      improvements:
+        items:
+          $ref: '#/definitions/llm.SkillImprovement'
+        type: array
+      overallScore:
+        type: integer
+      strengths:
+        items:
+          type: string
+        type: array
+      weaknesses:
+        items:
+          type: string
+        type: array
+    type: object
+  llm.SkillImprovement:
+    properties:
+      current:
+        type: string
+      field:
+        type: string
+      reason:
+        type: string
+      suggested:
+        type: string
+    type: object
+  models.ActionType:
+    enum:
+    - view
+    - click
+    - install
+    - use
+    - success
+    - fail
+    - feedback
+    - ignore
+    type: string
+    x-enum-varnames:
+    - ActionView
+    - ActionClick
+    - ActionInstall
+    - ActionUse
+    - ActionSuccess
+    - ActionFail
+    - ActionFeedback
+    - ActionIgnore
+  models.BehaviorLog:
+    properties:
+      actionType:
+        $ref: '#/definitions/models.ActionType'
+      context:
+        $ref: '#/definitions/models.ContextType'
+      createdAt:
+        type: string
+      durationMs:
+        type: integer
+      feedback:
+        type: string
+      id:
+        type: string
+      item:
+        allOf:
+        - $ref: '#/definitions/models.CapabilityItem'
+        description: Relations
+      itemId:
+        type: string
+      metadata:
+        type: object
+      rating:
+        description: 1-5 for feedback
+        type: integer
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      searchQuery:
+        type: string
+      sessionId:
+        type: string
+      userId:
+        type: string
+    type: object
+  models.CandidateStatus:
+    enum:
+    - pending
+    - approved
+    - rejected
+    - promoted
+    type: string
+    x-enum-varnames:
+    - StatusPending
+    - StatusApproved
+    - StatusRejected
+    - StatusPromoted
+  models.CapabilityArtifact:
+    properties:
+      artifactVersion:
+        type: string
+      checksumSha256:
+        type: string
+      createdAt:
+        type: string
+      downloadCount:
+        type: integer
+      fileSize:
+        type: integer
+      filename:
+        type: string
+      id:
+        type: string
+      isLatest:
+        type: boolean
+      itemId:
+        type: string
+      mimeType:
+        type: string
+      storageBackend:
+        type: string
+      storageKey:
+        type: string
+      uploadedBy:
+        type: string
+    type: object
+  models.CapabilityItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+      visibility:
+        type: string
+    type: object
+  models.CapabilityRegistry:
+    properties:
+      createdAt:
+        type: string
+      description:
+        type: string
+      externalBranch:
+        type: string
+      externalUrl:
+        type: string
+      id:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/models.CapabilityItem'
+        type: array
+      lastSyncLogId:
+        type: string
+      lastSyncSha:
+        type: string
+      lastSyncedAt:
+        type: string
+      name:
+        type: string
+      orgId:
+        type: string
+      ownerId:
+        type: string
+      sourceType:
+        type: string
+      syncConfig:
+        type: object
+      syncEnabled:
+        type: boolean
+      syncInterval:
+        type: integer
+      syncStatus:
+        description: idle | syncing | error | paused
+        type: string
+      updatedAt:
+        type: string
+      visibility:
+        type: string
+    type: object
+  models.CapabilityVersion:
+    properties:
+      commitMsg:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      id:
+        type: string
+      itemId:
+        type: string
+      metadata:
+        type: object
+      version:
+        type: integer
+    type: object
+  models.ContextType:
+    enum:
+    - search_query
+    - recommendation
+    - direct_access
+    - browse
+    type: string
+    x-enum-varnames:
+    - ContextSearch
+    - ContextRecommend
+    - ContextDirectAccess
+    - ContextBrowse
+  models.ExperienceCandidate:
+    properties:
+      context:
+        description: What happened
+        type: string
+      createdAt:
+        type: string
+      description:
+        type: string
+      frequency:
+        description: How many times this pattern occurred
+        type: integer
+      id:
+        type: string
+      impactScore:
+        description: Computed impact score
+        type: number
+      item:
+        allOf:
+        - $ref: '#/definitions/models.CapabilityItem'
+        description: Relations
+      itemId:
+        type: string
+      promotedAt:
+        type: string
+      promotedBy:
+        type: string
+      promotionType:
+        $ref: '#/definitions/models.PromotionType'
+      resolution:
+        description: How it was resolved / what was learned
+        type: string
+      sourceLogId:
+        description: Reference to behavior log if applicable
+        type: string
+      sourceType:
+        $ref: '#/definitions/models.SourceType'
+      status:
+        $ref: '#/definitions/models.CandidateStatus'
+      title:
+        type: string
+      type:
+        $ref: '#/definitions/models.ExperienceType'
+      updatedAt:
+        type: string
+    type: object
+  models.ExperiencePromotion:
+    properties:
+      candidate:
+        allOf:
+        - $ref: '#/definitions/models.ExperienceCandidate'
+        description: Relations
+      candidateId:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      item:
+        $ref: '#/definitions/models.CapabilityItem'
+      itemId:
+        type: string
+      metadataAfter:
+        type: object
+      metadataBefore:
+        type: object
+      promotedBy:
+        type: string
+      promotionType:
+        $ref: '#/definitions/models.PromotionType'
+    type: object
+  models.ExperienceType:
+    enum:
+    - error
+    - learning
+    - feature_request
+    - best_practice
+    - behavior_rule
+    type: string
+    x-enum-varnames:
+    - ExperienceError
+    - ExperienceLearning
+    - ExperienceFeature
+    - ExperiencePractice
+    - ExperienceRule
+  models.OrgMember:
+    properties:
+      createdAt:
+        type: string
+      id:
+        type: string
+      orgId:
+        type: string
+      role:
+        description: owner | admin | member
+        type: string
+      userId:
+        type: string
+      username:
+        type: string
+    type: object
+  models.Organization:
+    properties:
+      createdAt:
+        type: string
+      description:
+        type: string
+      displayName:
+        type: string
+      id:
+        type: string
+      members:
+        items:
+          $ref: '#/definitions/models.OrgMember'
+        type: array
+      name:
+        type: string
+      orgType:
+        description: normal | sync
+        type: string
+      ownerId:
+        type: string
+      updatedAt:
+        type: string
+      visibility:
+        description: public | private
+        type: string
+    type: object
+  models.PromotionType:
+    enum:
+    - best_practice
+    - behavior_rule
+    - new_workflow
+    - new_skill
+    type: string
+    x-enum-varnames:
+    - PromotionBestPractice
+    - PromotionBehaviorRule
+    - PromotionNewWorkflow
+    - PromotionNewSkill
+  models.SourceType:
+    enum:
+    - behavior_log
+    - manual
+    - auto_detect
+    type: string
+    x-enum-varnames:
+    - SourceBehavior
+    - SourceManual
+    - SourceAutoDetect
+  models.SyncJob:
+    properties:
+      createdAt:
+        type: string
+      finishedAt:
+        type: string
+      id:
+        type: string
+      lastError:
+        type: string
+      maxAttempts:
+        type: integer
+      payload:
+        type: object
+      priority:
+        type: integer
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      retryCount:
+        type: integer
+      scheduledAt:
+        type: string
+      startedAt:
+        type: string
+      status:
+        description: pending | running | success | failed | cancelled
+        type: string
+      syncLogId:
+        type: string
+      triggerType:
+        description: scheduled | manual | webhook
+        type: string
+      triggerUser:
+        type: string
+    type: object
+  models.SyncLog:
+    properties:
+      addedItems:
+        type: integer
+      commitSha:
+        type: string
+      createdAt:
+        type: string
+      deletedItems:
+        type: integer
+      durationMs:
+        type: integer
+      errorMessage:
+        type: string
+      failedItems:
+        type: integer
+      finishedAt:
+        type: string
+      id:
+        type: string
+      previousSha:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      skippedItems:
+        type: integer
+      startedAt:
+        type: string
+      status:
+        description: running | success | failed | cancelled
+        type: string
+      totalItems:
+        type: integer
+      triggerType:
+        description: scheduled | manual | webhook
+        type: string
+      triggerUser:
+        type: string
+      updatedItems:
+        type: integer
+    type: object
+  models.UserBehaviorSummary:
+    properties:
+      favoriteCategories:
+        items:
+          type: string
+        type: array
+      favoriteTypes:
+        items:
+          type: string
+        type: array
+      successRate:
+        type: number
+      totalInstalls:
+        type: integer
+      totalUses:
+        type: integer
+      totalViews:
+        type: integer
+      userId:
+        type: string
+    type: object
+  services.GenerateResponse:
+    properties:
+      analysis:
+        $ref: '#/definitions/llm.SkillAnalysis'
+      generated:
+        $ref: '#/definitions/llm.GeneratedSkill'
+      item:
+        $ref: '#/definitions/models.CapabilityItem'
+    type: object
+  services.ItemBehaviorStats:
+    properties:
+      averageRating:
+        type: number
+      clicks:
+        type: integer
+      failures:
+        type: integer
+      installs:
+        type: integer
+      itemId:
+        type: string
+      recentFeedback:
+        items:
+          type: string
+        type: array
+      successRate:
+        type: number
+      successes:
+        type: integer
+      uses:
+        type: integer
+      views:
+        type: integer
+    type: object
+  services.RecommendResponse:
+    properties:
+      generatedAt:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/services.RecommendedItem'
+        type: array
+      strategies:
+        description: Which strategies contributed
+        items:
+          type: string
+        type: array
+    type: object
+  services.RecommendedItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      reason:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      score:
+        type: number
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      status:
+        type: string
+      strategy:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+      visibility:
+        type: string
+    type: object
+  services.SearchResult:
+    properties:
+      durationMs:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/services.SearchResultItem'
+        type: array
+      query:
+        type: string
+      total:
+        type: integer
+    type: object
+  services.SearchResultItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      score:
+        type: number
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+      visibility:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: CoStrict Team
+    url: https://costrict.ai
+  description: AI Agent Platform API - Skill marketplace, organization and repository
+    management.
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Costrict Web API
+  version: "1.0"
+paths:
+  /admin/experiences/{id}:
+    get:
+      description: Get details of a specific experience candidate
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ExperienceCandidate'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get experience candidate by ID
+      tags:
+      - admin/experiences
+  /admin/experiences/{id}/approve:
+    post:
+      description: Approve and promote an experience candidate to item metadata
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ExperiencePromotion'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Approve an experience candidate
+      tags:
+      - admin/experiences
+  /admin/experiences/{id}/reject:
+    post:
+      consumes:
+      - application/json
+      description: Reject an experience candidate
+      parameters:
+      - description: Candidate ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rejection reason
+        in: body
+        name: body
+        schema:
+          properties:
+            reason:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Reject an experience candidate
+      tags:
+      - admin/experiences
+  /admin/experiences/pending:
+    get:
+      description: Get pending experience candidates awaiting review
+      parameters:
+      - description: 'Page size (default: 20)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Page offset (default: 0)'
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              candidates:
+                items:
+                  $ref: '#/definitions/models.ExperienceCandidate'
+                type: array
+              total:
+                type: integer
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get pending experience candidates
+      tags:
+      - admin/experiences
+  /admin/experiences/run-analysis:
+    post:
+      description: Trigger automatic pattern analysis for all items with recent activity
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Run automatic analysis
+      tags:
+      - admin/experiences
+  /artifacts/{id}:
+    delete:
+      description: Delete an artifact by ID and remove its stored file
+      parameters:
+      - description: Artifact ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete artifact
+      tags:
+      - artifacts
+  /artifacts/{id}/download:
+    get:
+      description: Download a file artifact by ID
+      parameters:
+      - description: Artifact ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Download artifact
+      tags:
+      - artifacts
+  /artifacts/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a file artifact for a skill item
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Item ID
+        in: formData
+        name: item_id
+        required: true
+        type: string
+      - description: Artifact version
+        in: formData
+        name: version
+        type: string
+      - description: Uploader user ID
+        in: formData
+        name: uploaded_by
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CapabilityArtifact'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Upload artifact
+      tags:
+      - artifacts
+  /auth/login:
+    get:
+      consumes:
+      - application/json
+      description: Exchange OAuth authorization code for access token
+      parameters:
+      - description: OAuth code
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            code:
+              type: string
+            state:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              token:
+                type: string
+              tokenType:
+                type: string
+              user:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: OAuth login
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      description: Invalidate current session
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+      summary: Logout
+      tags:
+      - auth
+  /auth/me:
+    get:
+      description: Get information of the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - auth
+  /items:
+    get:
+      description: Get all skill items visible to the current user with pagination
+      parameters:
+      - description: Filter by item type
+        in: query
+        name: type
+        type: string
+      - description: 'Filter by status (default: active)'
+        in: query
+        name: status
+        type: string
+      - description: Search by name or description
+        in: query
+        name: search
+        type: string
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      - description: Filter by registry ID
+        in: query
+        name: registryId
+        type: string
+      - description: 'Page size (default: 24, max: 100)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Page offset (default: 0)'
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              hasMore:
+                type: boolean
+              items:
+                items:
+                  $ref: '#/definitions/models.CapabilityItem'
+                type: array
+              total:
+                type: integer
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List all visible items
+      tags:
+      - items
+    post:
+      consumes:
+      - application/json
+      description: Create a skill item; auto-selects public registry if registryId
+        is omitted
+      parameters:
+      - description: Item data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            category:
+              type: string
+            content:
+              type: string
+            createdBy:
+              type: string
+            description:
+              type: string
+            itemType:
+              type: string
+            name:
+              type: string
+            registryId:
+              type: string
+            slug:
+              type: string
+            version:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create item (direct)
+      tags:
+      - items
+  /items/{id}:
+    delete:
+      description: Delete skill item by ID
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete item
+      tags:
+      - items
+    get:
+      description: Get skill item by ID with registry, versions and artifacts
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get item
+      tags:
+      - items
+    put:
+      consumes:
+      - application/json
+      description: Update skill item by ID; creates a new version if content changes
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Item data
+        in: body
+        name: body
+        schema:
+          properties:
+            category:
+              type: string
+            commitMsg:
+              type: string
+            content:
+              type: string
+            description:
+              type: string
+            name:
+              type: string
+            status:
+              type: string
+            updatedBy:
+              type: string
+            version:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update item
+      tags:
+      - items
+  /items/{id}/analyze:
+    post:
+      description: Analyze an existing skill and get improvement suggestions
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/llm.SkillAnalysis'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Analyze a skill
+      tags:
+      - generate
+  /items/{id}/analyze-patterns:
+    post:
+      description: Run pattern analysis on behavior logs for a specific item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/llm.ExperienceAnalysisResult'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Analyze patterns for an item
+      tags:
+      - experiences
+  /items/{id}/artifacts:
+    get:
+      description: Get all artifacts for a skill item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              artifacts:
+                items:
+                  $ref: '#/definitions/models.CapabilityArtifact'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List item artifacts
+      tags:
+      - artifacts
+  /items/{id}/behavior:
+    post:
+      consumes:
+      - application/json
+      description: Log a user interaction with a capability item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Behavior data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            actionType:
+              type: string
+            context:
+              type: string
+            durationMs:
+              type: integer
+            feedback:
+              type: string
+            metadata:
+              type: object
+            rating:
+              type: integer
+            searchQuery:
+              type: string
+            sessionId:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.BehaviorLog'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Log user behavior
+      tags:
+      - behavior
+  /items/{id}/download:
+    get:
+      description: Download the Markdown content of a capability item (skill/subagent/command)
+        as a file. Respects visibility rules.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Markdown content
+          schema:
+            type: string
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Download item content
+      tags:
+      - items
+  /items/{id}/improve:
+    post:
+      consumes:
+      - application/json
+      description: Apply suggested improvements to a skill
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Improvements to apply
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            improvements:
+              items:
+                $ref: '#/definitions/llm.SkillImprovement'
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Improve a skill
+      tags:
+      - generate
+  /items/{id}/promotion-history:
+    get:
+      description: Get the history of experience promotions for a specific item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Number of results (default: 20)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              promotions:
+                items:
+                  $ref: '#/definitions/models.ExperiencePromotion'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get promotion history for an item
+      tags:
+      - experiences
+  /items/{id}/similar:
+    get:
+      description: Find items similar to a given item using vector similarity
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Number of results (default: 10)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/services.SearchResultItem'
+                type: array
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Find similar items
+      tags:
+      - search
+  /items/{id}/stats:
+    get:
+      description: Get behavior statistics for a specific item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.ItemBehaviorStats'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get item behavior statistics
+      tags:
+      - behavior
+  /items/{id}/versions:
+    get:
+      description: Get all versions of a skill item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              versions:
+                items:
+                  $ref: '#/definitions/models.CapabilityVersion'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List item versions
+      tags:
+      - items
+  /items/{id}/versions/{version}:
+    get:
+      description: Get a specific version of a skill item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Version number
+        in: path
+        name: version
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityVersion'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get item version
+      tags:
+      - items
+  /items/my:
+    get:
+      description: Get all skill items owned by a user
+      parameters:
+      - description: Owner user ID
+        in: query
+        name: ownerId
+        required: true
+        type: string
+      - description: Filter by item type
+        in: query
+        name: type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/models.CapabilityItem'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List my items
+      tags:
+      - items
+  /marketplace/items/generate:
+    post:
+      consumes:
+      - application/json
+      description: Generate a skill definition based on a natural language prompt
+      parameters:
+      - description: Generation request
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            category:
+              type: string
+            context:
+              type: string
+            itemType:
+              type: string
+            prompt:
+              type: string
+            registryId:
+              type: string
+            saveItem:
+              type: boolean
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.GenerateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Generate a skill using AI
+      tags:
+      - generate
+  /marketplace/items/hybrid-search:
+    post:
+      consumes:
+      - application/json
+      description: Search using both semantic similarity and keyword matching
+      parameters:
+      - description: Search request
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            categories:
+              items:
+                type: string
+              type: array
+            limit:
+              type: integer
+            offset:
+              type: integer
+            query:
+              type: string
+            registryIds:
+              items:
+                type: string
+              type: array
+            types:
+              items:
+                type: string
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.SearchResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Hybrid search for capabilities
+      tags:
+      - search
+  /marketplace/items/new:
+    get:
+      description: Get recently added high-quality items
+      parameters:
+      - description: 'Number of results (default: 10)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/models.CapabilityItem'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get new and noteworthy items
+      tags:
+      - recommendations
+  /marketplace/items/recommend:
+    post:
+      consumes:
+      - application/json
+      description: Get personalized skill recommendations using multiple strategies
+      parameters:
+      - description: Recommendation request
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            categories:
+              items:
+                type: string
+              type: array
+            context:
+              type: string
+            limit:
+              type: integer
+            sessionItems:
+              items:
+                type: string
+              type: array
+            types:
+              items:
+                type: string
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.RecommendResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get personalized recommendations
+      tags:
+      - recommendations
+  /marketplace/items/search:
+    post:
+      consumes:
+      - application/json
+      description: Search for capability items using semantic similarity
+      parameters:
+      - description: Search request
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            categories:
+              items:
+                type: string
+              type: array
+            limit:
+              type: integer
+            minScore:
+              type: number
+            offset:
+              type: integer
+            query:
+              type: string
+            registryIds:
+              items:
+                type: string
+              type: array
+            types:
+              items:
+                type: string
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.SearchResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Semantic search for capabilities
+      tags:
+      - search
+  /marketplace/items/trending:
+    get:
+      description: Get trending items based on recent activity
+      parameters:
+      - description: 'Number of results (default: 10)'
+        in: query
+        name: limit
+        type: integer
+      - collectionFormat: csv
+        description: Filter by item types
+        in: query
+        items:
+          type: string
+        name: types
+        type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/models.CapabilityItem'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get trending items
+      tags:
+      - recommendations
+  /organizations:
+    get:
+      description: Get all organizations
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              organizations:
+                items:
+                  $ref: '#/definitions/models.Organization'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List organizations
+      tags:
+      - organizations
+    post:
+      consumes:
+      - application/json
+      description: Create a new organization. Set orgType=sync to create a Git-synced
+        organization.
+      parameters:
+      - description: Organization data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            description:
+              type: string
+            displayName:
+              type: string
+            name:
+              type: string
+            orgType:
+              type: string
+            ownerId:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Organization'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create organization
+      tags:
+      - organizations
+  /organizations/{id}:
+    delete:
+      description: Delete organization by ID
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete organization
+      tags:
+      - organizations
+    get:
+      description: Get organization by ID
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Organization'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get organization
+      tags:
+      - organizations
+    put:
+      consumes:
+      - application/json
+      description: Update organization by ID
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Organization data
+        in: body
+        name: body
+        schema:
+          properties:
+            description:
+              type: string
+            displayName:
+              type: string
+            name:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Organization'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update organization
+      tags:
+      - organizations
+  /organizations/{id}/members:
+    get:
+      description: Get all members of an organization
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              members:
+                items:
+                  $ref: '#/definitions/models.OrgMember'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List organization members
+      tags:
+      - organizations
+    post:
+      consumes:
+      - application/json
+      description: Add a user to an organization
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Member data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            role:
+              type: string
+            userId:
+              type: string
+            username:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.OrgMember'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Add organization member
+      tags:
+      - organizations
+  /organizations/{id}/members/{userId}:
+    delete:
+      description: Remove a user from an organization
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Remove organization member
+      tags:
+      - organizations
+  /organizations/{id}/registry:
+    get:
+      description: Get the internal capability registry for an organization
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get organization registry
+      tags:
+      - organizations
+  /organizations/{id}/sync:
+    post:
+      description: Manually trigger a sync job for the organization's registry
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Dry run mode
+        in: query
+        name: dryRun
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              jobId:
+                type: string
+              status:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Trigger org sync
+      tags:
+      - sync
+  /organizations/{id}/sync-jobs:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              jobs:
+                items:
+                  $ref: '#/definitions/models.SyncJob'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List org sync jobs
+      tags:
+      - sync
+  /organizations/{id}/sync-logs:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              logs:
+                items:
+                  $ref: '#/definitions/models.SyncLog'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List org sync logs
+      tags:
+      - sync
+  /organizations/{id}/sync-status:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: Get org sync status
+      tags:
+      - sync
+  /organizations/{id}/sync/cancel:
+    post:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+      summary: Cancel org sync
+      tags:
+      - sync
+  /organizations/my:
+    get:
+      description: Get all organizations the user belongs to
+      parameters:
+      - description: User ID
+        in: query
+        name: userId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              organizations:
+                items:
+                  $ref: '#/definitions/models.Organization'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get my organizations
+      tags:
+      - organizations
+  /registries:
+    get:
+      description: Get registries visible to the current user (public + org + personal)
+      parameters:
+      - description: Filter by organization ID
+        in: query
+        name: orgId
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              registries:
+                items:
+                  $ref: '#/definitions/models.CapabilityRegistry'
+                type: array
+            type: object
+      summary: List registries
+      tags:
+      - registries
+    post:
+      consumes:
+      - application/json
+      description: Create a new skill registry
+      parameters:
+      - description: Registry data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            description:
+              type: string
+            externalUrl:
+              type: string
+            name:
+              type: string
+            orgId:
+              type: string
+            ownerId:
+              type: string
+            sourceType:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create registry
+      tags:
+      - registries
+  /registries/{id}:
+    delete:
+      description: Delete registry by ID
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete registry
+      tags:
+      - registries
+    get:
+      description: Get registry by ID with its items
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get registry
+      tags:
+      - registries
+    put:
+      consumes:
+      - application/json
+      description: Update registry by ID
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Registry data
+        in: body
+        name: body
+        schema:
+          properties:
+            description:
+              type: string
+            name:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update registry
+      tags:
+      - registries
+  /registries/{id}/items:
+    get:
+      description: Get all items in a registry
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by item type
+        in: query
+        name: type
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      - description: Search by name or description
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/models.CapabilityItem'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List registry items
+      tags:
+      - items
+    post:
+      consumes:
+      - application/json
+      description: Create a new skill item in a specific registry
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Item data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            category:
+              type: string
+            content:
+              type: string
+            createdBy:
+              type: string
+            description:
+              type: string
+            itemType:
+              type: string
+            name:
+              type: string
+            slug:
+              type: string
+            version:
+              type: string
+            visibility:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create item in registry
+      tags:
+      - items
+  /registries/{id}/sync:
+    post:
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Dry run mode
+        in: query
+        name: dryRun
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              jobId:
+                type: string
+              status:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Trigger registry sync
+      tags:
+      - sync
+  /registries/{id}/sync-jobs:
+    get:
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              jobs:
+                items:
+                  $ref: '#/definitions/models.SyncJob'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List registry sync jobs
+      tags:
+      - sync
+  /registries/{id}/sync-logs:
+    get:
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              logs:
+                items:
+                  $ref: '#/definitions/models.SyncLog'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List registry sync logs
+      tags:
+      - sync
+  /registries/{id}/sync-status:
+    get:
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: Get registry sync status
+      tags:
+      - sync
+  /registries/{id}/sync/cancel:
+    post:
+      parameters:
+      - description: Registry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+      summary: Cancel registry sync
+      tags:
+      - sync
+  /registries/ensure-personal:
+    post:
+      consumes:
+      - application/json
+      description: Get or create the personal registry for a user
+      parameters:
+      - description: Owner data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ownerId:
+              type: string
+            username:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Ensure personal registry
+      tags:
+      - registries
+  /registries/my:
+    get:
+      description: Get all registries owned by a user
+      parameters:
+      - description: Owner user ID
+        in: query
+        name: ownerId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              registries:
+                items:
+                  $ref: '#/definitions/models.CapabilityRegistry'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List my registries
+      tags:
+      - registries
+  /registries/public:
+    get:
+      description: Get the global public skill registry
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityRegistry'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get public registry
+      tags:
+      - registries
+  /registry/{org}/{slug}/{file}:
+    get:
+      description: Download a specific file of an item identified by org/slug/filename.
+        Respects visibility rules.
+      parameters:
+      - description: Organization name
+        in: path
+        name: org
+        required: true
+        type: string
+      - description: Item slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Filename (e.g. SKILL.md, agent.md, command.md)
+        in: path
+        name: file
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: File content
+          schema:
+            type: string
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Download registry item file by slug
+      tags:
+      - registry
+  /registry/{org}/access:
+    get:
+      description: Probe whether a registry requires authentication. Returns {"public":false}
+        for non-existent orgs to avoid leaking org existence.
+      parameters:
+      - description: Organization name
+        in: path
+        name: org
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              public:
+                type: boolean
+            type: object
+      summary: Check registry access
+      tags:
+      - registry
+  /registry/{org}/index.json:
+    get:
+      description: Return the index.json for an org's registry, filtered by the caller's
+        access rights. Requires Bearer token for non-public registries.
+      parameters:
+      - description: Organization name
+        in: path
+        name: org
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  type: object
+                type: array
+              version:
+                type: integer
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get registry index
+      tags:
+      - registry
+  /sync-jobs/{id}:
+    get:
+      parameters:
+      - description: SyncJob ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SyncJob'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get sync job detail
+      tags:
+      - sync
+  /sync-logs/{id}:
+    get:
+      parameters:
+      - description: SyncLog ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SyncLog'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get sync log detail
+      tags:
+      - sync
+  /users/me/behavior/summary:
+    get:
+      description: Get a summary of user's behavior and preferences
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.UserBehaviorSummary'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get user behavior summary
+      tags:
+      - behavior
+  /webhooks/github:
+    post:
+      consumes:
+      - application/json
+      description: Receive GitHub push events and enqueue sync jobs
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              jobId:
+                type: string
+              status:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Handle GitHub webhook
+      tags:
+      - sync
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
