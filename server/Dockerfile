@@ -14,18 +14,12 @@ RUN apk add --no-cache ca-certificates git
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GOSUMDB=off
 
-# Install swag for swagger docs generation
-RUN go install github.com/swaggo/swag/cmd/swag@v1.16.6
-
 # Copy go mod files first for better caching
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy all source code
+# Copy all source code (including pre-generated docs)
 COPY . .
-
-# Generate swagger docs
-RUN swag init -g cmd/api/main.go -o docs
 
 # Build application
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/api
