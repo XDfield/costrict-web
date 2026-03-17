@@ -111,49 +111,6 @@ jobs:
           path: ./packages/*.tgz
           retention-days: 30
 
-  # Push charts to GitHub Packages (OCI registry)
-  push-to-oci:
-    needs: [detect-charts, release-charts]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        chart: ${{ fromJson(needs.detect-charts.outputs.charts) }}
-      fail-fast: false
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Download chart artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.chart }}-chart
-          path: ./packages
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push chart to OCI registry
-        run: |
-          VERSION="${{ needs.detect-charts.outputs.version }}"
-          # Find the actual chart package file (chart name in Chart.yaml may differ from directory name)
-          CHART_PKG=$(find ./packages -name "*.tgz" | head -n 1)
-
-          if [ -z "$CHART_PKG" ]; then
-            echo "Error: No .tgz file found in ./packages"
-            ls -la ./packages
-            exit 1
-          fi
-
-          OCI_REGISTRY="ghcr.io/${{ github.repository_owner }}/helm-charts"
-
-          echo "Pushing $CHART_PKG to $OCI_REGISTRY"
-          helm push "$CHART_PKG" "oci://$OCI_REGISTRY"
-
   # Create GitHub Release
   create-release:
     needs: [detect-charts, release-charts]
@@ -179,23 +136,20 @@ jobs:
             ### Charts
             ${{ join(fromJson(needs.detect-charts.outputs.charts), '\n') }}
 
-            ### Install from OCI Registry
+            ### Download Charts
+            Download the `.tgz` files from the release assets and install:
             ```bash
-            # Login to GHCR
-            helm registry login ghcr.io
-
-            # Install charts
-            helm install gateway oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-gateway --version ${{ needs.detect-charts.outputs.version }}
-            helm install api oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-api --version ${{ needs.detect-charts.outputs.version }}
-            helm install worker oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-worker --version ${{ needs.detect-charts.outputs.version }}
-            helm install portal oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-portal --version ${{ needs.detect-charts.outputs.version }}
+            helm install gateway ./costrict-web-gateway-${{ needs.detect-charts.outputs.version }}.tgz
+            helm install api ./costrict-web-api-${{ needs.detect-charts.outputs.version }}.tgz
+            helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz
+            helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Summary job
   release-summary:
-    needs: [detect-charts, release-charts, push-to-oci, create-release]
+    needs: [detect-charts, release-charts, create-release]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -210,14 +164,11 @@ jobs:
             echo "- $chart" >> $GITHUB_STEP_SUMMARY
           done
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Install from OCI Registry" >> $GITHUB_STEP_SUMMARY
+          echo "### Download from GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo '# Login to GHCR' >> $GITHUB_STEP_SUMMARY
-          echo 'helm registry login ghcr.io' >> $GITHUB_STEP_SUMMARY
-          echo '' >> $GITHUB_STEP_SUMMARY
-          echo '# Install charts' >> $GITHUB_STEP_SUMMARY
-          echo "helm install gateway oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-gateway --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "helm install api oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-api --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "helm install worker oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-worker --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "helm install portal oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-portal --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '# Download and install charts from release assets' >> $GITHUB_STEP_SUMMARY
+          echo "helm install gateway ./costrict-web-gateway-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "helm install api ./costrict-web-api-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
