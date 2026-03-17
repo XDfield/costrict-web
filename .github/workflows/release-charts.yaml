@@ -140,7 +140,15 @@ jobs:
       - name: Push chart to OCI registry
         run: |
           VERSION="${{ needs.detect-charts.outputs.version }}"
-          CHART_PKG="./packages/${{ matrix.chart }}-${VERSION}.tgz"
+          # Find the actual chart package file (chart name in Chart.yaml may differ from directory name)
+          CHART_PKG=$(find ./packages -name "*.tgz" | head -n 1)
+
+          if [ -z "$CHART_PKG" ]; then
+            echo "Error: No .tgz file found in ./packages"
+            ls -la ./packages
+            exit 1
+          fi
+
           OCI_REGISTRY="ghcr.io/${{ github.repository_owner }}/helm-charts"
 
           echo "Pushing $CHART_PKG to $OCI_REGISTRY"
