@@ -16,13 +16,8 @@ func main() {
 	cfg := gw.LoadConfig()
 	manager := gw.NewTunnelManager()
 
-	registerWithRetry(cfg)
-
-	stopHeartbeat := make(chan struct{})
-	go heartbeatLoop(cfg, manager, stopHeartbeat)
-
+	// Start HTTP server first (for health checks)
 	r := gw.SetupRouter(manager, cfg)
-
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: r,
@@ -34,6 +29,12 @@ func main() {
 			log.Fatalf("[Gateway] failed to start: %v", err)
 		}
 	}()
+
+	// Register with server in background
+	registerWithRetry(cfg)
+
+	stopHeartbeat := make(chan struct{})
+	go heartbeatLoop(cfg, manager, stopHeartbeat)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)

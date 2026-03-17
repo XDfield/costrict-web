@@ -58,7 +58,7 @@ envFrom: []
 livenessProbe:
   enabled: true
   httpGet:
-    path: /api/health
+    path: /
     port: 3000
   initialDelaySeconds: 10
   periodSeconds: 10
@@ -68,7 +68,7 @@ livenessProbe:
 readinessProbe:
   enabled: true
   httpGet:
-    path: /api/health
+    path: /
     port: 3000
   initialDelaySeconds: 5
   periodSeconds: 5
