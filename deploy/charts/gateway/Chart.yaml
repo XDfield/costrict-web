@@ -1,0 +1,9 @@
+apiVersion: v2
+name: costrict-web-gateway
+description: Costrict Web Gateway - Tunnel management and proxy service
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: costrict
+    url: https://github.com/costrict

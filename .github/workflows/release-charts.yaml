@@ -1,0 +1,215 @@
+name: Release Helm Charts
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      charts:
+        description: 'Charts to release (comma-separated: gateway,api,worker,portal,all)'
+        required: false
+        default: 'all'
+
+env:
+  HELM_VERSION: '3.14.0'
+  CHARTS_DIR: 'deploy/charts'
+
+jobs:
+  detect-charts:
+    runs-on: ubuntu-latest
+    outputs:
+      charts: ${{ steps.set-charts.outputs.charts }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            # Remove 'v' prefix if present
+            VERSION="${VERSION#v}"
+          else
+            # Extract version from tag (v1.0.0 or v1.0.0-debug)
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
+      - name: Set charts to release
+        id: set-charts
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHARTS_INPUT="${{ github.event.inputs.charts }}"
+          else
+            CHARTS_INPUT="all"
+          fi
+
+          if [ "$CHARTS_INPUT" = "all" ]; then
+            echo 'charts=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
+          else
+            # Convert comma-separated to JSON array
+            CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -R . | jq -s .)
+            echo "charts=$CHARTS_JSON" >> $GITHUB_OUTPUT
+          fi
+
+  release-charts:
+    needs: detect-charts
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chart: ${{ fromJson(needs.detect-charts.outputs.charts) }}
+      fail-fast: false
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Update chart version
+        run: |
+          VERSION="${{ needs.detect-charts.outputs.version }}"
+          CHART_PATH="${{ env.CHARTS_DIR }}/${{ matrix.chart }}/Chart.yaml"
+
+          # Update version and appVersion in Chart.yaml
+          yq -i ".version = \"$VERSION\"" "$CHART_PATH"
+          yq -i ".appVersion = \"$VERSION\"" "$CHART_PATH"
+
+          echo "Updated $CHART_PATH to version $VERSION"
+          cat "$CHART_PATH"
+
+      - name: Package chart
+        run: |
+          helm package ${{ env.CHARTS_DIR }}/${{ matrix.chart }} \
+            --version ${{ needs.detect-charts.outputs.version }} \
+            --destination ./packages
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.chart }}-chart
+          path: ./packages/*.tgz
+          retention-days: 30
+
+  # Push charts to GitHub Packages (OCI registry)
+  push-to-oci:
+    needs: [detect-charts, release-charts]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chart: ${{ fromJson(needs.detect-charts.outputs.charts) }}
+      fail-fast: false
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download chart artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.chart }}-chart
+          path: ./packages
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push chart to OCI registry
+        run: |
+          VERSION="${{ needs.detect-charts.outputs.version }}"
+          CHART_PKG="./packages/${{ matrix.chart }}-${VERSION}.tgz"
+          OCI_REGISTRY="ghcr.io/${{ github.repository_owner }}/helm-charts"
+
+          echo "Pushing $CHART_PKG to $OCI_REGISTRY"
+          helm push "$CHART_PKG" "oci://$OCI_REGISTRY"
+
+  # Create GitHub Release
+  create-release:
+    needs: [detect-charts, release-charts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all chart artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./all-charts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Helm Charts ${{ github.ref_name }}
+          files: |
+            ./all-charts/**/*.tgz
+          body: |
+            ## Helm Charts Release ${{ github.ref_name }}
+
+            ### Charts
+            ${{ join(fromJson(needs.detect-charts.outputs.charts), '\n') }}
+
+            ### Install from OCI Registry
+            ```bash
+            # Login to GHCR
+            helm registry login ghcr.io
+
+            # Install charts
+            helm install gateway oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-gateway --version ${{ needs.detect-charts.outputs.version }}
+            helm install api oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-api --version ${{ needs.detect-charts.outputs.version }}
+            helm install worker oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-worker --version ${{ needs.detect-charts.outputs.version }}
+            helm install portal oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-portal --version ${{ needs.detect-charts.outputs.version }}
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Summary job
+  release-summary:
+    needs: [detect-charts, release-charts, push-to-oci, create-release]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Release Summary
+        run: |
+          echo "## Helm Chart Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Released Charts" >> $GITHUB_STEP_SUMMARY
+          echo '${{ needs.detect-charts.outputs.charts }}' | jq -r '.[]' | while read chart; do
+            echo "- $chart" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Install from OCI Registry" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo '# Login to GHCR' >> $GITHUB_STEP_SUMMARY
+          echo 'helm registry login ghcr.io' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '# Install charts' >> $GITHUB_STEP_SUMMARY
+          echo "helm install gateway oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-gateway --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "helm install api oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-api --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "helm install worker oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-worker --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "helm install portal oci://ghcr.io/${{ github.repository_owner }}/helm-charts/costrict-web-portal --version ${{ needs.detect-charts.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
