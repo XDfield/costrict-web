@@ -6,6 +6,10 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Version tag (e.g., v0.0.3)'
+        required: true
+        default: 'v0.0.1'
       services:
         description: 'Services to build (comma-separated: gateway,api,worker,portal,all)'
         required: false
@@ -35,7 +39,8 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
+            VERSION="${{ github.event.inputs.version }}"
+            # Remove 'v' prefix if present
             VERSION="${VERSION#v}"
             [ -z "$VERSION" ] && VERSION="latest"
           else
@@ -57,7 +62,8 @@ jobs:
           if [ "$SERVICES_INPUT" = "all" ]; then
             echo 'services=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
           else
-            SERVICES_JSON=$(echo "$SERVICES_INPUT" | tr ',' '\n' | jq -R . | jq -s .)
+            # Convert comma-separated to JSON array (compact single-line output)
+            SERVICES_JSON=$(echo "$SERVICES_INPUT" | tr ',' '\n' | xargs | tr ' ' ',' | jq -Rc 'split(",")')
             echo "services=$SERVICES_JSON" >> $GITHUB_OUTPUT
           fi
 
