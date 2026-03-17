@@ -2,3 +2,7 @@
 	path = web
 	url = https://github.com/XDfield/buildwithclaude.git
 	branch = costrict
+[submodule "web-ui"]
+	path = web-ui
+	url = https://github.com/zgsm-ai/opencode
+	branch = feature/web
