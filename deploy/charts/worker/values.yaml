@@ -1,0 +1,74 @@
+# Default values for costrict-web-worker
+
+replicaCount: 2
+
+image:
+  repository: zgsm/costrict-web-worker
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Worker specific configuration
+config:
+  logLevel: "info"
+  concurrency: "5"
+
+# Database configuration
+database:
+  host: postgres
+  port: 5432
+  name: costrict
+  user: postgres
+  existingSecret: ""
+  existingSecretKey: password
+
+# Redis configuration
+redis:
+  host: redis
+  port: 6379
+  existingSecret: ""
+  existingSecretKey: password
+
+env: []
+envFrom: []
+
+livenessProbe:
+  enabled: false
+
+readinessProbe:
+  enabled: false

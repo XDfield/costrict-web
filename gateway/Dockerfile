@@ -6,14 +6,14 @@ ARG HTTP_PROXY
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates git
+RUN apk add --no-cache ca-certificates
 
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GOSUMDB=off
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -o gateway ./cmd
 
 # Final stage
 FROM alpine:latest
@@ -30,11 +30,13 @@ RUN addgroup -g 1000 -S appgroup && \
 WORKDIR /app
 
 # Copy binary from builder with execute permission
-COPY --from=builder --chmod=755 /app/worker ./worker
+COPY --from=builder --chmod=755 /app/gateway ./gateway
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
 
 USER appuser
 
-CMD ["./worker"]
+EXPOSE 8080
+
+CMD ["./gateway"]

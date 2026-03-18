@@ -1,0 +1,54 @@
+name: Validate Charts
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - 'deploy/charts/**'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'deploy/charts/**'
+
+env:
+  HELM_VERSION: '3.14.0'
+  CHARTS_DIR: 'deploy/charts'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chart: [gateway, api, worker, portal]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Validate chart template
+        run: |
+          echo "Validating ${{ matrix.chart }} chart..."
+          if helm template test-release ${{ env.CHARTS_DIR }}/${{ matrix.chart }} --debug > /dev/null 2>&1; then
+            echo "✅ ${{ matrix.chart }} template is valid"
+          else
+            echo "❌ ${{ matrix.chart }} template has errors"
+            helm template test-release ${{ env.CHARTS_DIR }}/${{ matrix.chart }} --debug
+            exit 1
+          fi
+
+      - name: Show rendered manifest
+        run: |
+          echo "### Rendered manifest for ${{ matrix.chart }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```yaml' >> $GITHUB_STEP_SUMMARY
+          helm template test-release ${{ env.CHARTS_DIR }}/${{ matrix.chart }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

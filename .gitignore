@@ -54,7 +54,6 @@ server/*.dylib
 server/vendor/
 server/*.log
 server/*.err
-server/docs/
 server/coverage
 server/coverage_handlers
 server/coverage_handlers.out
