@@ -10,6 +10,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RegisterDeviceHandler godoc
+// @Summary      Register a new device
+// @Description  Register a device for the authenticated user
+// @Tags         devices
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{deviceId=string,displayName=string,platform=string,version=string,workspaceId=string}  true  "Device registration data"
+// @Success      201   {object}  object{device=object,token=string}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string,deviceId=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices [post]
 func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -44,6 +57,15 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// ListDevicesHandler godoc
+// @Summary      List user devices
+// @Description  Get all devices registered by the authenticated user
+// @Tags         devices
+// @Produce      json
+// @Success      200   {object}  object{devices=[]object}
+// @Failure      401   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices [get]
 func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -62,6 +84,17 @@ func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// GetDeviceHandler godoc
+// @Summary      Get device details
+// @Description  Get details of a specific device
+// @Tags         devices
+// @Produce      json
+// @Param        deviceID  path      string  true  "Device ID"
+// @Success      200   {object}  object{device=object}
+// @Failure      401   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices/{deviceID} [get]
 func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -85,6 +118,20 @@ func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// UpdateDeviceHandler godoc
+// @Summary      Update device
+// @Description  Update device information
+// @Tags         devices
+// @Accept       json
+// @Produce      json
+// @Param        deviceID  path      string  true  "Device ID"
+// @Param        body      body      object{displayName=string,workspaceId=string}  true  "Device update data"
+// @Success      200   {object}  object{device=object}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices/{deviceID} [put]
 func UpdateDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -115,6 +162,16 @@ func UpdateDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// DeleteDeviceHandler godoc
+// @Summary      Delete device
+// @Description  Delete a device registration
+// @Tags         devices
+// @Param        deviceID  path      string  true  "Device ID"
+// @Success      204
+// @Failure      401   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices/{deviceID} [delete]
 func DeleteDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -137,6 +194,17 @@ func DeleteDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// RotateDeviceTokenHandler godoc
+// @Summary      Rotate device token
+// @Description  Rotate the authentication token for a device
+// @Tags         devices
+// @Produce      json
+// @Param        deviceID  path      string  true  "Device ID"
+// @Success      200   {object}  object{token=string,rotatedAt=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices/{deviceID}/rotate-token [post]
 func RotateDeviceTokenHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -163,6 +231,18 @@ func RotateDeviceTokenHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// ListWorkspaceDevicesHandler godoc
+// @Summary      List workspace devices
+// @Description  Get all devices in a workspace with pagination
+// @Tags         devices
+// @Produce      json
+// @Param        workspaceID  path      string  true   "Workspace ID"
+// @Param        page         query     int     false  "Page number (default: 1)"
+// @Param        pageSize     query     int     false  "Page size (default: 20, max: 100)"
+// @Success      200   {object}  object{devices=[]object,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      401   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /workspaces/{workspaceID}/devices [get]
 func ListWorkspaceDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)

@@ -57,7 +57,7 @@ func ListRegistries(c *gin.Context) {
 // @Tags         registries
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,visibility=string,repoId=string,ownerId=string}  true  "Registry data"
+// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,visibility=string,repoId=string,ownerId=string}  true  "Registry data"
 // @Success      201   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -132,7 +132,7 @@ func GetRegistry(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{name=string,description=string,visibility=string}  false  "Registry data"
+// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,visibility=string}  false  "Registry data"
 // @Success      200   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}

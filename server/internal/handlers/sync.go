@@ -62,8 +62,9 @@ func getRegistryIDForRepo(repoID string) (string, error) {
 // @Description  Manually trigger a sync job for the repository's registry
 // @Tags         sync
 // @Produce      json
-// @Param        id      path   string  true  "Repository ID"
-// @Param        dryRun  query  bool    false "Dry run mode"
+// @Param        id          path   string  true  "Repository ID"
+// @Param        registryId  query  string  false  "Registry ID"
+// @Param        dryRun      query  bool    false "Dry run mode"
 // @Success      202  {object}  object{jobId=string,status=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      409  {object}  object{error=string}
@@ -195,6 +196,8 @@ func GetRepoSyncStatus(c *gin.Context) {
 // @Produce      json
 // @Param        id          path   string  true   "Repository ID"
 // @Param        registryId  query  string  false  "Registry ID (filter by registry)"
+// @Param        page        query  int     false  "Page number (default: 1)"
+// @Param        pageSize    query  int     false  "Page size (default: 20)"
 // @Success      200  {object}  object{logs=[]models.SyncLog,total=integer}
 // @Router       /repositories/{id}/sync-logs [get]
 func ListRepoSyncLogs(c *gin.Context) {
@@ -232,6 +235,8 @@ func ListRepoSyncLogs(c *gin.Context) {
 // @Produce      json
 // @Param        id          path   string  true   "Repository ID"
 // @Param        registryId  query  string  false  "Registry ID (filter by registry)"
+// @Param        page        query  int     false  "Page number (default: 1)"
+// @Param        pageSize    query  int     false  "Page size (default: 20)"
 // @Success      200  {object}  object{jobs=[]models.SyncJob,total=integer}
 // @Router       /repositories/{id}/sync-jobs [get]
 func ListRepoSyncJobs(c *gin.Context) {
@@ -478,9 +483,14 @@ func listSyncJobs(c *gin.Context, registryID string) {
 // @Tags         sync
 // @Accept       json
 // @Produce      json
-// @Success      202  {object}  object{jobId=string,status=string}
+// @Param        X-GitHub-Event  header  string  true   "GitHub event type (push)"
+// @Param        X-Hub-Signature-256  header  string  false  "GitHub webhook signature"
+// @Param        body  body  object{}  true  "GitHub webhook payload"
+// @Success      200  {object}  object{message=string}
+// @Success      202  {object}  object{queued=[]string}
 // @Failure      400  {object}  object{error=string}
 // @Failure      401  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string}
 // @Router       /webhooks/github [post]
 func HandleGitHubWebhook(c *gin.Context) {
 	if JobService == nil {

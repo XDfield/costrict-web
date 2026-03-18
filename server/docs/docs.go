@@ -23,272 +23,6 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/admin/experiences/pending": {
-            "get": {
-                "description": "Get pending experience candidates awaiting review",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/experiences"
-                ],
-                "summary": "Get pending experience candidates",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "Page size (default: 20)",
-                        "name": "limit",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page offset (default: 0)",
-                        "name": "offset",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "candidates": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.ExperienceCandidate"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/experiences/run-analysis": {
-            "post": {
-                "description": "Trigger automatic pattern analysis for all items with recent activity",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/experiences"
-                ],
-                "summary": "Run automatic analysis",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/experiences/{id}": {
-            "get": {
-                "description": "Get details of a specific experience candidate",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/experiences"
-                ],
-                "summary": "Get experience candidate by ID",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Candidate ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/models.ExperienceCandidate"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/experiences/{id}/approve": {
-            "post": {
-                "description": "Approve and promote an experience candidate to item metadata",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/experiences"
-                ],
-                "summary": "Approve an experience candidate",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Candidate ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/models.ExperiencePromotion"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/experiences/{id}/reject": {
-            "post": {
-                "description": "Reject an experience candidate",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/experiences"
-                ],
-                "summary": "Reject an experience candidate",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Candidate ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Rejection reason",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/artifacts/upload": {
             "post": {
                 "description": "Upload a file artifact for a skill item",
@@ -480,9 +214,74 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/login": {
+        "/auth/callback": {
             "get": {
-                "description": "Exchange OAuth authorization code for access token",
+                "description": "Exchange OAuth authorization code for access token and set cookie",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "OAuth callback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "OAuth code",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Redirect URI",
+                        "name": "redirect_uri",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "token": {
+                                    "type": "string"
+                                },
+                                "user": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/login": {
+            "post": {
+                "description": "Exchange OAuth authorization code for access token via JSON body",
                 "consumes": [
                     "application/json"
                 ],
@@ -492,7 +291,7 @@ const docTemplate = `{
                 "tags": [
                     "auth"
                 ],
-                "summary": "OAuth login",
+                "summary": "OAuth login (legacy)",
                 "parameters": [
                     {
                         "description": "OAuth code",
@@ -615,6 +414,626 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/devices": {
+            "get": {
+                "description": "Get all devices registered by the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "List user devices",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "devices": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Register a device for the authenticated user",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Register a new device",
+                "parameters": [
+                    {
+                        "description": "Device registration data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceId": {
+                                    "type": "string"
+                                },
+                                "displayName": {
+                                    "type": "string"
+                                },
+                                "platform": {
+                                    "type": "string"
+                                },
+                                "version": {
+                                    "type": "string"
+                                },
+                                "workspaceId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "device": {
+                                    "type": "object"
+                                },
+                                "token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceId": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/devices/{deviceID}": {
+            "get": {
+                "description": "Get details of a specific device",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Get device details",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "device": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update device information",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Update device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Device update data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "displayName": {
+                                    "type": "string"
+                                },
+                                "workspaceId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "device": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a device registration",
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Delete device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/devices/{deviceID}/rotate-token": {
+            "post": {
+                "description": "Rotate the authentication token for a device",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Rotate device token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "rotatedAt": {
+                                    "type": "string"
+                                },
+                                "token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/invitations/my": {
+            "get": {
+                "description": "Get all pending invitations for the current user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "invitations"
+                ],
+                "summary": "Get my invitations",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "invitations": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.RepoInvitation"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/invitations/{id}/accept": {
+            "post": {
+                "description": "Accept a pending invitation to join a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "invitations"
+                ],
+                "summary": "Accept an invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Invitation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.RepoMember"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/invitations/{id}/decline": {
+            "post": {
+                "description": "Decline a pending invitation to join a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "invitations"
+                ],
+                "summary": "Decline an invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Invitation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -761,9 +1180,6 @@ const docTemplate = `{
                                     "type": "string"
                                 },
                                 "version": {
-                                    "type": "string"
-                                },
-                                "visibility": {
                                     "type": "string"
                                 }
                             }
@@ -945,9 +1361,6 @@ const docTemplate = `{
                                 },
                                 "version": {
                                     "type": "string"
-                                },
-                                "visibility": {
-                                    "type": "string"
                                 }
                             }
                         }
@@ -1063,57 +1476,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/llm.SkillAnalysis"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/items/{id}/analyze-patterns": {
-            "post": {
-                "description": "Run pattern analysis on behavior logs for a specific item",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "experiences"
-                ],
-                "summary": "Analyze patterns for an item",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/llm.ExperienceAnalysisResult"
                         }
                     },
                     "404": {
@@ -1400,16 +1762,198 @@ const docTemplate = `{
                 }
             }
         },
-        "/items/{id}/promotion-history": {
-            "get": {
-                "description": "Get the history of experience promotions for a specific item",
+        "/items/{id}/move": {
+            "put": {
+                "description": "Move a capability item to a different registry. Target registry must belong to a non-sync repository. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "experiences"
+                    "items"
                 ],
-                "summary": "Get promotion history for an item",
+                "summary": "Move item to another registry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Target registry ID",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "targetRegistryId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.CapabilityItem"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/scan": {
+            "post": {
+                "description": "Manually trigger a security scan for a capability item",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "scan"
+                ],
+                "summary": "Trigger security scan",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "jobId": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/scan-results": {
+            "get": {
+                "description": "Get paginated scan result history for a capability item",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "scan"
+                ],
+                "summary": "List scan results",
                 "parameters": [
                     {
                         "type": "string",
@@ -1420,8 +1964,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Number of results (default: 20)",
-                        "name": "limit",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 10)",
+                        "name": "size",
                         "in": "query"
                     }
                 ],
@@ -1431,17 +1981,71 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "promotions": {
+                                "results": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.ExperiencePromotion"
+                                        "$ref": "#/definitions/models.SecurityScan"
                                     }
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/scan-status": {
+            "get": {
+                "description": "Get current scan status and latest result summary for a capability item",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "scan"
+                ],
+                "summary": "Get scan status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "lastScannedAt": {
+                                    "type": "string"
+                                },
+                                "latestResult": {
+                                    "type": "object"
+                                },
+                                "scanStatus": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1653,82 +2257,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/marketplace/items/generate": {
-            "post": {
-                "description": "Generate a skill definition based on a natural language prompt",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "generate"
-                ],
-                "summary": "Generate a skill using AI",
-                "parameters": [
-                    {
-                        "description": "Generation request",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "category": {
-                                    "type": "string"
-                                },
-                                "context": {
-                                    "type": "string"
-                                },
-                                "itemType": {
-                                    "type": "string"
-                                },
-                                "prompt": {
-                                    "type": "string"
-                                },
-                                "registryId": {
-                                    "type": "string"
-                                },
-                                "saveItem": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/services.GenerateResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2100,765 +2628,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/organizations": {
-            "get": {
-                "description": "Get all organizations",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "List organizations",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "organizations": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.Organization"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "description": "Create a new organization. Set orgType=sync to create a Git-synced organization.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Create organization",
-                "parameters": [
-                    {
-                        "description": "Organization data",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "description": {
-                                    "type": "string"
-                                },
-                                "displayName": {
-                                    "type": "string"
-                                },
-                                "name": {
-                                    "type": "string"
-                                },
-                                "orgType": {
-                                    "type": "string"
-                                },
-                                "ownerId": {
-                                    "type": "string"
-                                },
-                                "visibility": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/models.Organization"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/my": {
-            "get": {
-                "description": "Get all organizations the user belongs to",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Get my organizations",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "User ID",
-                        "name": "userId",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "organizations": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.Organization"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}": {
-            "get": {
-                "description": "Get organization by ID",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Get organization",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/models.Organization"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "put": {
-                "description": "Update organization by ID",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Update organization",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Organization data",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "description": {
-                                    "type": "string"
-                                },
-                                "displayName": {
-                                    "type": "string"
-                                },
-                                "name": {
-                                    "type": "string"
-                                },
-                                "visibility": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/models.Organization"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "description": "Delete organization by ID",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Delete organization",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/members": {
-            "get": {
-                "description": "Get all members of an organization",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "List organization members",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "members": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.OrgMember"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "description": "Add a user to an organization",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Add organization member",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Member data",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "role": {
-                                    "type": "string"
-                                },
-                                "userId": {
-                                    "type": "string"
-                                },
-                                "username": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/models.OrgMember"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/members/{userId}": {
-            "delete": {
-                "description": "Remove a user from an organization",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Remove organization member",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "User ID",
-                        "name": "userId",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/registry": {
-            "get": {
-                "description": "Get the internal capability registry for an organization",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organizations"
-                ],
-                "summary": "Get organization registry",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/sync": {
-            "post": {
-                "description": "Manually trigger a sync job for the organization's registry",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "sync"
-                ],
-                "summary": "Trigger org sync",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "Dry run mode",
-                        "name": "dryRun",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "jobId": {
-                                    "type": "string"
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/sync-jobs": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "sync"
-                ],
-                "summary": "List org sync jobs",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "jobs": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.SyncJob"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/sync-logs": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "sync"
-                ],
-                "summary": "List org sync logs",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "logs": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/models.SyncLog"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/sync-status": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "sync"
-                ],
-                "summary": "Get org sync status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{id}/sync/cancel": {
-            "post": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "sync"
-                ],
-                "summary": "Cancel org sync",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/registries": {
             "get": {
-                "description": "Get registries visible to the current user (public + org + personal)",
+                "description": "Get registries visible to the current user (public + repo + personal)",
                 "produces": [
                     "application/json"
                 ],
@@ -2869,8 +2641,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by organization ID",
-                        "name": "orgId",
+                        "description": "Filter by repository ID",
+                        "name": "repoId",
                         "in": "query"
                     }
                 ],
@@ -2915,20 +2687,29 @@ const docTemplate = `{
                                 "description": {
                                     "type": "string"
                                 },
+                                "externalBranch": {
+                                    "type": "string"
+                                },
                                 "externalUrl": {
                                     "type": "string"
                                 },
                                 "name": {
                                     "type": "string"
                                 },
-                                "orgId": {
+                                "ownerId": {
                                     "type": "string"
                                 },
-                                "ownerId": {
+                                "repoId": {
                                     "type": "string"
                                 },
                                 "sourceType": {
                                     "type": "string"
+                                },
+                                "syncEnabled": {
+                                    "type": "boolean"
+                                },
+                                "syncInterval": {
+                                    "type": "integer"
                                 },
                                 "visibility": {
                                     "type": "string"
@@ -3187,8 +2968,23 @@ const docTemplate = `{
                                 "description": {
                                     "type": "string"
                                 },
+                                "externalBranch": {
+                                    "type": "string"
+                                },
+                                "externalUrl": {
+                                    "type": "string"
+                                },
                                 "name": {
                                     "type": "string"
+                                },
+                                "sourceType": {
+                                    "type": "string"
+                                },
+                                "syncEnabled": {
+                                    "type": "boolean"
+                                },
+                                "syncInterval": {
+                                    "type": "integer"
                                 },
                                 "visibility": {
                                     "type": "string"
@@ -3397,10 +3193,10 @@ const docTemplate = `{
                                 "slug": {
                                     "type": "string"
                                 },
-                                "version": {
+                                "sourcePath": {
                                     "type": "string"
                                 },
-                                "visibility": {
+                                "version": {
                                     "type": "string"
                                 }
                             }
@@ -3631,9 +3427,99 @@ const docTemplate = `{
                 }
             }
         },
-        "/registry/{org}/access": {
+        "/registries/{id}/transfer": {
+            "put": {
+                "description": "Transfer a registry's ownership to a different repository. Caller must be the registry owner_id or an admin/owner of the current repo, and at least a member of the target repo. Sync registries cannot be transferred while syncing.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "registries"
+                ],
+                "summary": "Transfer registry to another repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Registry ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Target repository ID",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "targetRepoId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.CapabilityRegistry"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/registry/{repo}/access": {
             "get": {
-                "description": "Probe whether a registry requires authentication. Returns {\"public\":false} for non-existent orgs to avoid leaking org existence.",
+                "description": "Probe whether a registry requires authentication. Returns {\"public\":false} for non-existent repos to avoid leaking repo existence.",
                 "produces": [
                     "application/json"
                 ],
@@ -3644,8 +3530,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Organization name",
-                        "name": "org",
+                        "description": "Repository name",
+                        "name": "repo",
                         "in": "path",
                         "required": true
                     }
@@ -3665,9 +3551,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/registry/{org}/index.json": {
+        "/registry/{repo}/index.json": {
             "get": {
-                "description": "Return the index.json for an org's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.",
+                "description": "Return the index.json for a repo's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.",
                 "produces": [
                     "application/json"
                 ],
@@ -3678,8 +3564,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Organization name",
-                        "name": "org",
+                        "description": "Repository name",
+                        "name": "repo",
                         "in": "path",
                         "required": true
                     }
@@ -3727,9 +3613,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/registry/{org}/{slug}/{file}": {
+        "/registry/{repo}/{slug}/{file}": {
             "get": {
-                "description": "Download a specific file of an item identified by org/slug/filename. Respects visibility rules.",
+                "description": "Download a specific file of an item identified by repo/slug/filename. Respects visibility rules.",
                 "produces": [
                     "text/plain"
                 ],
@@ -3740,8 +3626,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Organization name",
-                        "name": "org",
+                        "description": "Repository name",
+                        "name": "repo",
                         "in": "path",
                         "required": true
                     },
@@ -3776,6 +3662,1493 @@ const docTemplate = `{
                                     "type": "string"
                                 }
                             }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories": {
+            "get": {
+                "description": "Get all repositories",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "List repositories",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "repositories": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.Repository"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new repository. Set repoType=sync to create a Git-synced repository.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Create repository",
+                "parameters": [
+                    {
+                        "description": "Repository data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "description": {
+                                    "type": "string"
+                                },
+                                "displayName": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "ownerId": {
+                                    "type": "string"
+                                },
+                                "repoType": {
+                                    "type": "string"
+                                },
+                                "syncRegistries": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                },
+                                "syncRegistry": {
+                                    "type": "object"
+                                },
+                                "visibility": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.Repository"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/my": {
+            "get": {
+                "description": "Get all repositories the user belongs to",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Get my repositories",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "repositories": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.Repository"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}": {
+            "get": {
+                "description": "Get repository by ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Get repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Repository"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update repository by ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Update repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Repository data",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "description": {
+                                    "type": "string"
+                                },
+                                "displayName": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "visibility": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Repository"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete repository by ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Delete repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/invitations": {
+            "get": {
+                "description": "Get all invitations for a repository (requires owner or admin role)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "List repository invitations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status (pending|accepted|declined|cancelled)",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "invitations": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.RepoInvitation"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Send an invitation to a user to join the repository (requires owner or admin role)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Invite a user to a repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Invitation data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "inviteeId": {
+                                    "type": "string"
+                                },
+                                "inviteeUsername": {
+                                    "type": "string"
+                                },
+                                "role": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.RepoInvitation"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/invitations/{invId}": {
+            "delete": {
+                "description": "Cancel a pending invitation (requires owner or admin role)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Cancel a repository invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Invitation ID",
+                        "name": "invId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/members": {
+            "get": {
+                "description": "Get all members of a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "List repository members",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "members": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.RepoMember"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Add a user to a repository (requires owner or admin role)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Add repository member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Member data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string"
+                                },
+                                "userId": {
+                                    "type": "string"
+                                },
+                                "username": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.RepoMember"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/members/{userId}": {
+            "put": {
+                "description": "Update a member's role in a repository (requires owner or admin role)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Update repository member role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Role data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.RepoMember"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove a user from a repository (requires owner or admin role)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Remove repository member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/registries": {
+            "get": {
+                "description": "List all capability registries belonging to a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "List repository registries",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "registries": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Bind a new Git sync registry to a repository",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Add registry to repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Registry config",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateSyncRegistryInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.CapabilityRegistry"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/registries/{regId}": {
+            "put": {
+                "description": "Update sync configuration of a registry belonging to a repository",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Update repository registry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID",
+                        "name": "regId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Registry update data",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "conflictStrategy": {
+                                    "type": "string"
+                                },
+                                "description": {
+                                    "type": "string"
+                                },
+                                "excludePatterns": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "externalBranch": {
+                                    "type": "string"
+                                },
+                                "externalUrl": {
+                                    "type": "string"
+                                },
+                                "includePatterns": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "syncEnabled": {
+                                    "type": "boolean"
+                                },
+                                "syncInterval": {
+                                    "type": "integer"
+                                },
+                                "webhookSecret": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.CapabilityRegistry"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a sync registry from a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Remove registry from repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID",
+                        "name": "regId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/registry": {
+            "get": {
+                "description": "Get the internal capability registry for a repository",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repositories"
+                ],
+                "summary": "Get repository registry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.CapabilityRegistry"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/sync": {
+            "post": {
+                "description": "Manually trigger a sync job for the repository's registry",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Trigger repo sync",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID",
+                        "name": "registryId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Dry run mode",
+                        "name": "dryRun",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "jobId": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/sync-jobs": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "List repo sync jobs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID (filter by registry)",
+                        "name": "registryId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "jobs": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.SyncJob"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/sync-logs": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "List repo sync logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID (filter by registry)",
+                        "name": "registryId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "logs": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/models.SyncLog"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/sync-status": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Get repo sync status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID (get specific registry status)",
+                        "name": "registryId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/repositories/{id}/sync/cancel": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Cancel repo sync",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Registry ID (cancel specific registry)",
+                        "name": "registryId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/scan-jobs/{id}/cancel": {
+            "post": {
+                "description": "Cancel a pending scan job",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "scan"
+                ],
+                "summary": "Cancel scan job",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Scan job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/scan-results/{id}": {
+            "get": {
+                "description": "Get full scan report for a specific scan result",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "scan"
+                ],
+                "summary": "Get scan result detail",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Scan result ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SecurityScan"
                         }
                     },
                     "404": {
@@ -3901,6 +5274,65 @@ const docTemplate = `{
                 }
             }
         },
+        "/users/search": {
+            "get": {
+                "description": "Search users by username or email keyword (requires authentication)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Search users",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search keyword",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "users": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/casdoor.CasdoorUser"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/webhooks/github": {
             "post": {
                 "description": "Receive GitHub push events and enqueue sync jobs",
@@ -3914,17 +5346,52 @@ const docTemplate = `{
                     "sync"
                 ],
                 "summary": "Handle GitHub webhook",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "GitHub event type (push)",
+                        "name": "X-GitHub-Event",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "GitHub webhook signature",
+                        "name": "X-Hub-Signature-256",
+                        "in": "header"
+                    },
+                    {
+                        "description": "GitHub webhook payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
                 "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "202": {
                         "description": "Accepted",
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "jobId": {
-                                    "type": "string"
-                                },
-                                "status": {
-                                    "type": "string"
+                                "queued": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
                                 }
                             }
                         }
@@ -3950,140 +5417,166 @@ const docTemplate = `{
                                 }
                             }
                         }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{workspaceID}/devices": {
+            "get": {
+                "description": "Get all devices in a workspace with pagination",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "List workspace devices",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "workspaceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "devices": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                },
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     },
     "definitions": {
-        "llm.BehaviorPattern": {
+        "casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
-                "description": {
+                "email": {
                     "type": "string"
-                },
-                "frequency": {
-                    "type": "string"
-                },
-                "impact": {
-                    "type": "string"
-                },
-                "suggestedAction": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "llm.CandidateExperience": {
-            "type": "object",
-            "properties": {
-                "context": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "frequency": {
-                    "type": "integer"
-                },
-                "impactScore": {
-                    "type": "number"
-                },
-                "title": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "llm.ExperienceAnalysisResult": {
-            "type": "object",
-            "properties": {
-                "candidateExperiences": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/llm.CandidateExperience"
-                    }
-                },
-                "patterns": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/llm.BehaviorPattern"
-                    }
-                },
-                "recommendations": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/llm.ExperienceRecommendation"
-                    }
-                }
-            }
-        },
-        "llm.ExperienceRecommendation": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string"
-                },
-                "priority": {
-                    "type": "string"
-                },
-                "reason": {
-                    "type": "string"
-                }
-            }
-        },
-        "llm.GeneratedSkill": {
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "$ref": "#/definitions/llm.GeneratedSkillMetadata"
                 },
                 "name": {
                     "type": "string"
                 },
-                "slug": {
+                "owner": {
+                    "type": "string"
+                },
+                "picture": {
+                    "type": "string"
+                },
+                "preferred_username": {
+                    "type": "string"
+                },
+                "sub": {
                     "type": "string"
                 }
             }
         },
-        "llm.GeneratedSkillMetadata": {
+        "handlers.CreateSyncRegistryInput": {
             "type": "object",
             "properties": {
-                "examples": {
+                "conflictStrategy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "excludePatterns": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "prerequisites": {
+                "externalBranch": {
+                    "type": "string"
+                },
+                "externalUrl": {
+                    "type": "string"
+                },
+                "includePatterns": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "tags": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
+                "name": {
+                    "type": "string"
                 },
-                "version": {
+                "syncEnabled": {
+                    "type": "boolean"
+                },
+                "syncInterval": {
+                    "type": "integer"
+                },
+                "webhookSecret": {
                     "type": "string"
                 }
             }
@@ -4210,21 +5703,6 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CandidateStatus": {
-            "type": "string",
-            "enum": [
-                "pending",
-                "approved",
-                "rejected",
-                "promoted"
-            ],
-            "x-enum-varnames": [
-                "StatusPending",
-                "StatusApproved",
-                "StatusRejected",
-                "StatusPromoted"
-            ]
-        },
         "models.CapabilityArtifact": {
             "type": "object",
             "properties": {
@@ -4258,6 +5736,9 @@ const docTemplate = `{
                 "mimeType": {
                     "type": "string"
                 },
+                "sourceType": {
+                    "type": "string"
+                },
                 "storageBackend": {
                     "type": "string"
                 },
@@ -4269,6 +5750,44 @@ const docTemplate = `{
                 }
             }
         },
+        "models.CapabilityAsset": {
+            "type": "object",
+            "properties": {
+                "contentSha": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "fileSize": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "mimeType": {
+                    "type": "string"
+                },
+                "relPath": {
+                    "type": "string"
+                },
+                "storageBackend": {
+                    "type": "string"
+                },
+                "storageKey": {
+                    "type": "string"
+                },
+                "textContent": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
         "models.CapabilityItem": {
             "type": "object",
             "properties": {
@@ -4276,6 +5795,12 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -4308,6 +5833,9 @@ const docTemplate = `{
                 "itemType": {
                     "type": "string"
                 },
+                "lastScanId": {
+                    "type": "string"
+                },
                 "metadata": {
                     "type": "object"
                 },
@@ -4318,6 +5846,9 @@ const docTemplate = `{
                     "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
+                    "type": "string"
+                },
+                "securityStatus": {
                     "type": "string"
                 },
                 "slug": {
@@ -4346,9 +5877,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/models.CapabilityVersion"
                     }
-                },
-                "visibility": {
-                    "type": "string"
                 }
             }
         },
@@ -4376,6 +5904,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.CapabilityItem"
                     }
                 },
+                "lastSyncLog": {
+                    "$ref": "#/definitions/models.SyncLog"
+                },
                 "lastSyncLogId": {
                     "type": "string"
                 },
@@ -4388,10 +5919,10 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
-                "orgId": {
+                "ownerId": {
                     "type": "string"
                 },
-                "ownerId": {
+                "repoId": {
                     "type": "string"
                 },
                 "sourceType": {
@@ -4442,7 +5973,7 @@ const docTemplate = `{
                 "metadata": {
                     "type": "object"
                 },
-                "version": {
+                "revision": {
                     "type": "integer"
                 }
             }
@@ -4462,133 +5993,50 @@ const docTemplate = `{
                 "ContextBrowse"
             ]
         },
-        "models.ExperienceCandidate": {
+        "models.RepoInvitation": {
             "type": "object",
             "properties": {
-                "context": {
-                    "description": "What happened",
-                    "type": "string"
-                },
                 "createdAt": {
                     "type": "string"
                 },
-                "description": {
+                "expiresAt": {
                     "type": "string"
-                },
-                "frequency": {
-                    "description": "How many times this pattern occurred",
-                    "type": "integer"
                 },
                 "id": {
                     "type": "string"
                 },
-                "impactScore": {
-                    "description": "Computed impact score",
-                    "type": "number"
-                },
-                "item": {
-                    "description": "Relations",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.CapabilityItem"
-                        }
-                    ]
-                },
-                "itemId": {
+                "inviteeId": {
                     "type": "string"
                 },
-                "promotedAt": {
+                "inviteeUsername": {
                     "type": "string"
                 },
-                "promotedBy": {
+                "inviterId": {
                     "type": "string"
                 },
-                "promotionType": {
-                    "$ref": "#/definitions/models.PromotionType"
-                },
-                "resolution": {
-                    "description": "How it was resolved / what was learned",
+                "inviterUsername": {
                     "type": "string"
                 },
-                "sourceLogId": {
-                    "description": "Reference to behavior log if applicable",
+                "repoId": {
                     "type": "string"
                 },
-                "sourceType": {
-                    "$ref": "#/definitions/models.SourceType"
+                "repository": {
+                    "$ref": "#/definitions/models.Repository"
+                },
+                "role": {
+                    "description": "admin | member",
+                    "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/models.CandidateStatus"
-                },
-                "title": {
+                    "description": "pending | accepted | declined | cancelled",
                     "type": "string"
-                },
-                "type": {
-                    "$ref": "#/definitions/models.ExperienceType"
                 },
                 "updatedAt": {
                     "type": "string"
                 }
             }
         },
-        "models.ExperiencePromotion": {
-            "type": "object",
-            "properties": {
-                "candidate": {
-                    "description": "Relations",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/models.ExperienceCandidate"
-                        }
-                    ]
-                },
-                "candidateId": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "item": {
-                    "$ref": "#/definitions/models.CapabilityItem"
-                },
-                "itemId": {
-                    "type": "string"
-                },
-                "metadataAfter": {
-                    "type": "object"
-                },
-                "metadataBefore": {
-                    "type": "object"
-                },
-                "promotedBy": {
-                    "type": "string"
-                },
-                "promotionType": {
-                    "$ref": "#/definitions/models.PromotionType"
-                }
-            }
-        },
-        "models.ExperienceType": {
-            "type": "string",
-            "enum": [
-                "error",
-                "learning",
-                "feature_request",
-                "best_practice",
-                "behavior_rule"
-            ],
-            "x-enum-varnames": [
-                "ExperienceError",
-                "ExperienceLearning",
-                "ExperienceFeature",
-                "ExperiencePractice",
-                "ExperienceRule"
-            ]
-        },
-        "models.OrgMember": {
+        "models.RepoMember": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -4597,7 +6045,7 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
-                "orgId": {
+                "repoId": {
                     "type": "string"
                 },
                 "role": {
@@ -4612,7 +6060,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.Organization": {
+        "models.Repository": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -4630,17 +6078,17 @@ const docTemplate = `{
                 "members": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.OrgMember"
+                        "$ref": "#/definitions/models.RepoMember"
                     }
                 },
                 "name": {
                     "type": "string"
                 },
-                "orgType": {
-                    "description": "normal | sync",
+                "ownerId": {
                     "type": "string"
                 },
-                "ownerId": {
+                "repoType": {
+                    "description": "normal | sync",
                     "type": "string"
                 },
                 "updatedAt": {
@@ -4652,33 +6100,61 @@ const docTemplate = `{
                 }
             }
         },
-        "models.PromotionType": {
-            "type": "string",
-            "enum": [
-                "best_practice",
-                "behavior_rule",
-                "new_workflow",
-                "new_skill"
-            ],
-            "x-enum-varnames": [
-                "PromotionBestPractice",
-                "PromotionBehaviorRule",
-                "PromotionNewWorkflow",
-                "PromotionNewSkill"
-            ]
-        },
-        "models.SourceType": {
-            "type": "string",
-            "enum": [
-                "behavior_log",
-                "manual",
-                "auto_detect"
-            ],
-            "x-enum-varnames": [
-                "SourceBehavior",
-                "SourceManual",
-                "SourceAutoDetect"
-            ]
+        "models.SecurityScan": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "durationMs": {
+                    "type": "integer"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "itemRevision": {
+                    "type": "integer"
+                },
+                "permissions": {
+                    "type": "object"
+                },
+                "recommendations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object"
+                    }
+                },
+                "redFlags": {
+                    "type": "array",
+                    "items": {
+                        "type": "object"
+                    }
+                },
+                "riskLevel": {
+                    "description": "clean | low | medium | high | extreme",
+                    "type": "string"
+                },
+                "scanModel": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "triggerType": {
+                    "description": "create | update | sync | manual",
+                    "type": "string"
+                },
+                "verdict": {
+                    "description": "safe | caution | reject",
+                    "type": "string"
+                }
+            }
         },
         "models.SyncJob": {
             "type": "object",
@@ -4831,20 +6307,6 @@ const docTemplate = `{
                 }
             }
         },
-        "services.GenerateResponse": {
-            "type": "object",
-            "properties": {
-                "analysis": {
-                    "$ref": "#/definitions/llm.SkillAnalysis"
-                },
-                "generated": {
-                    "$ref": "#/definitions/llm.GeneratedSkill"
-                },
-                "item": {
-                    "$ref": "#/definitions/models.CapabilityItem"
-                }
-            }
-        },
         "services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
@@ -4913,6 +6375,12 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
                 "category": {
                     "type": "string"
                 },
@@ -4943,6 +6411,9 @@ const docTemplate = `{
                 "itemType": {
                     "type": "string"
                 },
+                "lastScanId": {
+                    "type": "string"
+                },
                 "metadata": {
                     "type": "object"
                 },
@@ -4960,6 +6431,9 @@ const docTemplate = `{
                 },
                 "score": {
                     "type": "number"
+                },
+                "securityStatus": {
+                    "type": "string"
                 },
                 "slug": {
                     "type": "string"
@@ -4990,9 +6464,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/models.CapabilityVersion"
                     }
-                },
-                "visibility": {
-                    "type": "string"
                 }
             }
         },
@@ -5025,6 +6496,12 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
                 "category": {
                     "type": "string"
                 },
@@ -5055,6 +6532,9 @@ const docTemplate = `{
                 "itemType": {
                     "type": "string"
                 },
+                "lastScanId": {
+                    "type": "string"
+                },
                 "metadata": {
                     "type": "object"
                 },
@@ -5069,6 +6549,9 @@ const docTemplate = `{
                 },
                 "score": {
                     "type": "number"
+                },
+                "securityStatus": {
+                    "type": "string"
                 },
                 "slug": {
                     "type": "string"
@@ -5096,9 +6579,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/models.CapabilityVersion"
                     }
-                },
-                "visibility": {
-                    "type": "string"
                 }
             }
         }
@@ -5120,7 +6600,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/api",
 	Schemes:          []string{},
 	Title:            "Costrict Web API",
-	Description:      "AI Agent Platform API - Skill marketplace, organization and repository management.",
+	Description:      "AI Agent Platform API - Skill marketplace, repository and registry management.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

@@ -140,6 +140,7 @@ func ListRepoInvitations(c *gin.Context) {
 // @Param        id     path      string  true  "Repository ID"
 // @Param        invId  path      string  true  "Invitation ID"
 // @Success      200    {object}  object{message=string}
+// @Failure      400    {object}  object{error=string}
 // @Failure      403    {object}  object{error=string}
 // @Failure      404    {object}  object{error=string}
 // @Router       /repositories/{id}/invitations/{invId} [delete]
@@ -219,6 +220,7 @@ func GetMyInvitations(c *gin.Context) {
 // @Produce      json
 // @Param        id  path      string  true  "Invitation ID"
 // @Success      200 {object}  models.RepoMember
+// @Failure      400 {object}  object{error=string}
 // @Failure      401 {object}  object{error=string}
 // @Failure      404 {object}  object{error=string}
 // @Failure      409 {object}  object{error=string}
@@ -298,6 +300,7 @@ func AcceptInvitation(c *gin.Context) {
 // @Produce      json
 // @Param        id  path      string  true  "Invitation ID"
 // @Success      200 {object}  object{message=string}
+// @Failure      400 {object}  object{error=string}
 // @Failure      401 {object}  object{error=string}
 // @Failure      404 {object}  object{error=string}
 // @Router       /invitations/{id}/decline [post]

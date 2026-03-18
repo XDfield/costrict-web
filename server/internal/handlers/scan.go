@@ -20,6 +20,8 @@ import (
 // @Success      202  {object}  object{jobId=string,status=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      409  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string}
 // @Router       /items/{id}/scan [post]
 func TriggerItemScan(c *gin.Context) {
 	itemID := c.Param("id")
@@ -175,6 +177,7 @@ func GetScanResult(c *gin.Context) {
 // @Param        id   path      string  true  "Scan job ID"
 // @Success      200  {object}  object{message=string}
 // @Failure      400  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string}
 // @Router       /scan-jobs/{id}/cancel [post]
 func CancelScanJob(c *gin.Context) {
 	jobID := c.Param("id")

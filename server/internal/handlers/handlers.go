@@ -78,7 +78,7 @@ func AuthCallback(c *gin.Context) {
 // @Success      200   {object}  object{token=string,tokenType=string,user=object}
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
-// @Router       /auth/login [get]
+// @Router       /auth/login [post]
 func Login(c *gin.Context) {
 	var req struct {
 		Code  string `json:"code" binding:"required"`
@@ -186,7 +186,7 @@ type CreateSyncRegistryInput struct {
 // @Tags         repositories
 // @Accept       json
 // @Produce      json
-// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string,repoType=string}  true  "Repository data"
+// @Param        body  body  object{name=string,displayName=string,description=string,visibility=string,ownerId=string,repoType=string,syncRegistry=object,syncRegistries=[]object}  true  "Repository data"
 // @Success      201  {object}  models.Repository
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
@@ -712,6 +712,7 @@ func AddRepoRegistry(c *gin.Context) {
 // @Produce      json
 // @Param        id     path  string  true  "Repository ID"
 // @Param        regId  path  string  true  "Registry ID"
+// @Param        body   body  object{name=string,description=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,includePatterns=[]string,excludePatterns=[]string,conflictStrategy=string,webhookSecret=string}  false  "Registry update data"
 // @Success      200  {object}  models.CapabilityRegistry
 // @Failure      404  {object}  object{error=string}
 // @Router       /repositories/{id}/registries/{regId} [put]

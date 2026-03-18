@@ -84,7 +84,7 @@ func ListItems(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,visibility=string,createdBy=string}  true  "Item data"
+// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,sourcePath=string,createdBy=string}  true  "Item data"
 // @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -173,7 +173,7 @@ func GetItem(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Item ID"
-// @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,visibility=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data"
+// @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data"
 // @Success      200   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
@@ -441,7 +441,7 @@ func ListAllItems(c *gin.Context) {
 // @Tags         items
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,visibility=string,createdBy=string}  true  "Item data"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,createdBy=string}  true  "Item data"
 // @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
