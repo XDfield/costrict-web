@@ -9,6 +9,12 @@ import (
 	"github.com/hashicorp/yamux"
 )
 
+const (
+	heartbeatInterval  = 30 * time.Second
+	heartbeatTimeout   = 10 * time.Second
+	maxFailedHeartbeat = 3
+)
+
 func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deviceID := c.Param("deviceID")
@@ -28,18 +34,33 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 			return
 		}
 
+		failedHeartbeats := 0
+
 		ws.SetPongHandler(func(string) error {
-			ws.SetReadDeadline(time.Now().Add(70 * time.Second))
+			failedHeartbeats = 0
+			ws.SetReadDeadline(time.Now().Add(heartbeatInterval + heartbeatTimeout))
 			return nil
 		})
+
 		go func() {
-			ticker := time.NewTicker(30 * time.Second)
+			ticker := time.NewTicker(heartbeatInterval)
 			defer ticker.Stop()
 			for range ticker.C {
+				if session.IsClosed() {
+					return
+				}
+				failedHeartbeats++
+				if failedHeartbeats > maxFailedHeartbeat {
+					log.Printf("[Gateway] device %s heartbeat failed %d times, closing connection", deviceID, failedHeartbeats-1)
+					session.Close()
+					return
+				}
 				conn.mu.Lock()
 				err := ws.WriteMessage(websocket.PingMessage, nil)
 				conn.mu.Unlock()
 				if err != nil {
+					log.Printf("[Gateway] device %s ping write error: %v", deviceID, err)
+					session.Close()
 					return
 				}
 			}

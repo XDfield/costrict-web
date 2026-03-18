@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,6 +34,14 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 			return
 		}
 		defer stream.Close()
+
+		if netConn, ok := stream.(net.Conn); ok {
+			deadline := time.Now().Add(30 * time.Second)
+			if dl, ok := c.Request.Context().Deadline(); ok && dl.Before(deadline) {
+				deadline = dl
+			}
+			netConn.SetDeadline(deadline)
+		}
 
 		path := c.Param("path")
 
@@ -63,6 +73,12 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 			return
 		}
 		defer resp.Body.Close()
+
+		if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			if netConn, ok := stream.(net.Conn); ok {
+				netConn.SetDeadline(time.Time{})
+			}
+		}
 
 		for k, vs := range resp.Header {
 			for _, v := range vs {
