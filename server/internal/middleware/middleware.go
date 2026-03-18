@@ -1,6 +1,11 @@
 package middleware
 
 import (
+	"bytes"
+	"io"
+	"log"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,4 +31,27 @@ func Logger() gin.HandlerFunc {
 
 func Recovery() gin.HandlerFunc {
 	return gin.Recovery()
+}
+
+func ErrorLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var bodyBytes []byte
+		if c.Request.Body != nil {
+			bodyBytes, _ = io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		}
+
+		c.Next()
+
+		status := c.Writer.Status()
+		if status >= http.StatusBadRequest {
+			log.Printf("[ERROR] %s %s => %d | body: %s | errors: %s",
+				c.Request.Method,
+				c.Request.RequestURI,
+				status,
+				string(bodyBytes),
+				c.Errors.String(),
+			)
+		}
+	}
 }
