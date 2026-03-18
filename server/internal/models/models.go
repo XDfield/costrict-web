@@ -276,10 +276,10 @@ type SecurityScan struct {
 	ScanModel       string         `json:"scanModel"`
 	RiskLevel       string         `gorm:"default:''" json:"riskLevel"` // clean | low | medium | high | extreme
 	Verdict         string         `gorm:"default:''" json:"verdict"`   // safe | caution | reject
-	RedFlags        datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags"`
-	Permissions     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"permissions"`
+	RedFlags        datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags" swaggertype:"array,object"`
+	Permissions     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"permissions" swaggertype:"object"`
 	Summary         string         `gorm:"type:text" json:"summary"`
-	Recommendations datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"recommendations"`
+	Recommendations datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"recommendations" swaggertype:"array,object"`
 	RawOutput       string         `gorm:"type:text" json:"-"`
 	DurationMs      int64          `json:"durationMs"`
 	CreatedAt       time.Time      `json:"createdAt"`
