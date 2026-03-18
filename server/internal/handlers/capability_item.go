@@ -549,6 +549,112 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 	c.JSON(http.StatusCreated, item)
 }
 
+// MoveItem godoc
+// @Summary      Move item to another registry
+// @Description  Move a capability item to a different registry. Target registry must belong to a non-sync repository. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo.
+// @Tags         items
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Item ID"
+// @Param        body  body      object{targetRegistryId=string}  true  "Target registry ID"
+// @Success      200   {object}  models.CapabilityItem
+// @Failure      400   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /items/{id}/move [put]
+func MoveItem(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		TargetRegistryID string `json:"targetRegistryId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	callerIDVal, _ := c.Get(middleware.UserIDKey)
+	callerID, _ := callerIDVal.(string)
+	if callerID == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	db := database.GetDB()
+
+	var item models.CapabilityItem
+	if db.Preload("Registry").First(&item, "id = ?", id).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	sourceReg := item.Registry
+	if sourceReg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Source registry not found"})
+		return
+	}
+
+	isCreator := item.CreatedBy == callerID
+	isSourceRepoAdmin := sourceReg.RepoID != "" && isRepoAdmin(getCallerRepoRole(c, sourceReg.RepoID))
+	if !isCreator && !isSourceRepoAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or source repo admin can move this item"})
+		return
+	}
+
+	if req.TargetRegistryID == item.RegistryID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Item already belongs to the target registry"})
+		return
+	}
+
+	var targetReg models.CapabilityRegistry
+	if db.First(&targetReg, "id = ?", req.TargetRegistryID).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Target registry not found"})
+		return
+	}
+
+	if targetReg.SourceType == "external" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot move item to a sync-type registry"})
+		return
+	}
+
+	if targetReg.RepoID != "" && targetReg.RepoID != "public" {
+		var targetRepo models.Repository
+		if db.First(&targetRepo, "id = ?", targetReg.RepoID).Error != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Target repository not found"})
+			return
+		}
+		if targetRepo.RepoType == "sync" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot move item to a sync-type repository"})
+			return
+		}
+
+		var targetMember models.RepoMember
+		if db.Where("repo_id = ? AND user_id = ?", targetReg.RepoID, callerID).First(&targetMember).Error != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You must be a member of the target repository"})
+			return
+		}
+	}
+
+	var conflictCount int64
+	db.Model(&models.CapabilityItem{}).
+		Where("registry_id = ? AND item_type = ? AND slug = ? AND id != ?", req.TargetRegistryID, item.ItemType, item.Slug, item.ID).
+		Count(&conflictCount)
+	if conflictCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "An item with the same slug and type already exists in the target registry", "slug": item.Slug})
+		return
+	}
+
+	if err := db.Model(&item).Update("registry_id", req.TargetRegistryID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to move item"})
+		return
+	}
+
+	item.RegistryID = req.TargetRegistryID
+	c.JSON(http.StatusOK, item)
+}
+
 func slugify(name string) string {
 	result := make([]byte, 0, len(name))
 	prevDash := false
