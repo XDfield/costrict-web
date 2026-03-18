@@ -91,6 +91,7 @@ func main() {
 		Update("sync_status", "error")
 
 	handlers.EnsurePublicRegistry()
+	handlers.InitCasdoor(&cfg.Casdoor)
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
@@ -147,6 +148,7 @@ func main() {
 	r.Use(middleware.CORS())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
+	r.Use(middleware.ErrorLogger())
 	r.Use(middleware.OptionalAuth(casdoorEndpoint))
 
 	r.GET("/health", func(c *gin.Context) {
@@ -161,6 +163,7 @@ func main() {
 	{
 		auth := api.Group("/auth")
 		{
+			auth.GET("/callback", handlers.AuthCallback)
 			auth.GET("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
 			auth.GET("/me", handlers.GetCurrentUser)
@@ -216,6 +219,7 @@ func main() {
 		api.GET("/items/:id", handlers.GetItem)
 		api.PUT("/items/:id", handlers.UpdateItem)
 		api.DELETE("/items/:id", handlers.DeleteItem)
+		api.PUT("/items/:id/move", handlers.MoveItem)
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)

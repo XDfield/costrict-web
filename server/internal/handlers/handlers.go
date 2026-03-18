@@ -3,14 +3,22 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/casdoor"
+	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
+
+var CasdoorClient *casdoor.CasdoorClient
+
+func InitCasdoor(cfg *config.CasdoorConfig) {
+	CasdoorClient = casdoor.NewClient(cfg)
+}
 
 func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookSecret string) datatypes.JSON {
 	cfg := map[string]any{
@@ -23,9 +31,46 @@ func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookS
 	return datatypes.JSON(b)
 }
 
+// AuthCallback godoc
+// @Summary      OAuth callback
+// @Description  Exchange OAuth authorization code for access token and set cookie
+// @Tags         auth
+// @Produce      json
+// @Param        code          query  string  true  "OAuth code"
+// @Param        redirect_uri  query  string  false "Redirect URI"
+// @Success      200  {object}  object{token=string,user=object}
+// @Failure      400  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /auth/callback [get]
+func AuthCallback(c *gin.Context) {
+	code := c.Query("code")
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+		return
+	}
+
+	tokenResp, err := CasdoorClient.ExchangeCodeForToken(code)
+	if err != nil || tokenResp.AccessToken == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
+		return
+	}
+
+	userInfo, err := CasdoorClient.GetUserInfo(tokenResp.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
+		return
+	}
+
+	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{
+		"token": tokenResp.AccessToken,
+		"user":  userInfo.User,
+	})
+}
+
 // Login godoc
-// @Summary      OAuth login
-// @Description  Exchange OAuth authorization code for access token
+// @Summary      OAuth login (legacy)
+// @Description  Exchange OAuth authorization code for access token via JSON body
 // @Tags         auth
 // @Accept       json
 // @Produce      json
@@ -45,24 +90,22 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	cfg := casdoor.NewClient(nil) // TODO: Get from config
-	tokenResp, err := cfg.ExchangeCodeForToken(req.Code)
+	tokenResp, err := CasdoorClient.ExchangeCodeForToken(req.Code)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
 		return
 	}
 
-	// Get user info
-	userInfo, err := cfg.GetUserInfo(tokenResp.AccessToken)
+	userInfo, err := CasdoorClient.GetUserInfo(tokenResp.AccessToken)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token":      tokenResp.AccessToken,
-		"tokenType":  tokenResp.TokenType,
-		"user":       userInfo.User,
+		"token":     tokenResp.AccessToken,
+		"tokenType": tokenResp.TokenType,
+		"user":      userInfo.User,
 	})
 }
 
@@ -88,20 +131,19 @@ func Logout(c *gin.Context) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
-	accessToken := c.GetHeader("Authorization")
-	if accessToken == "" {
+	token := extractBearerToken(c)
+	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	cfg := casdoor.NewClient(nil) // TODO: Get from config
-	userInfo, err := cfg.GetUserInfo(accessToken)
+	userInfo, err := CasdoorClient.GetUserInfo(token)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
 		return
 	}
 
-	c.JSON(http.StatusOK, userInfo.User)
+	c.JSON(http.StatusOK, gin.H{"user": userInfo.User})
 }
 
 // ListRepositories godoc

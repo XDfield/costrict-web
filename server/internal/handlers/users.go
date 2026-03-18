@@ -3,7 +3,6 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/costrict/costrict-web/server/internal/casdoor"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,7 +26,7 @@ func SearchUsers(c *gin.Context) {
 	keyword := c.Query("q")
 	token := extractBearerToken(c)
 
-	client := casdoor.NewClient(nil)
+	client := CasdoorClient
 	users, err := client.SearchUsers(token, keyword)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search users"})

@@ -20,22 +20,23 @@ type CasdoorClient struct {
 }
 
 type CasdoorUser struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Avatar   string `json:"avatar"`
-	CreatedAt string `json:"created_at"`
+	Sub               string `json:"sub"`
+	Name              string `json:"name"`
+	PreferredUsername string `json:"preferred_username"`
+	Email             string `json:"email"`
+	Picture           string `json:"picture"`
+	Owner             string `json:"owner"`
 }
 
 type CasdoorTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
 	Scope       string `json:"scope"`
 }
 
 type CasdoorUserInfoResponse struct {
-	User CasdoorUser `json:"user"`
+	User *CasdoorUser
 }
 
 func NewClient(cfg *config.CasdoorConfig) *CasdoorClient {
@@ -89,35 +90,31 @@ func (c *CasdoorClient) ExchangeCodeForToken(code string) (*CasdoorTokenResponse
 	return &tokenResp, nil
 }
 
-// GetUserInfo retrieves user information from Casdoor
+// GetUserInfo retrieves user information from Casdoor /api/userinfo (OIDC standard)
 func (c *CasdoorClient) GetUserInfo(accessToken string) (*CasdoorUserInfoResponse, error) {
-	userInfoURL := fmt.Sprintf("%s/api/userinfo", c.endpoint)
-
-	req, err := http.NewRequest("GET", userInfoURL, nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/userinfo", c.endpoint), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("userinfo returned %d", resp.StatusCode)
 	}
 
-	var userInfoResp CasdoorUserInfoResponse
-	if err := json.Unmarshal(body, &userInfoResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal user info response: %w", err)
+	var user CasdoorUser
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal user info: %w", err)
 	}
 
-	return &userInfoResp, nil
+	return &CasdoorUserInfoResponse{User: &user}, nil
 }
 
 // CallCasdoorAPI makes a generic API call to Casdoor
