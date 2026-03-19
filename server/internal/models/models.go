@@ -67,7 +67,7 @@ type NotificationLog struct {
 
 type Device struct {
 	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	DeviceID        string         `gorm:"uniqueIndex;not null"                           json:"deviceId"`
+	DeviceID        string         `gorm:"uniqueIndex;not null;index:idx_device_id_deleted_at" json:"deviceId"`
 	DisplayName     string         `gorm:"not null"                                       json:"displayName"`
 	Platform        string         `gorm:"not null"                                       json:"platform"`
 	Version         string         `gorm:"not null"                                       json:"version"`
@@ -82,7 +82,7 @@ type Device struct {
 	LastSeenAt      *time.Time     `                                                      json:"lastSeenAt,omitempty"`
 	CreatedAt       time.Time      `                                                      json:"createdAt"`
 	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
-	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
+	DeletedAt       gorm.DeletedAt `gorm:"index:idx_device_id_deleted_at"                   json:"-"`
 }
 
 // Repository represents a repository
@@ -214,7 +214,7 @@ type CapabilityItem struct {
 	CreatedBy string `gorm:"not null" json:"createdBy"`
 	UpdatedBy string `json:"updatedBy"`
 	Registry  *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID" json:"versions,omitempty"`
+	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
 	Assets    []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
 	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
