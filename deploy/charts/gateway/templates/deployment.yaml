@@ -34,22 +34,22 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.config.port }}
               protocol: TCP
           env:
-            - name: PORT
+            - name: GATEWAY_PORT
               value: {{ .Values.config.port | quote }}
             - name: SERVER_URL
               value: {{ .Values.config.serverUrl | quote }}
             - name: GATEWAY_ID
               value: {{ .Values.config.gatewayId | quote }}
-            - name: ENDPOINT
+            - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
-            - name: INTERNAL_URL
+            - name: GATEWAY_INTERNAL_URL
               value: {{ .Values.config.internalUrl | quote }}
-            - name: REGION
+            - name: GATEWAY_REGION
               value: {{ .Values.config.region | quote }}
-            - name: CAPACITY
+            - name: GATEWAY_CAPACITY
               value: {{ .Values.config.capacity | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}

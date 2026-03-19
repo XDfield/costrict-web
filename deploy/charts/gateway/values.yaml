@@ -31,7 +31,7 @@ securityContext:
 
 service:
   type: ClusterIP
-  port: 8080
+  port: 8081
 
 resources:
   limits:
@@ -49,7 +49,7 @@ affinity: {}
 
 # Gateway specific configuration
 config:
-  port: "8080"
+  port: "8081"
   serverUrl: "http://costrict-web-api:8080"
   gatewayId: ""
   endpoint: ""
@@ -64,7 +64,7 @@ livenessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8080
+    port: 8081
   initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
@@ -74,7 +74,7 @@ readinessProbe:
   enabled: true
   httpGet:
     path: /health
-    port: 8080
+    port: 8081
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
