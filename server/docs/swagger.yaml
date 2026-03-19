@@ -2222,6 +2222,74 @@ paths:
       summary: Get item behavior statistics
       tags:
       - behavior
+  /items/{id}/transfer:
+    put:
+      consumes:
+      - application/json
+      description: Transfer a capability item to a different repository. The system
+        will automatically find the target repository's internal registry. Target
+        repository must be a non-sync type. Caller must be the item creator, or owner/admin
+        of the source repo. Caller must be a member of the target repo.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target repository ID
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            targetRepoId:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.CapabilityItem'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Transfer item to another repository
+      tags:
+      - items
   /items/{id}/versions:
     get:
       description: Get all versions of a skill item

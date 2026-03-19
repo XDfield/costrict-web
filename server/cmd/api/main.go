@@ -223,6 +223,7 @@ func main() {
 		api.PUT("/items/:id", handlers.UpdateItem)
 		api.DELETE("/items/:id", handlers.DeleteItem)
 		api.PUT("/items/:id/move", handlers.MoveItem)
+		api.PUT("/items/:id/transfer", handlers.TransferItemToRepo)
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
