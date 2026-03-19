@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -32,6 +35,7 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		userInfo, err := fetchUserInfo(casdoorEndpoint, token)
 		if err != nil {
+			log.Printf("[OptionalAuth] fetchUserInfo failed: %v, endpoint=%s", err, casdoorEndpoint)
 			c.Next()
 			return
 		}
@@ -52,6 +56,7 @@ func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		userInfo, err := fetchUserInfo(casdoorEndpoint, token)
 		if err != nil {
+			log.Printf("[RequireAuth] fetchUserInfo failed: %v, endpoint=%s", err, casdoorEndpoint)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 			return
 		}
@@ -70,25 +75,28 @@ type casdoorUserInfo struct {
 }
 
 func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
-	req, err := http.NewRequest("GET", endpoint+"/api/userinfo", nil)
+	url := endpoint + "/api/userinfo"
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create request failed: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request to %s failed: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, http.ErrNoCookie
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[fetchUserInfo] casdoor returned %d: %s, url=%s", resp.StatusCode, string(body), url)
+		return nil, fmt.Errorf("casdoor returned status %d", resp.StatusCode)
 	}
 
 	var info casdoorUserInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode response failed: %w", err)
 	}
 	return &info, nil
 }
