@@ -1,4 +1,4 @@
-[submodule "web-ui"]
-	path = web-ui
-	url = https://github.com/zgsm-ai/opencode
+[submodule "portal"]
+	path = portal
+	url = git@github.com:zgsm-ai/opencode.git
 	branch = epic/ai-native
