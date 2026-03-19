@@ -59,6 +59,8 @@ server/coverage_handlers
 server/coverage_handlers.out
 server/*.out
 
+gateway/bin/
+
 # Submodule
 web/
 
