@@ -4074,7 +4074,7 @@ const docTemplate = `{
                 }
             },
             "delete": {
-                "description": "Delete repository by ID",
+                "description": "Delete repository by ID and all associated resources (registries, items, versions, assets, artifacts)",
                 "produces": [
                     "application/json"
                 ],

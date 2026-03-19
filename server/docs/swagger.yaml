@@ -3394,7 +3394,8 @@ paths:
       - repositories
   /repositories/{id}:
     delete:
-      description: Delete repository by ID
+      description: Delete repository by ID and all associated resources (registries,
+        items, versions, assets, artifacts)
       parameters:
       - description: Repository ID
         in: path

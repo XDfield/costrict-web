@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 var CasdoorClient *casdoor.CasdoorClient
@@ -393,7 +395,7 @@ func UpdateRepository(c *gin.Context) {
 
 // DeleteRepository godoc
 // @Summary      Delete repository
-// @Description  Delete repository by ID
+// @Description  Delete repository by ID and all associated resources (registries, items, versions, assets, artifacts)
 // @Tags         repositories
 // @Produce      json
 // @Param        id   path      string  true  "Repository ID"
@@ -404,18 +406,92 @@ func DeleteRepository(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 
-	if err := db.Where("repo_id = ?", id).Delete(&models.RepoMember{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete repository members"})
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// 1. 获取该仓库下的所有 registry IDs
+		var registryIDs []string
+		if err := tx.Model(&models.CapabilityRegistry{}).Where("repo_id = ?", id).Pluck("id", &registryIDs).Error; err != nil {
+			return fmt.Errorf("failed to get registry IDs: %w", err)
+		}
+
+		// 2. 如果有 registry，获取所有 item IDs
+		var itemIDs []string
+		if len(registryIDs) > 0 {
+			if err := tx.Model(&models.CapabilityItem{}).Where("registry_id IN ?", registryIDs).Pluck("id", &itemIDs).Error; err != nil {
+				return fmt.Errorf("failed to get item IDs: %w", err)
+			}
+		}
+
+		// 3. 删除依赖 Item 的记录（按照依赖关系顺序）
+		if len(itemIDs) > 0 {
+			// 删除扫描任务
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.ScanJob{}).Error; err != nil {
+				return fmt.Errorf("failed to delete scan jobs: %w", err)
+			}
+
+			// 删除安全扫描结果
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.SecurityScan{}).Error; err != nil {
+				return fmt.Errorf("failed to delete security scans: %w", err)
+			}
+
+			// 删除资源文件 (CapabilityAsset)
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.CapabilityAsset{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability assets: %w", err)
+			}
+
+			// 删除构建产物 (CapabilityArtifact)
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.CapabilityArtifact{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability artifacts: %w", err)
+			}
+
+			// 删除版本记录 (CapabilityVersion)
+			// 虽然有级联删除，但显式删除更保险
+			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.CapabilityVersion{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability versions: %w", err)
+			}
+
+			// 删除 Capability Items
+			if err := tx.Where("id IN ?", itemIDs).Delete(&models.CapabilityItem{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability items: %w", err)
+			}
+		}
+
+		// 4. 删除依赖 Registry 的记录
+		if len(registryIDs) > 0 {
+			// 删除同步任务 (SyncJob)
+			if err := tx.Where("registry_id IN ?", registryIDs).Delete(&models.SyncJob{}).Error; err != nil {
+				return fmt.Errorf("failed to delete sync jobs: %w", err)
+			}
+
+			// 删除同步日志 (SyncLog)
+			if err := tx.Where("registry_id IN ?", registryIDs).Delete(&models.SyncLog{}).Error; err != nil {
+				return fmt.Errorf("failed to delete sync logs: %w", err)
+			}
+
+			// 删除 Capability Registries
+			if err := tx.Where("id IN ?", registryIDs).Delete(&models.CapabilityRegistry{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability registries: %w", err)
+			}
+		}
+
+		// 5. 删除仓库成员
+		if err := tx.Where("repo_id = ?", id).Delete(&models.RepoMember{}).Error; err != nil {
+			return fmt.Errorf("failed to delete repository members: %w", err)
+		}
+
+		// 6. 最后删除仓库本身
+		if err := tx.Delete(&models.Repository{}, "id = ?", id).Error; err != nil {
+			return fmt.Errorf("failed to delete repository: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	result := db.Delete(&models.Repository{}, "id = ?", id)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete repository"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Repository deleted"})
+	c.JSON(http.StatusOK, gin.H{"message": "Repository and all associated resources deleted"})
 }
 
 func getCallerRepoRole(c *gin.Context, repoID string) string {
