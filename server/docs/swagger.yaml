@@ -531,6 +531,69 @@ definitions:
       userId:
         type: string
     type: object
+  models.WorkspaceDirectory:
+    properties:
+      createdAt:
+        type: string
+      id:
+        type: string
+      isDefault:
+        description: 是否为默认目录
+        type: boolean
+      name:
+        type: string
+      orderIndex:
+        description: 排序索引
+        type: integer
+      path:
+        type: string
+      settings:
+        description: 目录设置（如忽略模式等）
+        type: object
+      updatedAt:
+        type: string
+      workspaceId:
+        type: string
+    type: object
+  services.CreateDirectoryRequest:
+    properties:
+      isDefault:
+        type: boolean
+      name:
+        maxLength: 100
+        type: string
+      path:
+        maxLength: 500
+        type: string
+      settings:
+        additionalProperties: true
+        type: object
+    required:
+    - name
+    - path
+    type: object
+  services.CreateWorkspaceRequest:
+    properties:
+      description:
+        maxLength: 500
+        type: string
+      deviceId:
+        type: string
+      directories:
+        items:
+          $ref: '#/definitions/services.CreateDirectoryRequest'
+        minItems: 1
+        type: array
+      name:
+        maxLength: 100
+        type: string
+      settings:
+        additionalProperties: true
+        type: object
+    required:
+    - directories
+    - name
+    type: object
   services.ItemBehaviorStats:
     properties:
       averageRating:
@@ -637,6 +700,15 @@ definitions:
           $ref: '#/definitions/models.CapabilityVersion'
         type: array
     type: object
+  services.ReorderDirectoriesRequest:
+    properties:
+      directoryIds:
+        items:
+          type: string
+        type: array
+    required:
+    - directoryIds
+    type: object
   services.SearchResult:
     properties:
       durationMs:
@@ -712,6 +784,77 @@ definitions:
         items:
           $ref: '#/definitions/models.CapabilityVersion'
         type: array
+    type: object
+  services.UpdateDirectoryRequest:
+    properties:
+      isDefault:
+        type: boolean
+      name:
+        maxLength: 100
+        type: string
+      path:
+        maxLength: 500
+        type: string
+      settings:
+        additionalProperties: true
+        type: object
+    type: object
+  services.UpdateWorkspaceRequest:
+    properties:
+      description:
+        maxLength: 500
+        type: string
+      deviceId:
+        type: string
+      name:
+        maxLength: 100
+        type: string
+      settings:
+        additionalProperties: true
+        type: object
+      status:
+        enum:
+        - active
+        - inactive
+        - archived
+        type: string
+    type: object
+  services.WorkspaceWithDeviceStatus:
+    properties:
+      createdAt:
+        type: string
+      description:
+        type: string
+      deviceId:
+        description: 绑定的设备ID
+        type: string
+      deviceStatus:
+        description: online | offline | busy | ""
+        type: string
+      deviceUniqueId:
+        description: Device.DeviceID，用于代理路由
+        type: string
+      directories:
+        items:
+          $ref: '#/definitions/models.WorkspaceDirectory'
+        type: array
+      id:
+        type: string
+      isDefault:
+        description: 是否为默认工作空间
+        type: boolean
+      name:
+        type: string
+      settings:
+        description: 工作空间设置
+        type: object
+      status:
+        description: active | inactive | archived
+        type: string
+      updatedAt:
+        type: string
+      userId:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -4242,6 +4385,240 @@ paths:
       summary: Handle GitHub webhook
       tags:
       - sync
+  /workspaces:
+    get:
+      description: Get all workspaces for the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              workspaces:
+                items:
+                  $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List user workspaces
+      tags:
+      - workspaces
+    post:
+      consumes:
+      - application/json
+      description: Create a workspace for the authenticated user with at least one
+        directory
+      parameters:
+      - description: Workspace creation data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.CreateWorkspaceRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              workspace:
+                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create a new workspace
+      tags:
+      - workspaces
+  /workspaces/{workspaceID}:
+    delete:
+      description: Delete a workspace and all its directories
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete workspace
+      tags:
+      - workspaces
+    get:
+      description: Get details of a specific workspace including directories
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              workspace:
+                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get workspace details
+      tags:
+      - workspaces
+    put:
+      consumes:
+      - application/json
+      description: Update workspace information
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      - description: Workspace update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.UpdateWorkspaceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              workspace:
+                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update workspace
+      tags:
+      - workspaces
   /workspaces/{workspaceID}/devices:
     get:
       description: Get all devices in a workspace with pagination
@@ -4296,6 +4673,310 @@ paths:
       summary: List workspace devices
       tags:
       - devices
+  /workspaces/{workspaceID}/directories:
+    post:
+      consumes:
+      - application/json
+      description: Add a new directory to an existing workspace
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      - description: Directory creation data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.CreateDirectoryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              directory:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Add directory to workspace
+      tags:
+      - workspaces
+  /workspaces/{workspaceID}/directories/{directoryID}:
+    delete:
+      description: Delete a directory from a workspace
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      - description: Directory ID
+        in: path
+        name: directoryID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete workspace directory
+      tags:
+      - workspaces
+    put:
+      consumes:
+      - application/json
+      description: Update a directory in a workspace
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      - description: Directory ID
+        in: path
+        name: directoryID
+        required: true
+        type: string
+      - description: Directory update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.UpdateDirectoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              directory:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update workspace directory
+      tags:
+      - workspaces
+  /workspaces/{workspaceID}/directories/reorder:
+    post:
+      consumes:
+      - application/json
+      description: Reorder directories in a workspace
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      - description: Directory order data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.ReorderDirectoriesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Reorder workspace directories
+      tags:
+      - workspaces
+  /workspaces/{workspaceID}/set-default:
+    post:
+      description: Set a workspace as the default for the authenticated user
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: workspaceID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Set default workspace
+      tags:
+      - workspaces
+  /workspaces/default:
+    get:
+      description: Get the default workspace for the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              workspace:
+                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get default workspace
+      tags:
+      - workspaces
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer" followed by a space and JWT token.

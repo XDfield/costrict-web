@@ -71,6 +71,8 @@ func main() {
 		&models.SecurityScan{},
 		&models.ScanJob{},
 		&models.Device{},
+		&models.Workspace{},
+		&models.WorkspaceDirectory{},
 		&models.SystemNotificationChannel{},
 		&models.UserNotificationChannel{},
 		&models.UserConfig{},
@@ -158,6 +160,7 @@ func main() {
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	deviceSvc := &services.DeviceService{DB: db}
+	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
 	api := r.Group("/api")
 	{
@@ -284,6 +287,20 @@ func main() {
 		devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 		devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
 		api.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
+
+		// Workspace routes
+		workspaces := api.Group("/workspaces")
+		workspaces.POST("", handlers.CreateWorkspaceHandler(workspaceSvc))
+		workspaces.GET("", handlers.ListWorkspacesHandler(workspaceSvc))
+		workspaces.GET("/default", handlers.GetDefaultWorkspaceHandler(workspaceSvc))
+		workspaces.GET("/:workspaceID", handlers.GetWorkspaceHandler(workspaceSvc))
+		workspaces.PUT("/:workspaceID", handlers.UpdateWorkspaceHandler(workspaceSvc))
+		workspaces.DELETE("/:workspaceID", handlers.DeleteWorkspaceHandler(workspaceSvc))
+		workspaces.POST("/:workspaceID/set-default", handlers.SetDefaultWorkspaceHandler(workspaceSvc))
+		workspaces.POST("/:workspaceID/directories", handlers.AddWorkspaceDirectoryHandler(workspaceSvc))
+		workspaces.POST("/:workspaceID/directories/reorder", handlers.ReorderWorkspaceDirectoriesHandler(workspaceSvc))
+		workspaces.PUT("/:workspaceID/directories/:directoryID", handlers.UpdateWorkspaceDirectoryHandler(workspaceSvc))
+		workspaces.DELETE("/:workspaceID/directories/:directoryID", handlers.DeleteWorkspaceDirectoryHandler(workspaceSvc))
 
 		notificationModule := notification.New(db, cfg.CloudBaseURL)
 		notificationModule.RegisterRoutes(api)

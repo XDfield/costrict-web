@@ -85,6 +85,19 @@ func (s *DeviceService) GetDevice(deviceID, userID string) (*models.Device, erro
 	return &device, nil
 }
 
+// GetDeviceByID 通过设备 UUID 获取设备
+func (s *DeviceService) GetDeviceByID(id, userID string) (*models.Device, error) {
+	var device models.Device
+	result := s.DB.Where("id = ? AND user_id = ?", id, userID).First(&device)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrDeviceNotFound
+		}
+		return nil, result.Error
+	}
+	return &device, nil
+}
+
 func (s *DeviceService) ListDevices(userID string) ([]models.Device, error) {
 	var devices []models.Device
 	if err := s.DB.Where("user_id = ?", userID).Find(&devices).Error; err != nil {

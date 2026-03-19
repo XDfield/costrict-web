@@ -303,3 +303,35 @@ type ScanJob struct {
 	ScanResultID *string    `gorm:"type:uuid" json:"scanResultId"`
 	CreatedAt    time.Time  `json:"createdAt"`
 }
+
+// Workspace 工作空间
+// 用户可以创建多个工作空间，每个工作空间可以绑定多个设备和多个工作目录
+type Workspace struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name        string         `gorm:"not null"                                       json:"name"`
+	Description string         `                                                      json:"description"`
+	UserID      string         `gorm:"not null;index"                                 json:"userId"`
+	DeviceID    string         `gorm:"index"                                          json:"deviceId"`           // 绑定的设备ID
+	IsDefault   bool           `gorm:"not null;default:false"                         json:"isDefault"`          // 是否为默认工作空间
+	Status      string         `gorm:"not null;default:'active'"                      json:"status"`             // active | inactive | archived
+	Settings    datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"settings"           swaggertype:"object"` // 工作空间设置
+	Directories []WorkspaceDirectory `gorm:"foreignKey:WorkspaceID"                   json:"directories,omitempty"`
+	CreatedAt   time.Time      `                                                      json:"createdAt"`
+	UpdatedAt   time.Time      `                                                      json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
+
+// WorkspaceDirectory 工作空间目录
+// 一个工作空间可以有多个工作目录，但至少有一个
+type WorkspaceDirectory struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	WorkspaceID string         `gorm:"not null;index"                                 json:"workspaceId"`
+	Name        string         `gorm:"not null"                                       json:"name"`
+	Path        string         `gorm:"not null"                                       json:"path"`
+	IsDefault   bool           `gorm:"not null;default:false"                         json:"isDefault"`          // 是否为默认目录
+	OrderIndex  int            `gorm:"not null;default:0"                             json:"orderIndex"`         // 排序索引
+	Settings    datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"settings"           swaggertype:"object"` // 目录设置（如忽略模式等）
+	CreatedAt   time.Time      `                                                      json:"createdAt"`
+	UpdatedAt   time.Time      `                                                      json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
