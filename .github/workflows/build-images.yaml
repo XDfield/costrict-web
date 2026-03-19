@@ -93,6 +93,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Update web-ui submodule to epic/ai-native branch
+        run: |
+          git submodule update --remote web-ui
+          cd web-ui
+          git checkout epic/ai-native
+          echo "web-ui submodule commit: $(git rev-parse HEAD)"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -129,8 +136,8 @@ jobs:
               IMAGE_NAME="costrict-web-worker"
               ;;
             portal)
-              CONTEXT="./web"
-              DOCKERFILE="./web/Dockerfile"
+              CONTEXT="./web-ui"
+              DOCKERFILE="./web-ui/packages/app/Dockerfile"
               IMAGE_NAME="costrict-web-portal"
               ;;
           esac
