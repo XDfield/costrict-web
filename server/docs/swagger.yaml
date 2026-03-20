@@ -42,6 +42,71 @@ definitions:
       webhookSecret:
         type: string
     type: object
+  handlers.ItemWithAuthor:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      createdByName:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      updatedByName:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+    type: object
   llm.SkillAnalysis:
     properties:
       improvements:
@@ -1531,6 +1596,7 @@ paths:
   /items:
     get:
       description: Get all skill items visible to the current user with pagination
+        and author information
       parameters:
       - description: Filter by item type
         in: query
@@ -1571,7 +1637,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/handlers.ItemWithAuthor'
                 type: array
               total:
                 type: integer
@@ -1684,7 +1750,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemWithAuthor'
         "404":
           description: Not Found
           schema:
@@ -2824,7 +2890,7 @@ paths:
       - registries
   /registries/{id}/items:
     get:
-      description: Get all items in a registry
+      description: Get all items in a registry with author information
       parameters:
       - description: Registry ID
         in: path
@@ -2852,7 +2918,7 @@ paths:
             properties:
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/handlers.ItemWithAuthor'
                 type: array
             type: object
         "500":

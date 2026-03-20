@@ -43,16 +43,105 @@ func enqueueScanAsync(itemID string, revision int, triggerType string) {
 	}()
 }
 
+// ItemWithAuthor represents a capability item with author information
+type ItemWithAuthor struct {
+	models.CapabilityItem
+	CreatedByName string `json:"createdByName"`
+	UpdatedByName string `json:"updatedByName"`
+}
+
+// populateItemAuthors fetches user information for items and populates author names
+func populateItemAuthors(c *gin.Context, items []models.CapabilityItem) []ItemWithAuthor {
+	if CasdoorClient == nil || len(items) == 0 {
+		// Return items without author names if Casdoor is not configured
+		result := make([]ItemWithAuthor, len(items))
+		for i, item := range items {
+			result[i] = ItemWithAuthor{CapabilityItem: item}
+		}
+		return result
+	}
+
+	// Collect unique user IDs
+	userIDSet := make(map[string]bool)
+	for _, item := range items {
+		if item.CreatedBy != "" {
+			userIDSet[item.CreatedBy] = true
+		}
+		if item.UpdatedBy != "" {
+			userIDSet[item.UpdatedBy] = true
+		}
+	}
+
+	if len(userIDSet) == 0 {
+		result := make([]ItemWithAuthor, len(items))
+		for i, item := range items {
+			result[i] = ItemWithAuthor{CapabilityItem: item}
+		}
+		return result
+	}
+
+	// Convert set to slice
+	userIDs := make([]string, 0, len(userIDSet))
+	for id := range userIDSet {
+		userIDs = append(userIDs, id)
+	}
+
+	// Get token from context
+	token, _ := c.Get("accessToken")
+	tokenStr, _ := token.(string)
+
+	// Debug logging
+	log.Printf("[DEBUG] populateItemAuthors: userIDs=%v, token present=%v", userIDs, tokenStr != "")
+
+	// Fetch user information
+	userMap, err := CasdoorClient.GetUsersByIDs(tokenStr, userIDs)
+	if err != nil {
+		log.Printf("failed to fetch users: %v", err)
+		// Return items without author names on error
+		result := make([]ItemWithAuthor, len(items))
+		for i, item := range items {
+			result[i] = ItemWithAuthor{CapabilityItem: item}
+		}
+		return result
+	}
+
+	log.Printf("[DEBUG] populateItemAuthors: returned %d users from Casdoor", len(userMap))
+
+	// Populate author names
+	result := make([]ItemWithAuthor, len(items))
+	for i, item := range items {
+		itemWithAuthor := ItemWithAuthor{CapabilityItem: item}
+
+		if user, ok := userMap[item.CreatedBy]; ok {
+			itemWithAuthor.CreatedByName = user.Name
+			if user.PreferredUsername != "" {
+				itemWithAuthor.CreatedByName = user.PreferredUsername
+			}
+		}
+
+		if user, ok := userMap[item.UpdatedBy]; ok {
+			itemWithAuthor.UpdatedByName = user.Name
+			if user.PreferredUsername != "" {
+				itemWithAuthor.UpdatedByName = user.PreferredUsername
+			}
+		}
+
+		result[i] = itemWithAuthor
+	}
+
+	return result
+}
+
 // ListItems godoc
 // @Summary      List registry items
-// @Description  Get all items in a registry
+// @Description  Get all items in a registry with author information
 // @Tags         items
 // @Produce      json
 // @Param        id      path      string  true   "Registry ID"
 // @Param        type    query     string  false  "Filter by item type"
 // @Param        status  query     string  false  "Filter by status"
 // @Param        search  query     string  false  "Search by name or description"
-// @Success      200     {object}  object{items=[]models.CapabilityItem}
+// @Success      200     {object}  object{items=[]ItemWithAuthor}
 // @Failure      500     {object}  object{error=string}
 // @Router       /registries/{id}/items [get]
 func ListItems(c *gin.Context) {
@@ -74,7 +163,8 @@ func ListItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	itemsWithAuthors := populateItemAuthors(c, items)
+	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors})
 }
 
 // CreateItem godoc
@@ -151,7 +241,7 @@ func CreateItem(c *gin.Context) {
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  models.CapabilityItem
+// @Success      200  {object}  ItemWithAuthor
 // @Failure      404  {object}  object{error=string}
 // @Router       /items/{id} [get]
 func GetItem(c *gin.Context) {
@@ -163,7 +253,8 @@ func GetItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	c.JSON(http.StatusOK, item)
+	itemsWithAuthor := populateItemAuthors(c, []models.CapabilityItem{item})
+	c.JSON(http.StatusOK, itemsWithAuthor[0])
 }
 
 // UpdateItem godoc
@@ -366,7 +457,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 
 // ListAllItems godoc
 // @Summary      List all visible items
-// @Description  Get all skill items visible to the current user with pagination
+// @Description  Get all skill items visible to the current user with pagination and author information
 // @Tags         items
 // @Produce      json
 // @Param        type        query     string   false  "Filter by item type"
@@ -376,7 +467,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        limit       query     integer  false  "Page size (default: 24, max: 100)"
 // @Param        offset      query     integer  false  "Page offset (default: 0)"
-// @Success      200         {object}  object{items=[]models.CapabilityItem,total=integer,hasMore=boolean}
+// @Success      200         {object}  object{items=[]ItemWithAuthor,total=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
 // @Router       /items [get]
 func ListAllItems(c *gin.Context) {
@@ -386,7 +477,7 @@ func ListAllItems(c *gin.Context) {
 
 	registryIDs := buildVisibleRegistryIDs(db, uid)
 	if len(registryIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0})
+		c.JSON(http.StatusOK, gin.H{"items": []ItemWithAuthor{}, "total": 0})
 		return
 	}
 
@@ -432,7 +523,8 @@ func ListAllItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "hasMore": int64(offset+limit) < total})
+	itemsWithAuthors := populateItemAuthors(c, items)
+	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "hasMore": int64(offset+limit) < total})
 }
 
 // CreateItemDirect godoc

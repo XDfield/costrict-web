@@ -1048,7 +1048,7 @@ const docTemplate = `{
         },
         "/items": {
             "get": {
-                "description": "Get all skill items visible to the current user with pagination",
+                "description": "Get all skill items visible to the current user with pagination and author information",
                 "produces": [
                     "application/json"
                 ],
@@ -1112,7 +1112,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityItem"
+                                        "$ref": "#/definitions/handlers.ItemWithAuthor"
                                     }
                                 },
                                 "total": {
@@ -1295,7 +1295,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemWithAuthor"
                         }
                     },
                     "404": {
@@ -3182,7 +3182,7 @@ const docTemplate = `{
         },
         "/registries/{id}/items": {
             "get": {
-                "description": "Get all items in a registry",
+                "description": "Get all items in a registry with author information",
                 "produces": [
                     "application/json"
                 ],
@@ -3226,7 +3226,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityItem"
+                                        "$ref": "#/definitions/handlers.ItemWithAuthor"
                                     }
                                 }
                             }
@@ -6512,6 +6512,104 @@ const docTemplate = `{
                 },
                 "webhookSecret": {
                     "type": "string"
+                }
+            }
+        },
+        "handlers.ItemWithAuthor": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "createdByName": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "updatedByName": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
                 }
             }
         },
