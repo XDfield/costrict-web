@@ -47,6 +47,7 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		c.Set(UserIDKey, userInfo.Sub)
 		c.Set(UserNameKey, userInfo.PreferredUsername)
+		c.Set("accessToken", token)
 		c.Next()
 	}
 }
@@ -72,6 +73,7 @@ func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		c.Set(UserIDKey, userInfo.Sub)
 		c.Set(UserNameKey, userInfo.PreferredUsername)
+		c.Set("accessToken", token)
 		c.Next()
 	}
 }
