@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +21,8 @@ type Client struct {
 func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   0,
+			Transport: &http.Transport{},
 		},
 	}
 }
@@ -35,7 +37,17 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 		return c.proxyWebSocket(target, r, w)
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	isSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream") ||
+		strings.HasSuffix(r.URL.Path, "/event")
+
+	ctx := r.Context()
+	if !isSSE {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
+
+	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, target, r.Body)
 	if err != nil {
 		return err
 	}
@@ -66,7 +78,15 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 		"Access-Control-Allow-Credentials": true,
 		"Access-Control-Expose-Headers":    true,
 		"Access-Control-Max-Age":           true,
+		"Connection":                       true,
+		"Keep-Alive":                       true,
+		"Proxy-Connection":                 true,
+		"Transfer-Encoding":                true,
+		"Te":                               true,
+		"Trailers":                         true,
+		"Upgrade":                          true,
 	}
+	isSSEResp := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	for k, vs := range resp.Header {
 		if skipHeaders[k] {
 			continue
@@ -75,9 +95,16 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 			w.Header().Add(k, v)
 		}
 	}
+	if isSSEResp {
+		r.Close = false
+		r.Header.Del("Connection")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Accel-Buffering", "no")
+	}
 	w.WriteHeader(resp.StatusCode)
 
-	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+	if isSSEResp {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			io.Copy(w, resp.Body)

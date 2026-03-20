@@ -35,14 +35,6 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 		}
 		defer stream.Close()
 
-		if netConn, ok := stream.(net.Conn); ok {
-			deadline := time.Now().Add(30 * time.Second)
-			if dl, ok := c.Request.Context().Deadline(); ok && dl.Before(deadline) {
-				deadline = dl
-			}
-			netConn.SetDeadline(deadline)
-		}
-
 		path := c.Param("path")
 
 		if strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
@@ -54,12 +46,28 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 			return
 		}
 
+		// SSE 请求不设 deadline，普通请求设 30s 超时
+		isSSERequest := strings.Contains(c.GetHeader("Accept"), "text/event-stream") ||
+			strings.HasSuffix(path, "/event")
+		if !isSSERequest {
+			if netConn, ok := stream.(net.Conn); ok {
+				deadline := time.Now().Add(30 * time.Second)
+				if dl, ok := c.Request.Context().Deadline(); ok && dl.Before(deadline) {
+					deadline = dl
+				}
+				netConn.SetDeadline(deadline)
+			}
+		}
+
 		c.Request.URL.Path = path
 		requestURI := path
 		if c.Request.URL.RawQuery != "" {
 			requestURI += "?" + c.Request.URL.RawQuery
 		}
 		c.Request.RequestURI = requestURI
+		// 强制 keep-alive，防止设备端响应带 Connection: close
+		c.Request.Close = false
+		c.Request.Header.Del("Connection")
 
 		if err := c.Request.Write(stream); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to write request to tunnel"})
@@ -74,19 +82,34 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 		}
 		defer resp.Body.Close()
 
-		if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-			if netConn, ok := stream.(net.Conn); ok {
-				netConn.SetDeadline(time.Time{})
-			}
-		}
+		isSSE := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 
+		// hop-by-hop headers 不透传
+		hopByHop := map[string]bool{
+			"Connection":          true,
+			"Keep-Alive":          true,
+			"Transfer-Encoding":   true,
+			"Te":                  true,
+			"Trailers":            true,
+			"Proxy-Authorization": true,
+			"Proxy-Authenticate":  true,
+			"Upgrade":             true,
+		}
 		for k, vs := range resp.Header {
+			if hopByHop[k] {
+				continue
+			}
 			for _, v := range vs {
 				c.Header(k, v)
 			}
 		}
+		if isSSE {
+			c.Header("Connection", "keep-alive")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("X-Accel-Buffering", "no")
+		}
 		c.Status(resp.StatusCode)
-		if f, ok := c.Writer.(flusher); ok && resp.Header.Get("Content-Type") == "text/event-stream" {
+		if f, ok := c.Writer.(flusher); ok && isSSE {
 			buf := make([]byte, 4096)
 			for {
 				n, err := resp.Body.Read(buf)
