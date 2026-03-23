@@ -20,8 +20,9 @@ import (
 )
 
 var CasdoorClient *casdoor.CasdoorClient
-var cookieSecure bool // whether to set Secure flag on auth cookies
-var frontendURL string // frontend base URL for OAuth callback redirects
+var cookieSecure bool     // whether to set Secure flag on auth cookies
+var defaultFrontendURL string   // first entry from FRONTEND_URLS, used as fallback
+var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
@@ -30,7 +31,26 @@ func InitCasdoor(cfg *config.CasdoorConfig) {
 // InitCookieConfig sets cookie-related configuration from the global config.
 func InitCookieConfig(cfg *config.Config) {
 	cookieSecure = cfg.CookieSecure
-	frontendURL = strings.TrimRight(cfg.FrontendURL, "/")
+
+	// Build the allowed origins whitelist from FRONTEND_URLS.
+	allowedOrigins = make(map[string]bool)
+	for i, u := range cfg.FrontendURLs {
+		origin := strings.TrimRight(u, "/")
+		allowedOrigins[origin] = true
+		if i == 0 {
+			defaultFrontendURL = origin
+		}
+	}
+	if defaultFrontendURL == "" {
+		defaultFrontendURL = cfg.CloudBaseURL
+	}
+}
+
+// isAllowedOrigin checks whether the given full URL's origin is in the
+// FRONTEND_URLS whitelist.
+func isAllowedOrigin(rawURL string) bool {
+	origin, _ := splitOriginPath(rawURL)
+	return origin != "" && allowedOrigins[origin]
 }
 
 func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookSecret string) datatypes.JSON {
@@ -129,13 +149,16 @@ func AuthCallback(c *gin.Context) {
 	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
 
 	// Determine where to send the user after login.
-	redirectURL := frontendURL + "/"
+	// Validate the redirect target against the allowed origins whitelist.
+	redirectURL := defaultFrontendURL + "/"
 	if state.RedirectTo != "" {
-		if strings.HasPrefix(state.RedirectTo, "http://") || strings.HasPrefix(state.RedirectTo, "https://") {
+		if isAllowedOrigin(state.RedirectTo) {
 			redirectURL = state.RedirectTo
-		} else {
-			redirectURL = frontendURL + state.RedirectTo
+		} else if !strings.HasPrefix(state.RedirectTo, "http://") && !strings.HasPrefix(state.RedirectTo, "https://") {
+			// Plain path — prepend default frontend URL
+			redirectURL = defaultFrontendURL + state.RedirectTo
 		}
+		// If it's a full URL with a disallowed origin, fall through to the default.
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)
@@ -153,6 +176,13 @@ func AuthCallback(c *gin.Context) {
 func Login(c *gin.Context) {
 	redirectTo := c.DefaultQuery("redirect_to", "/")
 	callbackURL := c.Query("callback_url")
+
+	// Validate callback_url against the allowed origins whitelist.
+	// If not allowed or not provided, discard it so CasdoorClient falls back
+	// to the configured CASDOOR_CALLBACK_URL.
+	if callbackURL != "" && !isAllowedOrigin(callbackURL) {
+		callbackURL = ""
+	}
 
 	stateStr := encodeOAuthState(oauthState{RedirectTo: redirectTo, CallbackURL: callbackURL})
 
