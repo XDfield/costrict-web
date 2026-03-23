@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -69,6 +70,9 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
+		userName := c.GetString(middleware.UserNameKey)
+		log.Printf("[ListDevicesHandler] userID=%q, userName=%q", userID, userName)
+
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 			return
@@ -76,10 +80,12 @@ func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 
 		devices, err := svc.ListDevices(userID)
 		if err != nil {
+			log.Printf("[ListDevicesHandler] svc.ListDevices error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list devices"})
 			return
 		}
 
+		log.Printf("[ListDevicesHandler] found %d devices for userID=%q", len(devices), userID)
 		c.JSON(http.StatusOK, gin.H{"devices": devices})
 	}
 }

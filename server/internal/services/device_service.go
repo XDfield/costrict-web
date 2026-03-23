@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -100,9 +101,28 @@ func (s *DeviceService) GetDeviceByID(id, userID string) (*models.Device, error)
 
 func (s *DeviceService) ListDevices(userID string) ([]models.Device, error) {
 	var devices []models.Device
+
+	// Debug: 打印查询前的状态
+	log.Printf("[ListDevices] querying devices with userID=%q", userID)
+
+	// Debug: 先查询总数
+	var total int64
+	if err := s.DB.Model(&models.Device{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {
+		log.Printf("[ListDevices] count error: %v", err)
+	} else {
+		log.Printf("[ListDevices] total count for userID=%q: %d", userID, total)
+	}
+
+	// Debug: 查询所有设备的 user_id 用于对比
+	var allUserIDs []string
+	s.DB.Model(&models.Device{}).Distinct("user_id").Pluck("user_id", &allUserIDs)
+	log.Printf("[ListDevices] all distinct user_ids in devices table: %v", allUserIDs)
+
 	if err := s.DB.Where("user_id = ?", userID).Find(&devices).Error; err != nil {
 		return nil, err
 	}
+
+	log.Printf("[ListDevices] found %d devices for userID=%q", len(devices), userID)
 	return devices, nil
 }
 
