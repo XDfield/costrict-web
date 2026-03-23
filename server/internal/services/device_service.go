@@ -28,8 +28,10 @@ type RegisterDeviceRequest struct {
 }
 
 type UpdateDeviceRequest struct {
-	DisplayName string `json:"displayName"`
-	WorkspaceID string `json:"workspaceId"`
+	DisplayName string  `json:"displayName"`
+	Description *string `json:"description"`
+	Label       *string `json:"label"`
+	WorkspaceID string  `json:"workspaceId"`
 }
 
 func generateDeviceToken() (string, error) {
@@ -130,6 +132,12 @@ func (s *DeviceService) UpdateDevice(deviceID, userID string, req UpdateDeviceRe
 	updates := map[string]any{}
 	if req.DisplayName != "" {
 		updates["display_name"] = req.DisplayName
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
+	if req.Label != nil {
+		updates["label"] = *req.Label
 	}
 	if req.WorkspaceID != "" {
 		updates["workspace_id"] = req.WorkspaceID

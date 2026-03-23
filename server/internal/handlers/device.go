@@ -125,7 +125,7 @@ func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 // @Accept       json
 // @Produce      json
 // @Param        deviceID  path      string  true  "Device ID"
-// @Param        body      body      object{displayName=string,workspaceId=string}  true  "Device update data"
+// @Param        body      body      object{displayName=string,description=string,label=string,workspaceId=string}  true  "Device update data"
 // @Success      200   {object}  object{device=object}
 // @Failure      400   {object}  object{error=string}
 // @Failure      401   {object}  object{error=string}
