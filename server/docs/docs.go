@@ -1169,9 +1169,10 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a skill item; auto-selects public registry if registryId is omitted",
+                "description": "Create a skill item via JSON or upload a .zip archive via multipart/form-data. Auto-selects public registry if registryId is omitted.",
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -1182,10 +1183,9 @@ const docTemplate = `{
                 "summary": "Create item (direct)",
                 "parameters": [
                     {
-                        "description": "Item data",
+                        "description": "Item data (JSON)",
                         "name": "body",
                         "in": "body",
-                        "required": true,
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1218,6 +1218,24 @@ const docTemplate = `{
                                 }
                             }
                         }
+                    },
+                    {
+                        "type": "file",
+                        "description": "Zip archive (multipart)",
+                        "name": "file",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Item type: skill or mcp (multipart)",
+                        "name": "itemType",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Item name (multipart)",
+                        "name": "name",
+                        "in": "formData"
                     }
                 ],
                 "responses": {
@@ -1229,6 +1247,17 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1363,9 +1392,10 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update skill item by ID; creates a new version if content changes",
+                "description": "Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a zip archive. Creates a new version if content changes.",
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -1383,7 +1413,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Item data",
+                        "description": "Item data (JSON)",
                         "name": "body",
                         "in": "body",
                         "schema": {
@@ -1415,6 +1445,12 @@ const docTemplate = `{
                                 }
                             }
                         }
+                    },
+                    {
+                        "type": "file",
+                        "description": "Archive file (multipart)",
+                        "name": "file",
+                        "in": "formData"
                     }
                 ],
                 "responses": {
@@ -3463,6 +3499,17 @@ const docTemplate = `{
                             }
                         }
                     },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -3855,9 +3902,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/registry/{repo}/{slug}/{file}": {
+        "/registry/{repo}/{itemType}/{slug}/{file}": {
             "get": {
-                "description": "Download a specific file of an item identified by repo/slug/filename. Respects visibility rules.",
+                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.",
                 "produces": [
                     "text/plain"
                 ],
@@ -3870,6 +3917,13 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Repository name",
                         "name": "repo",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Item type (skill, mcp, etc.)",
+                        "name": "itemType",
                         "in": "path",
                         "required": true
                     },
@@ -6713,6 +6767,9 @@ const docTemplate = `{
                 "registryId": {
                     "type": "string"
                 },
+                "repoId": {
+                    "type": "string"
+                },
                 "securityStatus": {
                     "type": "string"
                 },
@@ -6723,6 +6780,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -7113,6 +7174,9 @@ const docTemplate = `{
                 "registryId": {
                     "type": "string"
                 },
+                "repoId": {
+                    "type": "string"
+                },
                 "securityStatus": {
                     "type": "string"
                 },
@@ -7123,6 +7187,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -7795,6 +7863,9 @@ const docTemplate = `{
                 "registryId": {
                     "type": "string"
                 },
+                "repoId": {
+                    "type": "string"
+                },
                 "score": {
                     "type": "number"
                 },
@@ -7808,6 +7879,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -7927,6 +8002,9 @@ const docTemplate = `{
                 "registryId": {
                     "type": "string"
                 },
+                "repoId": {
+                    "type": "string"
+                },
                 "score": {
                     "type": "number"
                 },
@@ -7940,6 +8018,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
