@@ -11,10 +11,15 @@
   - 问题：使用 `jwt.ParseUnverified` 跳过签名校验，任何人伪造 JWT payload 均可通过本地解析；仅在 Casdoor 服务不可用时才被 fallback 拦截
   - 修复：使用 Casdoor 公钥对 JWT 做签名验证，或始终强制走 Casdoor API 验证
 
-- [ ] **设备隧道连接无任何认证**
+- [x] **设备隧道连接无任何认证**
   - 位置：`gateway/internal/router.go:17`、`gateway/internal/tunnel_handler.go:18`
   - 问题：`/device/:deviceID/tunnel` WebSocket 端点不验证连接方身份，任何人可冒充任意 deviceID 接管隧道
-  - 修复：连接时校验设备 token（如 Bearer token 或 query 参数），验证通过后再建立 yamux session
+  - 修复：
+    1. Server: 新增 `POST /internal/gateway/device/verify-token` 内部接口，校验 `{deviceID, token}` 对是否匹配（复用 `DeviceService.VerifyDeviceToken`）
+    2. Gateway: 新增 `auth.go`，实现 `VerifyDeviceToken()` 通过 Server 内部接口验证设备 token，`ExtractDeviceToken()` 从 query 参数或 Authorization header 提取 token
+    3. Gateway: `DeviceTunnelHandler` 在 WebSocket 升级前校验设备 token，验证失败返回 401
+    4. 设备端: `tunnel.ts` 连接时通过 `?token=` query 参数携带 device_token（WebSocket API 不支持自定义 header）
+    5. 设备端: `gateway.ts` 请求 gateway-assign 时携带 `Authorization: Bearer <device_token>`
 
 - [x] **Gateway → Server 内部通信无认证**
   - 位置：`gateway/internal/registration.go`、`server/internal/gateway/handlers.go:149`
@@ -37,20 +42,28 @@
     2. Items/Registries 只读接口（`GET /items`、`GET /items/:id`、`GET /registries/:id`、`GET /registries/:id/items`、versions、artifacts、download、scan-results 等）保留在 `OptionalAuth` 下，匿名用户可预览公开内容（`ListAllItems` 已通过 `buildVisibleRegistryIDs` 控制匿名仅见 public registry）
     3. Marketplace 浏览、webhook 等保持公开
 
-- [ ] **`/cloud/device/:deviceID/proxy/*path` 无鉴权（TODO 未完成）**
+- [x] **`/cloud/device/:deviceID/proxy/*path` 无鉴权（TODO 未完成）**
   - 位置：`server/cmd/api/main.go:343`
   - 问题：代码注释 `// TODO: 打通链路后加认证`，当前任何人知道 deviceID 即可代理访问该设备内部服务
-  - 修复：补充鉴权，验证调用方是该设备的归属用户
+  - 修复：
+    1. 路由添加 `RequireAuth` 中间件，强制用户登录
+    2. `DeviceProxyHandler` 内通过 `DeviceService.VerifyDeviceOwnership(deviceID, userID)` 校验设备归属，非本人设备返回 403
 
-- [ ] **`/cloud/device/gateway-assign` 无鉴权**
+- [x] **`/cloud/device/gateway-assign` 无鉴权**
   - 位置：`server/cmd/api/main.go:329`
   - 问题：设备分配网关接口完全公开，可被外部滥用枚举或耗尽网关资源
-  - 修复：要求设备 token 认证后才可调用
+  - 修复：
+    1. `GatewayAssignHandler` 从 `Authorization: Bearer` header 提取设备 token
+    2. 通过 `DeviceService.VerifyDeviceToken` 验证 token 有效性，并校验 token 对应的 deviceID 与请求体 deviceID 一致
+    3. 设备端 `gateway.ts` 已在之前修复中添加 `Authorization: Bearer <device_token>`
 
-- [ ] **Gateway 代理端点无鉴权**
+- [x] **Gateway 代理端点无鉴权**
   - 位置：`gateway/internal/router.go:18`、`gateway/internal/proxy_handler.go:21`
   - 问题：`/device/:deviceID/proxy/*path` 无任何认证，知道 deviceID 即可代理访问设备
-  - 修复：验证请求方持有合法 token（用户 token 或内部密钥）
+  - 修复：
+    1. Gateway: 新增 `InternalSecretAuth` 中间件校验 `X-Internal-Secret`，密钥为空时拒绝所有请求
+    2. Gateway: `router.go` 中 proxy 路由挂载 `InternalSecretAuth(cfg.InternalSecret)`
+    3. Server: `Client` 构造时接收 `internalSecret`，`ProxyRequest` 的 HTTP/WebSocket 请求均携带 `X-Internal-Secret` header
 
 ---
 
