@@ -94,6 +94,7 @@ func main() {
 
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
+	handlers.InitCookieConfig(cfg)
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
@@ -147,7 +148,7 @@ func main() {
 
 	casdoorEndpoint := cfg.Casdoor.Endpoint
 
-	r.Use(middleware.CORS())
+	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())

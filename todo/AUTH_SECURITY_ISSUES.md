@@ -56,26 +56,26 @@
 
 ## P2 — 中等，计划修复
 
-- [ ] **`GetMyRepositories` 接受前端传入的 userId（越权）**
-  - 位置：`server/internal/handlers/handlers.go:917`
+- [x] **`GetMyRepositories` 接受前端传入的 userId（越权）**
+  - 位置：`server/internal/handlers/handlers.go:937`
   - 问题：`userId` 由 query 参数传入而非从 token 中提取，已认证用户可查询任意其他用户的仓库列表
   - 修复：从 `c.Get("userId")` 获取当前登录用户 ID，忽略前端传参
 
-- [ ] **`AddRepoRegistry` 中 ownerID 回退逻辑不安全**
+- [x] **`AddRepoRegistry` 中 ownerID 回退逻辑不安全**
   - 位置：`server/internal/handlers/handlers.go:766-769`
   - 问题：当 context 中取不到 `userID` 时，回退使用 `repo.OwnerID`，导致未认证调用者可以以仓库 owner 身份创建 registry
   - 修复：取不到 userID 时直接返回 401，不做回退
 
-- [ ] **Cookie 未设置 Secure 标志**
+- [x] **Cookie 未设置 Secure 标志**
   - 位置：`server/internal/handlers/handlers.go:66`
   - 问题：`SetCookie` 的 `secure` 参数为 `false`，在 HTTPS 环境下 token 仍可能通过明文 HTTP 传输
-  - 修复：生产环境将 `secure` 设为 `true`，可通过配置项控制
+  - 修复：新增 `COOKIE_SECURE` 配置项（默认 `true`），生产环境自动启用 Secure 标志，开发环境可设为 `false`
 
 ---
 
 ## P3 — 低优先级，优化项
 
-- [ ] **CORS 配置 `Allow-Origin: *` 与 `Allow-Credentials: true` 同时设置**
+- [x] **CORS 配置 `Allow-Origin: *` 与 `Allow-Credentials: true` 同时设置**
   - 位置：`server/internal/middleware/middleware.go:14-15`
   - 问题：浏览器规范禁止在 `Allow-Origin: *` 时携带凭证，两者同时设置无效且表明配置未经安全审查
-  - 修复：明确指定允许的域名列表，或去掉 `Allow-Credentials: true`
+  - 修复：`CORS()` 改为接受 `CORSConfig`，通过 `CORS_ALLOWED_ORIGINS` 环境变量配置允许的域名列表；未配置时回显请求 Origin（兼容开发模式），配置后严格校验 Origin 白名单

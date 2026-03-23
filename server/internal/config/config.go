@@ -4,20 +4,23 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	Port           string
-	DatabaseURL    string
-	RedisURL       string
-	CloudBaseURL   string
-	InternalSecret string
-	Casdoor        CasdoorConfig
-	LLM            LLMConfig
-	Embedding      EmbeddingConfig
-	Search         SearchConfig
+	Port               string
+	DatabaseURL        string
+	RedisURL           string
+	CloudBaseURL       string
+	InternalSecret     string
+	CookieSecure       bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CORSAllowedOrigins []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	Casdoor            CasdoorConfig
+	LLM                LLMConfig
+	Embedding          EmbeddingConfig
+	Search             SearchConfig
 }
 
 type CasdoorConfig struct {
@@ -63,11 +66,13 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:           getEnv("PORT", "8080"),
-		DatabaseURL:    getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
-		RedisURL:       getEnv("REDIS_URL", ""),
-		CloudBaseURL:   getEnv("COSTRICT_CLOUD_BASE_URL", "https://app.costrict.ai"),
-		InternalSecret: getEnv("INTERNAL_SECRET", ""),
+		Port:               getEnv("PORT", "8080"),
+		DatabaseURL:        getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		RedisURL:           getEnv("REDIS_URL", ""),
+		CloudBaseURL:       getEnv("COSTRICT_CLOUD_BASE_URL", "https://app.costrict.ai"),
+		InternalSecret:     getEnv("INTERNAL_SECRET", ""),
+		CookieSecure:       getEnvBool("COOKIE_SECURE", true),
+		CORSAllowedOrigins: getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
 			Endpoint:    getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			ClientID:    getEnv("CASDOOR_CLIENT_ID", ""),
@@ -138,4 +143,39 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := viper.GetString(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	return defaultValue
+}
+
+// getEnvSlice reads a comma-separated environment variable into a string slice.
+// Returns defaultValue if the variable is not set or empty.
+func getEnvSlice(key string, defaultValue []string) []string {
+	raw := getEnv(key, "")
+	if raw == "" {
+		return defaultValue
+	}
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	if len(result) == 0 {
+		return defaultValue
+	}
+	return result
 }

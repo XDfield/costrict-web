@@ -5,13 +5,50 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-func CORS() gin.HandlerFunc {
+// CORSConfig holds the allowed origins for CORS.
+// If AllowedOrigins is empty, all origins are allowed (insecure, for development only).
+type CORSConfig struct {
+	AllowedOrigins []string
+}
+
+func CORS(cfg CORSConfig) gin.HandlerFunc {
+	allowed := make(map[string]bool, len(cfg.AllowedOrigins))
+	for _, o := range cfg.AllowedOrigins {
+		allowed[strings.TrimRight(o, "/")] = true
+	}
+
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+
+		if len(allowed) == 0 {
+			// Development mode: allow all origins (but still echo the actual origin
+			// so that credentials work correctly).
+			if origin != "" {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Vary", "Origin")
+			} else {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+			}
+		} else {
+			if allowed[origin] {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Vary", "Origin")
+			} else {
+				// Origin not allowed — skip setting CORS headers.
+				if c.Request.Method == "OPTIONS" {
+					c.AbortWithStatus(http.StatusForbidden)
+					return
+				}
+				c.Next()
+				return
+			}
+		}
+
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")

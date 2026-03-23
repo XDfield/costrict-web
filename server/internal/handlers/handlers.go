@@ -18,9 +18,15 @@ import (
 )
 
 var CasdoorClient *casdoor.CasdoorClient
+var cookieSecure bool // whether to set Secure flag on auth cookies
 
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
+}
+
+// InitCookieConfig sets cookie-related configuration from the global config.
+func InitCookieConfig(cfg *config.Config) {
+	cookieSecure = cfg.CookieSecure
 }
 
 func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookSecret string) datatypes.JSON {
@@ -64,7 +70,7 @@ func AuthCallback(c *gin.Context) {
 		return
 	}
 
-	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", false, true)
+	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
 	c.JSON(http.StatusOK, gin.H{
 		"token": tokenResp.AccessToken,
 		"user":  userInfo.User,
@@ -126,7 +132,7 @@ func Logout(c *gin.Context) {
 	token := middleware.ExtractToken(c)
 
 	// Always clear the auth cookie, regardless of whether token revocation succeeds
-	c.SetCookie("auth_token", "", -1, "/", "", false, true)
+	c.SetCookie("auth_token", "", -1, "/", "", cookieSecure, true)
 
 	if token == "" {
 		// No token present — cookie cleared, nothing else to do
@@ -787,7 +793,8 @@ func AddRepoRegistry(c *gin.Context) {
 	userIDVal, _ := c.Get("userID")
 	ownerID, _ := userIDVal.(string)
 	if ownerID == "" {
-		ownerID = repo.OwnerID
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
 	}
 
 	reg := buildExternalRegistry(req, repoID, ownerID, repo.Visibility)
@@ -927,17 +934,21 @@ func RemoveRepoRegistry(c *gin.Context) {
 
 // GetMyRepositories godoc
 // @Summary      Get my repositories
-// @Description  Get all repositories the user belongs to
+// @Description  Get all repositories the current authenticated user belongs to
 // @Tags         repositories
 // @Produce      json
-// @Param        userId  query     string  true  "User ID"
 // @Success      200     {object}  object{repositories=[]models.Repository}
-// @Failure      400     {object}  object{error=string}
+// @Failure      401     {object}  object{error=string}
 // @Router       /repositories/my [get]
 func GetMyRepositories(c *gin.Context) {
-	userID := c.Query("userId")
-	if userID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "userId is required"})
+	userIDVal, exists := c.Get("userId")
+	if !exists || userIDVal == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	userID, ok := userIDVal.(string)
+	if !ok || userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 	db := database.GetDB()
