@@ -49,20 +49,31 @@ func NewClient(cfg *config.CasdoorConfig) *CasdoorClient {
 	}
 }
 
-// GetLoginURL returns = Casdoor login URL
-func (c *CasdoorClient) GetLoginURL(state string) string {
+// GetLoginURL returns the Casdoor OAuth authorization URL.
+// If callbackURL is non-empty it overrides the configured default, allowing
+// the frontend to specify its own origin so that Casdoor redirects back
+// through the frontend host (important for correct cookie domain).
+func (c *CasdoorClient) GetLoginURL(state, callbackURL string) string {
+	if callbackURL == "" {
+		callbackURL = c.callbackURL
+	}
 	params := url.Values{}
 	params.Set("client_id", c.clientID)
 	params.Set("response_type", "code")
-	params.Set("redirect_uri", c.callbackURL)
+	params.Set("redirect_uri", callbackURL)
 	params.Set("scope", "openid profile email")
 	params.Set("state", state)
 
 	return fmt.Sprintf("%s/login/oauth/authorize?%s", c.endpoint, params.Encode())
 }
 
-// ExchangeCodeForToken exchanges = authorization code for an access token
-func (c *CasdoorClient) ExchangeCodeForToken(code string) (*CasdoorTokenResponse, error) {
+// ExchangeCodeForToken exchanges an authorization code for an access token.
+// If callbackURL is non-empty it overrides the configured default; the value
+// must match the redirect_uri used in the authorization request.
+func (c *CasdoorClient) ExchangeCodeForToken(code, callbackURL string) (*CasdoorTokenResponse, error) {
+	if callbackURL == "" {
+		callbackURL = c.callbackURL
+	}
 	tokenURL := fmt.Sprintf("%s/api/login/oauth/access_token", c.endpoint)
 
 	data := url.Values{}
@@ -70,7 +81,7 @@ func (c *CasdoorClient) ExchangeCodeForToken(code string) (*CasdoorTokenResponse
 	data.Set("client_id", c.clientID)
 	data.Set("client_secret", c.secret)
 	data.Set("code", code)
-	data.Set("redirect_uri", c.callbackURL)
+	data.Set("redirect_uri", callbackURL)
 
 	resp, err := http.PostForm(tokenURL, data)
 	if err != nil {

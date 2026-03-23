@@ -14,6 +14,7 @@ type Config struct {
 	DatabaseURL        string
 	RedisURL           string
 	CloudBaseURL       string
+	FrontendURL        string   // Frontend base URL for OAuth callback redirects (e.g. http://localhost:3000)
 	InternalSecret     string
 	CookieSecure       bool     // Set auth cookie with Secure flag (HTTPS only); default true
 	CORSAllowedOrigins []string // Allowed CORS origins; empty means allow all (insecure, dev only)
@@ -70,6 +71,7 @@ func Load() *Config {
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
 		RedisURL:           getEnv("REDIS_URL", ""),
 		CloudBaseURL:       getEnv("COSTRICT_CLOUD_BASE_URL", "https://app.costrict.ai"),
+		FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:3000"),
 		InternalSecret:     getEnv("INTERNAL_SECRET", ""),
 		CookieSecure:       getEnvBool("COOKIE_SECURE", true),
 		CORSAllowedOrigins: getEnvSlice("CORS_ALLOWED_ORIGINS", nil),

@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/casdoor"
@@ -19,6 +21,7 @@ import (
 
 var CasdoorClient *casdoor.CasdoorClient
 var cookieSecure bool // whether to set Secure flag on auth cookies
+var frontendURL string // frontend base URL for OAuth callback redirects
 
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
@@ -27,6 +30,7 @@ func InitCasdoor(cfg *config.CasdoorConfig) {
 // InitCookieConfig sets cookie-related configuration from the global config.
 func InitCookieConfig(cfg *config.Config) {
 	cookieSecure = cfg.CookieSecure
+	frontendURL = strings.TrimRight(cfg.FrontendURL, "/")
 }
 
 func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookSecret string) datatypes.JSON {
@@ -40,14 +44,68 @@ func buildSyncConfigJSON(includes, excludes []string, conflictStrategy, webhookS
 	return datatypes.JSON(b)
 }
 
+// oauthState carries the frontend redirect target and the callback URL through
+// the OAuth flow. It is serialized as a compact pipe-delimited string:
+//
+//	origin|redirectPath|callbackPath
+//
+// e.g. "http://localhost:3000|/store/dashboard|/api/auth/callback"
+//
+// The origin is shared so it is stored only once, then base64url-encoded to
+// keep the URL short and safe.
+type oauthState struct {
+	RedirectTo  string // full redirect URL  (http://localhost:3000/store/dashboard)
+	CallbackURL string // full callback URL  (http://localhost:3000/api/auth/callback)
+}
+
+func encodeOAuthState(s oauthState) string {
+	// Extract common origin from redirect_to and store paths only.
+	origin, redirectPath := splitOriginPath(s.RedirectTo)
+	_, callbackPath := splitOriginPath(s.CallbackURL)
+	// Format: origin|redirectPath|callbackPath
+	raw := origin + "|" + redirectPath + "|" + callbackPath
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeOAuthState(encoded string) oauthState {
+	b, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return oauthState{}
+	}
+	parts := strings.SplitN(string(b), "|", 3)
+	if len(parts) < 3 {
+		return oauthState{}
+	}
+	origin := parts[0]
+	return oauthState{
+		RedirectTo:  origin + parts[1],
+		CallbackURL: origin + parts[2],
+	}
+}
+
+// splitOriginPath splits a full URL into origin (scheme://host) and path.
+// For non-URL strings it returns ("", original).
+func splitOriginPath(rawURL string) (string, string) {
+	// Find the third slash: http://host/path → split after "http://host"
+	for _, prefix := range []string{"https://", "http://"} {
+		if strings.HasPrefix(rawURL, prefix) {
+			rest := rawURL[len(prefix):]
+			if idx := strings.Index(rest, "/"); idx >= 0 {
+				return rawURL[:len(prefix)+idx], rest[idx:]
+			}
+			return rawURL, "/"
+		}
+	}
+	return "", rawURL
+}
+
 // AuthCallback godoc
 // @Summary      OAuth callback
-// @Description  Exchange OAuth authorization code for access token and set cookie
+// @Description  Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend
 // @Tags         auth
-// @Produce      json
-// @Param        code          query  string  true  "OAuth code"
-// @Param        redirect_uri  query  string  false "Redirect URI"
-// @Success      200  {object}  object{token=string,user=object}
+// @Param        code   query  string  true   "OAuth authorization code"
+// @Param        state  query  string  false  "Base64url-encoded JSON state"
+// @Success      302  "Redirect to frontend with auth cookie set"
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/callback [get]
@@ -58,64 +116,48 @@ func AuthCallback(c *gin.Context) {
 		return
 	}
 
-	tokenResp, err := CasdoorClient.ExchangeCodeForToken(code)
+	// Decode state to recover callback_url (needed for token exchange) and redirect target.
+	state := decodeOAuthState(c.Query("state"))
+
+	tokenResp, err := CasdoorClient.ExchangeCodeForToken(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
 		return
 	}
 
-	userInfo, err := CasdoorClient.GetUserInfo(tokenResp.AccessToken)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
-		return
+	// Set auth cookie before redirect
+	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+
+	// Determine where to send the user after login.
+	redirectURL := frontendURL + "/"
+	if state.RedirectTo != "" {
+		if strings.HasPrefix(state.RedirectTo, "http://") || strings.HasPrefix(state.RedirectTo, "https://") {
+			redirectURL = state.RedirectTo
+		} else {
+			redirectURL = frontendURL + state.RedirectTo
+		}
 	}
 
-	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
-	c.JSON(http.StatusOK, gin.H{
-		"token": tokenResp.AccessToken,
-		"user":  userInfo.User,
-	})
+	c.Redirect(http.StatusFound, redirectURL)
 }
 
 // Login godoc
-// @Summary      OAuth login (legacy)
-// @Description  Exchange OAuth authorization code for access token via JSON body
+// @Summary      OAuth login redirect
+// @Description  Redirect to Casdoor OAuth authorization page
 // @Tags         auth
-// @Accept       json
-// @Produce      json
-// @Param        body  body  object{code=string,state=string}  true  "OAuth code"
-// @Success      200   {object}  object{token=string,tokenType=string,user=object}
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /auth/login [post]
+// @Produce      html
+// @Param        redirect_to   query  string  false  "Full URL to redirect after login (default: /)"
+// @Param        callback_url  query  string  false  "OAuth callback URL on the frontend origin for correct cookie domain"
+// @Success      302  "Redirect to Casdoor login page"
+// @Router       /auth/login [get]
 func Login(c *gin.Context) {
-	var req struct {
-		Code  string `json:"code" binding:"required"`
-		State string `json:"state"`
-	}
+	redirectTo := c.DefaultQuery("redirect_to", "/")
+	callbackURL := c.Query("callback_url")
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
+	stateStr := encodeOAuthState(oauthState{RedirectTo: redirectTo, CallbackURL: callbackURL})
 
-	tokenResp, err := CasdoorClient.ExchangeCodeForToken(req.Code)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
-		return
-	}
-
-	userInfo, err := CasdoorClient.GetUserInfo(tokenResp.AccessToken)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"token":     tokenResp.AccessToken,
-		"tokenType": tokenResp.TokenType,
-		"user":      userInfo.User,
-	})
+	loginURL := CasdoorClient.GetLoginURL(stateStr, callbackURL)
+	c.Redirect(http.StatusFound, loginURL)
 }
 
 // Logout godoc
