@@ -9,6 +9,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/casdoor"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -113,12 +114,32 @@ func Login(c *gin.Context) {
 
 // Logout godoc
 // @Summary      Logout
-// @Description  Invalidate current session
+// @Description  Invalidate current session, revoke token at Casdoor, and clear auth cookie
 // @Tags         auth
 // @Produce      json
 // @Success      200  {object}  object{message=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
 // @Router       /auth/logout [post]
 func Logout(c *gin.Context) {
+	// Extract token from Authorization header or cookie
+	token := middleware.ExtractToken(c)
+
+	// Always clear the auth cookie, regardless of whether token revocation succeeds
+	c.SetCookie("auth_token", "", -1, "/", "", false, true)
+
+	if token == "" {
+		// No token present — cookie cleared, nothing else to do
+		c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
+		return
+	}
+
+	// Revoke token at Casdoor (logout all sessions for this user)
+	if err := CasdoorClient.Logout(token, true); err != nil {
+		// Log the error but don't fail the logout — cookie is already cleared
+		fmt.Printf("[Logout] Casdoor token revocation failed: %v\n", err)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
 
@@ -133,15 +154,15 @@ func Logout(c *gin.Context) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
-	token := extractBearerToken(c)
-	if token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+	token, exists := c.Get("accessToken")
+	if !exists || token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
-	userInfo, err := CasdoorClient.GetUserInfo(token)
+	userInfo, err := CasdoorClient.GetUserInfo(token.(string))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 		return
 	}
 

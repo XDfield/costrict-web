@@ -17,17 +17,16 @@ import (
 // @Failure      500   {object}  object{error=string}
 // @Router       /users/search [get]
 func SearchUsers(c *gin.Context) {
-	callerIDVal, exists := c.Get("userId")
-	if !exists || callerIDVal == nil {
+	token, exists := c.Get("accessToken")
+	if !exists || token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
 	keyword := c.Query("q")
-	token := extractBearerToken(c)
 
 	client := CasdoorClient
-	users, err := client.SearchUsers(token, keyword)
+	users, err := client.SearchUsers(token.(string), keyword)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search users"})
 		return
@@ -39,15 +38,4 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})
-}
-
-func extractBearerToken(c *gin.Context) string {
-	auth := c.GetHeader("Authorization")
-	if len(auth) > 7 && auth[:7] == "Bearer " {
-		return auth[7:]
-	}
-	if cookie, err := c.Cookie("auth_token"); err == nil {
-		return cookie
-	}
-	return ""
 }

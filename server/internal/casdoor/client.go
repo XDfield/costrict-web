@@ -220,6 +220,42 @@ func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser,
 	return matched, nil
 }
 
+// Logout calls Casdoor SSO logout to invalidate the user's session and expire tokens.
+// If logoutAll is true, all sessions and tokens for the user are invalidated;
+// otherwise only the current session is ended.
+func (c *CasdoorClient) Logout(accessToken string, logoutAll bool) error {
+	logoutURL := fmt.Sprintf("%s/api/sso-logout?logoutAll=%t", c.endpoint, logoutAll)
+
+	req, err := http.NewRequest("POST", logoutURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create logout request: %w", err)
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call Casdoor logout: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Casdoor logout returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Check Casdoor response status
+	var result struct {
+		Status string `json:"status"`
+		Msg    string `json:"msg"`
+	}
+	if err := json.Unmarshal(body, &result); err == nil && result.Status == "error" {
+		return fmt.Errorf("Casdoor logout error: %s", result.Msg)
+	}
+
+	return nil
+}
+
 // GetGroups retrieves groups from Casdoor
 func (c *CasdoorClient) GetGroups(accessToken string) ([]byte, error) {
 	return c.CallCasdoorAPI("GET", "/api/get-groups", accessToken, nil)

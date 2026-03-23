@@ -14,8 +14,30 @@ import (
 
 const UserIDKey = "userId"
 const UserNameKey = "userName"
+const InternalSecretHeader = "X-Internal-Secret"
 
-func extractToken(c *gin.Context) string {
+// InternalAuth validates requests from internal services (gateway, etc.) using a shared secret.
+// If secret is empty, all requests are rejected to prevent misconfiguration.
+func InternalAuth(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if secret == "" {
+			log.Printf("[InternalAuth] INTERNAL_SECRET not configured, rejecting request")
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Internal API not available"})
+			return
+		}
+
+		provided := c.GetHeader(InternalSecretHeader)
+		if provided == "" || provided != secret {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Invalid internal secret"})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// ExtractToken extracts the access token from the Authorization header or auth_token cookie.
+func ExtractToken(c *gin.Context) string {
 	auth := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
@@ -28,7 +50,7 @@ func extractToken(c *gin.Context) string {
 
 func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := extractToken(c)
+		token := ExtractToken(c)
 		if token == "" {
 			c.Next()
 			return
@@ -54,7 +76,7 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := extractToken(c)
+		token := ExtractToken(c)
 		if token == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 			return
