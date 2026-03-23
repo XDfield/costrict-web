@@ -346,6 +346,7 @@ func TestListRepositoryMembers_WithMembers(t *testing.T) {
 func TestAddRepositoryMember_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-am1", Name: "add-member-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-am1-owner", RepoID: "repo-am1", UserID: "u1", Role: "owner"})
 
 	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am1/members", map[string]interface{}{
 		"userId": "u-new", "username": "newuser", "role": "member",
@@ -366,6 +367,7 @@ func TestAddRepositoryMember_Success(t *testing.T) {
 func TestAddRepositoryMember_DefaultRole(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-am2", Name: "default-role-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-am2-owner", RepoID: "repo-am2", UserID: "u1", Role: "owner"})
 
 	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am2/members", map[string]interface{}{
 		"userId": "u-default",
@@ -382,6 +384,8 @@ func TestAddRepositoryMember_DefaultRole(t *testing.T) {
 
 func TestAddRepositoryMember_MissingUserID(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-am3", Name: "missing-uid-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-am3-owner", RepoID: "repo-am3", UserID: "u1", Role: "owner"})
 
 	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am3/members", map[string]interface{}{
 		"username": "no-user-id",
@@ -394,6 +398,7 @@ func TestAddRepositoryMember_MissingUserID(t *testing.T) {
 func TestAddRepositoryMember_Duplicate(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-am4", Name: "dup-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-am4-owner", RepoID: "repo-am4", UserID: "u1", Role: "owner"})
 	database.DB.Create(&models.RepoMember{ID: "mem-dup1", RepoID: "repo-am4", UserID: "u-dup", Role: "member"})
 
 	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am4/members", map[string]interface{}{
@@ -411,6 +416,7 @@ func TestAddRepositoryMember_Duplicate(t *testing.T) {
 func TestRemoveRepositoryMember_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-rm1", Name: "remove-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-rm1-owner", RepoID: "repo-rm1", UserID: "u1", Role: "owner"})
 	database.DB.Create(&models.RepoMember{ID: "mem-rm1", RepoID: "repo-rm1", UserID: "u-remove", Role: "member"})
 
 	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-rm1/members/u-remove")
@@ -479,7 +485,7 @@ func TestGetMyRepositories_Success(t *testing.T) {
 	database.DB.Create(&models.RepoMember{ID: "mem-my1", RepoID: "repo-my1", UserID: "u-me", Role: "member"})
 	database.DB.Create(&models.RepoMember{ID: "mem-my2", RepoID: "repo-my2", UserID: "u-me", Role: "admin"})
 
-	w := get(newRepoRouter(""), "/api/repositories/my?userId=u-me")
+	w := get(newRepoRouter("u-me"), "/api/repositories/my")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -491,18 +497,18 @@ func TestGetMyRepositories_Success(t *testing.T) {
 	}
 }
 
-func TestGetMyRepositories_MissingUserID(t *testing.T) {
+func TestGetMyRepositories_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
 	w := get(newRepoRouter(""), "/api/repositories/my")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
 
 func TestGetMyRepositories_NoMemberships(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := get(newRepoRouter(""), "/api/repositories/my?userId=u-nobody")
+	w := get(newRepoRouter("u-nobody"), "/api/repositories/my")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
