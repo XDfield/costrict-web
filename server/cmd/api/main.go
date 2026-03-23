@@ -31,7 +31,6 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/gateway"
-	"github.com/redis/go-redis/v9"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -40,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	"gorm.io/gorm"
@@ -134,8 +134,9 @@ func main() {
 	defer sched.Stop()
 	handlers.SyncScheduler = sched
 
-	// Initialize ItemHandler with indexer
-	itemHandler := handlers.NewItemHandler(db, indexerSvc)
+	// Initialize ItemHandler with indexer and parser
+	parserSvc := &services.ParserService{}
+	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc)
 
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
@@ -271,7 +272,7 @@ func main() {
 
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
-
+			
 			authed.GET("/invitations/my", handlers.GetMyInvitations)
 			authed.POST("/invitations/:id/accept", handlers.AcceptInvitation)
 			authed.POST("/invitations/:id/decline", handlers.DeclineInvitation)
@@ -464,6 +465,12 @@ func runPreMigrations(db *gorm.DB) error {
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
 			stmts: []string{
 				`ALTER TABLE security_scans DROP COLUMN IF EXISTS revision_id`,
+			},
+		},
+		{
+			check: `SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug'`,
+			stmts: []string{
+				`DROP INDEX IF EXISTS idx_item_slug`,
 			},
 		},
 	}

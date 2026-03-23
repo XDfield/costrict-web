@@ -1,11 +1,19 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -21,13 +29,21 @@ import (
 type ItemHandler struct {
 	db         *gorm.DB
 	indexerSvc *services.IndexerService
+	parserSvc  *services.ParserService
+	zipSvc     *services.ZipService
 }
 
 // NewItemHandler creates a new item handler
-func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService) *ItemHandler {
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService) *ItemHandler {
+	var zipSvc *services.ZipService
+	if parserSvc != nil {
+		zipSvc = &services.ZipService{Parser: parserSvc}
+	}
 	return &ItemHandler{
 		db:         db,
 		indexerSvc: indexerSvc,
+		parserSvc:  parserSvc,
+		zipSvc:     zipSvc,
 	}
 }
 
@@ -41,6 +57,112 @@ func enqueueScanAsync(itemID string, revision int, triggerType string) {
 			log.Printf("scan enqueue failed for item %s: %v", itemID, err)
 		}
 	}()
+}
+
+// ---------------------------------------------------------------------------
+// Shared item creation kernel
+// ---------------------------------------------------------------------------
+
+// ErrSlugConflict is returned when an item with the same slug already exists.
+var ErrSlugConflict = errors.New("slug conflict")
+
+// createItemRequest contains all fields needed to persist a new item.
+type createItemRequest struct {
+	ID          string
+	RegistryID  string
+	Slug        string
+	ItemType    string
+	Name        string
+	Description string
+	Category    string
+	Version     string
+	Content     string
+	Metadata    datatypes.JSON
+	SourcePath  string
+	SourceSHA   string
+	CreatedBy   string
+}
+
+// createItemAssets holds asset and artifact records to be created alongside the item.
+type createItemAssets struct {
+	Records  []models.CapabilityAsset
+	Artifact *models.CapabilityArtifact
+}
+
+// persistNewItem creates an item, its initial version, optional assets and artifact
+// in a single DB transaction. No storage I/O or async work happens here.
+func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
+	item := models.CapabilityItem{
+		ID:          req.ID,
+		RegistryID:  req.RegistryID,
+		Slug:        req.Slug,
+		ItemType:    req.ItemType,
+		Name:        req.Name,
+		Description: req.Description,
+		Category:    req.Category,
+		Version:     req.Version,
+		Content:     req.Content,
+		Metadata:    req.Metadata,
+		SourcePath:  req.SourcePath,
+		SourceSHA:   req.SourceSHA,
+		Status:      "active",
+		CreatedBy:   req.CreatedBy,
+	}
+
+	if item.Metadata == nil || len(item.Metadata) == 0 {
+		item.Metadata = datatypes.JSON([]byte("{}"))
+	}
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Omit("Embedding").Create(&item).Error; err != nil {
+			return err
+		}
+
+		version := models.CapabilityVersion{
+			ID:        uuid.New().String(),
+			ItemID:    item.ID,
+			Revision:  1,
+			Content:   item.Content,
+			Metadata:  item.Metadata,
+			CommitMsg: "Initial version",
+			CreatedBy: item.CreatedBy,
+		}
+		if err := tx.Create(&version).Error; err != nil {
+			return err
+		}
+
+		for i := range assets.Records {
+			if assets.Records[i].ID == "" {
+				assets.Records[i].ID = uuid.New().String()
+			}
+			assets.Records[i].ItemID = item.ID
+			if err := tx.Create(&assets.Records[i]).Error; err != nil {
+				return err
+			}
+		}
+
+		if assets.Artifact != nil {
+			// Mark existing latest artifacts as non-latest
+			tx.Model(&models.CapabilityArtifact{}).Where("item_id = ? AND is_latest = ?", item.ID, true).Update("is_latest", false)
+			if assets.Artifact.ID == "" {
+				assets.Artifact.ID = uuid.New().String()
+			}
+			assets.Artifact.ItemID = item.ID
+			if err := tx.Create(assets.Artifact).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+			strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+			return nil, ErrSlugConflict
+		}
+		return nil, err
+	}
+	return &item, nil
 }
 
 // ItemWithAuthor represents a capability item with author information
@@ -192,6 +314,7 @@ func ListItems(c *gin.Context) {
 // @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,sourcePath=string,createdBy=string}  true  "Item data"
 // @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /registries/{id}/items [post]
 func CreateItem(c *gin.Context) {
@@ -213,7 +336,13 @@ func CreateItem(c *gin.Context) {
 		return
 	}
 
-	item := models.CapabilityItem{
+	version := req.Version
+	if version == "" {
+		version = "1.0.0"
+	}
+
+	db := database.GetDB()
+	item, err := persistNewItem(db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryId,
 		Slug:        req.Slug,
@@ -221,33 +350,23 @@ func CreateItem(c *gin.Context) {
 		Name:        req.Name,
 		Description: req.Description,
 		Category:    req.Category,
-		Version:     req.Version,
+		Version:     version,
 		Content:     req.Content,
 		Metadata:    datatypes.JSON([]byte("{}")),
 		SourcePath:  req.SourcePath,
 		CreatedBy:   req.CreatedBy,
-	}
-
-	db := database.GetDB()
-	if result := db.Omit("Embedding").Create(&item); result.Error != nil {
+	}, createItemAssets{})
+	if err != nil {
+		if errors.Is(err, ErrSlugConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
 	}
 
-	version := models.CapabilityVersion{
-		ID:        uuid.New().String(),
-		ItemID:    item.ID,
-		Revision:  1,
-		Content:   item.Content,
-		Metadata:  datatypes.JSON([]byte("{}")),
-		CommitMsg: "Initial version",
-		CreatedBy: item.CreatedBy,
-	}
-	db.Create(&version)
-
 	enqueueScanAsync(item.ID, 1, "create")
-
-	c.JSON(http.StatusCreated, item)
+	c.JSON(http.StatusCreated, *item)
 }
 
 // GetItem godoc
@@ -540,16 +659,29 @@ func ListAllItems(c *gin.Context) {
 
 // CreateItemDirect godoc
 // @Summary      Create item (direct)
-// @Description  Create a skill item; auto-selects public registry if registryId is omitted
+// @Description  Create a skill item via JSON or upload a .zip archive via multipart/form-data. Auto-selects public registry if registryId is omitted.
 // @Tags         items
-// @Accept       json
+// @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,createdBy=string}  true  "Item data"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,createdBy=string}  false  "Item data (JSON)"
+// @Param        file        formData  file    false  "Zip archive (multipart)"
+// @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
+// @Param        name        formData  string  false  "Item name (multipart)"
 // @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items [post]
 func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
+	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+		h.createItemFromZip(c)
+	} else {
+		h.createItemFromJSON(c)
+	}
+}
+
+// createItemFromJSON handles the original JSON-body item creation path.
+func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	var req struct {
 		RegistryID  string `json:"registryId"`
 		Slug        string `json:"slug"`
@@ -585,18 +717,12 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 		req.Slug = slugify(req.Name)
 	}
 
-	// Check if slug already exists
-	var existingCount int64
-	if err := h.db.Model(&models.CapabilityItem{}).Where("slug = ?", req.Slug).Count(&existingCount).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing items"})
-		return
-	}
-	if existingCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
-		return
+	version := req.Version
+	if version == "" {
+		version = "1.0.0"
 	}
 
-	item := models.CapabilityItem{
+	item, err := persistNewItem(h.db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
 		Slug:        req.Slug,
@@ -604,19 +730,13 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 		Name:        req.Name,
 		Description: req.Description,
 		Category:    req.Category,
-		Version:     req.Version,
+		Version:     version,
 		Content:     req.Content,
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Status:      "active",
 		CreatedBy:   req.CreatedBy,
-	}
-	if item.Version == "" {
-		item.Version = "1.0.0"
-	}
-
-	if result := h.db.Omit("Embedding").Create(&item); result.Error != nil {
-		// Handle duplicate key error (race condition)
-		if strings.Contains(result.Error.Error(), "duplicate key value violates unique constraint") {
+	}, createItemAssets{})
+	if err != nil {
+		if errors.Is(err, ErrSlugConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
 			return
 		}
@@ -624,32 +744,257 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 		return
 	}
 
-	sv := models.CapabilityVersion{
-		ID:        uuid.New().String(),
-		ItemID:    item.ID,
-		Revision:  1,
-		Content:   item.Content,
-		Metadata:  datatypes.JSON([]byte("{}")),
-		CommitMsg: "Initial version",
-		CreatedBy: item.CreatedBy,
-	}
-	h.db.Create(&sv)
-
 	// Async index the item for semantic search
 	if h.indexerSvc != nil {
 		go func() {
 			ctx := context.Background()
-			if err := h.indexerSvc.IndexItem(ctx, &item); err != nil {
+			if err := h.indexerSvc.IndexItem(ctx, item); err != nil {
 				log.Printf("Failed to index item %s: %v", item.ID, err)
-			} else {
-				log.Printf("Successfully indexed item %s", item.ID)
 			}
 		}()
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
+	c.JSON(http.StatusCreated, *item)
+}
 
-	c.JSON(http.StatusCreated, item)
+// cleanupStorageKeys deletes uploaded objects after a later step fails.
+func cleanupStorageKeys(keys []string) {
+	if StorageBackend == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, key := range keys {
+		_ = StorageBackend.Delete(ctx, key)
+	}
+}
+
+// createItemFromZip handles multipart/form-data zip upload item creation.
+func (h *ItemHandler) createItemFromZip(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxZipUploadSize)
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Zip upload exceeds maximum size"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file"})
+		return
+	}
+	defer file.Close()
+
+	if header.Size <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File is empty"})
+		return
+	}
+
+	itemType := c.PostForm("itemType")
+	name := c.PostForm("name")
+	slug := c.PostForm("slug")
+	registryID := c.PostForm("registryId")
+	description := c.PostForm("description")
+	category := c.PostForm("category")
+	version := c.PostForm("version")
+	createdByForm := c.PostForm("createdBy")
+
+	if itemType == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType and name are required"})
+		return
+	}
+
+	switch itemType {
+	case "skill", "mcp":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType must be either skill or mcp"})
+		return
+	}
+
+	if registryID == "" {
+		registryID = PublicRegistryID
+	}
+
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	createdBy, _ := userIDVal.(string)
+	if createdBy == "" {
+		createdBy = createdByForm
+	}
+	if createdBy == "" {
+		createdBy = "anonymous"
+	}
+
+	if slug == "" {
+		slug = slugify(name)
+	}
+
+	if h.zipSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Zip upload is not configured"})
+		return
+	}
+	if StorageBackend == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage backend is not configured"})
+		return
+	}
+
+	readerAt, ok := file.(io.ReaderAt)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
+		return
+	}
+
+	result, err := h.zipSvc.ParseZip(readerAt, header.Size, itemType)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if result == nil || result.Parsed == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Zip parser returned no item"})
+		return
+	}
+
+	metadataMap := result.Parsed.Metadata
+	if itemType == "mcp" {
+		metadataMap = result.NormalizedMeta
+	}
+	if metadataMap == nil {
+		metadataMap = map[string]any{}
+	}
+	metadataJSON, err := json.Marshal(metadataMap)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode metadata"})
+		return
+	}
+
+	if description == "" {
+		description = result.Parsed.Description
+	}
+	if category == "" {
+		category = result.Parsed.Category
+	}
+	if version == "" {
+		version = result.Parsed.Version
+	}
+	if version == "" {
+		version = "1.0.0"
+	}
+
+	itemID := uuid.New().String()
+	ctx := context.Background()
+	uploadedKeys := make([]string, 0, len(result.Assets)+1)
+	assetStorageKeys := make(map[string]string, len(result.Assets))
+
+	for _, asset := range result.Assets {
+		if !asset.Binary {
+			continue
+		}
+		storageKey := fmt.Sprintf("%s/assets/%s", itemID, asset.Path)
+		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
+			cleanupStorageKeys(uploadedKeys)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store zip assets"})
+			return
+		}
+		uploadedKeys = append(uploadedKeys, storageKey)
+		assetStorageKeys[asset.Path] = storageKey
+	}
+
+	seeker, ok := file.(io.Seeker)
+	if !ok {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
+		return
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rewind uploaded file"})
+		return
+	}
+
+	zipKey := fmt.Sprintf("%s/_package.zip", itemID)
+	hasher := sha256.New()
+	tee := io.TeeReader(file, hasher)
+	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded zip"})
+		return
+	}
+	uploadedKeys = append(uploadedKeys, zipKey)
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	assetRecords := make([]models.CapabilityAsset, 0, len(result.Assets))
+	for _, asset := range result.Assets {
+		if asset.Binary {
+			assetRecords = append(assetRecords, models.CapabilityAsset{
+				RelPath:        asset.Path,
+				StorageBackend: "local",
+				StorageKey:     assetStorageKeys[asset.Path],
+				MimeType:       asset.MimeType,
+				FileSize:       asset.Size,
+				ContentSHA:     asset.ContentSHA,
+			})
+			continue
+		}
+		text := string(asset.Content)
+		assetRecords = append(assetRecords, models.CapabilityAsset{
+			RelPath:     asset.Path,
+			TextContent: &text,
+			MimeType:    asset.MimeType,
+			FileSize:    asset.Size,
+			ContentSHA:  asset.ContentSHA,
+		})
+	}
+
+	item, err := persistNewItem(h.db, createItemRequest{
+		ID:          itemID,
+		RegistryID:  registryID,
+		Slug:        slug,
+		ItemType:    itemType,
+		Name:        name,
+		Description: description,
+		Category:    category,
+		Version:     version,
+		Content:     result.MainContent,
+		Metadata:    datatypes.JSON(metadataJSON),
+		SourcePath:  result.MainPath,
+		SourceSHA:   result.MainSHA,
+		CreatedBy:   createdBy,
+	}, createItemAssets{
+		Records: assetRecords,
+		Artifact: &models.CapabilityArtifact{
+			Filename:        "_package.zip",
+			FileSize:        header.Size,
+			ChecksumSHA256:  checksum,
+			MimeType:        "application/zip",
+			StorageBackend:  "local",
+			StorageKey:      zipKey,
+			ArtifactVersion: version,
+			IsLatest:        true,
+			SourceType:      "upload",
+			UploadedBy:      createdBy,
+			CreatedAt:       time.Now(),
+		},
+	})
+	if err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		if errors.Is(err, ErrSlugConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": slug})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
+		return
+	}
+
+	if h.indexerSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.indexerSvc.IndexItem(ctx, item); err != nil {
+				log.Printf("Failed to index item %s: %v", item.ID, err)
+			}
+		}()
+	}
+
+	enqueueScanAsync(item.ID, 1, "create")
+	c.JSON(http.StatusCreated, *item)
 }
 
 // MoveItem godoc
@@ -740,12 +1085,13 @@ func MoveItem(c *gin.Context) {
 		}
 	}
 
+	// Global slug uniqueness: slug must be unique across all registries
 	var conflictCount int64
 	db.Model(&models.CapabilityItem{}).
-		Where("registry_id = ? AND item_type = ? AND slug = ? AND id != ?", req.TargetRegistryID, item.ItemType, item.Slug, item.ID).
+		Where("slug = ? AND id != ?", item.Slug, item.ID).
 		Count(&conflictCount)
 	if conflictCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "An item with the same slug and type already exists in the target registry", "slug": item.Slug})
+		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": item.Slug})
 		return
 	}
 
@@ -845,12 +1191,13 @@ func TransferItemToRepo(c *gin.Context) {
 		return
 	}
 
+	// Global slug uniqueness: slug must be unique across all registries
 	var conflictCount int64
 	db.Model(&models.CapabilityItem{}).
-		Where("registry_id = ? AND item_type = ? AND slug = ? AND id != ?", targetReg.ID, item.ItemType, item.Slug, item.ID).
+		Where("slug = ? AND id != ?", item.Slug, item.ID).
 		Count(&conflictCount)
 	if conflictCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "An item with the same slug and type already exists in the target registry", "slug": item.Slug})
+		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": item.Slug})
 		return
 	}
 

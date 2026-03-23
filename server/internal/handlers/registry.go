@@ -3,7 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -138,8 +141,24 @@ func RegistryIndex(c *gin.Context) {
 	var capabilityItems []models.CapabilityItem
 	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&capabilityItems)
 
+	itemIDs := make([]string, 0, len(capabilityItems))
+	for _, si := range capabilityItems {
+		itemIDs = append(itemIDs, si.ID)
+	}
+
+	var allAssets []models.CapabilityAsset
+	if len(itemIDs) > 0 {
+		db.Where("item_id IN ?", itemIDs).Find(&allAssets)
+	}
+
+	assetsByItem := make(map[string][]string, len(itemIDs))
+	for _, asset := range allAssets {
+		assetsByItem[asset.ItemID] = append(assetsByItem[asset.ItemID], asset.RelPath)
+	}
+
 	items := make([]indexItem, 0, len(capabilityItems))
 	for _, si := range capabilityItems {
+		assetPaths := assetsByItem[si.ID]
 		entry := indexItem{
 			Slug:        si.Slug,
 			Type:        si.ItemType,
@@ -149,13 +168,16 @@ func RegistryIndex(c *gin.Context) {
 
 		switch si.ItemType {
 		case "skill":
-			entry.Files = []string{"SKILL.md"}
+			entry.Files = append([]string{"SKILL.md"}, assetPaths...)
 		case "subagent":
-			entry.Files = []string{"agent.md"}
+			entry.Files = append([]string{"agent.md"}, assetPaths...)
 		case "command":
-			entry.Files = []string{si.Slug + ".md"}
+			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
 			entry.MCP = buildMCPConfig(si)
+			if len(assetPaths) > 0 {
+				entry.Files = append([]string{".mcp.json"}, assetPaths...)
+			}
 		}
 
 		items = append(items, entry)
@@ -343,9 +365,54 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
-	filename := c.Param("file")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+	requestedFile := strings.TrimPrefix(c.Param("file"), "/")
+	if strings.Contains(requestedFile, "..") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	mainFilename := contentFilename(item.ItemType, item.Slug)
+	if requestedFile == "" || requestedFile == mainFilename {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", mainFilename))
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+		return
+	}
+
+	var asset models.CapabilityAsset
+	if err := db.Where("item_id = ? AND rel_path = ?", item.ID, requestedFile).First(&asset).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", requestedFile))
+	if asset.TextContent != nil {
+		c.Data(http.StatusOK, asset.MimeType, []byte(*asset.TextContent))
+		return
+	}
+	if asset.StorageKey == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+	if StorageBackend == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+
+	reader, size, err := StorageBackend.Get(c.Request.Context(), asset.StorageKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+	defer reader.Close()
+
+	c.Header("Content-Type", asset.MimeType)
+	if size > 0 {
+		c.Header("Content-Length", strconv.FormatInt(size, 10))
+	}
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		_ = c.Error(err)
+	}
 }
 
 func mergeUnique(a, b []string) []string {

@@ -1,12 +1,19 @@
 package handlers
 
 import (
+	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -31,7 +38,7 @@ func newItemRouter(userID string) *gin.Engine {
 	db := database.GetDB()
 	embeddingSvc := services.NewEmbeddingService(&config.EmbeddingConfig{Provider: "mock", Dimensions: 1024})
 	indexerSvc := services.NewIndexerService(db, embeddingSvc)
-	itemHandler := NewItemHandler(db, indexerSvc)
+	itemHandler := NewItemHandler(db, indexerSvc, &services.ParserService{})
 
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
@@ -53,6 +60,122 @@ func postJSON(r *gin.Engine, path string, body interface{}) *httptest.ResponseRe
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	return w
+}
+
+type memoryBackend struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newMemoryBackend() *memoryBackend {
+	return &memoryBackend{data: make(map[string][]byte)}
+}
+
+func (m *memoryBackend) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.data[key] = data
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *memoryBackend) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	m.mu.Lock()
+	data, ok := m.data[key]
+	m.mu.Unlock()
+	if !ok {
+		return nil, 0, fmt.Errorf("not found: %s", key)
+	}
+	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+}
+
+func (m *memoryBackend) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	delete(m.data, key)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *memoryBackend) PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	return "", nil
+}
+
+func (m *memoryBackend) Exists(ctx context.Context, key string) (bool, error) {
+	m.mu.Lock()
+	_, ok := m.data[key]
+	m.mu.Unlock()
+	return ok, nil
+}
+
+func (m *memoryBackend) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.data)
+}
+
+func createTestZip(files map[string][]byte) []byte {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			panic(fmt.Sprintf("create zip entry %s: %v", name, err))
+		}
+		if _, err := w.Write(content); err != nil {
+			panic(fmt.Sprintf("write zip entry %s: %v", name, err))
+		}
+	}
+	if err := zw.Close(); err != nil {
+		panic(fmt.Sprintf("close zip: %v", err))
+	}
+	return buf.Bytes()
+}
+
+func postMultipart(r *gin.Engine, path string, fields map[string]string, zipBytes []byte) *httptest.ResponseRecorder {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			panic(fmt.Sprintf("write multipart field %s: %v", key, err))
+		}
+	}
+	fileWriter, err := writer.CreateFormFile("file", "upload.zip")
+	if err != nil {
+		panic(fmt.Sprintf("create multipart file: %v", err))
+	}
+	if _, err := fileWriter.Write(zipBytes); err != nil {
+		panic(fmt.Sprintf("write multipart file: %v", err))
+	}
+	if err := writer.Close(); err != nil {
+		panic(fmt.Sprintf("close multipart writer: %v", err))
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func createPublicRegistry(t *testing.T) {
+	t.Helper()
+	if err := database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	}).Error; err != nil {
+		t.Fatalf("failed to create public registry: %v", err)
+	}
+}
+
+func setMemoryStorageBackend(t *testing.T) *memoryBackend {
+	t.Helper()
+	oldBackend := StorageBackend
+	backend := newMemoryBackend()
+	StorageBackend = backend
+	t.Cleanup(func() { StorageBackend = oldBackend })
+	return backend
 }
 
 func putJSON(r *gin.Engine, path string, body interface{}) *httptest.ResponseRecorder {
@@ -606,6 +729,263 @@ func TestCreateItemDirect_AnonymousCreatedBy(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&item)
 	if item["createdBy"] != "anonymous" {
 		t.Fatalf("expected createdBy=anonymous, got %v", item["createdBy"])
+	}
+}
+
+func TestCreateItemDirect_ZipSkill_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	backend := setMemoryStorageBackend(t)
+
+	skillContent := "---\nname: My Skill\ndescription: A test skill\nversion: 2.0.0\n---\n# My Skill\nContent here"
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md":         []byte(skillContent),
+		"scripts/setup.sh": []byte("#!/bin/bash\necho hello"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+		"name":     "My Skill",
+	}, zipBytes)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if item["slug"] != "my-skill" {
+		t.Fatalf("expected slug=my-skill, got %v", item["slug"])
+	}
+	if item["content"] != skillContent {
+		t.Fatalf("unexpected content: %v", item["content"])
+	}
+	if item["description"] != "A test skill" {
+		t.Fatalf("unexpected description: %v", item["description"])
+	}
+
+	itemID, _ := item["id"].(string)
+	if itemID == "" {
+		t.Fatal("expected item id in response")
+	}
+
+	var assets []models.CapabilityAsset
+	if err := database.DB.Where("item_id = ?", itemID).Find(&assets).Error; err != nil {
+		t.Fatalf("load assets: %v", err)
+	}
+	if len(assets) != 1 {
+		t.Fatalf("expected 1 asset, got %d", len(assets))
+	}
+	if assets[0].RelPath != "scripts/setup.sh" {
+		t.Fatalf("unexpected asset path: %s", assets[0].RelPath)
+	}
+	if assets[0].TextContent == nil || *assets[0].TextContent != "#!/bin/bash\necho hello" {
+		t.Fatalf("unexpected text asset content: %#v", assets[0].TextContent)
+	}
+
+	var artifact models.CapabilityArtifact
+	if err := database.DB.Where("item_id = ? AND filename = ?", itemID, "_package.zip").First(&artifact).Error; err != nil {
+		t.Fatalf("load artifact: %v", err)
+	}
+	if artifact.StorageKey == "" {
+		t.Fatal("expected artifact storage key")
+	}
+	backend.mu.Lock()
+	_, ok := backend.data[artifact.StorageKey]
+	backend.mu.Unlock()
+	if !ok {
+		t.Fatalf("expected stored artifact for key %s", artifact.StorageKey)
+	}
+}
+
+func TestCreateItemDirect_ZipSkill_MainFileOnly(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md": []byte("# Skill\n"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+		"name":     "Main File Only",
+	}, zipBytes)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	itemID, _ := item["id"].(string)
+	if itemID == "" {
+		t.Fatal("expected item id in response")
+	}
+
+	var assetCount int64
+	if err := database.DB.Model(&models.CapabilityAsset{}).Where("item_id = ?", itemID).Count(&assetCount).Error; err != nil {
+		t.Fatalf("count assets: %v", err)
+	}
+	if assetCount != 0 {
+		t.Fatalf("expected 0 assets, got %d", assetCount)
+	}
+
+	var artifactCount int64
+	if err := database.DB.Model(&models.CapabilityArtifact{}).Where("item_id = ? AND filename = ?", itemID, "_package.zip").Count(&artifactCount).Error; err != nil {
+		t.Fatalf("count artifacts: %v", err)
+	}
+	if artifactCount != 1 {
+		t.Fatalf("expected 1 artifact, got %d", artifactCount)
+	}
+}
+
+func TestCreateItemDirect_ZipMCP_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		".mcp.json": []byte(`{"mcpServers":{"test":{"command":"npx","args":["-y","@test/mcp"]}}}`),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "mcp",
+		"name":     "Test MCP",
+	}, zipBytes)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	metadata, ok := item["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata object, got %#v", item["metadata"])
+	}
+	if metadata["hosting_type"] != "command" {
+		t.Fatalf("expected hosting_type=command, got %#v", metadata["hosting_type"])
+	}
+}
+
+func TestCreateItemDirect_ZipMCP_MultiServer(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		".mcp.json": []byte(`{"mcpServers":{"one":{"command":"one"},"two":{"command":"two"}}}`),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "mcp",
+		"name":     "Multi MCP",
+	}, zipBytes)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateItemDirect_Zip_MissingMainFile(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		"README.md": []byte("# missing main\n"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+		"name":     "Missing Main",
+	}, zipBytes)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "SKILL.md") {
+		t.Fatalf("expected error to mention SKILL.md, got %s", w.Body.String())
+	}
+}
+
+func TestCreateItemDirect_Zip_UnsupportedItemType(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md": []byte("# Skill\n"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "hook",
+		"name":     "Unsupported",
+	}, zipBytes)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateItemDirect_Zip_MissingRequiredFields(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md": []byte("# Skill\n"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+	}, zipBytes)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateItemDirect_Zip_SlugConflict(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	backend := setMemoryStorageBackend(t)
+
+	if err := database.DB.Create(&models.CapabilityItem{
+		ID: "existing-item", RegistryID: PublicRegistryID, Slug: "my-skill", ItemType: "skill", Name: "Existing Skill", Version: "1.0.0", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	}).Error; err != nil {
+		t.Fatalf("create existing item: %v", err)
+	}
+
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md": []byte("# Skill\n"),
+	})
+
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+		"name":     "My Skill",
+	}, zipBytes)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Storage must be fully cleaned up — no orphaned zip or asset files.
+	if n := backend.Len(); n != 0 {
+		t.Errorf("expected 0 storage keys after slug conflict, got %d", n)
+	}
+}
+
+func TestCreateItemDirect_JSON_StillWorks(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+
+	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
+		"itemType": "skill",
+		"name":     "json-test",
+		"content":  "# JSON Test",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -196,9 +196,9 @@ type SyncLog struct {
 
 type CapabilityItem struct {
 	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID     string         `gorm:"not null;index:idx_item_registry_created;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"registryId"`
-	Slug           string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"slug"`
-	ItemType       string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"itemType"`
+	RegistryID     string         `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
+	Slug           string         `gorm:"not null;uniqueIndex:idx_item_slug_global" json:"slug"`
+	ItemType       string         `gorm:"not null;index" json:"itemType"`
 	Name           string         `gorm:"not null" json:"name"`
 	Description    string         `json:"description"`
 	Category       string         `json:"category"`

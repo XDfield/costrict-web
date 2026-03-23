@@ -454,7 +454,7 @@ func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]stri
 				ItemID:      itemID,
 				RelPath:     assetRelPath,
 				TextContent: &text,
-				MimeType:    inferMimeType(f),
+				MimeType:    InferMimeType(f),
 				FileSize:    int64(len(content)),
 				ContentSHA:  contentSHA,
 			}
@@ -463,7 +463,7 @@ func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]stri
 	}
 }
 
-func inferMimeType(filePath string) string {
+func InferMimeType(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	switch ext {
 	case ".md":

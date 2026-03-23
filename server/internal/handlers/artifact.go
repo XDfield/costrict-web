@@ -209,3 +209,104 @@ func DeleteArtifact(c *gin.Context) {
 }
 
 
+// UploadItemArtifact godoc
+// @Summary      Upload artifact for item
+// @Description  Upload a file artifact directly to a skill item (RESTful path-based endpoint).
+//               Accepts the file in the "archive" or "file" multipart field.
+// @Tags         artifacts
+// @Accept       multipart/form-data
+// @Produce      json
+// @Param        id          path      string  true   "Item ID"
+// @Param        archive     formData  file    false  "Archive file (preferred field name)"
+// @Param        file        formData  file    false  "File (fallback field name)"
+// @Param        version     formData  string  false  "Artifact version"
+// @Success      201  {object}  models.CapabilityArtifact
+// @Failure      400  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/artifacts [post]
+func UploadItemArtifact(c *gin.Context) {
+	// Try "archive" first (device client field name), fall back to "file" (legacy).
+	file, header, err := c.Request.FormFile("archive")
+	if err != nil {
+		file, header, err = c.Request.FormFile("file")
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file: expected 'archive' or 'file' field"})
+		return
+	}
+	defer file.Close()
+
+	itemID := c.Param("id")
+	version := c.PostForm("version")
+	if version == "" {
+		version = "0"
+	}
+
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	uploadedBy, _ := userIDVal.(string)
+	if uploadedBy == "" {
+		uploadedBy = c.PostForm("uploaded_by")
+	}
+
+	db := database.GetDB()
+	var item models.CapabilityItem
+	if result := db.Preload("Registry").First(&item, "id = ?", itemID); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	repoID := ""
+	if item.Registry != nil {
+		repoID = item.Registry.RepoID
+	}
+
+	filename := filepath.Base(header.Filename)
+	var storageKey string
+	if repoID != "" {
+		storageKey = fmt.Sprintf("%s/%s/v%s/%s", repoID, itemID, version, filename)
+	} else {
+		storageKey = fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
+	}
+	fileSize := header.Size
+
+	hasher := sha256.New()
+	tee := io.TeeReader(file, hasher)
+
+	ctx := context.Background()
+	if err := StorageBackend.Put(ctx, storageKey, tee, fileSize); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store file"})
+		return
+	}
+
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	var artifact models.CapabilityArtifact
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.CapabilityArtifact{}).Where("item_id = ?", itemID).Update("is_latest", false).Error; err != nil {
+			return err
+		}
+		artifact = models.CapabilityArtifact{
+			ID:              uuid.New().String(),
+			ItemID:          itemID,
+			Filename:        filename,
+			FileSize:        fileSize,
+			ChecksumSHA256:  checksum,
+			MimeType:        header.Header.Get("Content-Type"),
+			StorageBackend:  "local",
+			StorageKey:      storageKey,
+			ArtifactVersion: version,
+			IsLatest:        true,
+			UploadedBy:      uploadedBy,
+			CreatedAt:       time.Now(),
+		}
+		return tx.Create(&artifact).Error
+	})
+	if err != nil {
+		StorageBackend.Delete(context.Background(), storageKey)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create artifact record"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, artifact)
+}
