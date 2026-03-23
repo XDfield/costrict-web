@@ -69,7 +69,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 		manager.Register(deviceID, session)
 
 		go func() {
-			if err := NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID); err != nil {
+			if err := NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
 				log.Printf("[Gateway] notify online failed for device %s: %v", deviceID, err)
 			}
 		}()
@@ -78,7 +78,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 
 		manager.Close(deviceID)
 		go func() {
-			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID); err != nil {
+			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
 				log.Printf("[Gateway] notify offline failed for device %s: %v", deviceID, err)
 			}
 		}()

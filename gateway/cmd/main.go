@@ -42,8 +42,8 @@ func main() {
 
 	log.Printf("[Gateway] shutting down gracefully...")
 	close(stopHeartbeat)
-	manager.NotifyAllOffline(cfg.ServerURL, cfg.GatewayID)
-	if err := gw.Deregister(cfg.ServerURL, cfg.GatewayID); err != nil {
+	manager.NotifyAllOffline(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret)
+	if err := gw.Deregister(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret); err != nil {
 		log.Printf("[Gateway] deregister failed: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func main() {
 
 func registerWithRetry(cfg *gw.Config) {
 	for {
-		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.Capacity); err != nil {
+		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); err != nil {
 			log.Printf("[Gateway] register failed, retrying in 5s: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -75,21 +75,21 @@ func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, stop <-chan struct
 			return
 		case <-ticker.C:
 		}
-		epoch, err := gw.Heartbeat(cfg.ServerURL, cfg.GatewayID, manager.Count())
+		epoch, err := gw.Heartbeat(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret, manager.Count())
 		if err != nil {
 			log.Printf("[Gateway] heartbeat failed: %v, re-registering...", err)
-			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.Capacity); regErr != nil {
+			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); regErr != nil {
 				log.Printf("[Gateway] re-register failed: %v", regErr)
 				continue
 			}
 			log.Printf("[Gateway] re-registered successfully")
-			manager.NotifyAllOnline(cfg.ServerURL, cfg.GatewayID)
+			manager.NotifyAllOnline(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret)
 			lastEpoch = 0
 			continue
 		}
 		if lastEpoch != 0 && epoch != lastEpoch {
 			log.Printf("[Gateway] server epoch changed (%d -> %d), re-notifying devices", lastEpoch, epoch)
-			manager.NotifyAllOnline(cfg.ServerURL, cfg.GatewayID)
+			manager.NotifyAllOnline(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret)
 		}
 		lastEpoch = epoch
 	}

@@ -9,7 +9,34 @@ import (
 	"net/http"
 )
 
-func Register(serverURL, gatewayID, endpoint, internalURL, region string, capacity int) error {
+const internalSecretHeader = "X-Internal-Secret"
+
+// internalPost sends a POST request to a server internal endpoint with the shared secret.
+func internalPost(url, secret string, data []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		req.Header.Set(internalSecretHeader, secret)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// internalRequest sends an arbitrary HTTP request to a server internal endpoint with the shared secret.
+func internalRequest(method, url, secret string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if secret != "" {
+		req.Header.Set(internalSecretHeader, secret)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func Register(serverURL, gatewayID, endpoint, internalURL, region, secret string, capacity int) error {
 	body := map[string]any{
 		"gatewayID":   gatewayID,
 		"endpoint":    endpoint,
@@ -18,7 +45,7 @@ func Register(serverURL, gatewayID, endpoint, internalURL, region string, capaci
 		"capacity":    capacity,
 	}
 	data, _ := json.Marshal(body)
-	resp, err := http.Post(serverURL+"/internal/gateway/register", "application/json", bytes.NewReader(data))
+	resp, err := internalPost(serverURL+"/internal/gateway/register", secret, data)
 	if err != nil {
 		return fmt.Errorf("register failed: %w", err)
 	}
@@ -29,11 +56,11 @@ func Register(serverURL, gatewayID, endpoint, internalURL, region string, capaci
 	return nil
 }
 
-func Heartbeat(serverURL, gatewayID string, currentConns int) (int64, error) {
+func Heartbeat(serverURL, gatewayID, secret string, currentConns int) (int64, error) {
 	body := map[string]any{"currentConns": currentConns}
 	data, _ := json.Marshal(body)
 	url := fmt.Sprintf("%s/internal/gateway/%s/heartbeat", serverURL, gatewayID)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := internalPost(url, secret, data)
 	if err != nil {
 		return 0, err
 	}
@@ -50,7 +77,7 @@ func Heartbeat(serverURL, gatewayID string, currentConns int) (int64, error) {
 	return result.ServerEpoch, nil
 }
 
-func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID string) {
+func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID, secret string) {
 	m.mu.RLock()
 	deviceIDs := make([]string, 0, len(m.sessions))
 	for id := range m.sessions {
@@ -59,16 +86,16 @@ func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID string) {
 	m.mu.RUnlock()
 
 	for _, deviceID := range deviceIDs {
-		if err := NotifyOnline(serverURL, gatewayID, deviceID); err != nil {
+		if err := NotifyOnline(serverURL, gatewayID, deviceID, secret); err != nil {
 			log.Printf("[Gateway] re-notify online failed for device %s: %v", deviceID, err)
 		}
 	}
 }
 
-func NotifyOnline(serverURL, gatewayID, deviceID string) error {
+func NotifyOnline(serverURL, gatewayID, deviceID, secret string) error {
 	body := map[string]any{"deviceID": deviceID, "gatewayID": gatewayID}
 	data, _ := json.Marshal(body)
-	resp, err := http.Post(serverURL+"/internal/gateway/device/online", "application/json", bytes.NewReader(data))
+	resp, err := internalPost(serverURL+"/internal/gateway/device/online", secret, data)
 	if err != nil {
 		return fmt.Errorf("notify online failed: %w", err)
 	}
@@ -79,10 +106,10 @@ func NotifyOnline(serverURL, gatewayID, deviceID string) error {
 	return nil
 }
 
-func NotifyOffline(serverURL, gatewayID, deviceID string) error {
+func NotifyOffline(serverURL, gatewayID, deviceID, secret string) error {
 	body := map[string]any{"deviceID": deviceID, "gatewayID": gatewayID}
 	data, _ := json.Marshal(body)
-	resp, err := http.Post(serverURL+"/internal/gateway/device/offline", "application/json", bytes.NewReader(data))
+	resp, err := internalPost(serverURL+"/internal/gateway/device/offline", secret, data)
 	if err != nil {
 		return fmt.Errorf("notify offline failed: %w", err)
 	}
@@ -90,7 +117,7 @@ func NotifyOffline(serverURL, gatewayID, deviceID string) error {
 	return nil
 }
 
-func (m *TunnelManager) NotifyAllOffline(serverURL, gatewayID string) {
+func (m *TunnelManager) NotifyAllOffline(serverURL, gatewayID, secret string) {
 	m.mu.RLock()
 	deviceIDs := make([]string, 0, len(m.sessions))
 	for id := range m.sessions {
@@ -99,19 +126,15 @@ func (m *TunnelManager) NotifyAllOffline(serverURL, gatewayID string) {
 	m.mu.RUnlock()
 
 	for _, deviceID := range deviceIDs {
-		if err := NotifyOffline(serverURL, gatewayID, deviceID); err != nil {
+		if err := NotifyOffline(serverURL, gatewayID, deviceID, secret); err != nil {
 			log.Printf("[Gateway] notify offline failed for device %s: %v", deviceID, err)
 		}
 	}
 }
 
-func Deregister(serverURL, gatewayID string) error {
+func Deregister(serverURL, gatewayID, secret string) error {
 	url := fmt.Sprintf("%s/internal/gateway/%s", serverURL, gatewayID)
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := internalRequest(http.MethodDelete, url, secret)
 	if err != nil {
 		return fmt.Errorf("deregister failed: %w", err)
 	}
