@@ -76,7 +76,7 @@ type Device struct {
 	Status          string         `gorm:"not null;default:'offline'"                     json:"status"`
 	Label           string         `                                                      json:"label"`
 	Description     string         `gorm:"type:text"                                      json:"description"`
-	Token           string         `gorm:"not null"                                       json:"-"`
+	Token           string         `gorm:"uniqueIndex;not null"                           json:"-"`
 	TokenRotatedAt  *time.Time     `                                                      json:"tokenRotatedAt,omitempty"`
 	LastConnectedAt *time.Time     `                                                      json:"lastConnectedAt,omitempty"`
 	LastSeenAt      *time.Time     `                                                      json:"lastSeenAt,omitempty"`
