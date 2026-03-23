@@ -1,10 +1,31 @@
 package internal
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
+
+// InternalSecretAuth validates requests from the API server using a shared secret.
+// If secret is empty, all requests are rejected to prevent misconfiguration.
+func InternalSecretAuth(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if secret == "" {
+			log.Printf("[Gateway] INTERNAL_SECRET not configured, rejecting proxy request")
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "internal API not available"})
+			return
+		}
+
+		provided := c.GetHeader(internalSecretHeader)
+		if provided == "" || provided != secret {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid internal secret"})
+			return
+		}
+
+		c.Next()
+	}
+}
 
 func SetupRouter(manager *TunnelManager, cfg *Config) *gin.Engine {
 	r := gin.Default()
@@ -14,8 +35,11 @@ func SetupRouter(manager *TunnelManager, cfg *Config) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// Device tunnel: authenticated by device token
 	r.GET("/device/:deviceID/tunnel", DeviceTunnelHandler(manager, cfg))
-	r.Any("/device/:deviceID/proxy/*path", DeviceProxyHandler(manager))
+
+	// Device proxy: only callable by API server via internal secret
+	r.Any("/device/:deviceID/proxy/*path", InternalSecretAuth(cfg.InternalSecret), DeviceProxyHandler(manager))
 
 	return r
 }
