@@ -760,12 +760,12 @@ func MoveItem(c *gin.Context) {
 
 // TransferItemToRepo godoc
 // @Summary      Transfer item to another repository
-// @Description  Transfer a capability item to a different repository. The system will automatically find the target repository's internal registry. Target repository must be a non-sync type. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo.
+// @Description  Transfer a capability item to a different repository. The system will automatically find the target repository's internal registry. Target repository must be a non-sync type. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo. When targetRepoId is "public", the item will be transferred to the default public registry; any authenticated user who is the item creator or source repo admin can perform this operation.
 // @Tags         items
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Item ID"
-// @Param        body  body      object{targetRepoId=string}  true  "Target repository ID"
+// @Param        body  body      object{targetRepoId=string}  true  "Target repository ID (use \"public\" for the default public registry)"
 // @Success      200   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      403   {object}  object{error=string}
@@ -809,6 +809,43 @@ func TransferItemToRepo(c *gin.Context) {
 	isSourceRepoAdmin := sourceReg.RepoID != "" && isRepoAdmin(getCallerRepoRole(c, sourceReg.RepoID))
 	if !isCreator && !isSourceRepoAdmin {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or source repo admin can transfer this item"})
+		return
+	}
+
+	// Special handling: transfer to the default public registry
+	if req.TargetRepoID == "public" {
+		if sourceReg.RepoID == "public" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Item already belongs to the public registry"})
+			return
+		}
+
+		var publicReg models.CapabilityRegistry
+		if db.First(&publicReg, "id = ?", PublicRegistryID).Error != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Public registry not found"})
+			return
+		}
+
+		if publicReg.ID == item.RegistryID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Item already belongs to the public registry"})
+			return
+		}
+
+		var conflictCount int64
+		db.Model(&models.CapabilityItem{}).
+			Where("registry_id = ? AND item_type = ? AND slug = ? AND id != ?", publicReg.ID, item.ItemType, item.Slug, item.ID).
+			Count(&conflictCount)
+		if conflictCount > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "An item with the same slug and type already exists in the public registry", "slug": item.Slug})
+			return
+		}
+
+		if err := db.Model(&item).Update("registry_id", publicReg.ID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer item"})
+			return
+		}
+
+		item.RegistryID = publicReg.ID
+		c.JSON(http.StatusOK, item)
 		return
 	}
 
