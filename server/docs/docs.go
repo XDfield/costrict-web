@@ -356,7 +356,7 @@ const docTemplate = `{
         },
         "/auth/logout": {
             "post": {
-                "description": "Invalidate current session",
+                "description": "Invalidate current session, revoke token at Casdoor, and clear auth cookie",
                 "produces": [
                     "application/json"
                 ],
@@ -371,6 +371,28 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
                                     "type": "string"
                                 }
                             }
@@ -674,7 +696,13 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "description": {
+                                    "type": "string"
+                                },
                                 "displayName": {
+                                    "type": "string"
+                                },
+                                "label": {
                                     "type": "string"
                                 },
                                 "workspaceId": {
@@ -1089,14 +1117,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Page size (default: 24, max: 100)",
-                        "name": "limit",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
                         "in": "query"
                     },
                     {
                         "type": "integer",
-                        "description": "Page offset (default: 0)",
-                        "name": "offset",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "pageSize",
                         "in": "query"
                     }
                 ],
@@ -1114,6 +1142,12 @@ const docTemplate = `{
                                     "items": {
                                         "$ref": "#/definitions/handlers.ItemWithAuthor"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
                                 },
                                 "total": {
                                     "type": "integer"
@@ -1220,7 +1254,7 @@ const docTemplate = `{
         },
         "/items/my": {
             "get": {
-                "description": "Get all skill items owned by a user",
+                "description": "Get all skill items owned by the current authenticated user",
                 "produces": [
                     "application/json"
                 ],
@@ -1231,15 +1265,20 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Owner user ID",
-                        "name": "ownerId",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
                         "description": "Filter by item type",
                         "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "pageSize",
                         "in": "query"
                     }
                 ],
@@ -1249,17 +1288,29 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityItem"
+                                        "$ref": "#/definitions/handlers.MyItem"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
                     },
-                    "400": {
-                        "description": "Bad Request",
+                    "401": {
+                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1970,8 +2021,8 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Page size (default: 10)",
-                        "name": "size",
+                        "description": "Page size (default: 10, max: 50)",
+                        "name": "pageSize",
                         "in": "query"
                     }
                 ],
@@ -1981,6 +2032,15 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
                                 "results": {
                                     "type": "array",
                                     "items": {
@@ -2078,8 +2138,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "Number of results (default: 10)",
-                        "name": "limit",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 10)",
+                        "name": "pageSize",
                         "in": "query"
                     }
                 ],
@@ -2089,11 +2155,23 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
                                 "items": {
                                     "type": "array",
                                     "items": {
                                         "$ref": "#/definitions/services.SearchResultItem"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
@@ -2398,10 +2476,10 @@ const docTemplate = `{
                                         "type": "string"
                                     }
                                 },
-                                "limit": {
+                                "page": {
                                     "type": "integer"
                                 },
-                                "offset": {
+                                "pageSize": {
                                     "type": "integer"
                                 },
                                 "query": {
@@ -2468,8 +2546,14 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Number of results (default: 10)",
-                        "name": "limit",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 10, max: 100)",
+                        "name": "pageSize",
                         "in": "query"
                     }
                 ],
@@ -2479,11 +2563,23 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
                                 "items": {
                                     "type": "array",
                                     "items": {
                                         "$ref": "#/definitions/models.CapabilityItem"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
@@ -2533,7 +2629,10 @@ const docTemplate = `{
                                 "context": {
                                     "type": "string"
                                 },
-                                "limit": {
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
                                     "type": "integer"
                                 },
                                 "sessionItems": {
@@ -2612,13 +2711,13 @@ const docTemplate = `{
                                         "type": "string"
                                     }
                                 },
-                                "limit": {
-                                    "type": "integer"
-                                },
                                 "minScore": {
                                     "type": "number"
                                 },
-                                "offset": {
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
                                     "type": "integer"
                                 },
                                 "query": {
@@ -2685,8 +2784,14 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Number of results (default: 10)",
-                        "name": "limit",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 10, max: 100)",
+                        "name": "pageSize",
                         "in": "query"
                     },
                     {
@@ -2706,11 +2811,23 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
                                 "items": {
                                     "type": "array",
                                     "items": {
                                         "$ref": "#/definitions/models.CapabilityItem"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
@@ -3215,6 +3332,18 @@ const docTemplate = `{
                         "description": "Search by name or description",
                         "name": "search",
                         "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "pageSize",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -3223,11 +3352,23 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "hasMore": {
+                                    "type": "boolean"
+                                },
                                 "items": {
                                     "type": "array",
                                     "items": {
                                         "$ref": "#/definitions/handlers.ItemWithAuthor"
                                     }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
                                 }
                             }
                         }
@@ -3903,7 +4044,7 @@ const docTemplate = `{
         },
         "/repositories/my": {
             "get": {
-                "description": "Get all repositories the user belongs to",
+                "description": "Get all repositories the current authenticated user belongs to",
                 "produces": [
                     "application/json"
                 ],
@@ -3911,15 +4052,6 @@ const docTemplate = `{
                     "repositories"
                 ],
                 "summary": "Get my repositories",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "User ID",
-                        "name": "userId",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -3935,8 +4067,8 @@ const docTemplate = `{
                             }
                         }
                     },
-                    "400": {
-                        "description": "Bad Request",
+                    "401": {
+                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -6457,6 +6589,9 @@ const docTemplate = `{
                 "email": {
                     "type": "string"
                 },
+                "id": {
+                    "type": "string"
+                },
                 "name": {
                     "type": "string"
                 },
@@ -6600,6 +6735,104 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "updatedByName": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "handlers.MyItem": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoName": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
                     "type": "string"
                 },
                 "version": {
@@ -7473,18 +7706,29 @@ const docTemplate = `{
                 "generatedAt": {
                     "type": "string"
                 },
+                "hasMore": {
+                    "type": "boolean"
+                },
                 "items": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/services.RecommendedItem"
                     }
                 },
+                "page": {
+                    "type": "integer"
+                },
+                "pageSize": {
+                    "type": "integer"
+                },
                 "strategies": {
-                    "description": "Which strategies contributed",
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
+                },
+                "total": {
+                    "type": "integer"
                 }
             }
         },

@@ -4,6 +4,8 @@ definitions:
     properties:
       email:
         type: string
+      id:
+        type: string
       name:
         type: string
       owner:
@@ -99,6 +101,71 @@ definitions:
       updatedBy:
         type: string
       updatedByName:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+    type: object
+  handlers.MyItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      repoName:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
         type: string
       version:
         type: string
@@ -688,15 +755,22 @@ definitions:
     properties:
       generatedAt:
         type: string
+      hasMore:
+        type: boolean
       items:
         items:
           $ref: '#/definitions/services.RecommendedItem'
         type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
       strategies:
-        description: Which strategies contributed
         items:
           type: string
         type: array
+      total:
+        type: integer
     type: object
   services.RecommendedItem:
     properties:
@@ -1151,7 +1225,8 @@ paths:
       - auth
   /auth/logout:
     post:
-      description: Invalidate current session
+      description: Invalidate current session, revoke token at Casdoor, and clear
+        auth cookie
       produces:
       - application/json
       responses:
@@ -1160,6 +1235,20 @@ paths:
           schema:
             properties:
               message:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
                 type: string
             type: object
       summary: Logout
@@ -1387,7 +1476,11 @@ paths:
         required: true
         schema:
           properties:
+            description:
+              type: string
             displayName:
+              type: string
+            label:
               type: string
             workspaceId:
               type: string
@@ -1618,13 +1711,13 @@ paths:
         in: query
         name: registryId
         type: string
-      - description: 'Page size (default: 24, max: 100)'
+      - description: 'Page number (default: 1)'
         in: query
-        name: limit
+        name: page
         type: integer
-      - description: 'Page offset (default: 0)'
+      - description: 'Page size (default: 20, max: 100)'
         in: query
-        name: offset
+        name: pageSize
         type: integer
       produces:
       - application/json
@@ -1639,6 +1732,10 @@ paths:
                 items:
                   $ref: '#/definitions/handlers.ItemWithAuthor'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
               total:
                 type: integer
             type: object
@@ -2158,9 +2255,9 @@ paths:
         in: query
         name: page
         type: integer
-      - description: 'Page size (default: 10)'
+      - description: 'Page size (default: 10, max: 50)'
         in: query
-        name: size
+        name: pageSize
         type: integer
       produces:
       - application/json
@@ -2169,6 +2266,12 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
+              page:
+                type: integer
+              pageSize:
+                type: integer
               results:
                 items:
                   $ref: '#/definitions/models.SecurityScan'
@@ -2229,9 +2332,13 @@ paths:
         name: id
         required: true
         type: string
-      - description: 'Number of results (default: 10)'
+      - description: 'Page number (default: 1)'
         in: query
-        name: limit
+        name: page
+        type: integer
+      - description: 'Page size (default: 10)'
+        in: query
+        name: pageSize
         type: integer
       produces:
       - application/json
@@ -2240,10 +2347,18 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
               items:
                 items:
                   $ref: '#/definitions/services.SearchResultItem'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
             type: object
         "404":
           description: Not Found
@@ -2427,17 +2542,20 @@ paths:
       - items
   /items/my:
     get:
-      description: Get all skill items owned by a user
+      description: Get all skill items owned by the current authenticated user
       parameters:
-      - description: Owner user ID
-        in: query
-        name: ownerId
-        required: true
-        type: string
       - description: Filter by item type
         in: query
         name: type
         type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
+        type: integer
+      - description: 'Page size (default: 20, max: 100)'
+        in: query
+        name: pageSize
+        type: integer
       produces:
       - application/json
       responses:
@@ -2445,13 +2563,21 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/handlers.MyItem'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
             type: object
-        "400":
-          description: Bad Request
+        "401":
+          description: Unauthorized
           schema:
             properties:
               error:
@@ -2476,9 +2602,9 @@ paths:
               items:
                 type: string
               type: array
-            limit:
+            page:
               type: integer
-            offset:
+            pageSize:
               type: integer
             query:
               type: string
@@ -2519,9 +2645,13 @@ paths:
     get:
       description: Get recently added high-quality items
       parameters:
-      - description: 'Number of results (default: 10)'
+      - description: 'Page number (default: 1)'
         in: query
-        name: limit
+        name: page
+        type: integer
+      - description: 'Page size (default: 10, max: 100)'
+        in: query
+        name: pageSize
         type: integer
       produces:
       - application/json
@@ -2530,10 +2660,18 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
               items:
                 items:
                   $ref: '#/definitions/models.CapabilityItem'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
             type: object
         "500":
           description: Internal Server Error
@@ -2563,7 +2701,9 @@ paths:
               type: array
             context:
               type: string
-            limit:
+            page:
+              type: integer
+            pageSize:
               type: integer
             sessionItems:
               items:
@@ -2614,11 +2754,11 @@ paths:
               items:
                 type: string
               type: array
-            limit:
-              type: integer
             minScore:
               type: number
-            offset:
+            page:
+              type: integer
+            pageSize:
               type: integer
             query:
               type: string
@@ -2659,9 +2799,13 @@ paths:
     get:
       description: Get trending items based on recent activity
       parameters:
-      - description: 'Number of results (default: 10)'
+      - description: 'Page number (default: 1)'
         in: query
-        name: limit
+        name: page
+        type: integer
+      - description: 'Page size (default: 10, max: 100)'
+        in: query
+        name: pageSize
         type: integer
       - collectionFormat: csv
         description: Filter by item types
@@ -2677,10 +2821,18 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
               items:
                 items:
                   $ref: '#/definitions/models.CapabilityItem'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
             type: object
         "500":
           description: Internal Server Error
@@ -2909,6 +3061,14 @@ paths:
         in: query
         name: search
         type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
+        type: integer
+      - description: 'Page size (default: 20, max: 100)'
+        in: query
+        name: pageSize
+        type: integer
       produces:
       - application/json
       responses:
@@ -2916,10 +3076,18 @@ paths:
           description: OK
           schema:
             properties:
+              hasMore:
+                type: boolean
               items:
                 items:
                   $ref: '#/definitions/handlers.ItemWithAuthor'
                 type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
             type: object
         "500":
           description: Internal Server Error
@@ -4257,13 +4425,7 @@ paths:
       - sync
   /repositories/my:
     get:
-      description: Get all repositories the user belongs to
-      parameters:
-      - description: User ID
-        in: query
-        name: userId
-        required: true
-        type: string
+      description: Get all repositories the current authenticated user belongs to
       produces:
       - application/json
       responses:
@@ -4276,8 +4438,8 @@ paths:
                   $ref: '#/definitions/models.Repository'
                 type: array
             type: object
-        "400":
-          description: Bad Request
+        "401":
+          description: Unauthorized
           schema:
             properties:
               error:
