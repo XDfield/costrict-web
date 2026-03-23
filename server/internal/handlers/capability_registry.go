@@ -9,6 +9,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // ListRegistries godoc
@@ -414,10 +415,6 @@ func ListMyItems(c *gin.Context) {
 
 	var registries []models.CapabilityRegistry
 	db.Where("owner_id = ?", ownerID).Find(&registries)
-	if len(registries) == 0 {
-		c.JSON(http.StatusOK, gin.H{"items": []MyItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
-		return
-	}
 
 	// Build registry ID list and registry lookup map
 	registryIDs := make([]string, len(registries))
@@ -427,7 +424,13 @@ func ListMyItems(c *gin.Context) {
 		registryMap[reg.ID] = reg
 	}
 
-	query := db.Where("registry_id IN ?", registryIDs)
+	// Include items in owned registries OR items the user created (e.g. in the public registry).
+	var query *gorm.DB
+	if len(registryIDs) > 0 {
+		query = db.Where("registry_id IN ? OR created_by = ?", registryIDs, ownerID)
+	} else {
+		query = db.Where("created_by = ?", ownerID)
+	}
 	if itemType := c.Query("type"); itemType != "" {
 		query = query.Where("item_type = ?", itemType)
 	}

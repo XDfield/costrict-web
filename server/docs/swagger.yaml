@@ -86,6 +86,8 @@ definitions:
         $ref: '#/definitions/models.CapabilityRegistry'
       registryId:
         type: string
+      repoId:
+        type: string
       securityStatus:
         type: string
       slug:
@@ -93,6 +95,9 @@ definitions:
       sourcePath:
         type: string
       sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
         type: string
       status:
         type: string
@@ -354,6 +359,8 @@ definitions:
         $ref: '#/definitions/models.CapabilityRegistry'
       registryId:
         type: string
+      repoId:
+        type: string
       securityStatus:
         type: string
       slug:
@@ -361,6 +368,9 @@ definitions:
       sourcePath:
         type: string
       sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
         type: string
       status:
         type: string
@@ -814,6 +824,8 @@ definitions:
         $ref: '#/definitions/models.CapabilityRegistry'
       registryId:
         type: string
+      repoId:
+        type: string
       score:
         type: number
       securityStatus:
@@ -823,6 +835,9 @@ definitions:
       sourcePath:
         type: string
       sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
         type: string
       status:
         type: string
@@ -901,6 +916,8 @@ definitions:
         $ref: '#/definitions/models.CapabilityRegistry'
       registryId:
         type: string
+      repoId:
+        type: string
       score:
         type: number
       securityStatus:
@@ -910,6 +927,9 @@ definitions:
       sourcePath:
         type: string
       sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
         type: string
       status:
         type: string
@@ -1752,13 +1772,13 @@ paths:
     post:
       consumes:
       - application/json
-      description: Create a skill item; auto-selects public registry if registryId
-        is omitted
+      - multipart/form-data
+      description: Create a skill item via JSON or upload a .zip archive via multipart/form-data.
+        Auto-selects public registry if registryId is omitted.
       parameters:
-      - description: Item data
+      - description: Item data (JSON)
         in: body
         name: body
-        required: true
         schema:
           properties:
             category:
@@ -1780,6 +1800,18 @@ paths:
             version:
               type: string
           type: object
+      - description: Zip archive (multipart)
+        in: formData
+        name: file
+        type: file
+      - description: 'Item type: skill or mcp (multipart)'
+        in: formData
+        name: itemType
+        type: string
+      - description: Item name (multipart)
+        in: formData
+        name: name
+        type: string
       produces:
       - application/json
       responses:
@@ -1789,6 +1821,13 @@ paths:
             $ref: '#/definitions/models.CapabilityItem'
         "400":
           description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
           schema:
             properties:
               error:
@@ -1861,14 +1900,16 @@ paths:
     put:
       consumes:
       - application/json
-      description: Update skill item by ID; creates a new version if content changes
+      - multipart/form-data
+      description: Update skill item by ID. Accepts JSON for field updates or multipart/form-data
+        with a zip archive. Creates a new version if content changes.
       parameters:
       - description: Item ID
         in: path
         name: id
         required: true
         type: string
-      - description: Item data
+      - description: Item data (JSON)
         in: body
         name: body
         schema:
@@ -1890,6 +1931,10 @@ paths:
             version:
               type: string
           type: object
+      - description: Archive file (multipart)
+        in: formData
+        name: file
+        type: file
       produces:
       - application/json
       responses:
@@ -3148,6 +3193,13 @@ paths:
               error:
                 type: string
             type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
         "500":
           description: Internal Server Error
           schema:
@@ -3438,14 +3490,19 @@ paths:
       summary: Get public registry
       tags:
       - registries
-  /registry/{repo}/{slug}/{file}:
+  /registry/{repo}/{itemType}/{slug}/{file}:
     get:
-      description: Download a specific file of an item identified by repo/slug/filename.
+      description: Download a specific file of an item identified by repo/itemType/slug/filename.
         Respects visibility rules.
       parameters:
       - description: Repository name
         in: path
         name: repo
+        required: true
+        type: string
+      - description: Item type (skill, mcp, etc.)
+        in: path
+        name: itemType
         required: true
         type: string
       - description: Item slug

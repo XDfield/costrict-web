@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,6 +71,7 @@ var ErrSlugConflict = errors.New("slug conflict")
 type createItemRequest struct {
 	ID          string
 	RegistryID  string
+	RepoID      string
 	Slug        string
 	ItemType    string
 	Name        string
@@ -81,6 +83,7 @@ type createItemRequest struct {
 	SourcePath  string
 	SourceSHA   string
 	CreatedBy   string
+	SourceType  string
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -89,12 +92,24 @@ type createItemAssets struct {
 	Artifact *models.CapabilityArtifact
 }
 
+// registryRepoID returns the repo_id associated with a registry.
+// Falls back to "public" when the registry has no repo_id set.
+func registryRepoID(db *gorm.DB, registryID string) string {
+	var repoID string
+	db.Model(&models.CapabilityRegistry{}).Select("repo_id").Where("id = ?", registryID).Scan(&repoID)
+	if repoID == "" {
+		return "public"
+	}
+	return repoID
+}
+
 // persistNewItem creates an item, its initial version, optional assets and artifact
 // in a single DB transaction. No storage I/O or async work happens here.
 func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
 	item := models.CapabilityItem{
 		ID:          req.ID,
 		RegistryID:  req.RegistryID,
+		RepoID:      req.RepoID,
 		Slug:        req.Slug,
 		ItemType:    req.ItemType,
 		Name:        req.Name,
@@ -105,6 +120,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		Metadata:    req.Metadata,
 		SourcePath:  req.SourcePath,
 		SourceSHA:   req.SourceSHA,
+		SourceType:  req.SourceType,
 		Status:      "active",
 		CreatedBy:   req.CreatedBy,
 	}
@@ -345,6 +361,7 @@ func CreateItem(c *gin.Context) {
 	item, err := persistNewItem(db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryId,
+		RepoID:      registryRepoID(db, registryId),
 		Slug:        req.Slug,
 		ItemType:    req.ItemType,
 		Name:        req.Name,
@@ -355,6 +372,7 @@ func CreateItem(c *gin.Context) {
 		Metadata:    datatypes.JSON([]byte("{}")),
 		SourcePath:  req.SourcePath,
 		CreatedBy:   req.CreatedBy,
+		SourceType:  "direct",
 	}, createItemAssets{})
 	if err != nil {
 		if errors.Is(err, ErrSlugConflict) {
@@ -393,18 +411,28 @@ func GetItem(c *gin.Context) {
 
 // UpdateItem godoc
 // @Summary      Update item
-// @Description  Update skill item by ID; creates a new version if content changes
+// @Description  Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a zip archive. Creates a new version if content changes.
 // @Tags         items
-// @Accept       json
+// @Accept       json,mpfd
 // @Produce      json
 // @Param        id    path      string  true  "Item ID"
-// @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data"
+// @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data (JSON)"
+// @Param        file  formData  file    false "Archive file (multipart)"
 // @Success      200   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items/{id} [put]
-func UpdateItem(c *gin.Context) {
+func (h *ItemHandler) UpdateItem(c *gin.Context) {
+	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+		h.updateItemFromArchive(c)
+	} else {
+		h.updateItemFromJSON(c)
+	}
+}
+
+// updateItemFromJSON handles the JSON-body item update path.
+func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
 		Name        string `json:"name"`
@@ -422,7 +450,13 @@ func UpdateItem(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
+	userID, _ := c.Get(middleware.UserIDKey)
+	uid, _ := userID.(string)
+	if req.UpdatedBy == "" {
+		req.UpdatedBy = uid
+	}
+
+	db := h.db
 	var item models.CapabilityItem
 	result := db.First(&item, "id = ?", id)
 	if result.Error != nil {
@@ -482,6 +516,277 @@ func UpdateItem(c *gin.Context) {
 			return tx.Create(&sv).Error
 		})
 		enqueueScanAsync(itemID, newRevision, "update")
+	}
+
+	c.JSON(http.StatusOK, item)
+}
+
+// updateItemFromArchive handles multipart/form-data archive upload item update.
+func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
+	id := c.Param("id")
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxZipUploadSize)
+
+	db := h.db
+	var item models.CapabilityItem
+	if db.First(&item, "id = ?", id).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Archive upload exceeds maximum size"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file"})
+		return
+	}
+	defer file.Close()
+
+	if header.Size <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File is empty"})
+		return
+	}
+
+	if h.zipSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive upload is not configured"})
+		return
+	}
+	if StorageBackend == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage backend is not configured"})
+		return
+	}
+
+	readerAt, ok := file.(io.ReaderAt)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
+		return
+	}
+
+	result, err := h.zipSvc.ParseZip(readerAt, header.Size, item.ItemType)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if result == nil || result.Parsed == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive parser returned no item"})
+		return
+	}
+
+	// Read optional form fields for overrides.
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	updatedBy, _ := userIDVal.(string)
+	if v := c.PostForm("updatedBy"); v != "" {
+		updatedBy = v
+	}
+	if updatedBy == "" {
+		updatedBy = item.CreatedBy
+	}
+	commitMsg := c.PostForm("commitMsg")
+
+	// Build metadata.
+	metadataMap := result.Parsed.Metadata
+	if item.ItemType == "mcp" {
+		metadataMap = result.NormalizedMeta
+	}
+	if metadataMap == nil {
+		metadataMap = map[string]any{}
+	}
+	metadataJSON, err := json.Marshal(metadataMap)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode metadata"})
+		return
+	}
+
+	// Apply form overrides or parsed values.
+	if v := c.PostForm("name"); v != "" {
+		item.Name = v
+	} else if result.Parsed.Name != "" {
+		item.Name = result.Parsed.Name
+	}
+	if v := c.PostForm("description"); v != "" {
+		item.Description = v
+	} else if result.Parsed.Description != "" {
+		item.Description = result.Parsed.Description
+	}
+	if v := c.PostForm("category"); v != "" {
+		item.Category = v
+	} else if result.Parsed.Category != "" {
+		item.Category = result.Parsed.Category
+	}
+	newVersion := c.PostForm("version")
+	if newVersion == "" {
+		newVersion = result.Parsed.Version
+	}
+	if newVersion == "" {
+		newVersion = item.Version
+	}
+
+	ctx := c.Request.Context()
+	itemID := item.ID
+
+	// Upload new binary assets to storage.
+	uploadedKeys := make([]string, 0, len(result.Assets)+1)
+	assetStorageKeys := make(map[string]string, len(result.Assets))
+
+	for _, asset := range result.Assets {
+		if !asset.Binary {
+			continue
+		}
+		storageKey := fmt.Sprintf("%s/assets/%s", itemID, asset.Path)
+		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
+			cleanupStorageKeys(uploadedKeys)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
+			return
+		}
+		uploadedKeys = append(uploadedKeys, storageKey)
+		assetStorageKeys[asset.Path] = storageKey
+	}
+
+	// Upload the archive file itself.
+	seeker, ok := file.(io.Seeker)
+	if !ok {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
+		return
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rewind uploaded file"})
+		return
+	}
+
+	uploadedFilename := filepath.Base(header.Filename)
+	zipKey := fmt.Sprintf("%s/%s", itemID, uploadedFilename)
+	hasher := sha256.New()
+	tee := io.TeeReader(file, hasher)
+	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
+		return
+	}
+	uploadedKeys = append(uploadedKeys, zipKey)
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	// Build new asset records.
+	assetRecords := make([]models.CapabilityAsset, 0, len(result.Assets))
+	for _, asset := range result.Assets {
+		if asset.Binary {
+			assetRecords = append(assetRecords, models.CapabilityAsset{
+				RelPath:        asset.Path,
+				StorageBackend: "local",
+				StorageKey:     assetStorageKeys[asset.Path],
+				MimeType:       asset.MimeType,
+				FileSize:       asset.Size,
+				ContentSHA:     asset.ContentSHA,
+			})
+			continue
+		}
+		text := string(asset.Content)
+		assetRecords = append(assetRecords, models.CapabilityAsset{
+			RelPath:     asset.Path,
+			TextContent: &text,
+			MimeType:    asset.MimeType,
+			FileSize:    asset.Size,
+			ContentSHA:  asset.ContentSHA,
+		})
+	}
+
+	// Collect old asset storage keys for cleanup after successful transaction.
+	var oldAssets []models.CapabilityAsset
+	db.Where("item_id = ?", itemID).Find(&oldAssets)
+	oldStorageKeys := make([]string, 0)
+	for _, a := range oldAssets {
+		if a.StorageKey != "" {
+			oldStorageKeys = append(oldStorageKeys, a.StorageKey)
+		}
+	}
+
+	// Single transaction: update item, replace assets, create version + artifact.
+	item.Content = result.MainContent
+	item.Metadata = datatypes.JSON(metadataJSON)
+	item.SourcePath = result.MainPath
+	item.SourceSHA = result.MainSHA
+	item.SourceType = "archive"
+	item.Version = newVersion
+	item.UpdatedBy = updatedBy
+
+	txErr := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&item).Error; err != nil {
+			return err
+		}
+
+		// Replace assets: delete old, insert new.
+		if err := tx.Where("item_id = ?", itemID).Delete(&models.CapabilityAsset{}).Error; err != nil {
+			return err
+		}
+		for i := range assetRecords {
+			assetRecords[i].ID = uuid.New().String()
+			assetRecords[i].ItemID = itemID
+			if err := tx.Create(&assetRecords[i]).Error; err != nil {
+				return err
+			}
+		}
+
+		// Mark old artifacts as non-latest, create new one.
+		tx.Model(&models.CapabilityArtifact{}).Where("item_id = ? AND is_latest = ?", itemID, true).Update("is_latest", false)
+		artifact := models.CapabilityArtifact{
+			ID:              uuid.New().String(),
+			ItemID:          itemID,
+			Filename:        uploadedFilename,
+			FileSize:        header.Size,
+			ChecksumSHA256:  checksum,
+			MimeType:        "application/zip",
+			StorageBackend:  "local",
+			StorageKey:      zipKey,
+			ArtifactVersion: newVersion,
+			IsLatest:        true,
+			SourceType:      "upload",
+			UploadedBy:      updatedBy,
+			CreatedAt:       time.Now(),
+		}
+		if err := tx.Create(&artifact).Error; err != nil {
+			return err
+		}
+
+		// Create new version.
+		var maxRevision int
+		tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
+		newRevision := maxRevision + 1
+		sv := models.CapabilityVersion{
+			ID:        uuid.New().String(),
+			ItemID:    itemID,
+			Revision:  newRevision,
+			Content:   item.Content,
+			Metadata:  item.Metadata,
+			CommitMsg: commitMsg,
+			CreatedBy: updatedBy,
+		}
+		if err := tx.Create(&sv).Error; err != nil {
+			return err
+		}
+
+		enqueueScanAsync(itemID, newRevision, "update")
+		return nil
+	})
+	if txErr != nil {
+		cleanupStorageKeys(uploadedKeys)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
+		return
+	}
+
+	// Cleanup old storage keys only after successful commit.
+	cleanupStorageKeys(oldStorageKeys)
+
+	if h.indexerSvc != nil {
+		go func() {
+			bgCtx := context.Background()
+			if err := h.indexerSvc.IndexItem(bgCtx, &item); err != nil {
+				log.Printf("Failed to index item %s: %v", item.ID, err)
+			}
+		}()
 	}
 
 	c.JSON(http.StatusOK, item)
@@ -725,6 +1030,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	item, err := persistNewItem(h.db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
+		RepoID:      registryRepoID(h.db, registryID),
 		Slug:        req.Slug,
 		ItemType:    req.ItemType,
 		Name:        req.Name,
@@ -734,6 +1040,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Content:     req.Content,
 		Metadata:    datatypes.JSON([]byte("{}")),
 		CreatedBy:   req.CreatedBy,
+		SourceType:  "direct",
 	}, createItemAssets{})
 	if err != nil {
 		if errors.Is(err, ErrSlugConflict) {
@@ -910,7 +1217,8 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 		return
 	}
 
-	zipKey := fmt.Sprintf("%s/_package.zip", itemID)
+	uploadedFilename := filepath.Base(header.Filename)
+	zipKey := fmt.Sprintf("%s/%s", itemID, uploadedFilename)
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
@@ -947,6 +1255,7 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 	item, err := persistNewItem(h.db, createItemRequest{
 		ID:          itemID,
 		RegistryID:  registryID,
+		RepoID:      registryRepoID(h.db, registryID),
 		Slug:        slug,
 		ItemType:    itemType,
 		Name:        name,
@@ -958,10 +1267,11 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 		SourcePath:  result.MainPath,
 		SourceSHA:   result.MainSHA,
 		CreatedBy:   createdBy,
+		SourceType:  "archive",
 	}, createItemAssets{
 		Records: assetRecords,
 		Artifact: &models.CapabilityArtifact{
-			Filename:        "_package.zip",
+			Filename:        uploadedFilename,
 			FileSize:        header.Size,
 			ChecksumSHA256:  checksum,
 			MimeType:        "application/zip",
@@ -1085,22 +1395,27 @@ func MoveItem(c *gin.Context) {
 		}
 	}
 
-	// Global slug uniqueness: slug must be unique across all registries
+	// Composite slug uniqueness: (repo_id, item_type, slug) must be unique in the target repo.
+	targetRepoID := registryRepoID(db, req.TargetRegistryID)
 	var conflictCount int64
 	db.Model(&models.CapabilityItem{}).
-		Where("slug = ? AND id != ?", item.Slug, item.ID).
+		Where("repo_id = ? AND item_type = ? AND slug = ? AND id != ?", targetRepoID, item.ItemType, item.Slug, item.ID).
 		Count(&conflictCount)
 	if conflictCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": item.Slug})
 		return
 	}
 
-	if err := db.Model(&item).Update("registry_id", req.TargetRegistryID).Error; err != nil {
+	if err := db.Model(&item).Updates(map[string]any{
+		"registry_id": req.TargetRegistryID,
+		"repo_id":     targetRepoID,
+	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to move item"})
 		return
 	}
 
 	item.RegistryID = req.TargetRegistryID
+	item.RepoID = targetRepoID
 	c.JSON(http.StatusOK, item)
 }
 
@@ -1191,22 +1506,27 @@ func TransferItemToRepo(c *gin.Context) {
 		return
 	}
 
-	// Global slug uniqueness: slug must be unique across all registries
+	// Composite slug uniqueness: (repo_id, item_type, slug) must be unique in the target repo.
 	var conflictCount int64
 	db.Model(&models.CapabilityItem{}).
-		Where("slug = ? AND id != ?", item.Slug, item.ID).
+		Where("repo_id = ? AND item_type = ? AND slug = ? AND id != ?", req.TargetRepoID, item.ItemType, item.Slug, item.ID).
 		Count(&conflictCount)
 	if conflictCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": item.Slug})
 		return
 	}
 
-	if err := db.Model(&item).Update("registry_id", targetReg.ID).Error; err != nil {
+	// Must update registry_id and repo_id atomically.
+	if err := db.Model(&item).Updates(map[string]any{
+		"registry_id": targetReg.ID,
+		"repo_id":     req.TargetRepoID,
+	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer item"})
 		return
 	}
 
 	item.RegistryID = targetReg.ID
+	item.RepoID = req.TargetRepoID
 	c.JSON(http.StatusOK, item)
 }
 

@@ -47,6 +47,14 @@ type syncConfig struct {
 	ConflictStrategy string   `json:"conflictStrategy"`
 }
 
+// syncRepoID returns repoID with a fallback to "public" for empty values.
+func syncRepoID(repoID string) string {
+	if repoID == "" {
+		return "public"
+	}
+	return repoID
+}
+
 func (s *SyncService) applyPluginJSON(content []byte, registry *models.CapabilityRegistry) {
 	item, err := s.Parser.ParsePluginJSON(content, ".claude-plugin/plugin.json")
 	if err != nil {
@@ -339,6 +347,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				newItem := &models.CapabilityItem{
 					ID:          uuid.New().String(),
 					RegistryID:  registryID,
+					RepoID:      syncRepoID(registry.RepoID),
 					Slug:        parsed.Slug,
 					ItemType:    parsed.ItemType,
 					Name:        parsed.Name,

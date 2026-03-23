@@ -318,16 +318,17 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/slug/filename. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.
 // @Tags         registry
 // @Produce      text/plain
-// @Param        repo  path      string  true  "Repository name"
-// @Param        slug  path      string  true  "Item slug"
-// @Param        file  path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
-// @Success      200   {string}  string  "File content"
-// @Failure      403   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Router       /registry/{repo}/{slug}/{file} [get]
+// @Param        repo      path      string  true  "Repository name"
+// @Param        itemType  path      string  true  "Item type (skill, mcp, etc.)"
+// @Param        slug      path      string  true  "Item slug"
+// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
+// @Success      200       {string}  string  "File content"
+// @Failure      403       {object}  object{error=string}
+// @Failure      404       {object}  object{error=string}
+// @Router       /registry/{repo}/{itemType}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
 	repoID, ok := resolveRepoID(c.Param("repo"))
 	if !ok {
@@ -335,22 +336,13 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
+	itemType := c.Param("itemType")
 	slug := c.Param("slug")
 	db := database.GetDB()
 
-	var registryIDs []string
-	db.Model(&models.CapabilityRegistry{}).
-		Where("repo_id = ?", repoID).
-		Pluck("id", &registryIDs)
-
-	if len(registryIDs) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
-		return
-	}
-
 	var item models.CapabilityItem
 	result := db.Preload("Registry").
-		Where("registry_id IN ? AND slug = ?", registryIDs, slug).
+		Where("repo_id = ? AND item_type = ? AND slug = ?", repoID, itemType, slug).
 		First(&item)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})

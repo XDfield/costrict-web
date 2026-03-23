@@ -197,8 +197,9 @@ type SyncLog struct {
 type CapabilityItem struct {
 	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	RegistryID     string         `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
-	Slug           string         `gorm:"not null;uniqueIndex:idx_item_slug_global" json:"slug"`
-	ItemType       string         `gorm:"not null;index" json:"itemType"`
+	RepoID         string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
+	Slug           string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
+	ItemType       string         `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
 	Name           string         `gorm:"not null" json:"name"`
 	Description    string         `json:"description"`
 	Category       string         `json:"category"`
@@ -207,6 +208,7 @@ type CapabilityItem struct {
 	Metadata       datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	SourcePath     string         `json:"sourcePath"`
 	SourceSHA      string         `json:"sourceSha"`
+	SourceType     string         `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
 	InstallCount   int            `gorm:"default:0" json:"installCount"`
 	Status         string         `gorm:"default:'active'" json:"status"`
 	SecurityStatus string         `gorm:"default:'unscanned'" json:"securityStatus"`

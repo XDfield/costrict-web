@@ -183,7 +183,7 @@ func main() {
 		api.GET("/registries/:id/items", handlers.ListItems)
 		api.GET("/registry/:repo/access", handlers.RegistryAccess)
 		api.GET("/registry/:repo/index.json", handlers.RegistryIndex)
-		api.GET("/registry/:repo/:slug/:file", handlers.DownloadRegistryFile)
+		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
 		// Items read (anonymous can preview public items)
@@ -259,7 +259,7 @@ func main() {
 
 			authed.GET("/items/my", handlers.ListMyItems)
 			authed.POST("/items", itemHandler.CreateItemDirect)
-			authed.PUT("/items/:id", handlers.UpdateItem)
+			authed.PUT("/items/:id", itemHandler.UpdateItem)
 			authed.DELETE("/items/:id", handlers.DeleteItem)
 			authed.PUT("/items/:id/move", handlers.MoveItem)
 			authed.PUT("/items/:id/transfer", handlers.TransferItemToRepo)
@@ -473,6 +473,33 @@ func runPreMigrations(db *gorm.DB) error {
 				`DROP INDEX IF EXISTS idx_item_slug`,
 			},
 		},
+		{
+			check: `SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug_global'`,
+			stmts: []string{
+				`DROP INDEX IF EXISTS idx_item_slug_global`,
+			},
+		},
+		// Ensure repo_id column exists before backfill and dedup.
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='id' AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='repo_id')`,
+			stmts: []string{
+				`ALTER TABLE capability_items ADD COLUMN repo_id text NOT NULL DEFAULT 'public'`,
+			},
+		},
+		// Backfill repo_id on capability_items from capability_registries.
+		// Runs unconditionally when any row still has the default 'public' value
+		// that may need to be resolved from its registry's actual repo_id.
+		{
+			check: `SELECT 1 FROM capability_items WHERE repo_id = 'public' LIMIT 1`,
+			stmts: []string{
+				`UPDATE capability_items SET repo_id = COALESCE(
+					(SELECT COALESCE(NULLIF(cr.repo_id,''), 'public')
+					 FROM capability_registries cr
+					 WHERE cr.id = capability_items.registry_id),
+					'public'
+				) WHERE repo_id = 'public'`,
+			},
+		},
 	}
 
 	for _, m := range migrations {
@@ -488,42 +515,47 @@ func runPreMigrations(db *gorm.DB) error {
 		}
 	}
 	if err := deduplicateSlugs(db); err != nil {
-		return fmt.Errorf("failed to deduplicate slugs before global unique index: %w", err)
+		return fmt.Errorf("failed to deduplicate slugs before composite unique index: %w", err)
 	}
 	return nil
 }
 
 
 // deduplicateSlugs resolves slug collisions before AutoMigrate installs the
-// global unique index on capability_items.slug. It is idempotent: if the index
-// already exists (i.e. a clean install or a re-deploy), it does nothing.
+// composite unique index (repo_id, item_type, slug) on capability_items.
+// It is idempotent: if the composite index already exists, it does nothing.
 //
-// Strategy: for each group of rows that share a slug, the oldest row (smallest
-// created_at, then id as tiebreak) keeps its slug unchanged. Every subsequent
-// duplicate gets a numeric suffix (-2, -3, …) in insertion order until the
-// candidate is unique across the entire table.
+// Strategy: for each group of rows that share (repo_id, item_type, slug), the
+// oldest row (smallest created_at, then id as tiebreak) keeps its slug
+// unchanged. Every subsequent duplicate gets a numeric suffix (-2, -3, …)
+// in insertion order until the candidate is unique within the same
+// (repo_id, item_type) scope.
 func deduplicateSlugs(db *gorm.DB) error {
-	// Skip if the global unique index already exists — already clean.
+	// Skip if the composite unique index already exists — already clean.
 	var idxExists int
-	db.Raw(`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug_global'`).Scan(&idxExists)
+	db.Raw(`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_repo_type_slug'`).Scan(&idxExists)
 	if idxExists == 1 {
 		return nil
 	}
 
 	type row struct {
-		ID   string
-		Slug string
+		ID       string
+		RepoID   string `gorm:"column:repo_id"`
+		ItemType string `gorm:"column:item_type"`
+		Slug     string
 	}
 
-	// Pull all duplicate slugs in deterministic order (oldest first).
+	// Pull all rows that participate in a (repo_id, item_type, slug) collision.
 	var rows []row
 	err := db.Raw(`
-		SELECT id, slug
+		SELECT id, repo_id, item_type, slug
 		FROM capability_items
-		WHERE slug IN (
-			SELECT slug FROM capability_items GROUP BY slug HAVING COUNT(*) > 1
+		WHERE (repo_id, item_type, slug) IN (
+			SELECT repo_id, item_type, slug
+			FROM capability_items
+			GROUP BY repo_id, item_type, slug HAVING COUNT(*) > 1
 		)
-		ORDER BY slug, created_at ASC, id ASC`, // oldest first within each group
+		ORDER BY repo_id, item_type, slug, created_at ASC, id ASC`,
 	).Scan(&rows).Error
 	if err != nil {
 		return fmt.Errorf("querying duplicate slugs: %w", err)
@@ -532,32 +564,36 @@ func deduplicateSlugs(db *gorm.DB) error {
 		return nil
 	}
 
-	// Group by slug; first entry in each group is the keeper.
+	// groupKey is (repo_id, item_type, slug).
+	type groupKey struct{ RepoID, ItemType, Slug string }
 	type group struct {
-		keeper bool
-		ids    []string // [0] = keeper, rest = duplicates in age order
+		ids []string // [0] = keeper, rest = duplicates in age order
 	}
-	groups := make(map[string]*group)
+	groups := make(map[groupKey]*group)
+	var keys []groupKey // preserve insertion order
 	for _, r := range rows {
-		g, ok := groups[r.Slug]
+		k := groupKey{r.RepoID, r.ItemType, r.Slug}
+		g, ok := groups[k]
 		if !ok {
-			groups[r.Slug] = &group{ids: []string{r.ID}}
+			groups[k] = &group{ids: []string{r.ID}}
+			keys = append(keys, k)
 		} else {
 			g.ids = append(g.ids, r.ID)
 		}
 	}
 
 	return db.Transaction(func(tx *gorm.DB) error {
-		for origSlug, g := range groups {
-			// ids[0] keeps origSlug; ids[1..] get suffixed.
+		for _, k := range keys {
+			g := groups[k]
+			// ids[0] keeps the original slug; ids[1..] get suffixed.
 			for i := 1; i < len(g.ids); i++ {
-				// Find a suffix that produces a slug not yet taken.
 				candidate := ""
 				for n := i + 1; ; n++ {
-					candidate = fmt.Sprintf("%s-%d", origSlug, n)
+					candidate = fmt.Sprintf("%s-%d", k.Slug, n)
 					var count int64
 					if err := tx.Raw(
-						`SELECT COUNT(*) FROM capability_items WHERE slug = ?`, candidate,
+						`SELECT COUNT(*) FROM capability_items WHERE repo_id = ? AND item_type = ? AND slug = ?`,
+						k.RepoID, k.ItemType, candidate,
 					).Scan(&count).Error; err != nil {
 						return fmt.Errorf("checking slug %q: %w", candidate, err)
 					}
@@ -565,7 +601,8 @@ func deduplicateSlugs(db *gorm.DB) error {
 						break
 					}
 				}
-				log.Printf("[deduplicateSlugs] renaming item %s slug %q -> %q", g.ids[i], origSlug, candidate)
+				log.Printf("[deduplicateSlugs] renaming item %s slug %q -> %q (repo=%s, type=%s)",
+					g.ids[i], k.Slug, candidate, k.RepoID, k.ItemType)
 				if err := tx.Exec(
 					`UPDATE capability_items SET slug = ? WHERE id = ?`, candidate, g.ids[i],
 				).Error; err != nil {
