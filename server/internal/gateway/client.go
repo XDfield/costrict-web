@@ -15,15 +15,17 @@ import (
 )
 
 type Client struct {
-	httpClient *http.Client
+	httpClient     *http.Client
+	internalSecret string
 }
 
-func NewClient() *Client {
+func NewClient(internalSecret string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout:   0,
 			Transport: &http.Transport{},
 		},
+		internalSecret: internalSecret,
 	}
 }
 
@@ -52,6 +54,9 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 		return err
 	}
 	proxyReq.Header = r.Header.Clone()
+	if c.internalSecret != "" {
+		proxyReq.Header.Set("X-Internal-Secret", c.internalSecret)
+	}
 
 	resp, err := c.httpClient.Do(proxyReq)
 	if err != nil {
@@ -156,6 +161,9 @@ func (c *Client) proxyWebSocket(target string, r *http.Request, w http.ResponseW
 	var reqBuf bytes.Buffer
 	fmt.Fprintf(&reqBuf, "%s %s HTTP/1.1\r\n", r.Method, u.RequestURI())
 	fmt.Fprintf(&reqBuf, "Host: %s\r\n", u.Host)
+	if c.internalSecret != "" {
+		fmt.Fprintf(&reqBuf, "X-Internal-Secret: %s\r\n", c.internalSecret)
+	}
 	for k, vs := range r.Header {
 		for _, v := range vs {
 			fmt.Fprintf(&reqBuf, "%s: %s\r\n", k, v)

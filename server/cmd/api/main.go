@@ -324,13 +324,13 @@ func main() {
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
 	}
 	gatewayRegistry := gateway.NewGatewayRegistry(store)
-	gatewayClient := gateway.NewClient()
+	gatewayClient := gateway.NewClient(cfg.InternalSecret)
 
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
 	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
 
-	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry))
+	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
 
@@ -343,8 +343,8 @@ func main() {
 	deviceCloudGroup := r.Group("/cloud")
 	cloudModule.RegisterDeviceRoutes(deviceCloudGroup, deviceSvc)
 
-	// TODO: 打通链路后加认证
-	r.Any("/cloud/device/:deviceID/proxy/*path", gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient))
+	// Device proxy: require user auth + device ownership check
+	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
@@ -94,14 +95,29 @@ func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceS
 	}
 }
 
-func GatewayAssignHandler(registry *GatewayRegistry) gin.HandlerFunc {
+func GatewayAssignHandler(registry *GatewayRegistry, deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Authenticate device token
+		auth := c.GetHeader("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+
 		var body struct {
 			DeviceID string `json:"deviceID" binding:"required"`
 			Region   string `json:"region"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		// Verify token matches the claimed deviceID
+		device, err := deviceSvc.VerifyDeviceToken(token)
+		if err != nil || device.DeviceID != body.DeviceID {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
 			return
 		}
 
@@ -118,9 +134,20 @@ func GatewayAssignHandler(registry *GatewayRegistry) gin.HandlerFunc {
 	}
 }
 
-func DeviceProxyHandler(registry *GatewayRegistry, client *Client) gin.HandlerFunc {
+func DeviceProxyHandler(registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deviceID := c.Param("deviceID")
+
+		// Verify caller owns this device (RequireAuth middleware sets userId)
+		userID := c.GetString("userId")
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if _, err := deviceSvc.VerifyDeviceOwnership(deviceID, userID); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "device does not belong to you"})
+			return
+		}
 
 		gw, err := registry.GetDeviceGateway(deviceID)
 		if err != nil {
@@ -146,6 +173,27 @@ func GatewayDeregisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 	}
 }
 
+func DeviceVerifyTokenHandler(deviceSvc *services.DeviceService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			DeviceID string `json:"deviceID" binding:"required"`
+			Token    string `json:"token" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		device, err := deviceSvc.VerifyDeviceToken(body.Token)
+		if err != nil || device.DeviceID != body.DeviceID {
+			c.JSON(http.StatusOK, gin.H{"valid": false})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"valid": true, "userID": device.UserID})
+	}
+}
+
 func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
@@ -153,4 +201,5 @@ func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, d
 	gatewayGroup.DELETE("/:gatewayID", GatewayDeregisterHandler(registry))
 	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, deviceSvc))
 	gatewayGroup.POST("/device/offline", DeviceOfflineHandler(registry, deviceSvc))
+	gatewayGroup.POST("/device/verify-token", DeviceVerifyTokenHandler(deviceSvc))
 }
