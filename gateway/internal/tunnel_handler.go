@@ -2,6 +2,7 @@ package internal
 
 import (
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,20 @@ const (
 func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deviceID := c.Param("deviceID")
+
+		// Authenticate device token before upgrading to WebSocket
+		token := ExtractDeviceToken(c.Request)
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
+			return
+		}
+
+		_, err := VerifyDeviceToken(cfg.ServerURL, cfg.InternalSecret, deviceID, token)
+		if err != nil {
+			log.Printf("[Gateway] device %s auth failed: %v", deviceID, err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
+			return
+		}
 
 		ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
