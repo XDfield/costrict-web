@@ -108,8 +108,8 @@ func GetItemScanStatus(c *gin.Context) {
 // @Produce      json
 // @Param        id    path      string   true   "Item ID"
 // @Param        page  query     integer  false  "Page number (default: 1)"
-// @Param        size  query     integer  false  "Page size (default: 10)"
-// @Success      200   {object}  object{results=[]models.SecurityScan,total=integer}
+// @Param        pageSize  query     int  false  "Page size (default: 10, max: 50)"
+// @Success      200   {object}  object{results=[]models.SecurityScan,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items/{id}/scan-results [get]
 func ListItemScanResults(c *gin.Context) {
@@ -123,7 +123,7 @@ func ListItemScanResults(c *gin.Context) {
 			page = n
 		}
 	}
-	if s := c.Query("size"); s != "" {
+	if s := c.Query("pageSize"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 50 {
 			pageSize = n
 		}
@@ -144,7 +144,13 @@ func ListItemScanResults(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"results": results, "total": total})
+	c.JSON(http.StatusOK, gin.H{
+		"results":  results,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64((page-1)*pageSize+pageSize) < total,
+	})
 }
 
 // GetScanResult godoc
