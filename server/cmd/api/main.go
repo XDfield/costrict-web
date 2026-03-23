@@ -148,11 +148,15 @@ func main() {
 
 	casdoorEndpoint := cfg.Casdoor.Endpoint
 
+	// Initialize JWKS provider for JWT signature verification
+	jwksProvider := middleware.NewJWKSProvider(casdoorEndpoint)
+	jwksProvider.Preload()
+
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
-	r.Use(middleware.OptionalAuth(casdoorEndpoint))
+	r.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -207,7 +211,7 @@ func main() {
 
 		// All routes below require authentication
 		authed := api.Group("")
-		authed.Use(middleware.RequireAuth(casdoorEndpoint))
+		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
 
@@ -337,14 +341,14 @@ func main() {
 	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
 	cloudModule.NotificationService = notificationSvc
 	cloudGroup := r.Group("/cloud")
-	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint))
+	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
 
 	deviceCloudGroup := r.Group("/cloud")
 	cloudModule.RegisterDeviceRoutes(deviceCloudGroup, deviceSvc)
 
 	// Device proxy: require user auth + device ownership check
-	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
+	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {

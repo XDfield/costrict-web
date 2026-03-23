@@ -48,7 +48,7 @@ func ExtractToken(c *gin.Context) string {
 	return ""
 }
 
-func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
+func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
 		if token == "" {
@@ -56,7 +56,7 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token)
+		userInfo, err := parseJWTToken(token, jwks)
 		if err != nil {
 			// Fallback to Casdoor API verification
 			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
@@ -74,7 +74,7 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 	}
 }
 
-func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
+func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
 		if token == "" {
@@ -82,7 +82,7 @@ func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token)
+		userInfo, err := parseJWTToken(token, jwks)
 		if err != nil {
 			// Fallback to Casdoor API verification
 			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
@@ -101,32 +101,44 @@ func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 }
 
 type casdoorUserInfo struct {
-	Sub               string `json:"sub"`
-	Name              string `json:"name"`
+	Sub              string `json:"sub"`
+	Name             string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
-	Email             string `json:"email"`
+	Email            string `json:"email"`
 }
 
 type casdoorUserinfoResponse struct {
-	Status string          `json:"status"`
-	Msg    string          `json:"msg"`
-	Sub    string          `json:"sub"`
-	Name   string          `json:"name"`
-	Email  string          `json:"email"`
+	Status string `json:"status"`
+	Msg    string `json:"msg"`
+	Sub    string `json:"sub"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
 }
 
-// parseJWTToken parses Casdoor JWT token locally without calling Casdoor API
-func parseJWTToken(tokenString string) (*casdoorUserInfo, error) {
-	// Parse token without verification (Casdoor JWT is already verified by signature)
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+// parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
+// If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
+func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, error) {
+	if jwks == nil {
+		return nil, fmt.Errorf("JWKS provider not configured")
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Ensure the signing method is RSA
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		kid, _ := token.Header["kid"].(string)
+		return jwks.GetKey(kid)
+	}, jwt.WithValidMethods([]string{"RS256"}))
+
 	if err != nil {
-		return nil, fmt.Errorf("parse JWT failed: %w", err)
+		return nil, fmt.Errorf("JWT verification failed: %w", err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid claims type")
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token claims")
 	}
 
 	// Extract sub (universal_id in Casdoor)
@@ -147,10 +159,10 @@ func parseJWTToken(tokenString string) (*casdoorUserInfo, error) {
 	email, _ := claims["email"].(string)
 
 	return &casdoorUserInfo{
-		Sub:               sub,
-		Name:              name,
+		Sub:              sub,
+		Name:             name,
 		PreferredUsername: preferredUsername,
-		Email:             email,
+		Email:            email,
 	}, nil
 }
 
@@ -190,9 +202,9 @@ func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
 	}
 
 	return &casdoorUserInfo{
-		Sub:               casdoorResp.Sub,
-		Name:              casdoorResp.Name,
+		Sub:              casdoorResp.Sub,
+		Name:             casdoorResp.Name,
 		PreferredUsername: casdoorResp.Name,
-		Email:             casdoorResp.Email,
+		Email:            casdoorResp.Email,
 	}, nil
 }
