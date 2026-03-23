@@ -29,6 +29,7 @@ yarn-error.log*
 .env*.local
 .env
 server/.env
+gateway/.env
 
 # vercel
 .vercel
@@ -60,6 +61,8 @@ server/coverage_handlers.out
 server/*.out
 
 gateway/bin/
+gateway/*.exe
+gateway/*.exe~
 
 # Submodule
 web/
