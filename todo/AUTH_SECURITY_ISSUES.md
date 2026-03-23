@@ -6,10 +6,14 @@
 
 ## P0 — 高危，需立即修复
 
-- [ ] **JWT 未做签名验证**
+- [x] **JWT 未做签名验证**
   - 位置：`server/internal/middleware/auth.go:100`
   - 问题：使用 `jwt.ParseUnverified` 跳过签名校验，任何人伪造 JWT payload 均可通过本地解析；仅在 Casdoor 服务不可用时才被 fallback 拦截
-  - 修复：使用 Casdoor 公钥对 JWT 做签名验证，或始终强制走 Casdoor API 验证
+  - 修复：
+    1. 新增 `jwks.go`，实现 `JWKSProvider` 从 Casdoor OIDC 端点 `/.well-known/jwks` 获取并缓存 RSA 公钥，支持自动刷新（5 分钟最小间隔）和启动时预加载
+    2. `parseJWTToken` 改用 `jwt.Parse` + `Keyfunc` 回调，通过 JWKS 公钥做 RS256 签名验证，限定 `WithValidMethods(["RS256"])`
+    3. 保留 Casdoor API fallback：签名验证失败时仍回退到 `fetchUserInfo` 调用 Casdoor `/api/userinfo`，确保 JWKS 不可用时系统不中断
+    4. `OptionalAuth` / `RequireAuth` 签名新增 `*JWKSProvider` 参数，`main.go` 启动时初始化并注入
 
 - [x] **设备隧道连接无任何认证**
   - 位置：`gateway/internal/router.go:17`、`gateway/internal/tunnel_handler.go:18`
