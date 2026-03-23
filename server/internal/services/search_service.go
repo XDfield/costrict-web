@@ -30,8 +30,8 @@ func NewSearchService(db *gorm.DB, embeddingSvc *EmbeddingService, cfg *config.S
 // SearchRequest represents a search request
 type SearchRequest struct {
 	Query       string   `json:"query"`
-	Limit       int      `json:"limit"`
-	Offset      int      `json:"offset"`
+	Page        int      `json:"page"`
+	PageSize    int      `json:"pageSize"`
 	Types       []string `json:"types"`
 	Categories  []string `json:"categories"`
 	RegistryIDs []string `json:"registryIds"`
@@ -54,8 +54,11 @@ type SearchResultItem struct {
 
 // SemanticSearch performs semantic search using vector similarity
 func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (*SearchResult, error) {
-	if req.Limit <= 0 {
-		req.Limit = s.cfg.DefaultLimit
+	if req.PageSize <= 0 {
+		req.PageSize = s.cfg.DefaultLimit
+	}
+	if req.Page <= 0 {
+		req.Page = 1
 	}
 	if req.MinScore <= 0 {
 		req.MinScore = s.cfg.SimilarityThreshold
@@ -151,7 +154,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	}
 
 	sql += ` ) AS sub WHERE score >= ? ORDER BY score DESC LIMIT ? OFFSET ?`
-	args = append(args, req.MinScore, req.Limit, req.Offset)
+	args = append(args, req.MinScore, req.PageSize, (req.Page-1)*req.PageSize)
 
 	result := database.GetDB().Raw(sql, args...).Scan(&items)
 	if result.Error != nil {
@@ -168,8 +171,11 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 
 // HybridSearch combines semantic and keyword search
 func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*SearchResult, error) {
-	if req.Limit <= 0 {
-		req.Limit = s.cfg.DefaultLimit
+	if req.PageSize <= 0 {
+		req.PageSize = s.cfg.DefaultLimit
+	}
+	if req.Page <= 0 {
+		req.Page = 1
 	}
 
 	// Get embedding for query
@@ -230,7 +236,7 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 	}
 
 	sql += " ORDER BY score DESC LIMIT ? OFFSET ?"
-	args = append(args, req.Limit, req.Offset)
+	args = append(args, req.PageSize, (req.Page-1)*req.PageSize)
 
 	result := database.GetDB().Raw(sql, args...).Scan(&items)
 	if result.Error != nil {
@@ -262,8 +268,11 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 
 // KeywordSearch performs traditional keyword search
 func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) {
-	if req.Limit <= 0 {
-		req.Limit = s.cfg.DefaultLimit
+	if req.PageSize <= 0 {
+		req.PageSize = s.cfg.DefaultLimit
+	}
+	if req.Page <= 0 {
+		req.Page = 1
 	}
 
 	query := s.db.Model(&models.CapabilityItem{}).Where("status = ?", "active")
@@ -286,7 +295,7 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 	query.Count(&total)
 
 	var items []models.CapabilityItem
-	result := query.Order("created_at DESC").Limit(req.Limit).Offset(req.Offset).Find(&items)
+	result := query.Order("created_at DESC").Limit(req.PageSize).Offset((req.Page - 1) * req.PageSize).Find(&items)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to search items: %w", result.Error)
 	}
@@ -308,20 +317,33 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 }
 
 // FindSimilar finds items similar to a given item
-func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit int) ([]SearchResultItem, error) {
-	if limit <= 0 {
-		limit = 10
+func (s *SearchService) FindSimilar(ctx context.Context, itemID string, page, pageSize int) ([]SearchResultItem, int64, error) {
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	if page <= 0 {
+		page = 1
 	}
 
 	// Get the item's embedding
 	var item models.CapabilityItem
 	result := s.db.First(&item, "id = ?", itemID)
 	if result.Error != nil {
-		return nil, fmt.Errorf("item not found: %w", result.Error)
+		return nil, 0, fmt.Errorf("item not found: %w", result.Error)
 	}
 
 	if item.Embedding == nil || *item.Embedding == "" || *item.Embedding == "[]" {
-		return nil, fmt.Errorf("item has no embedding")
+		return nil, 0, fmt.Errorf("item has no embedding")
+	}
+
+	// Count total similar items
+	var total int64
+	countResult := database.GetDB().Raw(`
+		SELECT COUNT(*) FROM capability_items
+		WHERE embedding IS NOT NULL AND status = 'active' AND id != ?
+	`, itemID).Scan(&total)
+	if countResult.Error != nil {
+		total = 0
 	}
 
 	// Find similar items
@@ -338,13 +360,14 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, limit in
 		  AND id != ?
 		ORDER BY score DESC
 		LIMIT ?
+		OFFSET ?
 	`
 
-	result = database.GetDB().Raw(sql, *item.Embedding, itemID, limit).Scan(&similarItems)
+	result = database.GetDB().Raw(sql, *item.Embedding, itemID, pageSize, (page-1)*pageSize).Scan(&similarItems)
 	if result.Error != nil {
 		// Return empty list if vector search fails (e.g., SQLite without pgvector)
-		return []SearchResultItem{}, nil
+		return []SearchResultItem{}, 0, nil
 	}
 
-	return similarItems, nil
+	return similarItems, total, nil
 }

@@ -26,7 +26,7 @@ func NewSearchHandler(searchSvc *services.SearchService) *SearchHandler {
 // @Tags         search
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{query=string,limit=integer,offset=integer,types=[]string,categories=[]string,registryIds=[]string,minScore=number}  true  "Search request"
+// @Param        body  body      object{query=string,page=integer,pageSize=integer,types=[]string,categories=[]string,registryIds=[]string,minScore=number}  true  "Search request"
 // @Success      200   {object}  services.SearchResult
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -34,8 +34,8 @@ func NewSearchHandler(searchSvc *services.SearchService) *SearchHandler {
 func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 	var req struct {
 		Query       string   `json:"query" binding:"required"`
-		Limit       int      `json:"limit"`
-		Offset      int      `json:"offset"`
+		Page        int      `json:"page"`
+		PageSize    int      `json:"pageSize"`
 		Types       []string `json:"types"`
 		Categories  []string `json:"categories"`
 		RegistryIDs []string `json:"registryIds"`
@@ -61,8 +61,8 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 
 	searchReq := services.SearchRequest{
 		Query:       req.Query,
-		Limit:       req.Limit,
-		Offset:      req.Offset,
+		Page:        req.Page,
+		PageSize:    req.PageSize,
 		Types:       req.Types,
 		Categories:  req.Categories,
 		RegistryIDs: req.RegistryIDs,
@@ -84,7 +84,7 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 // @Tags         search
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{query=string,limit=integer,offset=integer,types=[]string,categories=[]string,registryIds=[]string}  true  "Search request"
+// @Param        body  body      object{query=string,page=integer,pageSize=integer,types=[]string,categories=[]string,registryIds=[]string}  true  "Search request"
 // @Success      200   {object}  services.SearchResult
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -92,8 +92,8 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 func (h *SearchHandler) HybridSearch(c *gin.Context) {
 	var req struct {
 		Query       string   `json:"query" binding:"required"`
-		Limit       int      `json:"limit"`
-		Offset      int      `json:"offset"`
+		Page        int      `json:"page"`
+		PageSize    int      `json:"pageSize"`
 		Types       []string `json:"types"`
 		Categories  []string `json:"categories"`
 		RegistryIDs []string `json:"registryIds"`
@@ -117,8 +117,8 @@ func (h *SearchHandler) HybridSearch(c *gin.Context) {
 
 	searchReq := services.SearchRequest{
 		Query:       req.Query,
-		Limit:       req.Limit,
-		Offset:      req.Offset,
+		Page:        req.Page,
+		PageSize:    req.PageSize,
 		Types:       req.Types,
 		Categories:  req.Categories,
 		RegistryIDs: req.RegistryIDs,
@@ -138,23 +138,38 @@ func (h *SearchHandler) HybridSearch(c *gin.Context) {
 // @Description  Find items similar to a given item using vector similarity
 // @Tags         search
 // @Produce      json
-// @Param        id     path      string  true  "Item ID"
-// @Param        limit  query     integer false "Number of results (default: 10)"
-// @Success      200    {object}  object{items=[]services.SearchResultItem}
-// @Failure      404    {object}  object{error=string}
-// @Failure      500    {object}  object{error=string}
+// @Param        id       path      string  true  "Item ID"
+// @Param        page     query     integer false "Page number (default: 1)"
+// @Param        pageSize query     integer false "Page size (default: 10)"
+// @Success      200      {object}  object{items=[]services.SearchResultItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      404      {object}  object{error=string}
+// @Failure      500      {object}  object{error=string}
 // @Router       /items/{id}/similar [get]
 func (h *SearchHandler) FindSimilar(c *gin.Context) {
 	itemID := c.Param("id")
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 
-	items, err := h.searchSvc.FindSimilar(c.Request.Context(), itemID, limit)
+	items, total, err := h.searchSvc.FindSimilar(c.Request.Context(), itemID, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	offset := (page - 1) * pageSize
+	c.JSON(http.StatusOK, gin.H{
+		"items":    items,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64(offset+pageSize) < total,
+	})
 }
 
 func intersectStrings(a, b []string) []string {
