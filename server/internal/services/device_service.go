@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -15,8 +16,17 @@ var (
 	ErrDeviceNotFound          = errors.New("device not found")
 )
 
+// ownershipEntry caches a device ownership check result.
+type ownershipEntry struct {
+	valid   bool
+	expires time.Time
+}
+
+const ownershipCacheTTL = 30 * time.Second
+
 type DeviceService struct {
-	DB *gorm.DB
+	DB             *gorm.DB
+	ownershipCache sync.Map // key: "deviceID:userID" -> ownershipEntry
 }
 
 type RegisterDeviceRequest struct {
@@ -157,6 +167,8 @@ func (s *DeviceService) DeleteDevice(deviceID, userID string) error {
 	if err != nil {
 		return err
 	}
+	// Invalidate ownership cache
+	s.ownershipCache.Delete(deviceID + ":" + userID)
 	return s.DB.Delete(device).Error
 }
 
@@ -183,7 +195,33 @@ func (s *DeviceService) RotateToken(deviceID, userID string) (string, time.Time,
 }
 
 func (s *DeviceService) VerifyDeviceOwnership(deviceID, userID string) (*models.Device, error) {
-	return s.GetDevice(deviceID, userID)
+	cacheKey := deviceID + ":" + userID
+
+	// Check cache first
+	if v, ok := s.ownershipCache.Load(cacheKey); ok {
+		entry := v.(ownershipEntry)
+		if time.Now().Before(entry.expires) {
+			if entry.valid {
+				// Cache hit (positive) — still need to return a device, do a cheap DB lookup
+				// But since we know it's valid, this is just for the return value.
+				// For hot path optimization, we return a minimal device to avoid the DB call.
+				return &models.Device{DeviceID: deviceID, UserID: userID}, nil
+			}
+			return nil, ErrDeviceNotFound
+		}
+		// Expired, fall through to DB
+		s.ownershipCache.Delete(cacheKey)
+	}
+
+	device, err := s.GetDevice(deviceID, userID)
+	if err != nil {
+		// Cache negative result too (prevents repeated DB queries for invalid pairs)
+		s.ownershipCache.Store(cacheKey, ownershipEntry{valid: false, expires: time.Now().Add(ownershipCacheTTL)})
+		return nil, err
+	}
+
+	s.ownershipCache.Store(cacheKey, ownershipEntry{valid: true, expires: time.Now().Add(ownershipCacheTTL)})
+	return device, nil
 }
 
 func (s *DeviceService) VerifyDeviceToken(token string) (*models.Device, error) {
