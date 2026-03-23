@@ -28,7 +28,8 @@ func NewRecommendService(db *gorm.DB, behaviorSvc *BehaviorService, searchSvc *S
 // RecommendRequest represents a recommendation request
 type RecommendRequest struct {
 	UserID       string   `json:"userId"`
-	Limit        int      `json:"limit"`
+	Page         int      `json:"page"`
+	PageSize     int      `json:"pageSize"`
 	Types        []string `json:"types"`
 	Categories   []string `json:"categories"`
 	Context      string   `json:"context"`      // Context hint for recommendations
@@ -37,9 +38,13 @@ type RecommendRequest struct {
 
 // RecommendResponse represents a recommendation response
 type RecommendResponse struct {
-	Items         []RecommendedItem `json:"items"`
-	Strategies    []string          `json:"strategies"`    // Which strategies contributed
-	GeneratedAt   time.Time         `json:"generatedAt"`
+	Items       []RecommendedItem `json:"items"`
+	Total       int64             `json:"total"`
+	Page        int               `json:"page"`
+	PageSize    int               `json:"pageSize"`
+	HasMore     bool              `json:"hasMore"`
+	Strategies  []string          `json:"strategies"`
+	GeneratedAt time.Time         `json:"generatedAt"`
 }
 
 // RecommendedItem represents a recommended item with metadata
@@ -52,8 +57,11 @@ type RecommendedItem struct {
 
 // GetRecommendations returns personalized recommendations using multiple strategies
 func (s *RecommendService) GetRecommendations(ctx context.Context, req RecommendRequest) (*RecommendResponse, error) {
-	if req.Limit <= 0 {
-		req.Limit = 10
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	if req.PageSize <= 0 {
+		req.PageSize = 10
 	}
 
 	// Collect recommendations from multiple strategies
@@ -86,11 +94,27 @@ func (s *RecommendService) GetRecommendations(ctx context.Context, req Recommend
 		}
 	}
 
-	// Deduplicate and rank
-	finalItems := s.rankAndDedupe(allItems, req.Limit)
+	// Deduplicate all items (no limit)
+	allDeduped := s.rankAndDedupeAll(allItems)
+
+	// Paginate
+	total := int64(len(allDeduped))
+	start := (req.Page - 1) * req.PageSize
+	end := start + req.PageSize
+	if start > len(allDeduped) {
+		start = len(allDeduped)
+	}
+	if end > len(allDeduped) {
+		end = len(allDeduped)
+	}
+	finalItems := allDeduped[start:end]
 
 	return &RecommendResponse{
 		Items:       finalItems,
+		Total:       total,
+		Page:        req.Page,
+		PageSize:    req.PageSize,
+		HasMore:     int64(end) < total,
 		Strategies:  strategies,
 		GeneratedAt: time.Now(),
 	}, nil
@@ -123,7 +147,7 @@ func (s *RecommendService) collaborativeFiltering(ctx context.Context, req Recom
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
 		Order("COUNT(*) DESC").
-		Limit(req.Limit)
+		Limit(req.PageSize)
 
 	if len(req.Types) > 0 {
 		query = query.Where("capability_items.item_type IN ?", req.Types)
@@ -173,7 +197,7 @@ func (s *RecommendService) contentBasedFiltering(ctx context.Context, req Recomm
 		Where("id NOT IN (SELECT item_id FROM behavior_logs WHERE user_id = ?)", req.UserID).
 		Where("status = ?", "active").
 		Order("experience_score DESC, install_count DESC").
-		Limit(req.Limit)
+		Limit(req.PageSize)
 
 	if len(req.Types) > 0 {
 		query = query.Where("item_type IN ?", req.Types)
@@ -208,7 +232,7 @@ func (s *RecommendService) popularityBased(ctx context.Context, req RecommendReq
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
 		Order("recent_installs DESC, capability_items.install_count DESC").
-		Limit(req.Limit)
+		Limit(req.PageSize)
 
 	if len(req.Types) > 0 {
 		query = query.Where("capability_items.item_type IN ?", req.Types)
@@ -254,7 +278,7 @@ func (s *RecommendService) contextBased(ctx context.Context, req RecommendReques
 		Where("id NOT IN ?", req.SessionItems).
 		Where("status = ?", "active").
 		Order("experience_score DESC").
-		Limit(req.Limit)
+		Limit(req.PageSize)
 
 	if len(req.Types) > 0 {
 		query = query.Where("item_type IN ?", req.Types)
@@ -278,33 +302,42 @@ func (s *RecommendService) contextBased(ctx context.Context, req RecommendReques
 	return result, nil
 }
 
-// rankAndDedupe ranks and deduplicates recommendations
-func (s *RecommendService) rankAndDedupe(items []RecommendedItem, limit int) []RecommendedItem {
+// rankAndDedupeAll deduplicates recommendations without limit
+func (s *RecommendService) rankAndDedupeAll(items []RecommendedItem) []RecommendedItem {
 	seen := make(map[string]bool)
-	result := make([]RecommendedItem, 0, limit)
+	result := make([]RecommendedItem, 0, len(items))
 
-	// Sort by score (simplified - in production use weighted scoring)
 	for _, item := range items {
 		if seen[item.ID] {
 			continue
 		}
 		seen[item.ID] = true
 		result = append(result, item)
-		if len(result) >= limit {
-			break
-		}
 	}
 
 	return result
 }
 
 // GetTrendingItems returns trending items
-func (s *RecommendService) GetTrendingItems(ctx context.Context, limit int, itemTypes []string) ([]models.CapabilityItem, error) {
-	if limit <= 0 {
-		limit = 10
+func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize int, itemTypes []string) ([]models.CapabilityItem, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
 	}
 
 	sevenDaysAgo := time.Now().AddDate(0, 0, -7)
+
+	var total int64
+	countQuery := database.GetDB().Model(&models.CapabilityItem{}).
+		Where("capability_items.status = ?", "active")
+	if len(itemTypes) > 0 {
+		countQuery = countQuery.Where("capability_items.item_type IN ?", itemTypes)
+	}
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	query := database.GetDB().Model(&models.CapabilityItem{}).
 		Select("capability_items.*, COUNT(bl.id) as recent_activity").
@@ -312,7 +345,7 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, limit int, item
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
 		Order("recent_activity DESC, capability_items.install_count DESC").
-		Limit(limit)
+		Offset((page - 1) * pageSize).Limit(pageSize)
 
 	if len(itemTypes) > 0 {
 		query = query.Where("capability_items.item_type IN ?", itemTypes)
@@ -320,30 +353,40 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, limit int, item
 
 	var items []models.CapabilityItem
 	if result := query.Find(&items); result.Error != nil {
-		return nil, result.Error
+		return nil, 0, result.Error
 	}
 
-	return items, nil
+	return items, total, nil
 }
 
 // GetNewAndNoteworthy returns recently added high-quality items
-func (s *RecommendService) GetNewAndNoteworthy(ctx context.Context, limit int) ([]models.CapabilityItem, error) {
-	if limit <= 0 {
-		limit = 10
+func (s *RecommendService) GetNewAndNoteworthy(ctx context.Context, page, pageSize int) ([]models.CapabilityItem, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
 	}
 
 	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+
+	var total int64
+	countQuery := database.GetDB().Model(&models.CapabilityItem{}).
+		Where("status = ? AND created_at > ?", "active", thirtyDaysAgo)
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	var items []models.CapabilityItem
 	result := database.GetDB().Model(&models.CapabilityItem{}).
 		Where("status = ? AND created_at > ?", "active", thirtyDaysAgo).
 		Order("experience_score DESC, install_count DESC").
-		Limit(limit).
+		Offset((page - 1) * pageSize).Limit(pageSize).
 		Find(&items)
 
 	if result.Error != nil {
-		return nil, result.Error
+		return nil, 0, result.Error
 	}
 
-	return items, nil
+	return items, total, nil
 }

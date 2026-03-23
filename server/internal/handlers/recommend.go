@@ -30,14 +30,15 @@ func NewRecommendHandler(recommendSvc *services.RecommendService, behaviorSvc *s
 // @Tags         recommendations
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{limit=integer,types=[]string,categories=[]string,context=string,sessionItems=[]string}  true  "Recommendation request"
+// @Param        body  body      object{page=integer,pageSize=integer,types=[]string,categories=[]string,context=string,sessionItems=[]string}  true  "Recommendation request"
 // @Success      200   {object}  services.RecommendResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /marketplace/items/recommend [post]
 func (h *RecommendHandler) GetRecommendations(c *gin.Context) {
 	var req struct {
-		Limit        int      `json:"limit"`
+		Page         int      `json:"page"`
+		PageSize     int      `json:"pageSize"`
 		Types        []string `json:"types"`
 		Categories   []string `json:"categories"`
 		Context      string   `json:"context"`
@@ -55,7 +56,8 @@ func (h *RecommendHandler) GetRecommendations(c *gin.Context) {
 
 	recReq := services.RecommendRequest{
 		UserID:       uid,
-		Limit:        req.Limit,
+		Page:         req.Page,
+		PageSize:     req.PageSize,
 		Types:        req.Types,
 		Categories:   req.Categories,
 		Context:      req.Context,
@@ -76,22 +78,37 @@ func (h *RecommendHandler) GetRecommendations(c *gin.Context) {
 // @Description  Get trending items based on recent activity
 // @Tags         recommendations
 // @Produce      json
-// @Param        limit  query     integer  false  "Number of results (default: 10)"
-// @Param        types  query     []string false  "Filter by item types"
-// @Success      200    {object}  object{items=[]models.CapabilityItem}
-// @Failure      500    {object}  object{error=string}
+// @Param        page      query     integer  false  "Page number (default: 1)"
+// @Param        pageSize  query     integer  false  "Page size (default: 10, max: 100)"
+// @Param        types     query     []string false  "Filter by item types"
+// @Success      200       {object}  object{items=[]models.CapabilityItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      500       {object}  object{error=string}
 // @Router       /marketplace/items/trending [get]
 func (h *RecommendHandler) GetTrending(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 	types := c.QueryArray("types")
 
-	items, err := h.recommendSvc.GetTrendingItems(c.Request.Context(), limit, types)
+	items, total, err := h.recommendSvc.GetTrendingItems(c.Request.Context(), page, pageSize, types)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	offset := (page - 1) * pageSize
+	c.JSON(http.StatusOK, gin.H{
+		"items":    items,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64(offset+pageSize) < total,
+	})
 }
 
 // GetNewAndNoteworthy godoc
@@ -99,20 +116,35 @@ func (h *RecommendHandler) GetTrending(c *gin.Context) {
 // @Description  Get recently added high-quality items
 // @Tags         recommendations
 // @Produce      json
-// @Param        limit  query     integer  false  "Number of results (default: 10)"
-// @Success      200    {object}  object{items=[]models.CapabilityItem}
-// @Failure      500    {object}  object{error=string}
+// @Param        page      query     integer  false  "Page number (default: 1)"
+// @Param        pageSize  query     integer  false  "Page size (default: 10, max: 100)"
+// @Success      200       {object}  object{items=[]models.CapabilityItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      500       {object}  object{error=string}
 // @Router       /marketplace/items/new [get]
 func (h *RecommendHandler) GetNewAndNoteworthy(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 
-	items, err := h.recommendSvc.GetNewAndNoteworthy(c.Request.Context(), limit)
+	items, total, err := h.recommendSvc.GetNewAndNoteworthy(c.Request.Context(), page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	offset := (page - 1) * pageSize
+	c.JSON(http.StatusOK, gin.H{
+		"items":    items,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64(offset+pageSize) < total,
+	})
 }
 
 // LogBehavior godoc
