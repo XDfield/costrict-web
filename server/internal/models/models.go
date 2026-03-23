@@ -144,7 +144,7 @@ type CapabilityRegistry struct {
 	LastSyncLogID  *string        `gorm:"type:uuid" json:"lastSyncLogId"`
 	Visibility string `gorm:"default:'repo'" json:"visibility"`
 	RepoID     string `json:"repoId"`
-	OwnerID    string `gorm:"not null" json:"ownerId"`
+	OwnerID    string `gorm:"not null;index" json:"ownerId"`
 	Items       []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
 	LastSyncLog *SyncLog         `gorm:"foreignKey:LastSyncLogID;references:ID" json:"lastSyncLog,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -196,7 +196,7 @@ type SyncLog struct {
 
 type CapabilityItem struct {
 	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID     string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"registryId"`
+	RegistryID     string         `gorm:"not null;index:idx_item_registry_created;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"registryId"`
 	Slug           string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"slug"`
 	ItemType       string         `gorm:"not null;uniqueIndex:idx_item_slug,composite:registry_id,item_type,slug" json:"itemType"`
 	Name           string         `gorm:"not null" json:"name"`
@@ -217,7 +217,7 @@ type CapabilityItem struct {
 	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
 	Assets    []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
 	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	CreatedAt time.Time `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Vector embedding for semantic search
