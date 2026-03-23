@@ -141,14 +141,12 @@ type createItemAssets struct {
 var ErrSlugConflict = errors.New("slug conflict")
 
 // persistNewItem 只做 DB 事务内写入；不做对象存储 I/O，不做索引，不做扫描入队。
-func (h *ItemHandler) persistNewItem(
-    ctx context.Context,
-    req createItemRequest,
-    assets createItemAssets,
+func persistNewItem(
+	db *gorm.DB,
+	req createItemRequest,
+	assets createItemAssets,
 ) (*models.CapabilityItem, error)
 ```
-
-> 注意：`createItemFromZip` 仍直接复用 `artifact.go` 中已有的包级别 `var StorageBackend storage.Backend`，不为 `ItemHandler` 新增字段。
 
 ### Slug 冲突策略
 
@@ -167,17 +165,20 @@ func (h *ItemHandler) persistNewItem(
 3. `MoveItem` 沿用同一套全局 slug 语义，不再只按目标 `(registry_id, item_type, slug)` 判断
 4. 继续保持当前 registry 下载协议不变，直到未来单独立项做完整寻址 cutover
 
-也就是说，本期不是“暂不放宽”为止，而是先把当前对外协议所依赖的强唯一性做成真的。
+也就是说，本期不是「暂不放宽」为止，而是先把当前对外协议所依赖的强唯一性做成真的。
+
+**存量数据迁移保护**：由于旧索引 `idx_item_slug` 是 `(registry_id, item_type, slug)` 复合唯一，存量数据库中可能已存在跨 registry 或跨 type 的同名 slug。服务器启动时在 `runPreMigrations` 末尾自动调用 `deduplicateSlugs`：先 DROP 旧索引，再检测所有重复 slug 并按创建时间排序，最旧的记录保留原 slug，后续重复者依次追加数字后缀（`-2`、`-3`……）直到全局唯一，整个去重过程在 DB 事务内完成。去重成功后 `AutoMigrate` 才建立新的 `idx_item_slug_global`，避免因存量冲突导致服务器启动失败。该函数幂等：若 `idx_item_slug_global` 已存在则直接跳过。
 
 ### Zip 解析服务（`services/zip_service.go`，新增）
 
 ```go
 type ZipParseResult struct {
-    MainContent string
-    MainPath    string
-    MainSHA     string
-    Parsed      *services.ParsedItem
-    Assets      []ZipAsset
+    MainContent    string
+    MainPath       string
+    MainSHA        string
+    Parsed         *ParsedItem
+    Assets         []ZipAsset
+    NormalizedMeta map[string]any // MCP 规范化后的 metadata；非 mcp 类型为 nil
 }
 
 type ZipAsset struct {
@@ -191,7 +192,7 @@ type ZipAsset struct {
 
 // ParseZip 直接接受 multipart.File 对应的 ReaderAt/Seeker 能力；
 // 不要求调用方为了 ReaderAt 强制将文件溢写到磁盘。
-func ParseZip(r io.ReaderAt, size int64, itemType string) (*ZipParseResult, error)
+func (z *ZipService) ParseZip(r io.ReaderAt, size int64, itemType string) (*ZipParseResult, error)
 ```
 
 解析流程：
@@ -250,7 +251,7 @@ zip 解压出的附属文件存为 `CapabilityAsset` 记录，复用 `syncAssets
 
 - **文本文件**（`.md`、`.json`、`.yaml` 等）→ 内容存入 `TextContent`，无需对象存储
 - **二进制文件** → 通过 `StorageBackend.Put` 存入对象存储，记录 `StorageKey`、`StorageBackend`
-- storage key 格式：`{repoID}/{itemID}/assets/{relativePath}`（无 repoID 时省略前缀）
+- storage key 格式：`{itemID}/assets/{relativePath}`
 
 原始 zip 包本身单独作为 `CapabilityArtifact` 存储：
 
@@ -293,20 +294,20 @@ zip 解压出的附属文件存为 `CapabilityAsset` 记录，复用 `syncAssets
 
 ## Error Handling
 
-| 场景                         | HTTP 状态码 | 错误信息                                                     |
-| ---------------------------- | ----------- | ------------------------------------------------------------ |
-| 上传体超过压缩包大小限制     | 413         | `"Request body too large (max 50MB)"`                       |
-| 不支持的 zip 上传 itemType   | 400         | `"Zip upload is only supported for skill and mcp"`         |
-| zip 损坏或非 zip 格式        | 400         | `"Invalid zip file"`                                        |
-| 找不到主文件                 | 400         | skill: `"Main file not found: expected SKILL.md for skill type"`; mcp: `"Main file not found: expected .mcp.json for mcp type"` |
-| mcp zip 解析出多个 server    | 400         | `"MCP archive must contain exactly one server definition"`  |
-| 超过解压大小限制             | 400         | `"Archive exceeds maximum allowed size (50MB)"`             |
-| 文件数量超限                 | 400         | `"Archive contains too many files (max 500)"`               |
-| 路径遍历检测                 | 400         | `"Invalid file path in archive"`                            |
-| 缺少必填 form field          | 400         | `"Missing required field: itemType"`                        |
-| slug 冲突                    | 409         | 全局 slug 唯一语义，所有创建/移动入口返回一致的冲突错误 |
-| 文件存储失败                 | 500         | `"Failed to store files"`                                   |
-| asset 下载缺失               | 404         | `"File not found"`                                          |
+| 场景                         | HTTP 状态码 | 错误信息                                                                                               |
+| ---------------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| 上传体超过压缩包大小限制     | 413         | `"Zip upload exceeds maximum size"`                                                                  |
+| 不支持的 zip 上传 itemType   | 400         | `"itemType must be either skill or mcp"`                                                             |
+| zip 损坏或非 zip 格式        | 400         | zip 解析错误原文透传                                                                                   |
+| 找不到主文件                 | 400         | skill: `"zip archive must include SKILL.md"`; mcp: `"zip archive must include .mcp.json"`          |
+| mcp zip 解析出多个 server    | 400         | `".mcp.json must contain exactly 1 server entry"`                                                    |
+| 超过解压大小限制             | 400         | `"zip archive exceeds maximum uncompressed size of 52428800 bytes"`                                  |
+| 文件数量超限                 | 400         | `"zip archive contains more than 500 files"`                                                         |
+| 路径遍历检测                 | 400         | `"zip entry \"<name>\" contains path traversal"`                                                 |
+| 缺少必填 form field          | 400         | `"itemType and name are required"`                                                                    |
+| slug 冲突                    | 409         | `"An item with this slug already exists"`（全局唯一，所有创建/移动入口一致）                         |
+| 文件存储失败                 | 500         | `"Failed to store zip assets"` / `"Failed to store uploaded zip"`                                  |
+| asset 下载缺失               | 404         | `"File not found"`                                                                                   |
 
 ## Test Strategy
 

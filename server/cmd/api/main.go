@@ -487,5 +487,92 @@ func runPreMigrations(db *gorm.DB) error {
 			}
 		}
 	}
+	if err := deduplicateSlugs(db); err != nil {
+		return fmt.Errorf("failed to deduplicate slugs before global unique index: %w", err)
+	}
 	return nil
+}
+
+
+// deduplicateSlugs resolves slug collisions before AutoMigrate installs the
+// global unique index on capability_items.slug. It is idempotent: if the index
+// already exists (i.e. a clean install or a re-deploy), it does nothing.
+//
+// Strategy: for each group of rows that share a slug, the oldest row (smallest
+// created_at, then id as tiebreak) keeps its slug unchanged. Every subsequent
+// duplicate gets a numeric suffix (-2, -3, …) in insertion order until the
+// candidate is unique across the entire table.
+func deduplicateSlugs(db *gorm.DB) error {
+	// Skip if the global unique index already exists — already clean.
+	var idxExists int
+	db.Raw(`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug_global'`).Scan(&idxExists)
+	if idxExists == 1 {
+		return nil
+	}
+
+	type row struct {
+		ID   string
+		Slug string
+	}
+
+	// Pull all duplicate slugs in deterministic order (oldest first).
+	var rows []row
+	err := db.Raw(`
+		SELECT id, slug
+		FROM capability_items
+		WHERE slug IN (
+			SELECT slug FROM capability_items GROUP BY slug HAVING COUNT(*) > 1
+		)
+		ORDER BY slug, created_at ASC, id ASC`, // oldest first within each group
+	).Scan(&rows).Error
+	if err != nil {
+		return fmt.Errorf("querying duplicate slugs: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Group by slug; first entry in each group is the keeper.
+	type group struct {
+		keeper bool
+		ids    []string // [0] = keeper, rest = duplicates in age order
+	}
+	groups := make(map[string]*group)
+	for _, r := range rows {
+		g, ok := groups[r.Slug]
+		if !ok {
+			groups[r.Slug] = &group{ids: []string{r.ID}}
+		} else {
+			g.ids = append(g.ids, r.ID)
+		}
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for origSlug, g := range groups {
+			// ids[0] keeps origSlug; ids[1..] get suffixed.
+			for i := 1; i < len(g.ids); i++ {
+				// Find a suffix that produces a slug not yet taken.
+				candidate := ""
+				for n := i + 1; ; n++ {
+					candidate = fmt.Sprintf("%s-%d", origSlug, n)
+					var count int64
+					if err := tx.Raw(
+						`SELECT COUNT(*) FROM capability_items WHERE slug = ?`, candidate,
+					).Scan(&count).Error; err != nil {
+						return fmt.Errorf("checking slug %q: %w", candidate, err)
+					}
+					if count == 0 {
+						break
+					}
+				}
+				log.Printf("[deduplicateSlugs] renaming item %s slug %q -> %q", g.ids[i], origSlug, candidate)
+				if err := tx.Exec(
+					`UPDATE capability_items SET slug = ? WHERE id = ?`, candidate, g.ids[i],
+				).Error; err != nil {
+					return fmt.Errorf("renaming slug for item %s: %w", g.ids[i], err)
+				}
+			}
+		}
+		return nil
+	})
 }
