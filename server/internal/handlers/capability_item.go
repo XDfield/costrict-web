@@ -31,20 +31,20 @@ type ItemHandler struct {
 	db         *gorm.DB
 	indexerSvc *services.IndexerService
 	parserSvc  *services.ParserService
-	zipSvc     *services.ZipService
+	archiveSvc *services.ArchiveService
 }
 
 // NewItemHandler creates a new item handler
 func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService) *ItemHandler {
-	var zipSvc *services.ZipService
+	var archiveSvc *services.ArchiveService
 	if parserSvc != nil {
-		zipSvc = &services.ZipService{Parser: parserSvc}
+		archiveSvc = &services.ArchiveService{Parser: parserSvc}
 	}
 	return &ItemHandler{
 		db:         db,
 		indexerSvc: indexerSvc,
 		parserSvc:  parserSvc,
-		zipSvc:     zipSvc,
+		archiveSvc: archiveSvc,
 	}
 }
 
@@ -411,7 +411,7 @@ func GetItem(c *gin.Context) {
 
 // UpdateItem godoc
 // @Summary      Update item
-// @Description  Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a zip archive. Creates a new version if content changes.
+// @Description  Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a .zip, .tar.gz, or .tgz archive. Creates a new version if content changes.
 // @Tags         items
 // @Accept       json,mpfd
 // @Produce      json
@@ -524,7 +524,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 // updateItemFromArchive handles multipart/form-data archive upload item update.
 func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	id := c.Param("id")
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxZipUploadSize)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxArchiveUploadSize)
 
 	db := h.db
 	var item models.CapabilityItem
@@ -550,7 +550,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return
 	}
 
-	if h.zipSvc == nil {
+	if h.archiveSvc == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive upload is not configured"})
 		return
 	}
@@ -565,7 +565,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return
 	}
 
-	result, err := h.zipSvc.ParseZip(readerAt, header.Size, item.ItemType)
+	result, err := h.archiveSvc.ParseArchive(readerAt, header.Size, header.Filename, item.ItemType)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -738,7 +738,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 			Filename:        uploadedFilename,
 			FileSize:        header.Size,
 			ChecksumSHA256:  checksum,
-			MimeType:        "application/zip",
+			MimeType:        services.ArchiveMimeType(header.Filename),
 			StorageBackend:  "local",
 			StorageKey:      zipKey,
 			ArtifactVersion: newVersion,
@@ -964,12 +964,12 @@ func ListAllItems(c *gin.Context) {
 
 // CreateItemDirect godoc
 // @Summary      Create item (direct)
-// @Description  Create a skill item via JSON or upload a .zip archive via multipart/form-data. Auto-selects public registry if registryId is omitted.
+// @Description  Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted.
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
 // @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,createdBy=string}  false  "Item data (JSON)"
-// @Param        file        formData  file    false  "Zip archive (multipart)"
+// @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
 // @Success      201   {object}  models.CapabilityItem
@@ -979,7 +979,7 @@ func ListAllItems(c *gin.Context) {
 // @Router       /items [post]
 func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
-		h.createItemFromZip(c)
+		h.createItemFromArchive(c)
 	} else {
 		h.createItemFromJSON(c)
 	}
@@ -1076,15 +1076,15 @@ func cleanupStorageKeys(keys []string) {
 	}
 }
 
-// createItemFromZip handles multipart/form-data zip upload item creation.
-func (h *ItemHandler) createItemFromZip(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxZipUploadSize)
+// createItemFromArchive handles multipart/form-data archive upload item creation.
+func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxArchiveUploadSize)
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Zip upload exceeds maximum size"})
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Archive upload exceeds maximum size"})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read file"})
@@ -1135,8 +1135,8 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 		slug = slugify(name)
 	}
 
-	if h.zipSvc == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Zip upload is not configured"})
+	if h.archiveSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive upload is not configured"})
 		return
 	}
 	if StorageBackend == nil {
@@ -1150,13 +1150,13 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 		return
 	}
 
-	result, err := h.zipSvc.ParseZip(readerAt, header.Size, itemType)
+	result, err := h.archiveSvc.ParseArchive(readerAt, header.Size, header.Filename, itemType)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if result == nil || result.Parsed == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Zip parser returned no item"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive parser returned no item"})
 		return
 	}
 
@@ -1198,7 +1198,7 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 		storageKey := fmt.Sprintf("%s/assets/%s", itemID, asset.Path)
 		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
 			cleanupStorageKeys(uploadedKeys)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store zip assets"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
 			return
 		}
 		uploadedKeys = append(uploadedKeys, storageKey)
@@ -1223,7 +1223,7 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
 		cleanupStorageKeys(uploadedKeys)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded zip"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
 		return
 	}
 	uploadedKeys = append(uploadedKeys, zipKey)
@@ -1274,7 +1274,7 @@ func (h *ItemHandler) createItemFromZip(c *gin.Context) {
 			Filename:        uploadedFilename,
 			FileSize:        header.Size,
 			ChecksumSHA256:  checksum,
-			MimeType:        "application/zip",
+			MimeType:        services.ArchiveMimeType(header.Filename),
 			StorageBackend:  "local",
 			StorageKey:      zipKey,
 			ArtifactVersion: version,
