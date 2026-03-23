@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -72,22 +73,40 @@ func (c *CasdoorClient) ExchangeCodeForToken(code string) (*CasdoorTokenResponse
 	data.Set("code", code)
 	data.Set("redirect_uri", c.callbackURL)
 
+	log.Printf("[Casdoor] Exchanging code for token: URL=%s, client_id=%s, redirect_uri=%s", tokenURL, c.clientID, c.callbackURL)
+
 	resp, err := http.PostForm(tokenURL, data)
 	if err != nil {
+		log.Printf("[Casdoor] Failed to send request: %v", err)
 		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[Casdoor] Failed to read response body: %v", err)
 		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	log.Printf("[Casdoor] Token response: status=%d, body=%s", resp.StatusCode, string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Casdoor] Non-OK status: %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp CasdoorTokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		log.Printf("[Casdoor] Failed to unmarshal response: %v", err)
 		return nil, fmt.Errorf("failed to unmarshal token response: %w", err)
 	}
 
+	if tokenResp.AccessToken == "" {
+		log.Printf("[Casdoor] Empty access token in response")
+		return nil, fmt.Errorf("empty access token in response")
+	}
+
+	log.Printf("[Casdoor] Successfully obtained token")
 	return &tokenResp, nil
 }
 
