@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -375,33 +376,104 @@ func ListMyRegistries(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"registries": registries})
 }
 
+// MyItem represents a capability item with associated repo info
+type MyItem struct {
+	models.CapabilityItem
+	RepoID   string `json:"repoId"`
+	RepoName string `json:"repoName"`
+}
+
 // ListMyItems godoc
 // @Summary      List my items
-// @Description  Get all skill items owned by a user
+// @Description  Get all skill items owned by the current authenticated user
 // @Tags         items
 // @Produce      json
-// @Param        ownerId  query     string  true   "Owner user ID"
-// @Param        type     query     string  false  "Filter by item type"
-// @Success      200      {object}  object{items=[]models.CapabilityItem}
-// @Failure      400      {object}  object{error=string}
+// @Param        type      query     string  false  "Filter by item type"
+// @Param        page      query     int     false  "Page number (default: 1)"
+// @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
+// @Success      200      {object}  object{items=[]MyItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      401      {object}  object{error=string}
 // @Router       /items/my [get]
 func ListMyItems(c *gin.Context) {
-	ownerID := c.Query("ownerId")
-	if ownerID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ownerId is required"})
+	ownerID, exists := c.Get(middleware.UserIDKey)
+	if !exists || ownerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
 	db := database.GetDB()
-	var registryIDs []string
-	db.Model(&models.CapabilityRegistry{}).Where("owner_id = ?", ownerID).Pluck("id", &registryIDs)
+
+	var registries []models.CapabilityRegistry
+	db.Where("owner_id = ?", ownerID).Find(&registries)
+	if len(registries) == 0 {
+		c.JSON(http.StatusOK, gin.H{"items": []MyItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
+		return
+	}
+
+	// Build registry ID list and registry lookup map
+	registryIDs := make([]string, len(registries))
+	registryMap := make(map[string]models.CapabilityRegistry, len(registries))
+	for i, reg := range registries {
+		registryIDs[i] = reg.ID
+		registryMap[reg.ID] = reg
+	}
+
+	query := db.Where("registry_id IN ?", registryIDs)
+	if itemType := c.Query("type"); itemType != "" {
+		query = query.Where("item_type = ?", itemType)
+	}
+
+	var total int64
+	query.Model(&models.CapabilityItem{}).Count(&total)
 
 	var items []models.CapabilityItem
-	if len(registryIDs) > 0 {
-		query := db.Where("registry_id IN ?", registryIDs)
-		if itemType := c.Query("type"); itemType != "" {
-			query = query.Where("item_type = ?", itemType)
+	offset := (page - 1) * pageSize
+	query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&items)
+
+	// Collect unique repo IDs and fetch repo names
+	repoIDSet := make(map[string]bool)
+	for _, reg := range registries {
+		if reg.RepoID != "" {
+			repoIDSet[reg.RepoID] = true
 		}
-		query.Order("created_at DESC").Find(&items)
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	repoNameMap := make(map[string]string)
+	if len(repoIDSet) > 0 {
+		repoIDs := make([]string, 0, len(repoIDSet))
+		for id := range repoIDSet {
+			repoIDs = append(repoIDs, id)
+		}
+		var repos []models.Repository
+		db.Where("id IN ?", repoIDs).Find(&repos)
+		for _, repo := range repos {
+			repoNameMap[repo.ID] = repo.Name
+		}
+	}
+
+	// Build response with repo info
+	result := make([]MyItem, len(items))
+	for i, item := range items {
+		reg := registryMap[item.RegistryID]
+		result[i] = MyItem{
+			CapabilityItem: item,
+			RepoID:         reg.RepoID,
+			RepoName:       repoNameMap[reg.RepoID],
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items":    result,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64(offset+pageSize) < total,
+	})
 }

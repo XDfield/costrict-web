@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -326,8 +327,11 @@ func TestListMyRegistries_MissingOwnerID(t *testing.T) {
 
 func TestListMyItems_Success(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-my-items", Name: "my-repo", OwnerID: "item-owner",
+	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-items-reg", Name: "my-items-r", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "item-owner",
+		ID: "my-items-reg", Name: "my-items-r", SourceType: "internal", Visibility: "public", RepoID: "repo-my-items", OwnerID: "item-owner",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "my-item-1", RegistryID: "my-items-reg", Slug: "my-skill", ItemType: "skill",
@@ -338,7 +342,7 @@ func TestListMyItems_Success(t *testing.T) {
 		Name: "My Cmd", Status: "active", CreatedBy: "item-owner", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRegistryRouter(""), "/api/items/my?ownerId=item-owner")
+	w := get(newRegistryRouter("item-owner"), "/api/items/my")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -347,6 +351,24 @@ func TestListMyItems_Success(t *testing.T) {
 	items := body["items"].([]interface{})
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	// Verify repo info is present
+	first := items[0].(map[string]interface{})
+	if first["repoId"] != "repo-my-items" {
+		t.Fatalf("expected repoId 'repo-my-items', got %v", first["repoId"])
+	}
+	if first["repoName"] != "my-repo" {
+		t.Fatalf("expected repoName 'my-repo', got %v", first["repoName"])
+	}
+	// Verify pagination metadata
+	if body["total"].(float64) != 2 {
+		t.Fatalf("expected total=2, got %v", body["total"])
+	}
+	if body["page"].(float64) != 1 {
+		t.Fatalf("expected page=1, got %v", body["page"])
+	}
+	if body["hasMore"].(bool) != false {
+		t.Fatalf("expected hasMore=false, got %v", body["hasMore"])
 	}
 }
 
@@ -364,19 +386,63 @@ func TestListMyItems_FilterByType(t *testing.T) {
 		Name: "My Cmd2", Status: "active", CreatedBy: "item-owner2", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRegistryRouter(""), "/api/items/my?ownerId=item-owner2&type=skill")
+	w := get(newRegistryRouter("item-owner2"), "/api/items/my?type=skill")
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
 	items := body["items"].([]interface{})
 	if len(items) != 1 {
 		t.Fatalf("expected 1 skill item, got %d", len(items))
 	}
+	if body["total"].(float64) != 1 {
+		t.Fatalf("expected total=1, got %v", body["total"])
+	}
 }
 
-func TestListMyItems_MissingOwnerID(t *testing.T) {
+func TestListMyItems_Pagination(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "my-items-reg3", Name: "my-items-r3", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "item-owner3",
+	})
+	for i := 0; i < 5; i++ {
+		database.DB.Create(&models.CapabilityItem{
+			ID: fmt.Sprintf("page-item-%d", i), RegistryID: "my-items-reg3",
+			Slug: fmt.Sprintf("slug-%d", i), ItemType: "skill",
+			Name: fmt.Sprintf("Skill %d", i), Status: "active", CreatedBy: "item-owner3",
+			Metadata: datatypes.JSON([]byte("{}")),
+		})
+	}
+
+	// Page 1: pageSize=2
+	w := get(newRegistryRouter("item-owner3"), "/api/items/my?page=1&pageSize=2")
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("page1: expected 2 items, got %d", len(items))
+	}
+	if body["total"].(float64) != 5 {
+		t.Fatalf("page1: expected total=5, got %v", body["total"])
+	}
+	if body["hasMore"].(bool) != true {
+		t.Fatalf("page1: expected hasMore=true")
+	}
+
+	// Page 3: last page with 1 item
+	w = get(newRegistryRouter("item-owner3"), "/api/items/my?page=3&pageSize=2")
+	json.NewDecoder(w.Body).Decode(&body)
+	items = body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("page3: expected 1 item, got %d", len(items))
+	}
+	if body["hasMore"].(bool) != false {
+		t.Fatalf("page3: expected hasMore=false")
+	}
+}
+
+func TestListMyItems_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
 	w := get(newRegistryRouter(""), "/api/items/my")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
