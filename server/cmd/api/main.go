@@ -144,7 +144,7 @@ func main() {
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
 
-	r := gin.Default()
+	r := gin.New()
 
 	casdoorEndpoint := cfg.Casdoor.Endpoint
 
