@@ -137,12 +137,14 @@ func populateItemAuthors(c *gin.Context, items []models.CapabilityItem) []ItemWi
 // @Description  Get all items in a registry with author information
 // @Tags         items
 // @Produce      json
-// @Param        id      path      string  true   "Registry ID"
-// @Param        type    query     string  false  "Filter by item type"
-// @Param        status  query     string  false  "Filter by status"
-// @Param        search  query     string  false  "Search by name or description"
-// @Success      200     {object}  object{items=[]ItemWithAuthor}
-// @Failure      500     {object}  object{error=string}
+// @Param        id        path      string  true   "Registry ID"
+// @Param        type      query     string  false  "Filter by item type"
+// @Param        status    query     string  false  "Filter by status"
+// @Param        search    query     string  false  "Search by name or description"
+// @Param        page      query     int     false  "Page number (default: 1)"
+// @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
+// @Success      200       {object}  object{items=[]ItemWithAuthor,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Failure      500       {object}  object{error=string}
 // @Router       /registries/{id}/items [get]
 func ListItems(c *gin.Context) {
 	registryId := c.Param("id")
@@ -158,13 +160,26 @@ func ListItems(c *gin.Context) {
 	if search := c.Query("search"); search != "" {
 		query = query.Where("name LIKE ? OR description LIKE ?", "%"+search+"%", "%"+search+"%")
 	}
-	result := query.Find(&items)
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	var total int64
+	query.Model(&models.CapabilityItem{}).Count(&total)
+
+	result := query.Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
 	itemsWithAuthors := populateItemAuthors(c, items)
-	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors})
+	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
 }
 
 // CreateItem godoc
@@ -465,9 +480,9 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        search      query     string   false  "Search by name or description"
 // @Param        category    query     string   false  "Filter by category"
 // @Param        registryId  query     string   false  "Filter by registry ID"
-// @Param        limit       query     integer  false  "Page size (default: 24, max: 100)"
-// @Param        offset      query     integer  false  "Page offset (default: 0)"
-// @Success      200         {object}  object{items=[]ItemWithAuthor,total=integer,hasMore=boolean}
+// @Param        page        query     int      false  "Page number (default: 1)"
+// @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
+// @Success      200         {object}  object{items=[]ItemWithAuthor,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
 // @Router       /items [get]
 func ListAllItems(c *gin.Context) {
@@ -475,9 +490,18 @@ func ListAllItems(c *gin.Context) {
 	userID, _ := c.Get(middleware.UserIDKey)
 	uid, _ := userID.(string)
 
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
 	registryIDs := buildVisibleRegistryIDs(db, uid)
 	if len(registryIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"items": []ItemWithAuthor{}, "total": 0})
+		c.JSON(http.StatusOK, gin.H{"items": []ItemWithAuthor{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
 		return
 	}
 
@@ -504,27 +528,14 @@ func ListAllItems(c *gin.Context) {
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
 
-	limit := 24
-	offset := 0
-	if l := c.Query("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
-			limit = n
-		}
-	}
-	if o := c.Query("offset"); o != "" {
-		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
-			offset = n
-		}
-	}
-
 	var items []models.CapabilityItem
-	result := query.Preload("Registry").Order("created_at DESC").Limit(limit).Offset(offset).Find(&items)
+	result := query.Preload("Registry").Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
 	itemsWithAuthors := populateItemAuthors(c, items)
-	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "hasMore": int64(offset+limit) < total})
+	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
 }
 
 // CreateItemDirect godoc
