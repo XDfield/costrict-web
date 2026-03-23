@@ -1,9 +1,7 @@
 package middleware
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -36,13 +34,9 @@ func OptionalAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		userInfo, err := parseJWTToken(token)
 		if err != nil {
-			// Fallback to Casdoor API verification
-			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-			if err != nil {
-				log.Printf("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-				c.Next()
-				return
-			}
+			log.Printf("[OptionalAuth] JWT parse failed: %v", err)
+			c.Next()
+			return
 		}
 
 		c.Set(UserIDKey, userInfo.Sub)
@@ -62,13 +56,9 @@ func RequireAuth(casdoorEndpoint string) gin.HandlerFunc {
 
 		userInfo, err := parseJWTToken(token)
 		if err != nil {
-			// Fallback to Casdoor API verification
-			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-			if err != nil {
-				log.Printf("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-				return
-			}
+			log.Printf("[RequireAuth] JWT parse failed: %v", err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
 		}
 
 		c.Set(UserIDKey, userInfo.Sub)
@@ -85,14 +75,6 @@ type casdoorUserInfo struct {
 	Email             string `json:"email"`
 }
 
-type casdoorUserinfoResponse struct {
-	Status string          `json:"status"`
-	Msg    string          `json:"msg"`
-	Sub    string          `json:"sub"`
-	Name   string          `json:"name"`
-	Email  string          `json:"email"`
-}
-
 // parseJWTToken parses Casdoor JWT token locally without calling Casdoor API
 func parseJWTToken(tokenString string) (*casdoorUserInfo, error) {
 	// Parse token without verification (Casdoor JWT is already verified by signature)
@@ -107,15 +89,19 @@ func parseJWTToken(tokenString string) (*casdoorUserInfo, error) {
 		return nil, fmt.Errorf("invalid claims type")
 	}
 
-	// Extract sub (universal_id in Casdoor)
+	// Debug: 打印完整的 claims
+	log.Printf("[parseJWTToken] claims: %+v", claims)
+
+	// 使用 sub 作为 userID (OIDC 标准)
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
-		// Try universal_id as fallback
 		sub, _ = claims["universal_id"].(string)
 	}
 	if sub == "" {
 		return nil, fmt.Errorf("no sub or universal_id in token")
 	}
+
+	log.Printf("[parseJWTToken] extracted sub=%q (as userID)", sub)
 
 	name, _ := claims["name"].(string)
 	preferredUsername, _ := claims["preferred_username"].(string)
@@ -129,48 +115,5 @@ func parseJWTToken(tokenString string) (*casdoorUserInfo, error) {
 		Name:              name,
 		PreferredUsername: preferredUsername,
 		Email:             email,
-	}, nil
-}
-
-func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
-	url := endpoint + "/api/userinfo"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request to %s failed: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[fetchUserInfo] casdoor returned %d: %s, url=%s", resp.StatusCode, string(body), url)
-		return nil, fmt.Errorf("casdoor returned status %d", resp.StatusCode)
-	}
-
-	var casdoorResp casdoorUserinfoResponse
-	if err := json.Unmarshal(body, &casdoorResp); err != nil {
-		return nil, fmt.Errorf("decode response failed: %w", err)
-	}
-
-	// Check if Casdoor returned an error
-	if casdoorResp.Status == "error" {
-		return nil, fmt.Errorf("casdoor error: %s", casdoorResp.Msg)
-	}
-
-	if casdoorResp.Sub == "" {
-		return nil, fmt.Errorf("no sub in response")
-	}
-
-	return &casdoorUserInfo{
-		Sub:               casdoorResp.Sub,
-		Name:              casdoorResp.Name,
-		PreferredUsername: casdoorResp.Name,
-		Email:             casdoorResp.Email,
 	}, nil
 }
