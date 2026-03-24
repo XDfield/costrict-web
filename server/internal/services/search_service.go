@@ -67,7 +67,8 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 	// Get embedding for query
 	queryEmbedding, err := s.embeddingSvc.GetSingleEmbedding(ctx, req.Query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get query embedding: %w", err)
+		// Fall back to keyword search if embedding fails
+		return s.KeywordSearch(req)
 	}
 
 	// Build vector search query
