@@ -1,8 +1,10 @@
 package notification
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -21,11 +23,51 @@ func NewNotificationService(db *gorm.DB, cloudBaseURL string) *NotificationServi
 	return &NotificationService{db: db, cloudBaseURL: cloudBaseURL}
 }
 
-func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID, deviceID string) {
+type sessionInfo struct {
+	eventType   string
+	sessionID   string
+	deviceID    string
+	path        string
+	workspaceID string
+}
+
+func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID, deviceID, path string) {
 	go func() {
-		msg := buildMessage(eventType, sessionID, deviceID, s.cloudBaseURL)
+		info := sessionInfo{
+			eventType: eventType,
+			sessionID: sessionID,
+			deviceID:  deviceID,
+			path:      path,
+		}
+		workspaceID, err := s.getWorkspaceID(deviceID, path)
+		if err != nil {
+			slog.Error(
+				"failed to get workspaceID", "userID", userID,
+				"deviceID", deviceID, "path", path, "error", err,
+			)
+		}
+		info.workspaceID = workspaceID
+
+		msg := s.buildMessage(info)
 		s.send(userID, eventType, msg)
 	}()
+}
+
+func (s *NotificationService) getWorkspaceID(deviceID, path string) (string, error) {
+	var workspaceID string
+	err := s.db.Table("workspace_directories wd").
+		Select("w.id").
+		Joins("JOIN workspaces w ON w.id = wd.workspace_id").
+		Where("wd.path = ? AND w.device_id = ?", path, deviceID).
+		Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL").
+		Scan(&workspaceID).Error
+	if err != nil {
+		return "", err
+	}
+	if workspaceID == "" {
+		return "", fmt.Errorf("workspace not found for deviceID=%s, path=%s", deviceID, path)
+	}
+	return workspaceID, nil
 }
 
 func (s *NotificationService) send(userID, eventType string, msg sender.NotificationMessage) {
@@ -34,6 +76,11 @@ func (s *NotificationService) send(userID, eventType string, msg sender.Notifica
 		"user_id = ? AND enabled = true AND ? = ANY(trigger_events) AND deleted_at IS NULL",
 		userID, eventType,
 	).Find(&channels)
+
+	if len(channels) == 0 {
+		slog.Info("no notification channels found", "userID", userID, "eventType", eventType)
+		return
+	}
 
 	for _, ch := range channels {
 		snd, ok := sender.Get(ch.ChannelType)
@@ -151,7 +198,7 @@ func (s *NotificationService) GetAvailableChannelTypes() []map[string]any {
 	return result
 }
 
-func buildMessage(eventType, sessionID, deviceID, cloudBaseURL string) sender.NotificationMessage {
+func (s *NotificationService) buildMessage(info sessionInfo) sender.NotificationMessage {
 	titles := map[string]string{
 		"session.completed": "会话执行完成",
 		"session.failed":    "会话执行失败",
@@ -162,22 +209,26 @@ func buildMessage(eventType, sessionID, deviceID, cloudBaseURL string) sender.No
 		"idle":              "会话等待中",
 	}
 
-	title, ok := titles[eventType]
+	title, ok := titles[info.eventType]
 	if !ok {
 		title = "CoStrict 通知"
 	}
 
 	sessionURL := ""
-	if cloudBaseURL != "" && deviceID != "" && sessionID != "" {
-		sessionURL = fmt.Sprintf("%s/devices/%s/sessions/%s", cloudBaseURL, deviceID, sessionID)
+	if s.cloudBaseURL != "" && info.workspaceID != "" && info.sessionID != "" {
+		pathID := base64.RawURLEncoding.EncodeToString([]byte(info.path))
+		sessionURL = fmt.Sprintf("%s/workspace/%s/%s/session/%s", s.cloudBaseURL, info.workspaceID, pathID, info.sessionID)
+	} else {
+		slog.Warn("sessionURL assembly failed.", "workspaceID", info.workspaceID, "sessionID", info.sessionID)
+		sessionURL = s.cloudBaseURL
 	}
 
 	return sender.NotificationMessage{
 		Title:     title,
-		Body:      fmt.Sprintf("设备 %s 的会话 %s 状态更新：%s", deviceID, sessionID, title),
-		EventType: eventType,
-		SessionID: sessionID,
-		DeviceID:  deviceID,
-		Metadata:  map[string]any{"status": eventType, "sessionUrl": sessionURL},
+		Body:      fmt.Sprintf("**状态更新:** <font color=\"info\">%s</font>\n> **设备**: %s\n**会话**: %s", title, info.deviceID, info.sessionID),
+		EventType: info.eventType,
+		SessionID: info.sessionID,
+		DeviceID:  info.deviceID,
+		Metadata:  map[string]any{"status": info.eventType, "sessionUrl": sessionURL},
 	}
 }
