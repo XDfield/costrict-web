@@ -25,10 +25,11 @@ type Config struct {
 }
 
 type CasdoorConfig struct {
-	Endpoint    string
-	ClientID    string
-	Secret      string
-	CallbackURL string
+	Endpoint         string // Public URL for browser redirects (login page)
+	InternalEndpoint string // Internal URL for server-to-server calls (token exchange, userinfo); falls back to Endpoint
+	ClientID         string
+	Secret           string
+	CallbackURL      string
 }
 
 // LLMConfig holds configuration for the LLM service (GLM with OpenAI protocol)
@@ -81,10 +82,11 @@ func Load() *Config {
 		CookieSecure:       getEnvBool("COOKIE_SECURE", true),
 		CORSAllowedOrigins: getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
-			Endpoint:    getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
-			ClientID:    getEnv("CASDOOR_CLIENT_ID", ""),
-			Secret:      getEnv("CASDOOR_CLIENT_SECRET", ""),
-			CallbackURL: getEnv("CASDOOR_CALLBACK_URL", "http://localhost:8080/api/auth/callback"),
+			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
+			InternalEndpoint: getEnv("CASDOOR_INTERNAL_ENDPOINT", ""),
+			ClientID:         getEnv("CASDOOR_CLIENT_ID", ""),
+			Secret:           getEnv("CASDOOR_CLIENT_SECRET", ""),
+			CallbackURL:      getEnv("CASDOOR_CALLBACK_URL", "http://localhost:8080/api/auth/callback"),
 		},
 		LLM: LLMConfig{
 			Provider:    getEnv("LLM_PROVIDER", "openai"),

@@ -147,7 +147,10 @@ func main() {
 
 	r := gin.New()
 
-	casdoorEndpoint := cfg.Casdoor.Endpoint
+	casdoorEndpoint := cfg.Casdoor.InternalEndpoint
+	if casdoorEndpoint == "" {
+		casdoorEndpoint = cfg.Casdoor.Endpoint
+	}
 
 	// Initialize JWKS provider for JWT signature verification
 	jwksProvider := middleware.NewJWKSProvider(casdoorEndpoint)
@@ -173,7 +176,8 @@ func main() {
 		auth := api.Group("/auth")
 		{
 			auth.GET("/callback", handlers.AuthCallback)
-			auth.GET("/login", handlers.Login)
+			auth.GET("/login", handlers.AuthLogin)
+			auth.POST("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
 		}
 

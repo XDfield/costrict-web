@@ -13,10 +13,11 @@ import (
 )
 
 type CasdoorClient struct {
-	endpoint   string
-	clientID   string
-	secret     string
-	callbackURL string
+	endpoint         string // public URL for browser-facing URLs
+	internalEndpoint string // internal URL for server-to-server calls
+	clientID         string
+	secret           string
+	callbackURL      string
 }
 
 type CasdoorUser struct {
@@ -41,11 +42,16 @@ type CasdoorUserInfoResponse struct {
 }
 
 func NewClient(cfg *config.CasdoorConfig) *CasdoorClient {
+	internal := cfg.InternalEndpoint
+	if internal == "" {
+		internal = cfg.Endpoint
+	}
 	return &CasdoorClient{
-		endpoint:   cfg.Endpoint,
-		clientID:   cfg.ClientID,
-		secret:     cfg.Secret,
-		callbackURL: cfg.CallbackURL,
+		endpoint:         cfg.Endpoint,
+		internalEndpoint: internal,
+		clientID:         cfg.ClientID,
+		secret:           cfg.Secret,
+		callbackURL:      cfg.CallbackURL,
 	}
 }
 
@@ -57,6 +63,18 @@ func (c *CasdoorClient) GetLoginURL(state, callbackURL string) string {
 	if callbackURL == "" {
 		callbackURL = c.callbackURL
 	}
+	params := url.Values{}
+	params.Set("client_id", c.clientID)
+	params.Set("response_type", "code")
+	params.Set("redirect_uri", callbackURL)
+	params.Set("scope", "openid profile email")
+	params.Set("state", state)
+
+	return fmt.Sprintf("%s/login/oauth/authorize?%s", c.endpoint, params.Encode())
+}
+
+// GetLoginURLWithCallback returns a Casdoor login URL using a custom callback URL
+func (c *CasdoorClient) GetLoginURLWithCallback(state, callbackURL string) string {
 	params := url.Values{}
 	params.Set("client_id", c.clientID)
 	params.Set("response_type", "code")
@@ -104,7 +122,7 @@ func (c *CasdoorClient) ExchangeCodeForToken(code, callbackURL string) (*Casdoor
 
 // GetUserInfo retrieves user information from Casdoor /api/userinfo (OIDC standard)
 func (c *CasdoorClient) GetUserInfo(accessToken string) (*CasdoorUserInfoResponse, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/userinfo", c.endpoint), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/userinfo", c.internalEndpoint), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -131,7 +149,7 @@ func (c *CasdoorClient) GetUserInfo(accessToken string) (*CasdoorUserInfoRespons
 
 // CallCasdoorAPI makes a generic API call to Casdoor
 func (c *CasdoorClient) CallCasdoorAPI(method, endpoint string, accessToken string, body interface{}) ([]byte, error) {
-	apiURL := fmt.Sprintf("%s%s", c.endpoint, endpoint)
+	apiURL := fmt.Sprintf("%s%s", c.internalEndpoint, endpoint)
 
 	var reqBody io.Reader
 	if body != nil {
@@ -179,7 +197,7 @@ func (c *CasdoorClient) GetUsers(accessToken string) ([]byte, error) {
 
 // SearchUsers searches users in Casdoor by username or email keyword
 func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser, error) {
-	apiURL := fmt.Sprintf("%s/api/get-users", c.endpoint)
+	apiURL := fmt.Sprintf("%s/api/get-users", c.internalEndpoint)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -235,7 +253,7 @@ func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser,
 // If logoutAll is true, all sessions and tokens for the user are invalidated;
 // otherwise only the current session is ended.
 func (c *CasdoorClient) Logout(accessToken string, logoutAll bool) error {
-	logoutURL := fmt.Sprintf("%s/api/sso-logout?logoutAll=%t", c.endpoint, logoutAll)
+	logoutURL := fmt.Sprintf("%s/api/sso-logout?logoutAll=%t", c.internalEndpoint, logoutAll)
 
 	req, err := http.NewRequest("POST", logoutURL, nil)
 	if err != nil {
@@ -274,7 +292,7 @@ func (c *CasdoorClient) GetGroups(accessToken string) ([]byte, error) {
 
 // GetUserByID retrieves a user by ID from Casdoor
 func (c *CasdoorClient) GetUserByID(accessToken, userID string) (*CasdoorUser, error) {
-	apiURL := fmt.Sprintf("%s/api/get-user?id=%s", c.endpoint, url.QueryEscape(userID))
+	apiURL := fmt.Sprintf("%s/api/get-user?id=%s", c.internalEndpoint, url.QueryEscape(userID))
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
