@@ -97,9 +97,26 @@ func CreateRepoInvitation(c *gin.Context) {
 		return
 	}
 
-	db.Preload("Repository").First(&invitation, "id = ?", invitation.ID)
+	// TODO: 当前为自动同意邀请模式，跳过被邀请人手动确认流程。后续需改回原有的邀请-确认流程，届时删除下方自动同意逻辑，恢复直接返回 invitation 的行为。
+	invitation.Status = "accepted"
+	if err := db.Save(&invitation).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to auto-accept invitation"})
+		return
+	}
 
-	c.JSON(http.StatusCreated, invitation)
+	member := models.RepoMember{
+		ID:       uuid.New().String(),
+		RepoID:   repoID,
+		UserID:   req.InviteeID,
+		Username: req.InviteeUsername,
+		Role:     role,
+	}
+	if err := db.Create(&member).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"member": member, "autoAccepted": true})
 }
 
 // ListRepoInvitations godoc
