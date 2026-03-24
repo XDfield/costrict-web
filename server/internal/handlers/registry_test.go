@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -75,6 +76,7 @@ func setupTestDB(t *testing.T) func() {
 		`CREATE TABLE IF NOT EXISTS capability_items (
 			id                   TEXT PRIMARY KEY,
 			registry_id          TEXT NOT NULL,
+			repo_id              TEXT NOT NULL DEFAULT 'public',
 			slug                 TEXT NOT NULL,
 			item_type            TEXT NOT NULL,
 			name                 TEXT NOT NULL,
@@ -85,6 +87,7 @@ func setupTestDB(t *testing.T) func() {
 			metadata             TEXT DEFAULT '{}',
 			source_path          TEXT,
 			source_sha           TEXT,
+			source_type          TEXT NOT NULL DEFAULT 'direct',
 			install_count        INTEGER DEFAULT 0,
 			status               TEXT DEFAULT 'active',
 			security_status      TEXT DEFAULT 'unscanned',
@@ -96,7 +99,7 @@ func setupTestDB(t *testing.T) func() {
 			embedding_updated_at DATETIME,
 			created_at           DATETIME,
 			updated_at           DATETIME,
-			UNIQUE(registry_id, item_type, slug)
+			UNIQUE(repo_id, item_type, slug)
 		)`,
 		`CREATE TABLE IF NOT EXISTS capability_versions (
 			id         TEXT PRIMARY KEY,
@@ -223,7 +226,7 @@ func newRouter(userID string) *gin.Engine {
 	}
 	r.GET("/api/registry/:repo/access", injectUser, RegistryAccess)
 	r.GET("/api/registry/:repo/index.json", injectUser, RegistryIndex)
-	r.GET("/api/registry/:repo/:slug/:file", injectUser, DownloadRegistryFile)
+	r.GET("/api/registry/:repo/:itemType/:slug/*file", injectUser, DownloadRegistryFile)
 	r.GET("/api/items/:id/download", injectUser, DownloadItem)
 	return r
 }
@@ -329,7 +332,7 @@ func TestRegistryIndex_PublicRepo_Anonymous(t *testing.T) {
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-1", RegistryID: PublicRegistryID,
+		ID: "item-1", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "code-reviewer", ItemType: "skill",
 		Name: "Code Reviewer", Status: "active", CreatedBy: "system",
 		Content: "# Code Reviewer", Metadata: datatypes.JSON([]byte("{}")),
@@ -362,7 +365,7 @@ func TestRegistryIndex_CommandFilename_UsesSlug(t *testing.T) {
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-2", RegistryID: PublicRegistryID,
+		ID: "item-2", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "git-review", ItemType: "command",
 		Name: "Git Review", Status: "active", CreatedBy: "system",
 		Content: "# Git Review", Metadata: datatypes.JSON([]byte("{}")),
@@ -421,7 +424,7 @@ func TestRegistryIndex_PrivateRepo_Member(t *testing.T) {
 		ID: "mem-1", RepoID: "repo-4", UserID: "member-user", Role: "member",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-3", RegistryID: "reg-4",
+		ID: "item-3", RegistryID: "reg-4", RepoID: "repo-4",
 		Slug: "internal-tool", ItemType: "subagent",
 		Name: "Internal Tool", Status: "active", CreatedBy: "u1",
 		Content: "# Internal", Metadata: datatypes.JSON([]byte("{}")),
@@ -438,21 +441,88 @@ func TestRegistryIndex_PrivateRepo_Member(t *testing.T) {
 	}
 }
 
-func TestRegistryIndex_MCPItem_HasMCPField(t *testing.T) {
+func assertFilesContainExactly(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("unexpected files: got %#v want %#v", got, want)
+	}
+
+	counts := make(map[string]int, len(want))
+	for _, file := range want {
+		counts[file]++
+	}
+	for _, file := range got {
+		counts[file]--
+	}
+	for file, count := range counts {
+		if count != 0 {
+			t.Fatalf("unexpected files: got %#v want %#v", got, want)
+		}
+		_ = file
+	}
+}
+
+func TestRegistryIndex_SkillWithAssets(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
-	meta := `{"hosting_type":"command","command":"npx","args":["-y","@internal/tool"]}`
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-mcp", RegistryID: PublicRegistryID,
+		ID: "item-skill-assets", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	setupScript := "#!/bin/sh\necho setup\n"
+	demoScript := "print('demo')\n"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-skill-script", ItemID: "item-skill-assets",
+		RelPath: "scripts/setup.sh", TextContent: &setupScript, MimeType: "text/x-shellscript",
+		FileSize: int64(len(setupScript)), ContentSHA: "sha-script",
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-skill-example", ItemID: "item-skill-assets",
+		RelPath: "examples/demo.py", TextContent: &demoScript, MimeType: "text/x-python",
+		FileSize: int64(len(demoScript)), ContentSHA: "sha-example",
+	})
+
+	w := get(newRouter(""), "/api/registry/public/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body indexJSON
+	json.NewDecoder(w.Body).Decode(&body)
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(body.Items))
+	}
+	assertFilesContainExactly(t, body.Items[0].Files, "SKILL.md", "scripts/setup.sh", "examples/demo.py")
+}
+
+func TestRegistryIndex_MCPWithAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	meta := `{"hosting_type":"command","command":"npx"}`
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-mcp", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "my-tool", ItemType: "mcp",
 		Name: "My Tool", Status: "active", CreatedBy: "system",
 		Content: "", Metadata: datatypes.JSON([]byte(meta)),
 	})
+	assetText := "# MCP usage"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-mcp-doc", ItemID: "item-mcp",
+		RelPath: "docs/usage.md", TextContent: &assetText, MimeType: "text/markdown",
+		FileSize: int64(len(assetText)), ContentSHA: "sha-doc",
+	})
 
 	w := get(newRouter(""), "/api/registry/public/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 	var body indexJSON
 	json.NewDecoder(w.Body).Decode(&body)
 	if len(body.Items) != 1 {
@@ -462,11 +532,7 @@ func TestRegistryIndex_MCPItem_HasMCPField(t *testing.T) {
 	if item.MCP == nil {
 		t.Fatal("expected mcp field to be set")
 	}
-	var mcp map[string]interface{}
-	json.Unmarshal(item.MCP, &mcp)
-	if mcp["type"] != "local" {
-		t.Fatalf("expected type=local, got %v", mcp["type"])
-	}
+	assertFilesContainExactly(t, item.Files, ".mcp.json", "docs/usage.md")
 }
 
 // ---------------------------------------------------------------------------
@@ -480,13 +546,13 @@ func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-dl", RegistryID: PublicRegistryID,
+		ID: "item-dl", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "code-reviewer", ItemType: "skill",
 		Name: "Code Reviewer", Status: "active", CreatedBy: "system",
 		Content: "# Code Reviewer\nsome content", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRouter(""), "/api/registry/public/code-reviewer/SKILL.md")
+	w := get(newRouter(""), "/api/registry/public/skill/code-reviewer/SKILL.md")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -499,6 +565,186 @@ func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 	}
 }
 
+func TestDownloadRegistryFile_MainFile(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	content := "# My Skill\nmain content"
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-main", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: content, Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/SKILL.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != content {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestDownloadRegistryFile_EmptyFile(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	content := "# My Skill\nmain content"
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-empty", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: content, Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != content {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="SKILL.md"` {
+		t.Fatalf("unexpected Content-Disposition: %s", cd)
+	}
+}
+
+func TestDownloadRegistryFile_TextAsset(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-text-asset", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill\nmain content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	assetText := "#!/bin/bash\necho test"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-text", ItemID: "item-dl-text-asset",
+		RelPath: "scripts/setup.sh", TextContent: &assetText, MimeType: "text/x-sh",
+		FileSize: int64(len(assetText)), ContentSHA: "sha-text",
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/scripts/setup.sh")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != assetText {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="scripts/setup.sh"` {
+		t.Fatalf("unexpected Content-Disposition: %s", cd)
+	}
+}
+
+func TestDownloadRegistryFile_BinaryAsset(t *testing.T) {
+	defer setupTestDB(t)()
+	backend := newMemBackend()
+	binaryData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	backend.data["test-key"] = binaryData
+	oldBackend := StorageBackend
+	StorageBackend = backend
+	defer func() { StorageBackend = oldBackend }()
+
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-binary-asset", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill\nmain content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-binary", ItemID: "item-dl-binary-asset",
+		RelPath: "image.png", StorageBackend: "local", StorageKey: "test-key",
+		MimeType: "image/png", FileSize: int64(len(binaryData)), ContentSHA: "sha-binary",
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/image.png")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("unexpected Content-Type: %s", ct)
+	}
+	if !bytes.Equal(w.Body.Bytes(), binaryData) {
+		t.Fatalf("unexpected body: %v", w.Body.Bytes())
+	}
+}
+
+func TestDownloadRegistryFile_NestedPath(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-nested", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill\nmain content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	assetText := "nested file"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-nested", ItemID: "item-dl-nested",
+		RelPath: "deep/nested/file.txt", TextContent: &assetText, MimeType: "text/plain",
+		FileSize: int64(len(assetText)), ContentSHA: "sha-nested",
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/deep/nested/file.txt")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDownloadRegistryFile_NonexistentFile(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-missing-file", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill\nmain content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/nonexistent.txt")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestDownloadRegistryFile_PathTraversal(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-path-traversal", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill\nmain content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/my-skill/../../../etc/passwd")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
 func TestDownloadRegistryFile_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
@@ -506,7 +752,7 @@ func TestDownloadRegistryFile_NotFound(t *testing.T) {
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 
-	w := get(newRouter(""), "/api/registry/public/nonexistent/SKILL.md")
+	w := get(newRouter(""), "/api/registry/public/skill/nonexistent/SKILL.md")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -521,13 +767,13 @@ func TestDownloadRegistryFile_RepoItem_Forbidden(t *testing.T) {
 		SourceType: "internal", Visibility: "repo", RepoID: "repo-5", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-repo", RegistryID: "reg-5",
+		ID: "item-repo", RegistryID: "reg-5", RepoID: "repo-5",
 		Slug: "secret-skill", ItemType: "skill",
 		Name: "Secret", Status: "active", CreatedBy: "u1",
 		Content: "secret", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRouter("outsider"), "/api/registry/corp/secret-skill/SKILL.md")
+	w := get(newRouter("outsider"), "/api/registry/corp/skill/secret-skill/SKILL.md")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
 	}
@@ -544,7 +790,7 @@ func TestDownloadItem_PublicItem(t *testing.T) {
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID: "item-byid", RegistryID: PublicRegistryID,
+		ID: "item-byid", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "my-skill", ItemType: "skill",
 		Name: "My Skill", Status: "active", CreatedBy: "system",
 		Content: "# My Skill", Metadata: datatypes.JSON([]byte("{}")),
@@ -573,6 +819,7 @@ func TestDownloadItem_NotFound(t *testing.T) {
 
 func TestBuildMCPConfig_Command(t *testing.T) {
 	si := models.CapabilityItem{
+		RepoID: "public",
 		Metadata: datatypes.JSON([]byte(`{"hosting_type":"command","command":"npx","args":["-y","@foo/bar"]}`)),
 	}
 	raw := buildMCPConfig(si)
@@ -591,6 +838,7 @@ func TestBuildMCPConfig_Command(t *testing.T) {
 
 func TestBuildMCPConfig_Remote(t *testing.T) {
 	si := models.CapabilityItem{
+		RepoID: "public",
 		Metadata: datatypes.JSON([]byte(`{"hosting_type":"remote","server_type":"sse","url":"https://mcp.example.com"}`)),
 	}
 	raw := buildMCPConfig(si)
@@ -605,7 +853,7 @@ func TestBuildMCPConfig_Remote(t *testing.T) {
 }
 
 func TestBuildMCPConfig_EmptyMetadata(t *testing.T) {
-	si := models.CapabilityItem{Metadata: datatypes.JSON([]byte{})}
+	si := models.CapabilityItem{RepoID: "public", Metadata: datatypes.JSON([]byte{})}
 	if buildMCPConfig(si) != nil {
 		t.Fatal("expected nil for empty metadata")
 	}
@@ -613,7 +861,7 @@ func TestBuildMCPConfig_EmptyMetadata(t *testing.T) {
 
 func TestBuildMCPConfig_UnknownHostingType_PassThrough(t *testing.T) {
 	raw := `{"hosting_type":"artifact","package_name":"my-pkg"}`
-	si := models.CapabilityItem{Metadata: datatypes.JSON([]byte(raw))}
+	si := models.CapabilityItem{RepoID: "public", Metadata: datatypes.JSON([]byte(raw))}
 	out := buildMCPConfig(si)
 	if string(out) != raw {
 		t.Fatalf("expected passthrough, got %s", string(out))

@@ -446,3 +446,58 @@ func TestListMyItems_Unauthenticated(t *testing.T) {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
+
+
+func TestListMyItems_IncludesCreatedByInOtherRegistries(t *testing.T) {
+	defer setupTestDB(t)()
+	// Registry owned by "system", not by "user-abc".
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "public-reg", Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	// Item created by "user-abc" in the public registry.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "pub-item-1", RegistryID: "public-reg", RepoID: "public", Slug: "pub-skill", ItemType: "skill",
+		Name: "Public Skill", Status: "active", CreatedBy: "user-abc", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Item created by someone else — should NOT appear.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "pub-item-2", RegistryID: "public-reg", RepoID: "public", Slug: "other-skill", ItemType: "skill",
+		Name: "Other Skill", Status: "active", CreatedBy: "other-user", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter(""), "/api/items/my?ownerId=user-abc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item (created_by match), got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "pub-item-1" {
+		t.Fatalf("expected pub-item-1, got %s", first["id"])
+	}
+}
+
+func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
+	defer setupTestDB(t)()
+	// Registry owned by the user.
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "user-reg", Name: "user-r", SourceType: "internal", Visibility: "public", RepoID: "user-repo", OwnerID: "user-dedup",
+	})
+	// Item in user's own registry AND created_by = user -> matches both sides of OR.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "dedup-item", RegistryID: "user-reg", RepoID: "user-repo", Slug: "dedup-skill", ItemType: "skill",
+		Name: "Dedup Skill", Status: "active", CreatedBy: "user-dedup", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter(""), "/api/items/my?ownerId=user-dedup")
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected exactly 1 item (no duplicates), got %d", len(items))
+	}
+}

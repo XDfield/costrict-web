@@ -207,5 +207,3 @@ func DeleteArtifact(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Artifact deleted"})
 }
-
-

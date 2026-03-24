@@ -3,7 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -138,8 +141,24 @@ func RegistryIndex(c *gin.Context) {
 	var capabilityItems []models.CapabilityItem
 	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&capabilityItems)
 
+	itemIDs := make([]string, 0, len(capabilityItems))
+	for _, si := range capabilityItems {
+		itemIDs = append(itemIDs, si.ID)
+	}
+
+	var allAssets []models.CapabilityAsset
+	if len(itemIDs) > 0 {
+		db.Where("item_id IN ?", itemIDs).Find(&allAssets)
+	}
+
+	assetsByItem := make(map[string][]string, len(itemIDs))
+	for _, asset := range allAssets {
+		assetsByItem[asset.ItemID] = append(assetsByItem[asset.ItemID], asset.RelPath)
+	}
+
 	items := make([]indexItem, 0, len(capabilityItems))
 	for _, si := range capabilityItems {
+		assetPaths := assetsByItem[si.ID]
 		entry := indexItem{
 			Slug:        si.Slug,
 			Type:        si.ItemType,
@@ -149,13 +168,16 @@ func RegistryIndex(c *gin.Context) {
 
 		switch si.ItemType {
 		case "skill":
-			entry.Files = []string{"SKILL.md"}
+			entry.Files = append([]string{"SKILL.md"}, assetPaths...)
 		case "subagent":
-			entry.Files = []string{"agent.md"}
+			entry.Files = append([]string{"agent.md"}, assetPaths...)
 		case "command":
-			entry.Files = []string{si.Slug + ".md"}
+			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
 			entry.MCP = buildMCPConfig(si)
+			if len(assetPaths) > 0 {
+				entry.Files = append([]string{".mcp.json"}, assetPaths...)
+			}
 		}
 
 		items = append(items, entry)
@@ -296,16 +318,17 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/slug/filename. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.
 // @Tags         registry
 // @Produce      text/plain
-// @Param        repo  path      string  true  "Repository name"
-// @Param        slug  path      string  true  "Item slug"
-// @Param        file  path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
-// @Success      200   {string}  string  "File content"
-// @Failure      403   {object}  object{error=string}
-// @Failure      404   {object}  object{error=string}
-// @Router       /registry/{repo}/{slug}/{file} [get]
+// @Param        repo      path      string  true  "Repository name"
+// @Param        itemType  path      string  true  "Item type (skill, mcp, etc.)"
+// @Param        slug      path      string  true  "Item slug"
+// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
+// @Success      200       {string}  string  "File content"
+// @Failure      403       {object}  object{error=string}
+// @Failure      404       {object}  object{error=string}
+// @Router       /registry/{repo}/{itemType}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
 	repoID, ok := resolveRepoID(c.Param("repo"))
 	if !ok {
@@ -313,22 +336,13 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
+	itemType := c.Param("itemType")
 	slug := c.Param("slug")
 	db := database.GetDB()
 
-	var registryIDs []string
-	db.Model(&models.CapabilityRegistry{}).
-		Where("repo_id = ?", repoID).
-		Pluck("id", &registryIDs)
-
-	if len(registryIDs) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
-		return
-	}
-
 	var item models.CapabilityItem
 	result := db.Preload("Registry").
-		Where("registry_id IN ? AND slug = ?", registryIDs, slug).
+		Where("repo_id = ? AND item_type = ? AND slug = ?", repoID, itemType, slug).
 		First(&item)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
@@ -343,9 +357,54 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
-	filename := c.Param("file")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+	requestedFile := strings.TrimPrefix(c.Param("file"), "/")
+	if strings.Contains(requestedFile, "..") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	mainFilename := contentFilename(item.ItemType, item.Slug)
+	if requestedFile == "" || requestedFile == mainFilename {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", mainFilename))
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+		return
+	}
+
+	var asset models.CapabilityAsset
+	if err := db.Where("item_id = ? AND rel_path = ?", item.ID, requestedFile).First(&asset).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", requestedFile))
+	if asset.TextContent != nil {
+		c.Data(http.StatusOK, asset.MimeType, []byte(*asset.TextContent))
+		return
+	}
+	if asset.StorageKey == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+	if StorageBackend == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+
+	reader, size, err := StorageBackend.Get(c.Request.Context(), asset.StorageKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+	defer reader.Close()
+
+	c.Header("Content-Type", asset.MimeType)
+	if size > 0 {
+		c.Header("Content-Length", strconv.FormatInt(size, 10))
+	}
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		_ = c.Error(err)
+	}
 }
 
 func mergeUnique(a, b []string) []string {
