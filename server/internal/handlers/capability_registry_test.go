@@ -466,7 +466,7 @@ func TestListMyItems_IncludesCreatedByInOtherRegistries(t *testing.T) {
 		Name: "Other Skill", Status: "active", CreatedBy: "other-user", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRegistryRouter(""), "/api/items/my?ownerId=user-abc")
+	w := get(newRegistryRouter("user-abc"), "/api/items/my")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -482,6 +482,76 @@ func TestListMyItems_IncludesCreatedByInOtherRegistries(t *testing.T) {
 	}
 }
 
+func TestListMyItems_IncludesCommandsFromPublicAndOwnedRepo(t *testing.T) {
+	defer setupTestDB(t)()
+
+	const userID = "user-cmd-owner"
+
+	// 1. Public registry (owned by "system", not by the user).
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "pub-reg-cmd", Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+	// 2. User's own repo + registry.
+	database.DB.Create(&models.Repository{
+		ID: "repo-cmd-user", Name: "user-cmd-repo", OwnerID: userID,
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-cmd-user", Name: "user-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-cmd-user", OwnerID: userID,
+	})
+
+	// Command created by the user in the public registry.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "cmd-in-public", RegistryID: "pub-reg-cmd", RepoID: "public",
+		Slug: "pub-cmd", ItemType: "command",
+		Name: "Public Command", Status: "active", CreatedBy: userID,
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Command created by the user in their own repo registry.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "cmd-in-own-repo", RegistryID: "reg-cmd-user", RepoID: "repo-cmd-user",
+		Slug: "own-cmd", ItemType: "command",
+		Name: "Own Repo Command", Status: "active", CreatedBy: userID,
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Command created by another user in the public registry — should NOT appear.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "cmd-other-user", RegistryID: "pub-reg-cmd", RepoID: "public",
+		Slug: "other-cmd", ItemType: "command",
+		Name: "Other User Command", Status: "active", CreatedBy: "someone-else",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter(userID), "/api/items/my?type=command")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 command items (public + own repo), got %d", len(items))
+	}
+	if body["total"].(float64) != 2 {
+		t.Fatalf("expected total=2, got %v", body["total"])
+	}
+
+	// Collect returned item IDs and verify both commands are present.
+	ids := map[string]bool{}
+	for _, raw := range items {
+		item := raw.(map[string]interface{})
+		ids[item["id"].(string)] = true
+	}
+	if !ids["cmd-in-public"] {
+		t.Fatal("expected cmd-in-public to be returned")
+	}
+	if !ids["cmd-in-own-repo"] {
+		t.Fatal("expected cmd-in-own-repo to be returned")
+	}
+	if ids["cmd-other-user"] {
+		t.Fatal("cmd-other-user should NOT be returned")
+	}
+}
+
 func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
 	defer setupTestDB(t)()
 	// Registry owned by the user.
@@ -494,7 +564,7 @@ func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
 		Name: "Dedup Skill", Status: "active", CreatedBy: "user-dedup", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	w := get(newRegistryRouter(""), "/api/items/my?ownerId=user-dedup")
+	w := get(newRegistryRouter("user-dedup"), "/api/items/my")
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
 	items := body["items"].([]interface{})
