@@ -183,11 +183,7 @@ func AuthLogin(c *gin.Context) {
 	state := redirectTo
 
 	var loginURL string
-	if callbackURL != "" {
-		loginURL = CasdoorClient.GetLoginURLWithCallback(state, callbackURL)
-	} else {
-		loginURL = CasdoorClient.GetLoginURL(state)
-	}
+	loginURL = CasdoorClient.GetLoginURL(state, callbackURL)
 
 	c.Redirect(http.StatusFound, loginURL)
 }
