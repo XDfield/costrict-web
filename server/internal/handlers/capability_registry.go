@@ -297,9 +297,21 @@ func TransferRegistry(c *gin.Context) {
 		return
 	}
 
-	if err := db.Model(&registry).Updates(map[string]interface{}{
-		"repo_id": req.TargetRepoID,
-	}).Error; err != nil {
+	// Use a transaction to atomically update both the registry and all its items.
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&registry).Updates(map[string]interface{}{
+			"repo_id": req.TargetRepoID,
+		}).Error; err != nil {
+			return err
+		}
+		// Batch-update repo_id for all items under this registry.
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("registry_id = ?", registry.ID).
+			Update("repo_id", req.TargetRepoID).Error; err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer registry"})
 		return
 	}
