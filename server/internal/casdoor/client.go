@@ -61,6 +61,18 @@ func (c *CasdoorClient) GetLoginURL(state string) string {
 	return fmt.Sprintf("%s/login/oauth/authorize?%s", c.endpoint, params.Encode())
 }
 
+// GetLoginURLWithCallback returns a Casdoor login URL using a custom callback URL
+func (c *CasdoorClient) GetLoginURLWithCallback(state, callbackURL string) string {
+	params := url.Values{}
+	params.Set("client_id", c.clientID)
+	params.Set("response_type", "code")
+	params.Set("redirect_uri", callbackURL)
+	params.Set("scope", "openid profile email")
+	params.Set("state", state)
+
+	return fmt.Sprintf("%s/login/oauth/authorize?%s", c.endpoint, params.Encode())
+}
+
 // ExchangeCodeForToken exchanges = authorization code for an access token
 func (c *CasdoorClient) ExchangeCodeForToken(code string) (*CasdoorTokenResponse, error) {
 	tokenURL := fmt.Sprintf("%s/api/login/oauth/access_token", c.endpoint)

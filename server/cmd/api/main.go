@@ -172,7 +172,8 @@ func main() {
 		auth := api.Group("/auth")
 		{
 			auth.GET("/callback", handlers.AuthCallback)
-			auth.GET("/login", handlers.Login)
+			auth.GET("/login", handlers.AuthLogin)
+			auth.POST("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
 		}
 

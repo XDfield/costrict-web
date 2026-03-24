@@ -72,10 +72,45 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+
+	// If state contains a redirect URL, redirect the user back
+	redirectTo := c.Query("state")
+	if redirectTo != "" {
+		c.Redirect(http.StatusFound, redirectTo)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"token": tokenResp.AccessToken,
 		"user":  userInfo.User,
 	})
+}
+
+// AuthLogin godoc
+// @Summary      OAuth login redirect
+// @Description  Redirect user to Casdoor login page for OAuth authorization
+// @Tags         auth
+// @Produce      html
+// @Param        redirect_to   query  string  false "URL to redirect after login"
+// @Param        callback_url  query  string  false "OAuth callback URL"
+// @Success      302
+// @Failure      400  {object}  object{error=string}
+// @Router       /auth/login [get]
+func AuthLogin(c *gin.Context) {
+	redirectTo := c.Query("redirect_to")
+	callbackURL := c.Query("callback_url")
+
+	// Use redirect_to as state so AuthCallback can redirect back after login
+	state := redirectTo
+
+	var loginURL string
+	if callbackURL != "" {
+		loginURL = CasdoorClient.GetLoginURLWithCallback(state, callbackURL)
+	} else {
+		loginURL = CasdoorClient.GetLoginURL(state)
+	}
+
+	c.Redirect(http.StatusFound, loginURL)
 }
 
 // Login godoc
