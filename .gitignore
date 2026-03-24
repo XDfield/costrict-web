@@ -70,6 +70,7 @@ web/
 # Costrict temporary files
 .costrict/
 .cospec/
+opencode.json
 
 # Artifact storage (runtime data, not source)
 data/

@@ -21,8 +21,16 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 	return datatypes.JSON(b), nil
 }
 
-// --- 管理员：系统渠道管理 ---
-
+// AdminListSystemChannelsHandler godoc
+//
+//	@Summary		List system notification channels
+//	@Description	Get all system notification channels (admin only)
+//	@Tags			admin/notification-channels
+//	@Produce		json
+//	@Success		200	{object}	object{channels=[]models.SystemNotificationChannel}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/notification-channels [get]
 func AdminListSystemChannelsHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -41,6 +49,19 @@ func AdminListSystemChannelsHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// AdminCreateSystemChannelHandler godoc
+//
+//	@Summary		Create system notification channel
+//	@Description	Create a new system notification channel (admin only)
+//	@Tags			admin/notification-channels
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		object{type=string,name=string,workspaceId=string,systemConfig=object}	true	"Channel data"
+//	@Success		201		{object}	object{channel=models.SystemNotificationChannel}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/admin/notification-channels [post]
 func AdminCreateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -88,6 +109,21 @@ func AdminCreateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// AdminUpdateSystemChannelHandler godoc
+//
+//	@Summary		Update system notification channel
+//	@Description	Update a system notification channel (admin only)
+//	@Tags			admin/notification-channels
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		string													true	"Channel ID"
+//	@Param			body	body		object{name=string,enabled=bool,systemConfig=object}	true	"Update data"
+//	@Success		200		{object}	object{channel=models.SystemNotificationChannel}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/admin/notification-channels/{id} [put]
 func AdminUpdateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -134,6 +170,18 @@ func AdminUpdateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// AdminDeleteSystemChannelHandler godoc
+//
+//	@Summary		Delete system notification channel
+//	@Description	Delete a system notification channel (admin only)
+//	@Tags			admin/notification-channels
+//	@Produce		json
+//	@Param			id	path		string	true	"Channel ID"
+//	@Success		200	{object}	object{success=bool}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		404	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/notification-channels/{id} [delete]
 func AdminDeleteSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -161,6 +209,15 @@ func AdminDeleteSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 
 // --- 用户：可用渠道类型查询 ---
 
+// ListAvailableTypesHandler godoc
+//
+//	@Summary		List available notification channel types
+//	@Description	Get all available notification channel types with their config schemas
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Success		200	{object}	object{channelTypes=[]object}
+//	@Failure		401	{object}	object{error=string}
+//	@Router			/notification-channels/available [get]
 func ListAvailableTypesHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -175,6 +232,16 @@ func ListAvailableTypesHandler(svc *NotificationService) gin.HandlerFunc {
 
 // --- 用户：自己的渠道配置管理 ---
 
+// ListMyChannelsHandler godoc
+//
+//	@Summary		List user notification channels
+//	@Description	Get all notification channels configured by the authenticated user
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Success		200	{object}	object{channels=[]models.UserNotificationChannel}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/notification-channels [get]
 func ListMyChannelsHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -194,6 +261,19 @@ func ListMyChannelsHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// CreateMyChannelHandler godoc
+//
+//	@Summary		Create user notification channel
+//	@Description	Create a new notification channel for the authenticated user
+//	@Tags			notification-channels
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		object{systemChannelId=string,channelType=string,name=string,userConfig=object,triggerEvents=[]string}	true	"Channel data"
+//	@Success		201		{object}	object{channel=models.UserNotificationChannel}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/notification-channels [post]
 func CreateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -253,6 +333,17 @@ func CreateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// GetMyChannelHandler godoc
+//
+//	@Summary		Get notification channel details
+//	@Description	Get details of a specific notification channel
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Param			id	path		string	true	"Channel ID"
+//	@Success		200	{object}	object{channel=models.UserNotificationChannel}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		404	{object}	object{error=string}
+//	@Router			/notification-channels/{id} [get]
 func GetMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -273,6 +364,21 @@ func GetMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// UpdateMyChannelHandler godoc
+//
+//	@Summary		Update notification channel
+//	@Description	Update a notification channel configuration
+//	@Tags			notification-channels
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		string																		true	"Channel ID"
+//	@Param			body	body		object{name=string,userConfig=object,triggerEvents=[]string,enabled=bool}	true	"Update data"
+//	@Success		200		{object}	object{channel=models.UserNotificationChannel}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/notification-channels/{id} [put]
 func UpdateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -332,6 +438,18 @@ func UpdateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// DeleteMyChannelHandler godoc
+//
+//	@Summary		Delete notification channel
+//	@Description	Delete a notification channel
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Param			id	path		string	true	"Channel ID"
+//	@Success		200	{object}	object{success=bool}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		404	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/notification-channels/{id} [delete]
 func DeleteMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -357,6 +475,18 @@ func DeleteMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// TestMyChannelHandler godoc
+//
+//	@Summary		Test notification channel
+//	@Description	Send a test notification to verify channel configuration
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Param			id	path		string	true	"Channel ID"
+//	@Success		200	{object}	object{success=bool}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		404	{object}	object{error=string}
+//	@Failure		500	{object}	object{success=bool,error=string}
+//	@Router			/notification-channels/{id}/test [post]
 func TestMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
@@ -375,6 +505,18 @@ func TestMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 	}
 }
 
+// ListLogsHandler godoc
+//
+//	@Summary		List notification logs
+//	@Description	Get notification sending logs for a specific channel
+//	@Tags			notification-channels
+//	@Produce		json
+//	@Param			id		path		string	true	"Channel ID"
+//	@Param			limit	query		int		false	"Number of logs to return (default 20)"
+//	@Success		200		{object}	object{logs=[]models.NotificationLog}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
+//	@Router			/notification-channels/{id}/logs [get]
 func ListLogsHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)

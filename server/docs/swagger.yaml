@@ -462,6 +462,31 @@ definitions:
     - ContextRecommend
     - ContextDirectAccess
     - ContextBrowse
+  models.NotificationLog:
+    properties:
+      channelType:
+        type: string
+      createdAt:
+        type: string
+      deviceId:
+        type: string
+      error:
+        type: string
+      eventType:
+        type: string
+      id:
+        type: string
+      sentAt:
+        type: string
+      sessionId:
+        type: string
+      status:
+        type: string
+      userChannelId:
+        type: string
+      userId:
+        type: string
+    type: object
   models.RepoInvitation:
     properties:
       createdAt:
@@ -652,6 +677,30 @@ definitions:
       updatedItems:
         type: integer
     type: object
+  models.SystemNotificationChannel:
+    properties:
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      name:
+        description: 显示名，如"企业微信"
+        type: string
+      systemConfig:
+        type: object
+      type:
+        description: '"wecom" | "feishu" | "webhook"'
+        type: string
+      updatedAt:
+        type: string
+      workspaceId:
+        description: 空=全局
+        type: string
+    type: object
   models.UserBehaviorSummary:
     properties:
       favoriteCategories:
@@ -670,6 +719,37 @@ definitions:
         type: integer
       totalViews:
         type: integer
+      userId:
+        type: string
+    type: object
+  models.UserNotificationChannel:
+    properties:
+      channelType:
+        description: '"wecom" | "feishu" | "webhook"'
+        type: string
+      createdAt:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      lastError:
+        type: string
+      lastUsedAt:
+        type: string
+      name:
+        type: string
+      systemChannelId:
+        description: 关联系统渠道（webhook 类型可为空）
+        type: string
+      triggerEvents:
+        items:
+          type: string
+        type: array
+      updatedAt:
+        type: string
+      userConfig:
+        type: object
       userId:
         type: string
     type: object
@@ -1029,6 +1109,199 @@ info:
   title: Costrict Web API
   version: "1.0"
 paths:
+  /admin/notification-channels:
+    get:
+      description: Get all system notification channels (admin only)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channels:
+                items:
+                  $ref: '#/definitions/models.SystemNotificationChannel'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List system notification channels
+      tags:
+      - admin/notification-channels
+    post:
+      consumes:
+      - application/json
+      description: Create a new system notification channel (admin only)
+      parameters:
+      - description: Channel data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            name:
+              type: string
+            systemConfig:
+              type: object
+            type:
+              type: string
+            workspaceId:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              channel:
+                $ref: '#/definitions/models.SystemNotificationChannel'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create system notification channel
+      tags:
+      - admin/notification-channels
+  /admin/notification-channels/{id}:
+    delete:
+      description: Delete a system notification channel (admin only)
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete system notification channel
+      tags:
+      - admin/notification-channels
+    put:
+      consumes:
+      - application/json
+      description: Update a system notification channel (admin only)
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            enabled:
+              type: boolean
+            name:
+              type: string
+            systemConfig:
+              type: object
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channel:
+                $ref: '#/definitions/models.SystemNotificationChannel'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update system notification channel
+      tags:
+      - admin/notification-channels
   /artifacts/{id}:
     delete:
       description: Delete an artifact by ID and remove its stored file
@@ -2889,6 +3162,355 @@ paths:
       summary: Get trending items
       tags:
       - recommendations
+  /notification-channels:
+    get:
+      description: Get all notification channels configured by the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channels:
+                items:
+                  $ref: '#/definitions/models.UserNotificationChannel'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List user notification channels
+      tags:
+      - notification-channels
+    post:
+      consumes:
+      - application/json
+      description: Create a new notification channel for the authenticated user
+      parameters:
+      - description: Channel data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            channelType:
+              type: string
+            name:
+              type: string
+            systemChannelId:
+              type: string
+            triggerEvents:
+              items:
+                type: string
+              type: array
+            userConfig:
+              type: object
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              channel:
+                $ref: '#/definitions/models.UserNotificationChannel'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create user notification channel
+      tags:
+      - notification-channels
+  /notification-channels/{id}:
+    delete:
+      description: Delete a notification channel
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete notification channel
+      tags:
+      - notification-channels
+    get:
+      description: Get details of a specific notification channel
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channel:
+                $ref: '#/definitions/models.UserNotificationChannel'
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get notification channel details
+      tags:
+      - notification-channels
+    put:
+      consumes:
+      - application/json
+      description: Update a notification channel configuration
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            enabled:
+              type: boolean
+            name:
+              type: string
+            triggerEvents:
+              items:
+                type: string
+              type: array
+            userConfig:
+              type: object
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channel:
+                $ref: '#/definitions/models.UserNotificationChannel'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update notification channel
+      tags:
+      - notification-channels
+  /notification-channels/{id}/logs:
+    get:
+      description: Get notification sending logs for a specific channel
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Number of logs to return (default 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              logs:
+                items:
+                  $ref: '#/definitions/models.NotificationLog'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List notification logs
+      tags:
+      - notification-channels
+  /notification-channels/{id}/test:
+    post:
+      description: Send a test notification to verify channel configuration
+      parameters:
+      - description: Channel ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+              success:
+                type: boolean
+            type: object
+      summary: Test notification channel
+      tags:
+      - notification-channels
+  /notification-channels/available:
+    get:
+      description: Get all available notification channel types with their config
+        schemas
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              channelTypes:
+                items:
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List available notification channel types
+      tags:
+      - notification-channels
   /registries:
     get:
       description: Get registries visible to the current user (public + repo + personal)

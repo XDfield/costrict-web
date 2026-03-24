@@ -221,6 +221,7 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 			DeviceID  string `json:"deviceID"`
 			Type      string `json:"type" binding:"required"`
 			SessionID string `json:"sessionID" binding:"required"`
+			Path      string `json:"path"`
 			Data      any    `json:"data"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
@@ -250,7 +251,7 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 		manager.RouteEvent(event, connIDs)
 
 		if notificationSvc != nil && isNotifiableEvent(body.Type) {
-			notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID)
+			notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true, "routedTo": len(connIDs)})

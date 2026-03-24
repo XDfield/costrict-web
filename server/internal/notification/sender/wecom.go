@@ -55,11 +55,9 @@ func (s *WeComSender) Send(userConfig json.RawMessage, msg NotificationMessage) 
 	}
 
 	sessionURL, _ := msg.Metadata["sessionUrl"].(string)
-	content := fmt.Sprintf("## %s %s\n> **会话**: %s\n> **设备**: %s",
-		eventIcon(msg.EventType), msg.Title, msg.SessionID, msg.DeviceID,
-	)
+	content := fmt.Sprintf("## %s %s\n%s", eventIcon(msg.EventType), msg.Title, msg.Body)
 	if sessionURL != "" {
-		content += fmt.Sprintf("\n> [查看会话](%s)", sessionURL)
+		content += fmt.Sprintf("\n**详情**: [点击访问](%s)", sessionURL)
 	}
 
 	payload := map[string]any{
