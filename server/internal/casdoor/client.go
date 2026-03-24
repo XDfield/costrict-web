@@ -92,7 +92,7 @@ func (c *CasdoorClient) ExchangeCodeForToken(code, callbackURL string) (*Casdoor
 	if callbackURL == "" {
 		callbackURL = c.callbackURL
 	}
-	tokenURL := fmt.Sprintf("%s/api/login/oauth/access_token", c.endpoint)
+	tokenURL := fmt.Sprintf("%s/api/login/oauth/access_token", c.internalEndpoint)
 
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
