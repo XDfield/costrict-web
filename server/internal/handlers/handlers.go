@@ -141,7 +141,8 @@ func AuthCallback(c *gin.Context) {
 
 	tokenResp, err := CasdoorClient.ExchangeCodeForToken(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
+		fmt.Printf("[ERROR] ExchangeCodeForToken failed: err=%v, tokenResp=%+v\n", err, tokenResp)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
 		return
 	}
 
