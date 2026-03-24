@@ -1628,5 +1628,126 @@ func TestTransferItemToRepo_SlugConflict(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Transfer + ListMyItems visibility
+// ---------------------------------------------------------------------------
+
+func TestTransferItemToPublic_ThenVisibleInMyItems(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+
+	const userID = "u-tr-pub"
+
+	// User's own repo and registry.
+	database.DB.Create(&models.Repository{ID: "repo-trp", Name: "trp-repo", OwnerID: userID})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-trp", Name: "trp-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-trp", OwnerID: userID,
+	})
+	// Command in user's own repo.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-trp-cmd", RegistryID: "reg-trp", RepoID: "repo-trp", Slug: "trp-cmd", ItemType: "command",
+		Name: "My Command", Status: "active", CreatedBy: userID, Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	// Step 1: Transfer the item to public.
+	w := putJSON(newItemRouter(userID), "/api/items/item-trp-cmd/transfer", map[string]interface{}{
+		"targetRepoId": "public",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("transfer expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify DB state after transfer.
+	var dbItem models.CapabilityItem
+	database.DB.First(&dbItem, "id = ?", "item-trp-cmd")
+	if dbItem.RegistryID != PublicRegistryID {
+		t.Fatalf("DB: expected registryId=%s, got %s", PublicRegistryID, dbItem.RegistryID)
+	}
+	if dbItem.RepoID != "public" {
+		t.Fatalf("DB: expected repoId=public, got %s", dbItem.RepoID)
+	}
+	if dbItem.CreatedBy != userID {
+		t.Fatalf("DB: created_by should remain %s, got %s", userID, dbItem.CreatedBy)
+	}
+
+	// Step 2: /items/my should still return this item (via created_by match).
+	w = get(newRegistryRouter(userID), "/api/items/my?type=command")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/items/my expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item in /items/my after transfer to public, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-trp-cmd" {
+		t.Fatalf("expected item-trp-cmd, got %v", first["id"])
+	}
+}
+
+func TestTransferItemFromPublicToRepo_ThenVisibleInMyItems(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+
+	const userID = "u-tr-frompub"
+
+	// User's target repo and registry.
+	database.DB.Create(&models.Repository{ID: "repo-tfp", Name: "tfp-repo", OwnerID: userID})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tfp", Name: "tfp-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tfp", OwnerID: userID,
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-tfp", RepoID: "repo-tfp", UserID: userID, Role: "owner"})
+	// Command originally in the public registry, created by this user.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tfp-cmd", RegistryID: PublicRegistryID, RepoID: "public", Slug: "tfp-cmd", ItemType: "command",
+		Name: "Public Command", Status: "active", CreatedBy: userID, Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	// Step 1: Transfer the item from public to user's repo.
+	w := putJSON(newItemRouter(userID), "/api/items/item-tfp-cmd/transfer", map[string]interface{}{
+		"targetRepoId": "repo-tfp",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("transfer expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify DB state after transfer.
+	var dbItem models.CapabilityItem
+	database.DB.First(&dbItem, "id = ?", "item-tfp-cmd")
+	if dbItem.RegistryID != "reg-tfp" {
+		t.Fatalf("DB: expected registryId=reg-tfp, got %s", dbItem.RegistryID)
+	}
+	if dbItem.RepoID != "repo-tfp" {
+		t.Fatalf("DB: expected repoId=repo-tfp, got %s", dbItem.RepoID)
+	}
+	if dbItem.CreatedBy != userID {
+		t.Fatalf("DB: created_by should remain %s, got %s", userID, dbItem.CreatedBy)
+	}
+
+	// Step 2: /items/my should return this item (via both registry_id and created_by match).
+	w = get(newRegistryRouter(userID), "/api/items/my?type=command")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/items/my expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item in /items/my after transfer from public, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-tfp-cmd" {
+		t.Fatalf("expected item-tfp-cmd, got %v", first["id"])
+	}
+	if first["repoId"] != "repo-tfp" {
+		t.Fatalf("expected repoId=repo-tfp, got %v", first["repoId"])
+	}
+	if first["repoName"] != "tfp-repo" {
+		t.Fatalf("expected repoName=tfp-repo, got %v", first["repoName"])
+	}
+}
+
 // ensure fmt is used
 var _ = fmt.Sprintf
