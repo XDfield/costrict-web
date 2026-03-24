@@ -135,6 +135,13 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		return nil, fmt.Errorf("registry has no external URL configured")
 	}
 
+	// Resolve the user who triggered this sync; fall back to "sync" for
+	// automated / webhook triggers where no user context is available.
+	triggerUser := opts.TriggerUser
+	if triggerUser == "" {
+		triggerUser = "sync"
+	}
+
 	syncLog := &models.SyncLog{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
@@ -323,7 +330,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Content = parsed.Content
 				existing.Metadata = metadataJSON(parsed.Metadata)
 				existing.SourceSHA = contentHash
-				existing.UpdatedBy = "sync"
+				existing.UpdatedBy = triggerUser
 
 				if err := s.DB.Save(existing).Error; err != nil {
 					result.Failed++
@@ -337,8 +344,8 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					Revision:  maxRevision + 1,
 					Content:   parsed.Content,
 					Metadata:  metadataJSON(parsed.Metadata),
-					CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
-					CreatedBy: "sync",
+				CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
+				CreatedBy: triggerUser,
 				}
 				s.DB.Create(ver)
 				s.enqueueScan(existing.ID, maxRevision+1)
@@ -358,9 +365,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					Metadata:    metadataJSON(parsed.Metadata),
 					SourcePath:  relPath,
 					SourceSHA:   contentHash,
-					Status:      "active",
-					CreatedBy:   "sync",
-					UpdatedBy:   "sync",
+				Status:      "active",
+				CreatedBy:   triggerUser,
+				UpdatedBy:   triggerUser,
 				}
 				if err := s.DB.Create(newItem).Error; err != nil {
 					result.Failed++
@@ -374,8 +381,8 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					Revision:  1,
 					Content:   parsed.Content,
 					Metadata:  metadataJSON(parsed.Metadata),
-					CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
-					CreatedBy: "sync",
+				CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
+				CreatedBy: triggerUser,
 				}
 				s.DB.Create(ver)
 
