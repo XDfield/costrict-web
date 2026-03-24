@@ -585,6 +585,11 @@ func DeleteRepository(c *gin.Context) {
 				return fmt.Errorf("failed to delete sync jobs: %w", err)
 			}
 
+			// 清除 capability_registries 对 sync_logs 的外键引用，避免删除 sync_logs 时违反外键约束
+			if err := tx.Model(&models.CapabilityRegistry{}).Where("id IN ?", registryIDs).Update("last_sync_log_id", nil).Error; err != nil {
+				return fmt.Errorf("failed to clear last sync log references: %w", err)
+			}
+
 			// 删除同步日志 (SyncLog)
 			if err := tx.Where("registry_id IN ?", registryIDs).Delete(&models.SyncLog{}).Error; err != nil {
 				return fmt.Errorf("failed to delete sync logs: %w", err)
