@@ -142,7 +142,7 @@ func (p *ParserService) ParseAgentsMD(content []byte, sourcePath string) ([]*Par
 	if err != nil {
 		return nil, err
 	}
-	item.ItemType = "agent"
+	item.ItemType = "subagent"
 	return []*ParsedItem{item}, nil
 }
 
@@ -222,7 +222,7 @@ func (p *ParserService) InferItemType(filePath string) string {
 	case base == ".mcp.json":
 		return "mcp"
 	case strings.Contains(lower, "agents/") || strings.HasSuffix(lower, "agents.md"):
-		return "agent"
+		return "subagent"
 	case strings.Contains(lower, "commands/"):
 		return "command"
 	case strings.Contains(lower, "hooks/"):

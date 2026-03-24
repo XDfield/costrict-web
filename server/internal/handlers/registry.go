@@ -170,7 +170,7 @@ func RegistryIndex(c *gin.Context) {
 		case "skill":
 			entry.Files = append([]string{"SKILL.md"}, assetPaths...)
 		case "subagent":
-			entry.Files = append([]string{"agent.md"}, assetPaths...)
+			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "command":
 			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
