@@ -50,6 +50,8 @@ func newItemRouter(userID string) *gin.Engine {
 	r.GET("/api/items", injectUser, ListAllItems)
 	r.POST("/api/items", injectUser, itemHandler.CreateItemDirect)
 	r.GET("/api/registries/public", injectUser, GetPublicRegistry)
+	r.PUT("/api/items/:id/move", injectUser, MoveItem)
+	r.PUT("/api/items/:id/transfer", injectUser, TransferItemToRepo)
 	return r
 }
 
@@ -1180,6 +1182,449 @@ func TestUpdateItem_JSON_SourceTypeRemainsDirect(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&item)
 	if item["sourceType"] != "direct" {
 		t.Fatalf("expected sourceType=direct after JSON update, got %v", item["sourceType"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MoveItem
+// ---------------------------------------------------------------------------
+
+func TestMoveItem_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	// Source registry + repo
+	database.DB.Create(&models.Repository{ID: "repo-src", Name: "src-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-src", Name: "src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-src", OwnerID: "u1",
+	})
+	// Target registry + repo
+	database.DB.Create(&models.Repository{ID: "repo-tgt", Name: "tgt-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tgt", Name: "tgt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tgt", OwnerID: "u1",
+	})
+	// Caller is member of target repo
+	database.DB.Create(&models.RepoMember{ID: "mem-move1", RepoID: "repo-tgt", UserID: "u1", Role: "member"})
+	// Item to move
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-move1", RegistryID: "reg-src", RepoID: "repo-src", Slug: "move-me", ItemType: "skill",
+		Name: "Move Me", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-move1/move", map[string]interface{}{
+		"targetRegistryId": "reg-tgt",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	if item["registryId"] != "reg-tgt" {
+		t.Fatalf("expected registryId=reg-tgt, got %v", item["registryId"])
+	}
+	if item["repoId"] != "repo-tgt" {
+		t.Fatalf("expected repoId=repo-tgt, got %v", item["repoId"])
+	}
+
+	// Verify in DB
+	var dbItem models.CapabilityItem
+	database.DB.First(&dbItem, "id = ?", "item-move1")
+	if dbItem.RegistryID != "reg-tgt" {
+		t.Fatalf("DB: expected registryId=reg-tgt, got %s", dbItem.RegistryID)
+	}
+	if dbItem.RepoID != "repo-tgt" {
+		t.Fatalf("DB: expected repoId=repo-tgt, got %s", dbItem.RepoID)
+	}
+}
+
+func TestMoveItem_NotFound(t *testing.T) {
+	defer setupTestDB(t)()
+	w := putJSON(newItemRouter("u1"), "/api/items/no-such/move", map[string]interface{}{
+		"targetRegistryId": "reg-x",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestMoveItem_Unauthenticated(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-noauth", Name: "noauth-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-noauth", RegistryID: "reg-noauth", RepoID: "repo-1", Slug: "noauth-item", ItemType: "skill",
+		Name: "No Auth", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter(""), "/api/items/item-noauth/move", map[string]interface{}{
+		"targetRegistryId": "reg-x",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestMoveItem_ForbiddenNotCreatorNorAdmin(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-fb", Name: "fb-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fb", Name: "fb-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-fb", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fb", RegistryID: "reg-fb", RepoID: "repo-fb", Slug: "fb-item", ItemType: "skill",
+		Name: "Forbidden", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// u-other is NOT the creator and NOT an admin of repo-fb
+	database.DB.Create(&models.RepoMember{ID: "mem-fb", RepoID: "repo-fb", UserID: "u-other", Role: "member"})
+
+	w := putJSON(newItemRouter("u-other"), "/api/items/item-fb/move", map[string]interface{}{
+		"targetRegistryId": "reg-fb",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestMoveItem_SameRegistry(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-same", Name: "same-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-same", RegistryID: "reg-same", RepoID: "repo-1", Slug: "same-item", ItemType: "skill",
+		Name: "Same", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-same/move", map[string]interface{}{
+		"targetRegistryId": "reg-same",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestMoveItem_TargetExternalRegistry(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-src-ext", Name: "src-ext", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-ext", Name: "ext-reg", SourceType: "external", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-ext", RegistryID: "reg-src-ext", RepoID: "repo-1", Slug: "ext-item", ItemType: "skill",
+		Name: "Ext Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-ext/move", map[string]interface{}{
+		"targetRegistryId": "reg-ext",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestMoveItem_SlugConflict(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-sc", Name: "sc-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-sc-src", Name: "sc-src", SourceType: "internal", Visibility: "repo", RepoID: "repo-sc", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-sc-tgt", Name: "sc-tgt", SourceType: "internal", Visibility: "repo", RepoID: "repo-sc", OwnerID: "u1",
+	})
+	// Existing item in target registry with same slug+type
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-sc-existing", RegistryID: "reg-sc-tgt", RepoID: "repo-sc", Slug: "dup-slug", ItemType: "skill",
+		Name: "Existing", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Item to move with same slug+type
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-sc-move", RegistryID: "reg-sc-src", RepoID: "repo-sc", Slug: "dup-slug", ItemType: "command",
+		Name: "To Move", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	// Same slug but different type — should succeed (uniqueness is repo+type+slug)
+	database.DB.Create(&models.RepoMember{ID: "mem-sc", RepoID: "repo-sc", UserID: "u1", Role: "owner"})
+	w := putJSON(newItemRouter("u1"), "/api/items/item-sc-move/move", map[string]interface{}{
+		"targetRegistryId": "reg-sc-tgt",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (different type, no conflict), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMoveItem_SlugConflict_SameType(t *testing.T) {
+	defer setupTestDB(t)()
+	// Two repos: source and target both under the same target repo for conflict
+	database.DB.Create(&models.Repository{ID: "repo-sc2-src", Name: "sc2-src-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-sc2-tgt", Name: "sc2-tgt-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-sc2-src", Name: "sc2-src", SourceType: "internal", Visibility: "repo", RepoID: "repo-sc2-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-sc2-tgt", Name: "sc2-tgt", SourceType: "internal", Visibility: "repo", RepoID: "repo-sc2-tgt", OwnerID: "u1",
+	})
+	// Existing item in target repo with slug "dup-slug" and type "skill"
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-sc2-existing", RegistryID: "reg-sc2-tgt", RepoID: "repo-sc2-tgt", Slug: "dup-slug", ItemType: "skill",
+		Name: "Existing", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Item to move: in source repo with same slug+type (different repo, so no DB constraint violation)
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-sc2-move", RegistryID: "reg-sc2-src", RepoID: "repo-sc2-src", Slug: "dup-slug", ItemType: "skill",
+		Name: "To Move", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-sc2", RepoID: "repo-sc2-tgt", UserID: "u1", Role: "owner"})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-sc2-move/move", map[string]interface{}{
+		"targetRegistryId": "reg-sc2-tgt",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMoveItem_NotTargetRepoMember(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-nm-src", Name: "nm-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-nm-tgt", Name: "nm-tgt", OwnerID: "u2"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-nm-src", Name: "nm-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-nm-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-nm-tgt", Name: "nm-tgt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-nm-tgt", OwnerID: "u2",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-nm", RegistryID: "reg-nm-src", RepoID: "repo-nm-src", Slug: "nm-item", ItemType: "skill",
+		Name: "NM Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// u1 is NOT a member of repo-nm-tgt
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-nm/move", map[string]interface{}{
+		"targetRegistryId": "reg-nm-tgt",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TransferItemToRepo
+// ---------------------------------------------------------------------------
+
+func TestTransferItemToRepo_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-tr-src", Name: "tr-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-tr-tgt", Name: "tr-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tr-src", Name: "tr-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tr-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tr-tgt", Name: "tr-tgt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tr-tgt", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-tr1", RepoID: "repo-tr-tgt", UserID: "u1", Role: "member"})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tr1", RegistryID: "reg-tr-src", RepoID: "repo-tr-src", Slug: "tr-skill", ItemType: "skill",
+		Name: "Transfer Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-tr1/transfer", map[string]interface{}{
+		"targetRepoId": "repo-tr-tgt",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	if item["registryId"] != "reg-tr-tgt" {
+		t.Fatalf("expected registryId=reg-tr-tgt, got %v", item["registryId"])
+	}
+	if item["repoId"] != "repo-tr-tgt" {
+		t.Fatalf("expected repoId=repo-tr-tgt, got %v", item["repoId"])
+	}
+
+	// Verify in DB
+	var dbItem models.CapabilityItem
+	database.DB.First(&dbItem, "id = ?", "item-tr1")
+	if dbItem.RegistryID != "reg-tr-tgt" {
+		t.Fatalf("DB: expected registryId=reg-tr-tgt, got %s", dbItem.RegistryID)
+	}
+	if dbItem.RepoID != "repo-tr-tgt" {
+		t.Fatalf("DB: expected repoId=repo-tr-tgt, got %s", dbItem.RepoID)
+	}
+}
+
+func TestTransferItemToRepo_ToPublic_UpdatesRepoID(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	database.DB.Create(&models.Repository{ID: "repo-tp", Name: "tp-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tp", Name: "tp-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tp", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tp", RegistryID: "reg-tp", RepoID: "repo-tp", Slug: "tp-skill", ItemType: "skill",
+		Name: "To Public", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-tp/transfer", map[string]interface{}{
+		"targetRepoId": "public",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	if item["registryId"] != PublicRegistryID {
+		t.Fatalf("expected registryId=%s, got %v", PublicRegistryID, item["registryId"])
+	}
+	// This is the key assertion for Bug 1 fix: repo_id must be updated to "public"
+	if item["repoId"] != "public" {
+		t.Fatalf("expected repoId=public in response, got %v", item["repoId"])
+	}
+
+	// Verify in DB that repo_id is actually "public"
+	var dbItem models.CapabilityItem
+	database.DB.First(&dbItem, "id = ?", "item-tp")
+	if dbItem.RepoID != "public" {
+		t.Fatalf("DB: expected repoId=public, got %s", dbItem.RepoID)
+	}
+	if dbItem.RegistryID != PublicRegistryID {
+		t.Fatalf("DB: expected registryId=%s, got %s", PublicRegistryID, dbItem.RegistryID)
+	}
+}
+
+func TestTransferItemToRepo_ToPublic_AlreadyPublic(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-already-pub", RegistryID: PublicRegistryID, RepoID: "public", Slug: "already-pub", ItemType: "skill",
+		Name: "Already Public", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-already-pub/transfer", map[string]interface{}{
+		"targetRepoId": "public",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTransferItemToRepo_SameRepo(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-same-tr", Name: "same-tr", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-same-tr", Name: "same-tr-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-same-tr", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-same-tr", RegistryID: "reg-same-tr", RepoID: "repo-same-tr", Slug: "same-tr", ItemType: "skill",
+		Name: "Same Repo", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-same-tr/transfer", map[string]interface{}{
+		"targetRepoId": "repo-same-tr",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTransferItemToRepo_SyncTypeRepo(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-sync-src", Name: "sync-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-sync-tgt", Name: "sync-tgt", OwnerID: "u1", RepoType: "sync"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-sync-src", Name: "sync-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-sync-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-sync", RepoID: "repo-sync-tgt", UserID: "u1", Role: "member"})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-sync", RegistryID: "reg-sync-src", RepoID: "repo-sync-src", Slug: "sync-item", ItemType: "skill",
+		Name: "Sync Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-sync/transfer", map[string]interface{}{
+		"targetRepoId": "repo-sync-tgt",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTransferItemToRepo_NotTargetRepoMember(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-tnm-src", Name: "tnm-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-tnm-tgt", Name: "tnm-tgt", OwnerID: "u2"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tnm-src", Name: "tnm-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tnm-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tnm", RegistryID: "reg-tnm-src", RepoID: "repo-tnm-src", Slug: "tnm-item", ItemType: "skill",
+		Name: "TNM Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// u1 is NOT a member of repo-tnm-tgt
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-tnm/transfer", map[string]interface{}{
+		"targetRepoId": "repo-tnm-tgt",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestTransferItemToRepo_NoInternalRegistry(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-nir-src", Name: "nir-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-nir-tgt", Name: "nir-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-nir-src", Name: "nir-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-nir-src", OwnerID: "u1",
+	})
+	// Target repo has NO internal registry (only external)
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-nir-ext", Name: "nir-ext-reg", SourceType: "external", Visibility: "repo", RepoID: "repo-nir-tgt", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-nir", RepoID: "repo-nir-tgt", UserID: "u1", Role: "member"})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-nir", RegistryID: "reg-nir-src", RepoID: "repo-nir-src", Slug: "nir-item", ItemType: "skill",
+		Name: "NIR Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-nir/transfer", map[string]interface{}{
+		"targetRepoId": "repo-nir-tgt",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestTransferItemToRepo_SlugConflict(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-tsc-src", Name: "tsc-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-tsc-tgt", Name: "tsc-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tsc-src", Name: "tsc-src-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tsc-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-tsc-tgt", Name: "tsc-tgt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-tsc-tgt", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-tsc", RepoID: "repo-tsc-tgt", UserID: "u1", Role: "member"})
+	// Existing item in target repo
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tsc-existing", RegistryID: "reg-tsc-tgt", RepoID: "repo-tsc-tgt", Slug: "conflict-slug", ItemType: "skill",
+		Name: "Existing", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Item to transfer with same slug+type
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-tsc-move", RegistryID: "reg-tsc-src", RepoID: "repo-tsc-src", Slug: "conflict-slug", ItemType: "skill",
+		Name: "To Transfer", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-tsc-move/transfer", map[string]interface{}{
+		"targetRepoId": "repo-tsc-tgt",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w.Code)
 	}
 }
 

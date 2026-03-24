@@ -30,6 +30,7 @@ func newRegistryRouter(userID string) *gin.Engine {
 	r.POST("/api/registries/ensure-personal", injectUser, EnsurePersonalRegistry)
 	r.GET("/api/registries/my", injectUser, ListMyRegistries)
 	r.GET("/api/items/my", injectUser, ListMyItems)
+	r.PUT("/api/registries/:id/transfer", injectUser, TransferRegistry)
 	return r
 }
 
@@ -499,5 +500,198 @@ func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
 	items := body["items"].([]interface{})
 	if len(items) != 1 {
 		t.Fatalf("expected exactly 1 item (no duplicates), got %d", len(items))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TransferRegistry
+// ---------------------------------------------------------------------------
+
+func TestTransferRegistry_Success_UpdatesItemsRepoID(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rt-src", Name: "rt-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-rt-tgt", Name: "rt-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rt", Name: "rt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rt-src", OwnerID: "u1",
+	})
+	// Caller must be member of target repo
+	database.DB.Create(&models.RepoMember{ID: "mem-rt", RepoID: "repo-rt-tgt", UserID: "u1", Role: "member"})
+	// Create several items under this registry
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rt1", RegistryID: "reg-rt", RepoID: "repo-rt-src", Slug: "rt-skill1", ItemType: "skill",
+		Name: "RT Skill 1", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rt2", RegistryID: "reg-rt", RepoID: "repo-rt-src", Slug: "rt-cmd1", ItemType: "command",
+		Name: "RT Cmd 1", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rt3", RegistryID: "reg-rt", RepoID: "repo-rt-src", Slug: "rt-skill2", ItemType: "skill",
+		Name: "RT Skill 2", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-rt/transfer", map[string]interface{}{
+		"targetRepoId": "repo-rt-tgt",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify registry repo_id updated
+	var reg models.CapabilityRegistry
+	database.DB.First(&reg, "id = ?", "reg-rt")
+	if reg.RepoID != "repo-rt-tgt" {
+		t.Fatalf("DB: expected registry repoId=repo-rt-tgt, got %s", reg.RepoID)
+	}
+
+	// Key assertion for Bug 2 fix: ALL items under this registry must have repo_id updated
+	var items []models.CapabilityItem
+	database.DB.Where("registry_id = ?", "reg-rt").Find(&items)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	for _, item := range items {
+		if item.RepoID != "repo-rt-tgt" {
+			t.Fatalf("DB: item %s expected repoId=repo-rt-tgt, got %s", item.ID, item.RepoID)
+		}
+	}
+}
+
+func TestTransferRegistry_NotFound(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.RepoMember{ID: "mem-rnf", RepoID: "repo-x", UserID: "u1", Role: "member"})
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/no-such-reg/transfer", map[string]interface{}{
+		"targetRepoId": "repo-x",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_Unauthenticated(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rt-noauth", Name: "rt-noauth", SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
+	})
+
+	w := putJSON(newRegistryRouter(""), "/api/registries/reg-rt-noauth/transfer", map[string]interface{}{
+		"targetRepoId": "repo-2",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_ForbiddenNotOwnerNorAdmin(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rtf", Name: "rtf-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rtf", Name: "rtf-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rtf", OwnerID: "u1",
+	})
+	// u-other is only a member (not admin/owner) of the source repo, and NOT the registry owner
+	database.DB.Create(&models.RepoMember{ID: "mem-rtf", RepoID: "repo-rtf", UserID: "u-other", Role: "member"})
+
+	w := putJSON(newRegistryRouter("u-other"), "/api/registries/reg-rtf/transfer", map[string]interface{}{
+		"targetRepoId": "repo-2",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_SameRepo(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rts", Name: "rts-repo", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rts", Name: "rts-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rts", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-rts", RepoID: "repo-rts", UserID: "u1", Role: "owner"})
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-rts/transfer", map[string]interface{}{
+		"targetRepoId": "repo-rts",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_SyncingNotAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rtsn", Name: "rtsn-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-rtsn-tgt", Name: "rtsn-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rtsn", Name: "rtsn-reg", SourceType: "external", Visibility: "repo",
+		RepoID: "repo-rtsn", OwnerID: "u1", SyncStatus: "syncing",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-rtsn", RepoID: "repo-rtsn-tgt", UserID: "u1", Role: "member"})
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-rtsn/transfer", map[string]interface{}{
+		"targetRepoId": "repo-rtsn-tgt",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_NotTargetRepoMember(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rtnm", Name: "rtnm-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-rtnm-tgt", Name: "rtnm-tgt", OwnerID: "u2"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rtnm", Name: "rtnm-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rtnm", OwnerID: "u1",
+	})
+	// u1 is NOT a member of repo-rtnm-tgt
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-rtnm/transfer", map[string]interface{}{
+		"targetRepoId": "repo-rtnm-tgt",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestTransferRegistry_ItemsInOtherRegistryUnchanged(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-rio-src", Name: "rio-src", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-rio-tgt", Name: "rio-tgt", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rio-move", Name: "rio-move", SourceType: "internal", Visibility: "repo", RepoID: "repo-rio-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rio-stay", Name: "rio-stay", SourceType: "internal", Visibility: "repo", RepoID: "repo-rio-src", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{ID: "mem-rio", RepoID: "repo-rio-tgt", UserID: "u1", Role: "member"})
+
+	// Item in the registry being transferred
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rio-moved", RegistryID: "reg-rio-move", RepoID: "repo-rio-src", Slug: "rio-moved", ItemType: "skill",
+		Name: "Moved", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Item in a DIFFERENT registry in the same source repo — should NOT be affected
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rio-stay", RegistryID: "reg-rio-stay", RepoID: "repo-rio-src", Slug: "rio-stay", ItemType: "skill",
+		Name: "Stay", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-rio-move/transfer", map[string]interface{}{
+		"targetRepoId": "repo-rio-tgt",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The moved item should have new repo_id
+	var movedItem models.CapabilityItem
+	database.DB.First(&movedItem, "id = ?", "item-rio-moved")
+	if movedItem.RepoID != "repo-rio-tgt" {
+		t.Fatalf("moved item: expected repoId=repo-rio-tgt, got %s", movedItem.RepoID)
+	}
+
+	// The other item should keep its original repo_id
+	var stayItem models.CapabilityItem
+	database.DB.First(&stayItem, "id = ?", "item-rio-stay")
+	if stayItem.RepoID != "repo-rio-src" {
+		t.Fatalf("unrelated item: expected repoId=repo-rio-src (unchanged), got %s", stayItem.RepoID)
 	}
 }
