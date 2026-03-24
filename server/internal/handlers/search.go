@@ -71,6 +71,7 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 
 	result, err := h.searchSvc.SemanticSearch(c.Request.Context(), searchReq)
 	if err != nil {
+		_ = c.Error(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -126,6 +127,7 @@ func (h *SearchHandler) HybridSearch(c *gin.Context) {
 
 	result, err := h.searchSvc.HybridSearch(c.Request.Context(), searchReq)
 	if err != nil {
+		_ = c.Error(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -158,6 +160,7 @@ func (h *SearchHandler) FindSimilar(c *gin.Context) {
 
 	items, total, err := h.searchSvc.FindSimilar(c.Request.Context(), itemID, page, pageSize)
 	if err != nil {
+		_ = c.Error(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
