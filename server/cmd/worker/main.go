@@ -86,9 +86,9 @@ func main() {
 		if model := os.Getenv("SCAN_LLM_MODEL"); model != "" {
 			llmCfg.Model = model
 		}
-		if timeoutStr := os.Getenv("SCAN_LLM_TIMEOUT_SECONDS"); timeoutStr != "" {
-			if secs, err := strconv.Atoi(timeoutStr); err == nil && secs > 0 {
-				llmCfg.MaxTokens = secs
+		if maxTokensStr := os.Getenv("SCAN_LLM_MAX_TOKENS"); maxTokensStr != "" {
+			if n, err := strconv.Atoi(maxTokensStr); err == nil && n > 0 {
+				llmCfg.MaxTokens = n
 			}
 		}
 

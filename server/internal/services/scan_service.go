@@ -223,6 +223,18 @@ func (s *ScanService) callLLM(ctx context.Context, userPrompt string) (*ScanRepo
 }
 
 func extractJSON(s string) string {
+	// Strip markdown code fences (```json ... ``` or ``` ... ```)
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
 	if start == -1 || end == -1 || end <= start {
