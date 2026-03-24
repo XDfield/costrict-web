@@ -1406,7 +1406,7 @@ func MoveItem(c *gin.Context) {
 		return
 	}
 
-	if err := db.Model(&item).Updates(map[string]any{
+	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(map[string]any{
 		"registry_id": req.TargetRegistryID,
 		"repo_id":     targetRepoID,
 	}).Error; err != nil {
@@ -1500,12 +1500,16 @@ func TransferItemToRepo(c *gin.Context) {
 			return
 		}
 
-		if err := db.Model(&item).Update("registry_id", publicReg.ID).Error; err != nil {
+		if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(map[string]any{
+			"registry_id": publicReg.ID,
+			"repo_id":     "public",
+		}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer item"})
 			return
 		}
 
 		item.RegistryID = publicReg.ID
+		item.RepoID = "public"
 		c.JSON(http.StatusOK, item)
 		return
 	}
@@ -1554,7 +1558,7 @@ func TransferItemToRepo(c *gin.Context) {
 	}
 
 	// Must update registry_id and repo_id atomically.
-	if err := db.Model(&item).Updates(map[string]any{
+	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(map[string]any{
 		"registry_id": targetReg.ID,
 		"repo_id":     req.TargetRepoID,
 	}).Error; err != nil {
