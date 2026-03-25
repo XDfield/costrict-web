@@ -281,8 +281,8 @@ func TestParseArchive_Zip_MCPRemoteSSE(t *testing.T) {
 		t.Fatalf("ParseArchive() error = %v", err)
 	}
 
-	if got := result.NormalizedMeta["type"]; got != "http" {
-		t.Fatalf("type = %#v, want %q", got, "http")
+	if got := result.NormalizedMeta["type"]; got != "sse" {
+		t.Fatalf("type = %#v, want %q", got, "sse")
 	}
 }
 

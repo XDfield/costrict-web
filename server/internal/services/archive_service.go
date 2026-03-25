@@ -396,8 +396,13 @@ func NormalizeMCPMetadata(meta map[string]any) (map[string]any, error) {
 		return result, nil
 	}
 	if url, ok := result["url"].(string); ok && strings.TrimSpace(url) != "" {
-		// Has url but missing type → default to http.
-		result["type"] = "http"
+		// Respect transport hint if present.
+		if transport, ok := result["transport"].(string); ok && strings.EqualFold(transport, "sse") {
+			result["type"] = "sse"
+		} else {
+			result["type"] = "http"
+		}
+		delete(result, "transport")
 		return result, nil
 	}
 

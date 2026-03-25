@@ -330,9 +330,13 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Content = parsed.Content
 				meta := parsed.Metadata
 				if parsed.ItemType == "mcp" {
-					if normalized, err := NormalizeMCPMetadata(meta); err == nil {
-						meta = normalized
+					normalized, err := NormalizeMCPMetadata(meta)
+					if err != nil {
+						result.Failed++
+						result.Errors = append(result.Errors, fmt.Sprintf("normalize mcp %s: %v", relPath, err))
+						continue
 					}
+					meta = normalized
 				}
 				existing.Metadata = metadataJSON(meta)
 				existing.SourceSHA = contentHash
@@ -359,9 +363,13 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			} else {
 				meta := parsed.Metadata
 				if parsed.ItemType == "mcp" {
-					if normalized, err := NormalizeMCPMetadata(meta); err == nil {
-						meta = normalized
+					normalized, err := NormalizeMCPMetadata(meta)
+					if err != nil {
+						result.Failed++
+						result.Errors = append(result.Errors, fmt.Sprintf("normalize mcp %s: %v", relPath, err))
+						continue
 					}
+					meta = normalized
 				}
 				newItem := &models.CapabilityItem{
 					ID:          uuid.New().String(),

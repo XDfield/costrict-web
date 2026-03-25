@@ -103,21 +103,22 @@ func resolveMetadata(itemType string, raw json.RawMessage, content string) (data
 		if len(src) == 0 && content != "" {
 			src = json.RawMessage(content)
 		}
-		if len(src) > 0 {
-			var m map[string]any
-			if err := json.Unmarshal(src, &m); err != nil {
-				return nil, fmt.Errorf("invalid metadata JSON: %w", err)
-			}
-			norm, err := services.NormalizeMCPMetadata(m)
-			if err != nil {
-				return nil, fmt.Errorf("invalid MCP metadata: %w", err)
-			}
-			b, err := json.Marshal(norm)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal metadata: %w", err)
-			}
-			return datatypes.JSON(b), nil
+		if len(src) == 0 {
+			return nil, fmt.Errorf("MCP item requires metadata or .mcp.json content")
 		}
+		var m map[string]any
+		if err := json.Unmarshal(src, &m); err != nil {
+			return nil, fmt.Errorf("invalid metadata JSON: %w", err)
+		}
+		norm, err := services.NormalizeMCPMetadata(m)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MCP metadata: %w", err)
+		}
+		b, err := json.Marshal(norm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+		return datatypes.JSON(b), nil
 	}
 	if len(raw) > 0 {
 		return datatypes.JSON(raw), nil

@@ -12,7 +12,7 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 |---|---|---|
 | JSON API（`CreateItem` / `createItemFromJSON`） | 硬编码 `{}` — 请求体无 `metadata` 字段 | 错误 |
 | Archive 上传（`createItemFromArchive`） | 经 `normalizeMCPMetadata` 处理，含完整配置 | 正确 |
-| Sync（`SyncRegistry`） | 直接使用 `parsed.Metadata`，未经规范化 | 格式不标准 |
+| Sync（`SyncRegistry`） | 直接使用 `parsed.Metadata`，未经规范化，且失败时静默回退 | 格式不标准 |
 
 同时，`updateItemFromJSON` 在更新 content 时也不会重新解析 MCP 配置到 metadata。
 
@@ -20,15 +20,15 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 
 ### 核心原则：写入时规范化，读取时零转换
 
-1. **`NormalizeMCPMetadata`**：在写入时将任何输入格式转成 Claude MCP 标准格式
+1. **`NormalizeMCPMetadata`**：在写入时将任何输入格式转成 Claude MCP 标准格式落库
 2. **`buildMCPConfig`**：读取时直接返回 metadata，不做任何转换
-3. **`resolveMetadata`**：统一的 metadata 解析入口，MCP item 在无显式 metadata 时自动从 content 解析
+3. **`resolveMetadata`**：统一的 metadata 解析入口，MCP item 在无显式 metadata 时自动从 content 解析；无 metadata 也无 content 时拒绝创建
 
 ### MCP 标准格式
 
-参照 Claude Desktop / MCP 协议标准，落库格式为：
+参照 [Claude MCP 配置标准](https://docs.anthropic.com/en/docs/claude-code/mcp)，落库格式为：
 
-**stdio（本地服务）**：
+**stdio（本地服务）** — 无 `type` 字段，靠 `command` 识别：
 ```json
 {
   "command": "npx",
@@ -57,7 +57,7 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 
 ### 输入格式兼容
 
-`NormalizeMCPMetadata` 接受以下输入并统一转换：
+`NormalizeMCPMetadata` 接受以下输入并统一转换为标准格式：
 
 | 输入格式 | 来源 | 转换结果 |
 |---|---|---|
@@ -68,16 +68,18 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 | `{"type":"remote","url":"...","headers":{...}}` | opencode 特有格式 | `{"type":"http","url":"...","headers":{...}}` |
 | `{"mcpServers":{"name":{...}}}` | `.mcp.json` 标准包裹格式 | 解包后按上述规则处理 |
 | `{"url":"..."}` | 无 type 的 url | `{"type":"http","url":"..."}` |
+| `{"url":"...","transport":"sse"}` | 无 type 但有 transport 提示 | `{"type":"sse","url":"..."}` |
 
 ## 改动点
 
 ### 1. `services/archive_service.go` — `NormalizeMCPMetadata`
 
 - 导出为 `NormalizeMCPMetadata`（原 `normalizeMCPMetadata` 未导出）
-- 签名从 `func(parsed *ParsedItem)` 改为 `func(meta map[string]any)`
-- 输出标准 MCP 格式，不再包含内部字段（`hosting_type`、`server_type`、`key`）
-- 识别 opencode 特有格式（`local`/`remote`）并转换
+- 签名从 `func(parsed *ParsedItem)` 改为 `func(meta map[string]any)`，不再绑定 `ParsedItem` 结构体
+- 输出 Claude MCP 标准格式：stdio 无 `type` 字段、远程为 `http` 或 `sse`
+- 识别 opencode 特有格式（`local` → stdio，`remote` → `http`）并转换
 - 识别 `.mcp.json` 的 `mcpServers` 包裹层并解包
+- 无 type 但有 url 时，检查 `transport` 字段：`"sse"` 设 `type: "sse"`，否则默认 `"http"`
 
 ### 2. `handlers/capability_item.go` — JSON 创建 / 更新路径
 
@@ -85,6 +87,7 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 - 非 MCP item：透传 metadata 或默认 `{}`
 - MCP item + 有 metadata：调用 `NormalizeMCPMetadata` 规范化
 - MCP item + 无 metadata + 有 content：从 content 解析（当作 `.mcp.json`），再规范化
+- MCP item + 无 metadata + 无 content：返回错误，拒绝创建（防止存入无效的空 `{}`）
 
 **`CreateItem` / `createItemFromJSON`**：
 - 请求体新增 `Metadata json.RawMessage` 字段
@@ -100,16 +103,18 @@ MCP item 有三条创建路径，只有 archive 上传路径能正确生成 meta
 
 ### 4. `services/sync_service.go` — Sync 路径
 
-- 创建和更新 MCP item 时，先调用 `NormalizeMCPMetadata` 规范化
+- 创建和更新 MCP item 时，调用 `NormalizeMCPMetadata` 规范化
+- 规范化失败时计入 `result.Failed`，记录错误信息，跳过该 item（不再静默回退存原始 metadata）
 - Version 记录保持原始 metadata 不变（历史快照）
 
 ## 影响面
 
 ### 向后兼容
 
-- **JSON 创建接口**：`metadata` 字段可选，不传时行为与改动前一致（MCP item 会从 content 解析）
+- **JSON 创建接口**：`metadata` 字段可选。非 MCP item 不传时默认 `{}`（行为不变）；MCP item 不传 metadata 时从 content 解析，两者都没有时返回 400 错误（**行为变更**）
 - **非 MCP item**：完全不受影响
 - **Archive 上传**：行为不变，只是 `NormalizeMCPMetadata` 签名调整
+- **Sync**：MCP 规范化失败时该 item 被跳过并计入失败数（原先会静默存入非标准格式）
 
 ### 存量数据
 
