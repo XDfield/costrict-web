@@ -67,6 +67,10 @@ spec:
                   name: {{ .Values.redis.existingSecret }}
                   key: {{ .Values.redis.existingSecretKey }}
             {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: ARTIFACT_STORAGE_PATH
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -96,6 +100,17 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: artifacts-storage
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: artifacts-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-artifacts" (include "api.fullname" .)) }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
