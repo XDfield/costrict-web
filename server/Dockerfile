@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Set proxy for build
 ARG HTTPS_PROXY
@@ -23,6 +23,7 @@ COPY . .
 
 # Build application
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -o migrate ./cmd/migrate
 
 # Final stage
 FROM alpine:latest
@@ -39,8 +40,9 @@ RUN addgroup -g 1000 -S appgroup && \
 
 WORKDIR /app
 
-# Copy binary from builder with execute permission
+# Copy binaries from builder with execute permission
 COPY --from=builder --chmod=755 /app/server ./server
+COPY --from=builder --chmod=755 /app/migrate ./migrate
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app

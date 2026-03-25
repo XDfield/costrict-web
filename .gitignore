@@ -71,6 +71,7 @@ web/
 .costrict/
 .cospec/
 opencode.json
+.claude/
 
 # Artifact storage (runtime data, not source)
 data/
