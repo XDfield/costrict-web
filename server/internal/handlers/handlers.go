@@ -365,7 +365,7 @@ func CreateRepository(c *gin.Context) {
 	if repoType == "sync" {
 		var createdRegistries []models.CapabilityRegistry
 		for _, sr := range req.SyncRegistries {
-			reg := buildExternalRegistry(sr, repo.ID, ownerID, visibility)
+			reg := buildExternalRegistry(sr, repo.ID, ownerID)
 			db.Create(&reg)
 			if SyncScheduler != nil && sr.SyncEnabled {
 				_ = SyncScheduler.RegisterRegistry(&reg)
@@ -381,7 +381,6 @@ func CreateRepository(c *gin.Context) {
 		Name:        repo.Name,
 		Description: "Registry for repository " + repo.Name,
 		SourceType:  "internal",
-		Visibility:  visibility,
 		RepoID:      repo.ID,
 		OwnerID:     ownerID,
 	}
@@ -390,7 +389,7 @@ func CreateRepository(c *gin.Context) {
 	c.JSON(http.StatusCreated, repo)
 }
 
-func buildExternalRegistry(sr CreateSyncRegistryInput, repoID, ownerID, visibility string) models.CapabilityRegistry {
+func buildExternalRegistry(sr CreateSyncRegistryInput, repoID, ownerID string) models.CapabilityRegistry {
 	branch := sr.ExternalBranch
 	if branch == "" {
 		branch = "main"
@@ -418,7 +417,6 @@ func buildExternalRegistry(sr CreateSyncRegistryInput, repoID, ownerID, visibili
 		SyncInterval:   interval,
 		SyncStatus:     "idle",
 		SyncConfig:     buildSyncConfigJSON(sr.IncludePatterns, sr.ExcludePatterns, conflictStrategy, sr.WebhookSecret),
-		Visibility:     visibility,
 		RepoID:         repoID,
 		OwnerID:        ownerID,
 	}
@@ -884,7 +882,7 @@ func AddRepoRegistry(c *gin.Context) {
 		return
 	}
 
-	reg := buildExternalRegistry(req, repoID, ownerID, repo.Visibility)
+	reg := buildExternalRegistry(req, repoID, ownerID)
 	if err := db.Create(&reg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
 		return

@@ -142,7 +142,6 @@ type CapabilityRegistry struct {
 	SyncStatus     string         `gorm:"default:'idle'" json:"syncStatus"` // idle | syncing | error | paused
 	SyncConfig     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"syncConfig" swaggertype:"object"`
 	LastSyncLogID  *string        `gorm:"type:uuid" json:"lastSyncLogId"`
-	Visibility string `gorm:"default:'repo'" json:"visibility"`
 	RepoID     string `json:"repoId"`
 	OwnerID    string `gorm:"not null;index" json:"ownerId"`
 	Items       []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`

@@ -132,10 +132,10 @@ func TestVerifyGitHubSignature_WrongSecret(t *testing.T) {
 func TestGetRegistryIDForRepo_ExternalFirst(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg", Name: "ext", SourceType: "external", Visibility: "repo", RepoID: "repo-ext", OwnerID: "u1",
+		ID: "ext-reg", Name: "ext", SourceType: "external", RepoID: "repo-ext", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "int-reg", Name: "int", SourceType: "internal", Visibility: "repo", RepoID: "repo-ext", OwnerID: "u1",
+		ID: "int-reg", Name: "int", SourceType: "internal", RepoID: "repo-ext", OwnerID: "u1",
 	})
 
 	id, err := getRegistryIDForRepo("repo-ext")
@@ -150,7 +150,7 @@ func TestGetRegistryIDForRepo_ExternalFirst(t *testing.T) {
 func TestGetRegistryIDForRepo_FallbackToInternal(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "int-only", Name: "int-only", SourceType: "internal", Visibility: "repo", RepoID: "repo-int", OwnerID: "u1",
+		ID: "int-only", Name: "int-only", SourceType: "internal", RepoID: "repo-int", OwnerID: "u1",
 	})
 
 	id, err := getRegistryIDForRepo("repo-int")
@@ -233,7 +233,7 @@ func TestGetSyncJobDetail_NotFound(t *testing.T) {
 func TestGetRegistrySyncStatus_Found(t *testing.T) {
 	defer setupSyncDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-ss1", Name: "sync-reg", SourceType: "internal", Visibility: "public",
+		ID: "reg-ss1", Name: "sync-reg", SourceType: "internal",
 		RepoID: "repo-1", OwnerID: "u1", SyncStatus: "idle",
 	})
 

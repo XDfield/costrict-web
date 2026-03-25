@@ -31,9 +31,24 @@ func resolveRepoID(repoName string) (string, bool) {
 	return repo.ID, true
 }
 
+// getRepoVisibility returns the visibility of the repository associated with the given repoID.
+// For the virtual "public" repo, it returns "public".
+// Returns empty string if the repo is not found.
+func getRepoVisibility(repoID string) string {
+	if repoID == "public" {
+		return "public"
+	}
+	db := database.GetDB()
+	var repo models.Repository
+	if db.Select("visibility").Where("id = ?", repoID).First(&repo).Error != nil {
+		return ""
+	}
+	return repo.Visibility
+}
+
 // RegistryAccess godoc
 // @Summary      Check registry access
-// @Description  Probe whether a registry requires authentication. Returns {"public":false} for non-existent repos to avoid leaking repo existence.
+// @Description  Probe whether a registry requires authentication. Checks the parent repository's visibility. Returns {"public":false} for non-existent repos to avoid leaking repo existence.
 // @Tags         registry
 // @Produce      json
 // @Param        repo  path      string  true  "Repository name"
@@ -46,13 +61,8 @@ func RegistryAccess(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
-	var count int64
-	db.Model(&models.CapabilityRegistry{}).
-		Where("repo_id = ? AND visibility = 'public'", repoID).
-		Count(&count)
-
-	c.JSON(http.StatusOK, gin.H{"public": count > 0})
+	visibility := getRepoVisibility(repoID)
+	c.JSON(http.StatusOK, gin.H{"public": visibility == "public"})
 }
 
 // indexItem is the wire format for a single entry in index.json
@@ -73,7 +83,7 @@ type indexJSON struct {
 
 // RegistryIndex godoc
 // @Summary      Get registry index
-// @Description  Return the index.json for a repo's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.
+// @Description  Return the index.json for a repo's registry, filtered by the caller's access rights. Access is determined by the parent repository's visibility. Requires Bearer token for non-public repositories.
 // @Tags         registry
 // @Produce      json
 // @Param        repo  path      string  true  "Repository name"
@@ -90,12 +100,8 @@ func RegistryIndex(c *gin.Context) {
 
 	db := database.GetDB()
 
-	var publicCount int64
-	db.Model(&models.CapabilityRegistry{}).
-		Where("repo_id = ? AND visibility = 'public'", repoID).
-		Count(&publicCount)
-
-	isPublic := publicCount > 0
+	visibility := getRepoVisibility(repoID)
+	isPublic := visibility == "public"
 
 	userIDVal, _ := c.Get(middleware.UserIDKey)
 	userID, _ := userIDVal.(string)
@@ -105,39 +111,53 @@ func RegistryIndex(c *gin.Context) {
 		return
 	}
 
-	var registryIDs []string
-
+	// For public repos, return all registries under this repo
 	if isPublic {
+		var registryIDs []string
 		db.Model(&models.CapabilityRegistry{}).
-			Where("repo_id = ? AND visibility = 'public'", repoID).
+			Where("repo_id = ?", repoID).
 			Pluck("id", &registryIDs)
+
+		if len(registryIDs) == 0 {
+			c.JSON(http.StatusOK, indexJSON{Version: 1, Items: []indexItem{}})
+			return
+		}
+
+		c.JSON(http.StatusOK, buildRegistryIndex(db, registryIDs))
+		return
 	}
 
+	// For private repos, check membership
 	if userID != "" && repoID != "public" {
 		var isMember int64
 		db.Model(&models.RepoMember{}).
 			Where("user_id = ? AND repo_id = ?", userID, repoID).
 			Count(&isMember)
 
-		if !isPublic && isMember == 0 {
+		if isMember == 0 {
 			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this registry"})
 			return
 		}
 
-		if isMember > 0 {
-			var repoRegIDs []string
-			db.Model(&models.CapabilityRegistry{}).
-				Where("repo_id = ? AND visibility IN ('public','repo')", repoID).
-				Pluck("id", &repoRegIDs)
-			registryIDs = mergeUnique(registryIDs, repoRegIDs)
-		}
-	}
+		var registryIDs []string
+		db.Model(&models.CapabilityRegistry{}).
+			Where("repo_id = ?", repoID).
+			Pluck("id", &registryIDs)
 
-	if len(registryIDs) == 0 {
-		c.JSON(http.StatusOK, indexJSON{Version: 1, Items: []indexItem{}})
+		if len(registryIDs) == 0 {
+			c.JSON(http.StatusOK, indexJSON{Version: 1, Items: []indexItem{}})
+			return
+		}
+
+		c.JSON(http.StatusOK, buildRegistryIndex(db, registryIDs))
 		return
 	}
 
+	c.JSON(http.StatusOK, indexJSON{Version: 1, Items: []indexItem{}})
+}
+
+// buildRegistryIndex builds the index JSON response for a list of registry IDs
+func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
 	var capabilityItems []models.CapabilityItem
 	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&capabilityItems)
 
@@ -185,13 +205,13 @@ func RegistryIndex(c *gin.Context) {
 		items = append(items, entry)
 	}
 
-	c.JSON(http.StatusOK, indexJSON{Version: 1, Items: items})
+	return indexJSON{Version: 1, Items: items}
 }
 
 
 // DownloadItem godoc
 // @Summary      Download item content
-// @Description  Download the Markdown content of a capability item (skill/subagent/command) as a file. Respects visibility rules.
+// @Description  Download the Markdown content of a capability item (skill/subagent/command) as a file. Access is determined by the parent repository's visibility.
 // @Tags         items
 // @Produce      text/plain
 // @Param        id  path      string  true  "Item ID"
@@ -244,7 +264,10 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 		return false
 	}
 
-	if reg.Visibility == "public" {
+	// Determine visibility from the parent repository
+	visibility := getRepoVisibility(reg.RepoID)
+
+	if visibility == "public" {
 		return true
 	}
 
@@ -252,25 +275,18 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 		return false
 	}
 
-	if reg.Visibility == "private" {
-		return reg.OwnerID == userID
-	}
-
-	if reg.Visibility == "repo" {
-		db := database.GetDB()
-		var count int64
-		db.Model(&models.RepoMember{}).
-			Where("repo_id = ? AND user_id = ?", reg.RepoID, userID).
-			Count(&count)
-		return count > 0
-	}
-
-	return false
+	// For private repos, check membership
+	db := database.GetDB()
+	var count int64
+	db.Model(&models.RepoMember{}).
+		Where("repo_id = ? AND user_id = ?", reg.RepoID, userID).
+		Count(&count)
+	return count > 0
 }
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Access is determined by the parent repository's visibility.
 // @Tags         registry
 // @Produce      text/plain,application/octet-stream
 // @Param        repo      path      string  true  "Repository name"

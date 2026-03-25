@@ -249,7 +249,6 @@ func main() {
 			authed.GET("/registries", handlers.ListRegistries)
 			authed.GET("/registries/my", handlers.ListMyRegistries)
 			authed.POST("/registries", handlers.CreateRegistry)
-			authed.POST("/registries/ensure-personal", handlers.EnsurePersonalRegistry)
 			authed.PUT("/registries/:id", handlers.UpdateRegistry)
 			authed.PUT("/registries/:id/transfer", handlers.TransferRegistry)
 			authed.DELETE("/registries/:id", handlers.DeleteRegistry)
@@ -456,7 +455,6 @@ func runPreMigrations(db *gorm.DB) error {
 			sync_status text DEFAULT 'idle',
 			sync_config JSONB DEFAULT '{}',
 			last_sync_log_id uuid,
-			visibility text DEFAULT 'repo',
 			repo_id text,
 			owner_id text NOT NULL,
 			created_at timestamptz,
@@ -486,6 +484,14 @@ func runPreMigrations(db *gorm.DB) error {
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
 			stmts: []string{
 				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
+			},
+		},
+		// Drop visibility column from capability_registries — visibility is now
+		// derived from the parent repository's visibility field.
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_registries' AND column_name='visibility'`,
+			stmts: []string{
+				`ALTER TABLE capability_registries DROP COLUMN IF EXISTS visibility`,
 			},
 		},
 		{
