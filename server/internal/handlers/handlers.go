@@ -121,10 +121,11 @@ func splitOriginPath(rawURL string) (string, string) {
 
 // AuthCallback godoc
 // @Summary      OAuth callback
-// @Description  Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend
+// @Description  Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend. The state parameter carries the redirect target and callback URL encoded as base64url. After successful token exchange, the user is redirected (302) to the URL specified in state, or to the default frontend URL.
 // @Tags         auth
+// @Produce      json
 // @Param        code   query  string  true   "OAuth authorization code"
-// @Param        state  query  string  false  "Base64url-encoded JSON state"
+// @Param        state  query  string  false  "Base64url-encoded state containing redirect target and callback URL (format: origin|redirectPath|callbackPath)"
 // @Success      302  "Redirect to frontend with auth cookie set"
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
@@ -163,29 +164,6 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)
-}
-
-// AuthLogin godoc
-// @Summary      OAuth login redirect
-// @Description  Redirect user to Casdoor login page for OAuth authorization
-// @Tags         auth
-// @Produce      html
-// @Param        redirect_to   query  string  false "URL to redirect after login"
-// @Param        callback_url  query  string  false "OAuth callback URL"
-// @Success      302
-// @Failure      400  {object}  object{error=string}
-// @Router       /auth/login [get]
-func AuthLogin(c *gin.Context) {
-	redirectTo := c.Query("redirect_to")
-	callbackURL := c.Query("callback_url")
-
-	// Use redirect_to as state so AuthCallback can redirect back after login
-	state := redirectTo
-
-	var loginURL string
-	loginURL = CasdoorClient.GetLoginURL(state, callbackURL)
-
-	c.Redirect(http.StatusFound, loginURL)
 }
 
 // Login godoc
@@ -322,7 +300,7 @@ func CreateRepository(c *gin.Context) {
 		DisplayName      string                    `json:"displayName"`
 		Description      string                    `json:"description"`
 		Visibility       string                    `json:"visibility"`
-		OwnerID          string                    `json:"ownerId" binding:"required"`
+		OwnerID          string                    `json:"ownerId"`
 		RepoType         string                    `json:"repoType"`
 		SyncRegistry     *CreateSyncRegistryInput  `json:"syncRegistry"`
 		SyncRegistries   []CreateSyncRegistryInput `json:"syncRegistries"`
@@ -330,6 +308,14 @@ func CreateRepository(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Always use the authenticated user's ID (from JWT sub) as the owner,
+	// ignoring any ownerId provided in the request body.
+	ownerID := c.GetString(middleware.UserIDKey)
+	if ownerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
@@ -359,7 +345,7 @@ func CreateRepository(c *gin.Context) {
 		Description: req.Description,
 		Visibility:  visibility,
 		RepoType:    repoType,
-		OwnerID:     req.OwnerID,
+		OwnerID:     ownerID,
 	}
 
 	db := database.GetDB()
@@ -371,7 +357,7 @@ func CreateRepository(c *gin.Context) {
 	ownerMember := models.RepoMember{
 		ID:     uuid.New().String(),
 		RepoID: repo.ID,
-		UserID: req.OwnerID,
+		UserID: ownerID,
 		Role:   "owner",
 	}
 	db.Create(&ownerMember)
@@ -379,7 +365,7 @@ func CreateRepository(c *gin.Context) {
 	if repoType == "sync" {
 		var createdRegistries []models.CapabilityRegistry
 		for _, sr := range req.SyncRegistries {
-			reg := buildExternalRegistry(sr, repo.ID, req.OwnerID, visibility)
+			reg := buildExternalRegistry(sr, repo.ID, ownerID, visibility)
 			db.Create(&reg)
 			if SyncScheduler != nil && sr.SyncEnabled {
 				_ = SyncScheduler.RegisterRegistry(&reg)
@@ -397,7 +383,7 @@ func CreateRepository(c *gin.Context) {
 		SourceType:  "internal",
 		Visibility:  visibility,
 		RepoID:      repo.ID,
-		OwnerID:     req.OwnerID,
+		OwnerID:     ownerID,
 	}
 	db.Create(&repoRegistry)
 

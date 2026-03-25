@@ -174,7 +174,9 @@ func RegistryIndex(c *gin.Context) {
 		case "command":
 			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
-			entry.MCP = buildMCPConfig(si)
+			if len(si.Metadata) > 0 {
+				entry.MCP = json.RawMessage(si.Metadata)
+			}
 			if len(assetPaths) > 0 {
 				entry.Files = append([]string{".mcp.json"}, assetPaths...)
 			}
@@ -186,56 +188,6 @@ func RegistryIndex(c *gin.Context) {
 	c.JSON(http.StatusOK, indexJSON{Version: 1, Items: items})
 }
 
-// buildMCPConfig constructs the mcp config object from a CapabilityItem's metadata.
-// For hosting_type=command it returns {"type":"local","command":[...]}
-// For hosting_type=remote  it returns {"type":"remote","url":"..."}
-// Falls back to raw metadata if the structure is unrecognised.
-func buildMCPConfig(si models.CapabilityItem) json.RawMessage {
-	if len(si.Metadata) == 0 {
-		return nil
-	}
-
-	var meta map[string]interface{}
-	if err := json.Unmarshal(si.Metadata, &meta); err != nil {
-		return nil
-	}
-
-	hostingType, _ := meta["hosting_type"].(string)
-
-	switch hostingType {
-	case "command":
-		cmd, _ := meta["command"].(string)
-		argsRaw, _ := meta["args"].([]interface{})
-		args := make([]string, 0, len(argsRaw)+1)
-		if cmd != "" {
-			args = append(args, cmd)
-		}
-		for _, a := range argsRaw {
-			if s, ok := a.(string); ok {
-				args = append(args, s)
-			}
-		}
-		out, _ := json.Marshal(map[string]interface{}{
-			"type":    "local",
-			"command": args,
-		})
-		return out
-
-	case "remote":
-		url, _ := meta["url"].(string)
-		serverType, _ := meta["server_type"].(string)
-		if serverType == "" {
-			serverType = "http"
-		}
-		out, _ := json.Marshal(map[string]interface{}{
-			"type": serverType,
-			"url":  url,
-		})
-		return out
-	}
-
-	return json.RawMessage(si.Metadata)
-}
 
 // DownloadItem godoc
 // @Summary      Download item content
@@ -318,16 +270,17 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Respects visibility rules.
 // @Tags         registry
-// @Produce      text/plain
+// @Produce      text/plain,application/octet-stream
 // @Param        repo      path      string  true  "Repository name"
-// @Param        itemType  path      string  true  "Item type (skill, mcp, etc.)"
+// @Param        itemType  path      string  true  "Item type (skill, mcp, subagent, command)"
 // @Param        slug      path      string  true  "Item slug"
-// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
-// @Success      200       {string}  string  "File content"
+// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, or any asset file)"
+// @Success      200       {file}    file    "File content (text or binary depending on file type)"
 // @Failure      403       {object}  object{error=string}
 // @Failure      404       {object}  object{error=string}
+// @Failure      500       {object}  object{error=string}
 // @Router       /registry/{repo}/{itemType}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
 	repoID, ok := resolveRepoID(c.Param("repo"))

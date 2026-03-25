@@ -75,11 +75,17 @@ func CreateRegistry(c *gin.Context) {
 		SyncInterval   int    `json:"syncInterval"`
 		Visibility     string `json:"visibility"`
 		RepoID         string `json:"repoId"`
-		OwnerID        string `json:"ownerId" binding:"required"`
+		OwnerID        string `json:"ownerId"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	ownerID := c.GetString(middleware.UserIDKey)
+	if ownerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
@@ -94,7 +100,7 @@ func CreateRegistry(c *gin.Context) {
 		SyncInterval:   req.SyncInterval,
 		Visibility:     req.Visibility,
 		RepoID:         req.RepoID,
-		OwnerID:        req.OwnerID,
+		OwnerID:        ownerID,
 	}
 
 	db := database.GetDB()
@@ -333,7 +339,7 @@ func TransferRegistry(c *gin.Context) {
 // @Router       /registries/ensure-personal [post]
 func EnsurePersonalRegistry(c *gin.Context) {
 	var req struct {
-		OwnerID  string `json:"ownerId" binding:"required"`
+		OwnerID  string `json:"ownerId"`
 		Username string `json:"username"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -341,9 +347,15 @@ func EnsurePersonalRegistry(c *gin.Context) {
 		return
 	}
 
+	ownerID := c.GetString(middleware.UserIDKey)
+	if ownerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
-	result := db.Where("owner_id = ? AND source_type = 'internal' AND repo_id = ''", req.OwnerID).Limit(1).Find(&registry)
+	result := db.Where("owner_id = ? AND source_type = 'internal' AND repo_id = ''", ownerID).Limit(1).Find(&registry)
 	if result.Error == nil && registry.ID != "" {
 		c.JSON(http.StatusOK, registry)
 		return
@@ -359,7 +371,7 @@ func EnsurePersonalRegistry(c *gin.Context) {
 		Description: "Personal skill registry",
 		SourceType:  "internal",
 		Visibility:  "public",
-		OwnerID:     req.OwnerID,
+		OwnerID:     ownerID,
 	}
 	if result := db.Create(&registry); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
@@ -378,9 +390,9 @@ func EnsurePersonalRegistry(c *gin.Context) {
 // @Failure      400      {object}  object{error=string}
 // @Router       /registries/my [get]
 func ListMyRegistries(c *gin.Context) {
-	ownerID := c.Query("ownerId")
+	ownerID := c.GetString(middleware.UserIDKey)
 	if ownerID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ownerId is required"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 	db := database.GetDB()

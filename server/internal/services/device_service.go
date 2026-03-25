@@ -258,3 +258,9 @@ func (s *DeviceService) UpdateLastSeen(deviceID string) error {
 		Where("device_id = ?", deviceID).
 		Update("last_seen_at", now).Error
 }
+
+func (s *DeviceService) UpdateVersion(deviceID, version string) error {
+	return s.DB.Model(&models.Device{}).
+		Where("device_id = ?", deviceID).
+		Update("version", version).Error
+}

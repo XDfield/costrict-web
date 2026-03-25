@@ -218,14 +218,15 @@ func TestParseArchive_Zip_MCPHappyPath(t *testing.T) {
 	if result.MainContent != string(content) {
 		t.Fatalf("MainContent mismatch")
 	}
-	if got := result.NormalizedMeta["hosting_type"]; got != "command" {
-		t.Fatalf("hosting_type = %#v, want %q", got, "command")
+	if _, hasType := result.NormalizedMeta["type"]; hasType {
+		t.Fatalf("stdio format should not have type, got %v", result.NormalizedMeta["type"])
 	}
 	if got := result.NormalizedMeta["command"]; got != "npx" {
 		t.Fatalf("command = %#v, want %q", got, "npx")
 	}
-	if got := result.NormalizedMeta["args"]; !reflect.DeepEqual(got, []any{"-y", "@tool/foo"}) {
-		t.Fatalf("args = %#v, want %#v", got, []any{"-y", "@tool/foo"})
+	expectedArgs := []any{"-y", "@tool/foo"}
+	if got := result.NormalizedMeta["args"]; !reflect.DeepEqual(got, expectedArgs) {
+		t.Fatalf("args = %#v, want %#v", got, expectedArgs)
 	}
 }
 
@@ -250,11 +251,8 @@ func TestParseArchive_Zip_MCPRemoteServer(t *testing.T) {
 		t.Fatalf("ParseArchive() error = %v", err)
 	}
 
-	if got := result.NormalizedMeta["hosting_type"]; got != "remote" {
-		t.Fatalf("hosting_type = %#v, want %q", got, "remote")
-	}
-	if got := result.NormalizedMeta["server_type"]; got != "http" {
-		t.Fatalf("server_type = %#v, want %q", got, "http")
+	if got := result.NormalizedMeta["type"]; got != "http" {
+		t.Fatalf("type = %#v, want %q", got, "http")
 	}
 	if got := result.NormalizedMeta["url"]; got != "https://api.example.com/mcp" {
 		t.Fatalf("url = %#v, want %q", got, "https://api.example.com/mcp")
@@ -283,11 +281,8 @@ func TestParseArchive_Zip_MCPRemoteSSE(t *testing.T) {
 		t.Fatalf("ParseArchive() error = %v", err)
 	}
 
-	if got := result.NormalizedMeta["hosting_type"]; got != "remote" {
-		t.Fatalf("hosting_type = %#v, want %q", got, "remote")
-	}
-	if got := result.NormalizedMeta["server_type"]; got != "sse" {
-		t.Fatalf("server_type = %#v, want %q", got, "sse")
+	if got := result.NormalizedMeta["type"]; got != "sse" {
+		t.Fatalf("type = %#v, want %q", got, "sse")
 	}
 }
 
@@ -631,14 +626,15 @@ func TestParseArchive_TarGz_MCPHappyPath(t *testing.T) {
 	if result.MainContent != string(content) {
 		t.Fatalf("MainContent mismatch")
 	}
-	if got := result.NormalizedMeta["hosting_type"]; got != "command" {
-		t.Fatalf("hosting_type = %#v, want %q", got, "command")
+	if _, hasType := result.NormalizedMeta["type"]; hasType {
+		t.Fatalf("stdio format should not have type, got %v", result.NormalizedMeta["type"])
 	}
 	if got := result.NormalizedMeta["command"]; got != "npx" {
 		t.Fatalf("command = %#v, want %q", got, "npx")
 	}
-	if got := result.NormalizedMeta["args"]; !reflect.DeepEqual(got, []any{"-y", "@tool/foo"}) {
-		t.Fatalf("args = %#v, want %#v", got, []any{"-y", "@tool/foo"})
+	expectedArgs := []any{"-y", "@tool/foo"}
+	if got := result.NormalizedMeta["args"]; !reflect.DeepEqual(got, expectedArgs) {
+		t.Fatalf("args = %#v, want %#v", got, expectedArgs)
 	}
 }
 
@@ -784,23 +780,28 @@ func TestNormalizeMCPMetadata_NoServers(t *testing.T) {
 		"args":    []any{"-y", "@tool/foo"},
 	}}
 
-	meta, err := normalizeMCPMetadata(parsed)
+	meta, err := NormalizeMCPMetadata(parsed.Metadata)
 	if err != nil {
-		t.Fatalf("normalizeMCPMetadata() error = %v", err)
+		t.Fatalf("NormalizeMCPMetadata() error = %v", err)
 	}
-	if got := meta["hosting_type"]; got != "command" {
-		t.Fatalf("hosting_type = %#v, want %q", got, "command")
+	if _, hasType := meta["type"]; hasType {
+		t.Fatalf("stdio format should not have type, got %v", meta["type"])
 	}
 	if got := meta["command"]; got != "npx" {
 		t.Fatalf("command = %#v, want %q", got, "npx")
 	}
+	expectedArgs := []any{"-y", "@tool/foo"}
+	if got := meta["args"]; !reflect.DeepEqual(got, expectedArgs) {
+		t.Fatalf("args = %#v, want %#v", got, expectedArgs)
+	}
+
 }
 
 func TestNormalizeMCPMetadata_CannotDetermine(t *testing.T) {
 	t.Parallel()
 
-	_, err := normalizeMCPMetadata(&ParsedItem{Metadata: map[string]any{"name": "demo"}})
+	_, err := NormalizeMCPMetadata(map[string]any{"name": "demo"})
 	if err == nil {
-		t.Fatal("normalizeMCPMetadata() error = nil, want error")
+		t.Fatal("NormalizeMCPMetadata() error = nil, want error")
 	}
 }
