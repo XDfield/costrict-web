@@ -120,9 +120,8 @@ func TestCreateRepository_Success(t *testing.T) {
 func TestCreateRepository_MissingRequired(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "no-owner",
-	})
+	// name is the only required field now; ownerId comes from auth context
+	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}

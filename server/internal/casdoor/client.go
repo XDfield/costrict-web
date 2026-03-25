@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ type CasdoorClient struct {
 	clientID         string
 	secret           string
 	callbackURL      string
+	organization     string // Casdoor organization name
 }
 
 type CasdoorUser struct {
@@ -52,6 +54,7 @@ func NewClient(cfg *config.CasdoorConfig) *CasdoorClient {
 		clientID:         cfg.ClientID,
 		secret:           cfg.Secret,
 		callbackURL:      cfg.CallbackURL,
+		organization:     cfg.Organization,
 	}
 }
 
@@ -197,16 +200,16 @@ func (c *CasdoorClient) GetUsers(accessToken string) ([]byte, error) {
 
 // SearchUsers searches users in Casdoor by username or email keyword
 func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser, error) {
-	apiURL := fmt.Sprintf("%s/api/get-users", c.internalEndpoint)
+	apiURL := fmt.Sprintf("%s/api/get-users?owner=%s", c.internalEndpoint, url.QueryEscape(c.organization))
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	if accessToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-	}
+	// Use client credentials (Basic Auth) for admin API access,
+	// as /api/get-users requires admin privileges that normal user tokens lack.
+	req.SetBasicAuth(c.clientID, c.secret)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -218,6 +221,8 @@ func (c *CasdoorClient) SearchUsers(accessToken, keyword string) ([]CasdoorUser,
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
+
+	log.Printf("[SearchUsers] GET %s -> status=%d, body=%s", apiURL, resp.StatusCode, string(body))
 
 	// Casdoor returns wrapped response: {"status": "ok", "data": [...], "msg": ""}
 	var wrappedResp struct {

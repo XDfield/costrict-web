@@ -300,7 +300,7 @@ func CreateRepository(c *gin.Context) {
 		DisplayName      string                    `json:"displayName"`
 		Description      string                    `json:"description"`
 		Visibility       string                    `json:"visibility"`
-		OwnerID          string                    `json:"ownerId" binding:"required"`
+		OwnerID          string                    `json:"ownerId"`
 		RepoType         string                    `json:"repoType"`
 		SyncRegistry     *CreateSyncRegistryInput  `json:"syncRegistry"`
 		SyncRegistries   []CreateSyncRegistryInput `json:"syncRegistries"`
@@ -308,6 +308,14 @@ func CreateRepository(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Always use the authenticated user's ID (from JWT sub) as the owner,
+	// ignoring any ownerId provided in the request body.
+	ownerID := c.GetString(middleware.UserIDKey)
+	if ownerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
@@ -337,7 +345,7 @@ func CreateRepository(c *gin.Context) {
 		Description: req.Description,
 		Visibility:  visibility,
 		RepoType:    repoType,
-		OwnerID:     req.OwnerID,
+		OwnerID:     ownerID,
 	}
 
 	db := database.GetDB()
@@ -349,7 +357,7 @@ func CreateRepository(c *gin.Context) {
 	ownerMember := models.RepoMember{
 		ID:     uuid.New().String(),
 		RepoID: repo.ID,
-		UserID: req.OwnerID,
+		UserID: ownerID,
 		Role:   "owner",
 	}
 	db.Create(&ownerMember)
@@ -357,7 +365,7 @@ func CreateRepository(c *gin.Context) {
 	if repoType == "sync" {
 		var createdRegistries []models.CapabilityRegistry
 		for _, sr := range req.SyncRegistries {
-			reg := buildExternalRegistry(sr, repo.ID, req.OwnerID, visibility)
+			reg := buildExternalRegistry(sr, repo.ID, ownerID, visibility)
 			db.Create(&reg)
 			if SyncScheduler != nil && sr.SyncEnabled {
 				_ = SyncScheduler.RegisterRegistry(&reg)
@@ -375,7 +383,7 @@ func CreateRepository(c *gin.Context) {
 		SourceType:  "internal",
 		Visibility:  visibility,
 		RepoID:      repo.ID,
-		OwnerID:     req.OwnerID,
+		OwnerID:     ownerID,
 	}
 	db.Create(&repoRegistry)
 
