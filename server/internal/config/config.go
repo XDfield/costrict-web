@@ -30,6 +30,7 @@ type CasdoorConfig struct {
 	ClientID         string
 	Secret           string
 	CallbackURL      string
+	Organization     string // Casdoor organization name for user queries (e.g. "user-group")
 }
 
 // LLMConfig holds configuration for the LLM service (GLM with OpenAI protocol)
@@ -87,6 +88,7 @@ func Load() *Config {
 			ClientID:         getEnv("CASDOOR_CLIENT_ID", ""),
 			Secret:           getEnv("CASDOOR_CLIENT_SECRET", ""),
 			CallbackURL:      getEnv("CASDOOR_CALLBACK_URL", "http://localhost:8080/api/auth/callback"),
+			Organization:     getEnv("CASDOOR_ORGANIZATION", "user-group"),
 		},
 		LLM: LLMConfig{
 			Provider:    getEnv("LLM_PROVIDER", "openai"),
