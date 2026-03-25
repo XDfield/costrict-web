@@ -869,8 +869,8 @@ func TestCreateItemDirect_ZipMCP_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected metadata object, got %#v", item["metadata"])
 	}
-	if metadata["hosting_type"] != "command" {
-		t.Fatalf("expected hosting_type=command, got %#v", metadata["hosting_type"])
+	if metadata["command"] == nil {
+		t.Fatalf("expected command in metadata, got %#v", metadata)
 	}
 }
 

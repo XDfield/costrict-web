@@ -146,7 +146,7 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 				return nil, fmt.Errorf(".mcp.json must contain exactly 1 server entry")
 			}
 			parsed = items[0]
-			normalizedMeta, err = normalizeMCPMetadata(parsed)
+			normalizedMeta, err = NormalizeMCPMetadata(parsed.Metadata)
 		}
 	}
 	if err != nil {
@@ -321,13 +321,25 @@ func enumerateTarGzEntries(r io.ReaderAt, size int64) ([]archiveEntry, error) {
 	return entries, nil
 }
 
-func normalizeMCPMetadata(parsed *ParsedItem) (map[string]any, error) {
-	if parsed == nil {
-		return nil, fmt.Errorf("parsed item is required")
+// NormalizeMCPMetadata converts any supported MCP input format into the
+// standard MCP configuration format (Claude / MCP protocol).
+//
+// Standard format:
+//   stdio: {"command": "npx", "args": ["-y", "@foo/bar"], "env": {...}}
+//   http:  {"type": "http", "url": "https://...", "headers": {...}}
+//   sse:   {"type": "sse",  "url": "https://...", "headers": {...}}
+//
+// Accepted proprietary inputs:
+//   - {"type":"local",  "command":["npx","-y","@foo"]}  → stdio
+//   - {"type":"remote", "url":"https://..."}             → http (type becomes "http")
+//   - {"mcpServers":{"name":{...}}}                        → unwrap then normalize
+func NormalizeMCPMetadata(meta map[string]any) (map[string]any, error) {
+	if len(meta) == 0 {
+		return nil, fmt.Errorf("metadata is required")
 	}
 
-	serverConfig := cloneMap(parsed.Metadata)
-	if serversRaw, ok := parsed.Metadata["mcpServers"]; ok {
+	var serverConfig map[string]any
+	if serversRaw, ok := meta["mcpServers"]; ok {
 		servers, ok := serversRaw.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("mcpServers must be an object")
@@ -335,37 +347,61 @@ func normalizeMCPMetadata(parsed *ParsedItem) (map[string]any, error) {
 		if len(servers) != 1 {
 			return nil, fmt.Errorf(".mcp.json must contain exactly 1 server entry")
 		}
-
-		for key, value := range servers {
+		for _, value := range servers {
 			serverMap, ok := value.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("mcp server %q must be an object", key)
+				return nil, fmt.Errorf("mcpServers entry must be an object")
 			}
 			serverConfig = cloneMap(serverMap)
-			if _, exists := serverConfig["key"]; !exists {
-				serverConfig["key"] = key
-			}
 			break
 		}
+	} else {
+		serverConfig = cloneMap(meta)
 	}
 
-	result := cloneMap(serverConfig)
-	if command, ok := result["command"].(string); ok && strings.TrimSpace(command) != "" {
-		result["hosting_type"] = "command"
-		return result, nil
-	}
+	result := serverConfig
+	t, _ := result["type"].(string)
 
-	if url, ok := result["url"].(string); ok && strings.TrimSpace(url) != "" {
-		result["hosting_type"] = "remote"
-		serverType := "http"
-		if transport, ok := result["transport"].(string); ok && strings.EqualFold(transport, "sse") {
-			serverType = "sse"
+	switch t {
+	case "local", "stdio":
+		// Proprietary format: command is []any. Split to command + args.
+		delete(result, "type")
+		if cmdArr, ok := result["command"].([]any); ok && len(cmdArr) > 0 {
+			result["command"] = cmdArr[0]
+			if len(cmdArr) > 1 {
+				args := make([]string, 0, len(cmdArr)-1)
+				for _, a := range cmdArr[1:] {
+					if s, ok := a.(string); ok {
+						args = append(args, s)
+					}
+				}
+				result["args"] = args
+			}
 		}
-		result["server_type"] = serverType
+		return result, nil
+
+	case "remote":
+		// Proprietary: "remote" → standard "http".
+		result["type"] = "http"
+		return result, nil
+
+	case "http", "sse":
+		// Already standard remote format.
 		return result, nil
 	}
 
-	return nil, fmt.Errorf("unable to determine MCP hosting type")
+	// No type field — detect from content.
+	if cmd, ok := result["command"].(string); ok && strings.TrimSpace(cmd) != "" {
+		// Standard stdio format.
+		return result, nil
+	}
+	if url, ok := result["url"].(string); ok && strings.TrimSpace(url) != "" {
+		// Has url but missing type → default to http.
+		result["type"] = "http"
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("unable to determine MCP server type: need command or url")
 }
 
 func resolveMainFile(itemType string) string {

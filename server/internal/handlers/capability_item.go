@@ -92,6 +92,39 @@ type createItemAssets struct {
 	Artifact *models.CapabilityArtifact
 }
 
+// resolveMetadata returns the JSON-encoded metadata for an item.
+// For MCP items it normalises the raw payload to standard MCP format.
+// When metadata is absent but content holds a valid .mcp.json body,
+// the metadata is derived from content automatically.
+// Returns an error when MCP metadata cannot be normalised.
+func resolveMetadata(itemType string, raw json.RawMessage, content string) (datatypes.JSON, error) {
+	if itemType == "mcp" {
+		src := json.RawMessage(raw)
+		if len(src) == 0 && content != "" {
+			src = json.RawMessage(content)
+		}
+		if len(src) > 0 {
+			var m map[string]any
+			if err := json.Unmarshal(src, &m); err != nil {
+				return nil, fmt.Errorf("invalid metadata JSON: %w", err)
+			}
+			norm, err := services.NormalizeMCPMetadata(m)
+			if err != nil {
+				return nil, fmt.Errorf("invalid MCP metadata: %w", err)
+			}
+			b, err := json.Marshal(norm)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+			}
+			return datatypes.JSON(b), nil
+		}
+	}
+	if len(raw) > 0 {
+		return datatypes.JSON(raw), nil
+	}
+	return datatypes.JSON([]byte("{}")), nil
+}
+
 // registryRepoID returns the repo_id associated with a registry.
 // Falls back to "public" when the registry has no repo_id set.
 func registryRepoID(db *gorm.DB, registryID string) string {
@@ -327,7 +360,7 @@ func ListItems(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,sourcePath=string,createdBy=string}  true  "Item data"
+// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data"
 // @Success      201   {object}  models.CapabilityItem
 // @Failure      400   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
@@ -342,8 +375,9 @@ func CreateItem(c *gin.Context) {
 		Description string `json:"description"`
 		Category    string `json:"category"`
 		Version     string `json:"version"`
-		Content     string `json:"content"`
-		SourcePath  string `json:"sourcePath"`
+		Content     string          `json:"content"`
+		Metadata    json.RawMessage `json:"metadata"`
+		SourcePath  string          `json:"sourcePath"`
 		CreatedBy   string `json:"createdBy" binding:"required"`
 	}
 
@@ -358,6 +392,11 @@ func CreateItem(c *gin.Context) {
 	}
 
 	db := database.GetDB()
+	metadata, err := resolveMetadata(req.ItemType, req.Metadata, req.Content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	item, err := persistNewItem(db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryId,
@@ -369,7 +408,7 @@ func CreateItem(c *gin.Context) {
 		Category:    req.Category,
 		Version:     version,
 		Content:     req.Content,
-		Metadata:    datatypes.JSON([]byte("{}")),
+		Metadata:    metadata,
 		SourcePath:  req.SourcePath,
 		CreatedBy:   req.CreatedBy,
 		SourceType:  "direct",
@@ -478,6 +517,14 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	}
 	if req.Content != "" {
 		item.Content = req.Content
+		if item.ItemType == "mcp" {
+			meta, err := resolveMetadata("mcp", nil, req.Content)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			item.Metadata = meta
+		}
 	}
 	if req.Status != "" {
 		item.Status = req.Status
@@ -968,7 +1015,7 @@ func ListAllItems(c *gin.Context) {
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,createdBy=string}  false  "Item data (JSON)"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string}  false  "Item data (JSON)"
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
@@ -995,8 +1042,9 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Description string `json:"description"`
 		Category    string `json:"category"`
 		Version     string `json:"version"`
-		Content     string `json:"content"`
-		CreatedBy   string `json:"createdBy"`
+		Content     string          `json:"content"`
+		Metadata    json.RawMessage `json:"metadata"`
+		CreatedBy   string          `json:"createdBy"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1027,6 +1075,11 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		version = "1.0.0"
 	}
 
+	metadata, err := resolveMetadata(req.ItemType, req.Metadata, req.Content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	item, err := persistNewItem(h.db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryID,
@@ -1038,7 +1091,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Category:    req.Category,
 		Version:     version,
 		Content:     req.Content,
-		Metadata:    datatypes.JSON([]byte("{}")),
+		Metadata:    metadata,
 		CreatedBy:   req.CreatedBy,
 		SourceType:  "direct",
 	}, createItemAssets{})
