@@ -3,6 +3,9 @@ package handlers
 import (
 	"net/http"
 
+	// imported for swag to resolve casdoor.CasdoorUser in godoc annotations
+	_ "github.com/costrict/costrict-web/server/internal/casdoor"
+
 	"github.com/gin-gonic/gin"
 )
 
