@@ -505,7 +505,7 @@ func TestRegistryIndex_MCPWithAssets(t *testing.T) {
 		ID: PublicRegistryID, Name: "public",
 		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
 	})
-	meta := `{"hosting_type":"command","command":"npx"}`
+	meta := `{"command":"npx"}`
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-mcp", RegistryID: PublicRegistryID, RepoID: "public",
 		Slug: "my-tool", ItemType: "mcp",
@@ -533,6 +533,102 @@ func TestRegistryIndex_MCPWithAssets(t *testing.T) {
 		t.Fatal("expected mcp field to be set")
 	}
 	assertFilesContainExactly(t, item.Files, ".mcp.json", "docs/usage.md")
+}
+
+func TestRegistryIndex_MCPFromJSONMetadata(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+
+	// Simulate an MCP item created via JSON API with metadata containing
+	// mcpServers envelope — resolveMetadata should normalise it.
+	normalized, err := resolveMetadata("mcp", json.RawMessage(`{"mcpServers":{"demo":{"command":"npx","args":["-y","@demo/mcp"]}}}`), "")
+	if err != nil {
+		t.Fatalf("resolveMetadata error: %v", err)
+	}
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-mcp-json", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "demo-tool", ItemType: "mcp",
+		Name: "Demo Tool", Status: "active", CreatedBy: "system",
+		Content: "", Metadata: normalized,
+	})
+
+	w := get(newRouter(""), "/api/registry/public/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body indexJSON
+	json.NewDecoder(w.Body).Decode(&body)
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(body.Items))
+	}
+	item := body.Items[0]
+	if item.MCP == nil {
+		t.Fatal("expected mcp field to be set")
+	}
+
+	var mcp map[string]interface{}
+	if err := json.Unmarshal(item.MCP, &mcp); err != nil {
+		t.Fatalf("failed to parse mcp: %v", err)
+	}
+	if mcp["type"] != nil {
+		t.Fatalf("stdio should not have type, got %v", mcp["type"])
+	}
+	if mcp["command"] != "npx" {
+		t.Fatalf("expected command=npx, got %v", mcp["command"])
+	}
+}
+
+func TestRegistryIndex_MCPMetadataDerivedFromContent(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+	})
+
+	// When no metadata is supplied, resolveMetadata should parse content as .mcp.json.
+	mcpContent := `{"mcpServers":{"my-server":{"command":"node","args":["server.js"]}}}`
+	normalized, err := resolveMetadata("mcp", nil, mcpContent)
+	if err != nil {
+		t.Fatalf("resolveMetadata error: %v", err)
+	}
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-mcp-content", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "content-tool", ItemType: "mcp",
+		Name: "Content Tool", Status: "active", CreatedBy: "system",
+		Content: mcpContent, Metadata: normalized,
+	})
+
+	w := get(newRouter(""), "/api/registry/public/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body indexJSON
+	json.NewDecoder(w.Body).Decode(&body)
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(body.Items))
+	}
+	item := body.Items[0]
+	if item.MCP == nil {
+		t.Fatal("expected mcp field to be set")
+	}
+
+	var mcp map[string]interface{}
+	if err := json.Unmarshal(item.MCP, &mcp); err != nil {
+		t.Fatalf("failed to parse mcp: %v", err)
+	}
+	if mcp["type"] != nil {
+		t.Fatalf("stdio should not have type, got %v", mcp["type"])
+	}
+	if mcp["command"] != "node" {
+		t.Fatalf("expected command=node, got %v", mcp["command"])
+	}
+	args, _ := mcp["args"].([]interface{})
+	if len(args) != 1 || args[0] != "server.js" {
+		t.Fatalf("expected args=[server.js], got %v", mcp["args"])
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -810,61 +906,6 @@ func TestDownloadItem_NotFound(t *testing.T) {
 	w := get(newRouter(""), "/api/items/no-such-id/download")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// buildMCPConfig
-// ---------------------------------------------------------------------------
-
-func TestBuildMCPConfig_Command(t *testing.T) {
-	si := models.CapabilityItem{
-		RepoID: "public",
-		Metadata: datatypes.JSON([]byte(`{"hosting_type":"command","command":"npx","args":["-y","@foo/bar"]}`)),
-	}
-	raw := buildMCPConfig(si)
-	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("invalid json: %v", err)
-	}
-	if out["type"] != "local" {
-		t.Fatalf("expected type=local, got %v", out["type"])
-	}
-	cmds, _ := out["command"].([]interface{})
-	if len(cmds) != 3 || cmds[0] != "npx" {
-		t.Fatalf("unexpected command: %v", cmds)
-	}
-}
-
-func TestBuildMCPConfig_Remote(t *testing.T) {
-	si := models.CapabilityItem{
-		RepoID: "public",
-		Metadata: datatypes.JSON([]byte(`{"hosting_type":"remote","server_type":"sse","url":"https://mcp.example.com"}`)),
-	}
-	raw := buildMCPConfig(si)
-	var out map[string]interface{}
-	json.Unmarshal(raw, &out)
-	if out["type"] != "sse" {
-		t.Fatalf("expected type=sse, got %v", out["type"])
-	}
-	if out["url"] != "https://mcp.example.com" {
-		t.Fatalf("unexpected url: %v", out["url"])
-	}
-}
-
-func TestBuildMCPConfig_EmptyMetadata(t *testing.T) {
-	si := models.CapabilityItem{RepoID: "public", Metadata: datatypes.JSON([]byte{})}
-	if buildMCPConfig(si) != nil {
-		t.Fatal("expected nil for empty metadata")
-	}
-}
-
-func TestBuildMCPConfig_UnknownHostingType_PassThrough(t *testing.T) {
-	raw := `{"hosting_type":"artifact","package_name":"my-pkg"}`
-	si := models.CapabilityItem{RepoID: "public", Metadata: datatypes.JSON([]byte(raw))}
-	out := buildMCPConfig(si)
-	if string(out) != raw {
-		t.Fatalf("expected passthrough, got %s", string(out))
 	}
 }
 

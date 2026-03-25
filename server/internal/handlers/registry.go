@@ -174,7 +174,9 @@ func RegistryIndex(c *gin.Context) {
 		case "command":
 			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
-			entry.MCP = buildMCPConfig(si)
+			if len(si.Metadata) > 0 {
+				entry.MCP = json.RawMessage(si.Metadata)
+			}
 			if len(assetPaths) > 0 {
 				entry.Files = append([]string{".mcp.json"}, assetPaths...)
 			}
@@ -186,56 +188,6 @@ func RegistryIndex(c *gin.Context) {
 	c.JSON(http.StatusOK, indexJSON{Version: 1, Items: items})
 }
 
-// buildMCPConfig constructs the mcp config object from a CapabilityItem's metadata.
-// For hosting_type=command it returns {"type":"local","command":[...]}
-// For hosting_type=remote  it returns {"type":"remote","url":"..."}
-// Falls back to raw metadata if the structure is unrecognised.
-func buildMCPConfig(si models.CapabilityItem) json.RawMessage {
-	if len(si.Metadata) == 0 {
-		return nil
-	}
-
-	var meta map[string]interface{}
-	if err := json.Unmarshal(si.Metadata, &meta); err != nil {
-		return nil
-	}
-
-	hostingType, _ := meta["hosting_type"].(string)
-
-	switch hostingType {
-	case "command":
-		cmd, _ := meta["command"].(string)
-		argsRaw, _ := meta["args"].([]interface{})
-		args := make([]string, 0, len(argsRaw)+1)
-		if cmd != "" {
-			args = append(args, cmd)
-		}
-		for _, a := range argsRaw {
-			if s, ok := a.(string); ok {
-				args = append(args, s)
-			}
-		}
-		out, _ := json.Marshal(map[string]interface{}{
-			"type":    "local",
-			"command": args,
-		})
-		return out
-
-	case "remote":
-		url, _ := meta["url"].(string)
-		serverType, _ := meta["server_type"].(string)
-		if serverType == "" {
-			serverType = "http"
-		}
-		out, _ := json.Marshal(map[string]interface{}{
-			"type": serverType,
-			"url":  url,
-		})
-		return out
-	}
-
-	return json.RawMessage(si.Metadata)
-}
 
 // DownloadItem godoc
 // @Summary      Download item content

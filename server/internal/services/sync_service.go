@@ -328,7 +328,17 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Category = parsed.Category
 				existing.Version = parsed.Version
 				existing.Content = parsed.Content
-				existing.Metadata = metadataJSON(parsed.Metadata)
+				meta := parsed.Metadata
+				if parsed.ItemType == "mcp" {
+					normalized, err := NormalizeMCPMetadata(meta)
+					if err != nil {
+						result.Failed++
+						result.Errors = append(result.Errors, fmt.Sprintf("normalize mcp %s: %v", relPath, err))
+						continue
+					}
+					meta = normalized
+				}
+				existing.Metadata = metadataJSON(meta)
 				existing.SourceSHA = contentHash
 				existing.UpdatedBy = triggerUser
 
@@ -343,14 +353,24 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					ItemID:    existing.ID,
 					Revision:  maxRevision + 1,
 					Content:   parsed.Content,
-					Metadata:  metadataJSON(parsed.Metadata),
-				CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
-				CreatedBy: triggerUser,
+					Metadata:  metadataJSON(meta),
+					CommitMsg: fmt.Sprintf("sync: %s", cloneResult.CommitSHA[:8]),
+					CreatedBy: triggerUser,
 				}
 				s.DB.Create(ver)
 				s.enqueueScan(existing.ID, maxRevision+1)
 				result.Updated++
 			} else {
+				meta := parsed.Metadata
+				if parsed.ItemType == "mcp" {
+					normalized, err := NormalizeMCPMetadata(meta)
+					if err != nil {
+						result.Failed++
+						result.Errors = append(result.Errors, fmt.Sprintf("normalize mcp %s: %v", relPath, err))
+						continue
+					}
+					meta = normalized
+				}
 				newItem := &models.CapabilityItem{
 					ID:          uuid.New().String(),
 					RegistryID:  registryID,
@@ -362,7 +382,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					Category:    parsed.Category,
 					Version:     parsed.Version,
 					Content:     parsed.Content,
-					Metadata:    metadataJSON(parsed.Metadata),
+					Metadata:    metadataJSON(meta),
 					SourcePath:  relPath,
 					SourceSHA:   contentHash,
 				Status:      "active",
@@ -380,9 +400,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					ItemID:    newItem.ID,
 					Revision:  1,
 					Content:   parsed.Content,
-					Metadata:  metadataJSON(parsed.Metadata),
-				CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
-				CreatedBy: triggerUser,
+					Metadata:  metadataJSON(meta),
+					CommitMsg: fmt.Sprintf("sync: initial import from %s", cloneResult.CommitSHA[:8]),
+					CreatedBy: triggerUser,
 				}
 				s.DB.Create(ver)
 
