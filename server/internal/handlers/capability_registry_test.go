@@ -124,9 +124,8 @@ func TestCreateRegistry_Success(t *testing.T) {
 func TestCreateRegistry_MissingRequired(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newRegistryRouter("u1"), "/api/registries", map[string]interface{}{
-		"name": "No Owner",
-	})
+	// name is the only required field now; ownerId comes from auth context
+	w := postJSON(newRegistryRouter("u1"), "/api/registries", map[string]interface{}{})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
@@ -226,8 +225,8 @@ func TestDeleteRegistry_Success(t *testing.T) {
 func TestEnsurePersonalRegistry_Creates(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newRegistryRouter(""), "/api/registries/ensure-personal", map[string]interface{}{
-		"ownerId": "user-new", "username": "alice",
+	w := postJSON(newRegistryRouter("user-new"), "/api/registries/ensure-personal", map[string]interface{}{
+		"username": "alice",
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -246,8 +245,8 @@ func TestEnsurePersonalRegistry_ReturnsExisting(t *testing.T) {
 		Visibility: "public", RepoID: "", OwnerID: "user-bob",
 	})
 
-	w := postJSON(newRegistryRouter(""), "/api/registries/ensure-personal", map[string]interface{}{
-		"ownerId": "user-bob", "username": "bob",
+	w := postJSON(newRegistryRouter("user-bob"), "/api/registries/ensure-personal", map[string]interface{}{
+		"username": "bob",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for existing registry, got %d", w.Code)
@@ -262,9 +261,7 @@ func TestEnsurePersonalRegistry_ReturnsExisting(t *testing.T) {
 func TestEnsurePersonalRegistry_DefaultName(t *testing.T) {
 	defer setupTestDB(t)()
 
-	w := postJSON(newRegistryRouter(""), "/api/registries/ensure-personal", map[string]interface{}{
-		"ownerId": "user-noname",
-	})
+	w := postJSON(newRegistryRouter("user-noname"), "/api/registries/ensure-personal", map[string]interface{}{})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -278,11 +275,12 @@ func TestEnsurePersonalRegistry_DefaultName(t *testing.T) {
 func TestEnsurePersonalRegistry_MissingOwnerID(t *testing.T) {
 	defer setupTestDB(t)()
 
+	// No authenticated user → should return 401
 	w := postJSON(newRegistryRouter(""), "/api/registries/ensure-personal", map[string]interface{}{
 		"username": "nobody",
 	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
 
@@ -302,7 +300,7 @@ func TestListMyRegistries_Success(t *testing.T) {
 		ID: "other-r", Name: "other-reg", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "owner-b",
 	})
 
-	w := get(newRegistryRouter(""), "/api/registries/my?ownerId=owner-a")
+	w := get(newRegistryRouter("owner-a"), "/api/registries/my")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -316,9 +314,10 @@ func TestListMyRegistries_Success(t *testing.T) {
 
 func TestListMyRegistries_MissingOwnerID(t *testing.T) {
 	defer setupTestDB(t)()
+	// No authenticated user → should return 401
 	w := get(newRegistryRouter(""), "/api/registries/my")
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
 
