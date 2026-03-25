@@ -39,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
+	"github.com/pressly/goose/v3"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -53,8 +54,8 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	if err := runPreMigrations(db); err != nil {
-		log.Fatalf("Failed to run pre-migrations: %v", err)
+	if err := deduplicateSlugsBeforeMigrate(db); err != nil {
+		log.Fatalf("Failed to deduplicate slugs: %v", err)
 	}
 
 	err = db.AutoMigrate(
@@ -82,8 +83,8 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
-	if err := runPostMigrations(db); err != nil {
-		log.Fatalf("Failed to run post-migrations: %v", err)
+	if err := runGooseMigrations(db); err != nil {
+		log.Fatalf("Failed to run goose migrations: %v", err)
 	}
 
 	log.Println("Database migrated successfully")
@@ -276,7 +277,7 @@ func main() {
 
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
-			
+
 			authed.GET("/invitations/my", handlers.GetMyInvitations)
 			authed.POST("/invitations/:id/accept", handlers.AcceptInvitation)
 			authed.POST("/invitations/:id/decline", handlers.DeclineInvitation)
@@ -361,169 +362,9 @@ func main() {
 	}
 }
 
-func runPostMigrations(db *gorm.DB) error {
-	fks := []struct {
-		table      string
-		constraint string
-		stmt       string
-	}{
-		{
-			table:      "sync_logs",
-			constraint: "fk_sync_logs_registry",
-			stmt:       `ALTER TABLE sync_logs ADD CONSTRAINT fk_sync_logs_registry FOREIGN KEY (registry_id) REFERENCES capability_registries(id)`,
-		},
-		{
-			table:      "sync_jobs",
-			constraint: "fk_sync_jobs_registry",
-			stmt:       `ALTER TABLE sync_jobs ADD CONSTRAINT fk_sync_jobs_registry FOREIGN KEY (registry_id) REFERENCES capability_registries(id)`,
-		},
-		{
-			table:      "capability_registries",
-			constraint: "fk_capability_registries_last_sync_log",
-			stmt:       `ALTER TABLE capability_registries ADD CONSTRAINT fk_capability_registries_last_sync_log FOREIGN KEY (last_sync_log_id) REFERENCES sync_logs(id) ON DELETE SET NULL`,
-		},
-	}
-
-	for _, fk := range fks {
-		var exists int
-		db.Raw(`SELECT 1 FROM information_schema.table_constraints WHERE table_name=? AND constraint_name=?`, fk.table, fk.constraint).Scan(&exists)
-		if exists == 1 {
-			continue
-		}
-		if err := db.Exec(fk.stmt).Error; err != nil {
-			return fmt.Errorf("post-migration failed (%s): %w", fk.stmt, err)
-		}
-	}
-	return nil
+func deduplicateSlugsBeforeMigrate(db *gorm.DB) error {
+	return deduplicateSlugs(db)
 }
-
-func runPreMigrations(db *gorm.DB) error {
-	bootstrapStmts := []string{
-		`CREATE TABLE IF NOT EXISTS sync_logs (
-			id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-			registry_id uuid NOT NULL,
-			trigger_type text NOT NULL,
-			trigger_user text,
-			status text NOT NULL DEFAULT 'running',
-			commit_sha text,
-			previous_sha text,
-			total_items bigint DEFAULT 0,
-			added_items bigint DEFAULT 0,
-			updated_items bigint DEFAULT 0,
-			deleted_items bigint DEFAULT 0,
-			skipped_items bigint DEFAULT 0,
-			failed_items bigint DEFAULT 0,
-			error_message text,
-			duration_ms bigint,
-			started_at timestamptz NOT NULL DEFAULT now(),
-			finished_at timestamptz,
-			created_at timestamptz
-		)`,
-		`CREATE TABLE IF NOT EXISTS capability_registries (
-			id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-			name text NOT NULL,
-			description text,
-			source_type text NOT NULL DEFAULT 'internal',
-			external_url text,
-			external_branch text DEFAULT 'main',
-			sync_enabled boolean DEFAULT false,
-			sync_interval bigint DEFAULT 3600,
-			last_synced_at timestamptz,
-			last_sync_sha text,
-			sync_status text DEFAULT 'idle',
-			sync_config JSONB DEFAULT '{}',
-			last_sync_log_id uuid,
-			visibility text DEFAULT 'repo',
-			repo_id text,
-			owner_id text NOT NULL,
-			created_at timestamptz,
-			updated_at timestamptz
-		)`,
-	}
-	for _, stmt := range bootstrapStmts {
-		if err := db.Exec(stmt).Error; err != nil {
-			return fmt.Errorf("bootstrap failed: %w", err)
-		}
-	}
-
-	migrations := []struct {
-		check string
-		stmts []string
-	}{
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_versions' AND column_name='version'`,
-			stmts: []string{
-				`ALTER TABLE capability_versions ADD COLUMN IF NOT EXISTS revision bigint`,
-				`UPDATE capability_versions SET revision = version WHERE revision IS NULL`,
-				`ALTER TABLE capability_versions ALTER COLUMN revision SET NOT NULL`,
-				`ALTER TABLE capability_versions ALTER COLUMN revision SET DEFAULT 1`,
-			},
-		},
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='visibility'`,
-			stmts: []string{
-				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
-			},
-		},
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
-			stmts: []string{
-				`ALTER TABLE security_scans DROP COLUMN IF EXISTS revision_id`,
-			},
-		},
-		{
-			check: `SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug'`,
-			stmts: []string{
-				`DROP INDEX IF EXISTS idx_item_slug`,
-			},
-		},
-		{
-			check: `SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_slug_global'`,
-			stmts: []string{
-				`DROP INDEX IF EXISTS idx_item_slug_global`,
-			},
-		},
-		// Ensure repo_id column exists before backfill and dedup.
-		{
-			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='id' AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='capability_items' AND column_name='repo_id')`,
-			stmts: []string{
-				`ALTER TABLE capability_items ADD COLUMN repo_id text NOT NULL DEFAULT 'public'`,
-			},
-		},
-		// Backfill repo_id on capability_items from capability_registries.
-		// Runs unconditionally when any row still has the default 'public' value
-		// that may need to be resolved from its registry's actual repo_id.
-		{
-			check: `SELECT 1 FROM capability_items WHERE repo_id = 'public' LIMIT 1`,
-			stmts: []string{
-				`UPDATE capability_items SET repo_id = COALESCE(
-					(SELECT COALESCE(NULLIF(cr.repo_id,''), 'public')
-					 FROM capability_registries cr
-					 WHERE cr.id = capability_items.registry_id),
-					'public'
-				) WHERE repo_id = 'public'`,
-			},
-		},
-	}
-
-	for _, m := range migrations {
-		var exists int
-		db.Raw(m.check).Scan(&exists)
-		if exists != 1 {
-			continue
-		}
-		for _, stmt := range m.stmts {
-			if err := db.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("pre-migration failed (%s): %w", stmt, err)
-			}
-		}
-	}
-	if err := deduplicateSlugs(db); err != nil {
-		return fmt.Errorf("failed to deduplicate slugs before composite unique index: %w", err)
-	}
-	return nil
-}
-
 
 // deduplicateSlugs resolves slug collisions before AutoMigrate installs the
 // composite unique index (repo_id, item_type, slug) on capability_items.
@@ -616,4 +457,28 @@ func deduplicateSlugs(db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+func runGooseMigrations(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+	}
+
+	migrationsDir := "migrations"
+	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
+		log.Println("Migrations directory not found, skipping goose migrations")
+		return nil
+	}
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(sqlDB, migrationsDir); err != nil {
+		return fmt.Errorf("goose migration failed: %w", err)
+	}
+
+	log.Println("Goose migrations completed successfully")
+	return nil
 }
