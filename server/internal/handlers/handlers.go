@@ -121,10 +121,11 @@ func splitOriginPath(rawURL string) (string, string) {
 
 // AuthCallback godoc
 // @Summary      OAuth callback
-// @Description  Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend
+// @Description  Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend. The state parameter carries the redirect target and callback URL encoded as base64url. After successful token exchange, the user is redirected (302) to the URL specified in state, or to the default frontend URL.
 // @Tags         auth
+// @Produce      json
 // @Param        code   query  string  true   "OAuth authorization code"
-// @Param        state  query  string  false  "Base64url-encoded JSON state"
+// @Param        state  query  string  false  "Base64url-encoded state containing redirect target and callback URL (format: origin|redirectPath|callbackPath)"
 // @Success      302  "Redirect to frontend with auth cookie set"
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
@@ -163,29 +164,6 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)
-}
-
-// AuthLogin godoc
-// @Summary      OAuth login redirect
-// @Description  Redirect user to Casdoor login page for OAuth authorization
-// @Tags         auth
-// @Produce      html
-// @Param        redirect_to   query  string  false "URL to redirect after login"
-// @Param        callback_url  query  string  false "OAuth callback URL"
-// @Success      302
-// @Failure      400  {object}  object{error=string}
-// @Router       /auth/login [get]
-func AuthLogin(c *gin.Context) {
-	redirectTo := c.Query("redirect_to")
-	callbackURL := c.Query("callback_url")
-
-	// Use redirect_to as state so AuthCallback can redirect back after login
-	state := redirectTo
-
-	var loginURL string
-	loginURL = CasdoorClient.GetLoginURL(state, callbackURL)
-
-	c.Redirect(http.StatusFound, loginURL)
 }
 
 // Login godoc

@@ -318,16 +318,17 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Respects visibility rules.
 // @Tags         registry
-// @Produce      text/plain
+// @Produce      text/plain,application/octet-stream
 // @Param        repo      path      string  true  "Repository name"
-// @Param        itemType  path      string  true  "Item type (skill, mcp, etc.)"
+// @Param        itemType  path      string  true  "Item type (skill, mcp, subagent, command)"
 // @Param        slug      path      string  true  "Item slug"
-// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, command.md)"
-// @Success      200       {string}  string  "File content"
+// @Param        file      path      string  true  "Filename (e.g. SKILL.md, agent.md, or any asset file)"
+// @Success      200       {file}    file    "File content (text or binary depending on file type)"
 // @Failure      403       {object}  object{error=string}
 // @Failure      404       {object}  object{error=string}
+// @Failure      500       {object}  object{error=string}
 // @Router       /registry/{repo}/{itemType}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
 	repoID, ok := resolveRepoID(c.Param("repo"))

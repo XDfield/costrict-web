@@ -176,8 +176,7 @@ func main() {
 		auth := api.Group("/auth")
 		{
 			auth.GET("/callback", handlers.AuthCallback)
-			auth.GET("/login", handlers.AuthLogin)
-			auth.POST("/login", handlers.Login)
+			auth.GET("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
 		}
 
@@ -362,6 +361,30 @@ func main() {
 }
 
 func runPostMigrations(db *gorm.DB) error {
+	// Ensure composite index on devices(device_id, deleted_at) exists.
+	// GORM AutoMigrate may not reliably create composite indexes from struct tags.
+	// This index is critical for SetOnline/SetOffline/UpdateVersion queries that
+	// filter by device_id with soft-delete (WHERE device_id = ? AND deleted_at IS NULL).
+	idxes := []struct {
+		name string
+		stmt string
+	}{
+		{
+			name: "idx_devices_device_id_deleted_at",
+			stmt: `CREATE INDEX IF NOT EXISTS idx_devices_device_id_deleted_at ON devices(device_id, deleted_at)`,
+		},
+	}
+	for _, idx := range idxes {
+		var exists int
+		db.Raw(`SELECT 1 FROM pg_indexes WHERE indexname = ?`, idx.name).Scan(&exists)
+		if exists == 1 {
+			continue
+		}
+		if err := db.Exec(idx.stmt).Error; err != nil {
+			return fmt.Errorf("post-migration index %s failed: %w", idx.name, err)
+		}
+	}
+
 	fks := []struct {
 		table      string
 		constraint string
