@@ -218,8 +218,9 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 // ItemWithAuthor represents a capability item with author information
 type ItemWithAuthor struct {
 	models.CapabilityItem
-	CreatedByName string `json:"createdByName"`
-	UpdatedByName string `json:"updatedByName"`
+	CreatedByName  string `json:"createdByName"`
+	UpdatedByName  string `json:"updatedByName"`
+	RepoVisibility string `json:"repoVisibility,omitempty"`
 }
 
 // populateItemAuthors fetches user information for items and populates author names
@@ -429,7 +430,7 @@ func CreateItem(c *gin.Context) {
 
 // GetItem godoc
 // @Summary      Get item
-// @Description  Get skill item by ID with registry, versions and artifacts
+// @Description  Get skill item by ID with registry, versions, artifacts and repo visibility
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -446,7 +447,14 @@ func GetItem(c *gin.Context) {
 		return
 	}
 	itemsWithAuthor := populateItemAuthors(c, []models.CapabilityItem{item})
-	c.JSON(http.StatusOK, itemsWithAuthor[0])
+	resp := itemsWithAuthor[0]
+
+	// Populate repo visibility from the parent repository
+	if item.Registry != nil {
+		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // UpdateItem godoc
@@ -913,22 +921,24 @@ func GetItemVersion(c *gin.Context) {
 func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 	var ids []string
 
+	// Registries belonging to public repos (including virtual "public" repo)
 	var publicIDs []string
-	db.Model(&models.CapabilityRegistry{}).Where("visibility = 'public'").Pluck("id", &publicIDs)
+	db.Model(&models.CapabilityRegistry{}).
+		Where("repo_id IN (SELECT CAST(id AS TEXT) FROM repositories WHERE visibility = 'public') OR repo_id = 'public'").
+		Pluck("id", &publicIDs)
 	ids = append(ids, publicIDs...)
 
 	if userID != "" {
+		// Registries belonging to private repos the user is a member of
 		var repoIDs []string
 		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
 		if len(repoIDs) > 0 {
 			var repoRegs []string
-			db.Model(&models.CapabilityRegistry{}).Where("repo_id IN ? AND visibility = 'repo'", repoIDs).Pluck("id", &repoRegs)
+			db.Model(&models.CapabilityRegistry{}).
+				Where("repo_id IN ? AND repo_id NOT IN (SELECT CAST(id AS TEXT) FROM repositories WHERE visibility = 'public')", repoIDs).
+				Pluck("id", &repoRegs)
 			ids = append(ids, repoRegs...)
 		}
-
-		var personalRegs []string
-		db.Model(&models.CapabilityRegistry{}).Where("owner_id = ?", userID).Pluck("id", &personalRegs)
-		ids = append(ids, personalRegs...)
 	}
 
 	seen := make(map[string]bool)

@@ -3,6 +3,10 @@ package handlers
 import (
 	"net/http"
 
+	// imported for swag to resolve type references in godoc annotations
+	_ "github.com/costrict/costrict-web/server/internal/llm"
+	_ "github.com/costrict/costrict-web/server/internal/models"
+
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )

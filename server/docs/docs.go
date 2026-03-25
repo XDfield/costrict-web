@@ -42,7 +42,7 @@ const docTemplate = `{
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SystemNotificationChannel"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
                                     }
                                 }
                             }
@@ -116,7 +116,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -206,7 +206,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -368,7 +368,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityArtifact"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
                         }
                     },
                     "400": {
@@ -516,7 +516,7 @@ const docTemplate = `{
         },
         "/auth/callback": {
             "get": {
-                "description": "Exchange OAuth authorization code for access token and set cookie",
+                "description": "Exchange OAuth authorization code for access token, set auth cookie, and redirect to frontend. The state parameter carries the redirect target and callback URL encoded as base64url. After successful token exchange, the user is redirected (302) to the URL specified in state, or to the default frontend URL.",
                 "produces": [
                     "application/json"
                 ],
@@ -527,32 +527,21 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "OAuth code",
+                        "description": "OAuth authorization code",
                         "name": "code",
                         "in": "query",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Redirect URI",
-                        "name": "redirect_uri",
+                        "description": "Base64url-encoded state containing redirect target and callback URL (format: origin|redirectPath|callbackPath)",
+                        "name": "state",
                         "in": "query"
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "token": {
-                                    "type": "string"
-                                },
-                                "user": {
-                                    "type": "object"
-                                }
-                            }
-                        }
+                    "302": {
+                        "description": "Redirect to frontend with auth cookie set"
                     },
                     "400": {
                         "description": "Bad Request",
@@ -580,76 +569,32 @@ const docTemplate = `{
             }
         },
         "/auth/login": {
-            "post": {
-                "description": "Exchange OAuth authorization code for access token via JSON body",
-                "consumes": [
-                    "application/json"
-                ],
+            "get": {
+                "description": "Redirect to Casdoor OAuth authorization page",
                 "produces": [
-                    "application/json"
+                    "text/html"
                 ],
                 "tags": [
                     "auth"
                 ],
-                "summary": "OAuth login (legacy)",
+                "summary": "OAuth login redirect",
                 "parameters": [
                     {
-                        "description": "OAuth code",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "code": {
-                                    "type": "string"
-                                },
-                                "state": {
-                                    "type": "string"
-                                }
-                            }
-                        }
+                        "type": "string",
+                        "description": "Full URL to redirect after login (default: /)",
+                        "name": "redirect_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "OAuth callback URL on the frontend origin for correct cookie domain",
+                        "name": "callback_url",
+                        "in": "query"
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "token": {
-                                    "type": "string"
-                                },
-                                "tokenType": {
-                                    "type": "string"
-                                },
-                                "user": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
+                    "302": {
+                        "description": "Redirect to Casdoor login page"
                     }
                 }
             }
@@ -736,6 +681,501 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cloud/device/gateway-assign": {
+            "post": {
+                "description": "Allocate an available gateway for a device. Requires a valid device Bearer token. Verifies that the token matches the claimed deviceID. If a version is provided and differs from the stored value, the device version is updated.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Assign gateway to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device Bearer token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Assignment request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceID": {
+                                    "type": "string"
+                                },
+                                "region": {
+                                    "type": "string"
+                                },
+                                "version": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "gatewayID": {
+                                    "type": "string"
+                                },
+                                "gatewayURL": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/cloud/device/{deviceID}/proxy/{path}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forward an HTTP request to a device via its connected gateway. Requires user authentication (RequireAuth middleware) and verifies that the authenticated user owns the device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Proxy request to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Proxy path to forward",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Proxied response from the device"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forward an HTTP request to a device via its connected gateway. Requires user authentication (RequireAuth middleware) and verifies that the authenticated user owns the device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Proxy request to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Proxy path to forward",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Proxied response from the device"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forward an HTTP request to a device via its connected gateway. Requires user authentication (RequireAuth middleware) and verifies that the authenticated user owns the device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Proxy request to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Proxy path to forward",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Proxied response from the device"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forward an HTTP request to a device via its connected gateway. Requires user authentication (RequireAuth middleware) and verifies that the authenticated user owns the device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Proxy request to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Proxy path to forward",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Proxied response from the device"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forward an HTTP request to a device via its connected gateway. Requires user authentication (RequireAuth middleware) and verifies that the authenticated user owns the device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "cloud"
+                ],
+                "summary": "Proxy request to device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Proxy path to forward",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Proxied response from the device"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1195,6 +1635,427 @@ const docTemplate = `{
                 }
             }
         },
+        "/internal/gateway/device/offline": {
+            "post": {
+                "description": "Notify the server that a device has disconnected from a gateway. Unbinds the device and marks it offline.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Device offline",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Device offline event",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceID": {
+                                    "type": "string"
+                                },
+                                "gatewayID": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/gateway/device/online": {
+            "post": {
+                "description": "Notify the server that a device has connected to a gateway. Binds the device to the gateway and marks it online.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Device online",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Device online event",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceID": {
+                                    "type": "string"
+                                },
+                                "gatewayID": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/gateway/device/verify-token": {
+            "post": {
+                "description": "Verify that a device token is valid and matches the claimed deviceID. Used by gateways for internal authentication.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Verify device token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Verification request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deviceID": {
+                                    "type": "string"
+                                },
+                                "token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "userID": {
+                                    "type": "string"
+                                },
+                                "valid": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/gateway/register": {
+            "post": {
+                "description": "Register a new gateway instance with the server. The gateway receives a heartbeat interval in the response.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Register gateway",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Gateway registration data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "capacity": {
+                                    "type": "integer"
+                                },
+                                "endpoint": {
+                                    "type": "string"
+                                },
+                                "gatewayID": {
+                                    "type": "string"
+                                },
+                                "internalURL": {
+                                    "type": "string"
+                                },
+                                "region": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "heartbeatInterval": {
+                                    "type": "integer"
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/gateway/{gatewayID}": {
+            "delete": {
+                "description": "Remove a gateway instance from the registry.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Deregister gateway",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Gateway ID",
+                        "name": "gatewayID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/internal/gateway/{gatewayID}/heartbeat": {
+            "post": {
+                "description": "Report gateway health and current connection count. Returns the current server epoch for consistency checks.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal-gateway"
+                ],
+                "summary": "Gateway heartbeat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal shared secret",
+                        "name": "X-Internal-Secret",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Gateway ID",
+                        "name": "gatewayID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Heartbeat data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "currentConns": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "serverEpoch": {
+                                    "type": "integer"
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/invitations/my": {
             "get": {
                 "description": "Get all pending invitations for the current user",
@@ -1214,7 +2075,7 @@ const docTemplate = `{
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.RepoInvitation"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
                                     }
                                 }
                             }
@@ -1257,7 +2118,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.RepoMember"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
                         }
                     },
                     "400": {
@@ -1440,7 +2301,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/handlers.ItemWithAuthor"
+                                        "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
                                     }
                                 },
                                 "page": {
@@ -1469,7 +2330,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a skill item via JSON or upload a .zip archive via multipart/form-data. Auto-selects public registry if registryId is omitted.",
+                "description": "Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -1521,7 +2382,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "file",
-                        "description": "Zip archive (multipart)",
+                        "description": "Archive file (.zip, .tar.gz, or .tgz) (multipart)",
                         "name": "file",
                         "in": "formData"
                     },
@@ -1542,7 +2403,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -1623,7 +2484,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/handlers.MyItem"
+                                        "$ref": "#/definitions/internal_handlers.MyItem"
                                     }
                                 },
                                 "page": {
@@ -1675,7 +2536,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handlers.ItemWithAuthor"
+                            "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
                         }
                     },
                     "404": {
@@ -1692,7 +2553,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a zip archive. Creates a new version if content changes.",
+                "description": "Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a .zip, .tar.gz, or .tgz archive. Creates a new version if content changes.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -1757,7 +2618,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -1862,7 +2723,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/llm.SkillAnalysis"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis"
                         }
                     },
                     "404": {
@@ -1918,7 +2779,7 @@ const docTemplate = `{
                                 "artifacts": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityArtifact"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
                                     }
                                 }
                             }
@@ -1999,7 +2860,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.BehaviorLog"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.BehaviorLog"
                         }
                     },
                     "400": {
@@ -2110,7 +2971,7 @@ const docTemplate = `{
                                 "improvements": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/llm.SkillImprovement"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
                                     }
                                 }
                             }
@@ -2121,7 +2982,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -2189,7 +3050,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -2380,7 +3241,7 @@ const docTemplate = `{
                                 "results": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SecurityScan"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
                                     }
                                 },
                                 "total": {
@@ -2497,7 +3358,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/services.SearchResultItem"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
                                     }
                                 },
                                 "page": {
@@ -2560,7 +3421,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/services.ItemBehaviorStats"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats"
                         }
                     },
                     "500": {
@@ -2579,7 +3440,7 @@ const docTemplate = `{
         },
         "/items/{id}/transfer": {
             "put": {
-                "description": "Transfer a capability item to a different repository. The system will automatically find the target repository's internal registry. Target repository must be a non-sync type. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo.",
+                "description": "Transfer a capability item to a different repository. The system will automatically find the target repository's internal registry. Target repository must be a non-sync type. Caller must be the item creator, or owner/admin of the source repo. Caller must be a member of the target repo. When targetRepoId is \"public\", the item will be transferred to the default public registry; any authenticated user who is the item creator or source repo admin can perform this operation.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2599,7 +3460,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Target repository ID",
+                        "description": "Target repository ID (use \\",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -2617,7 +3478,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -2706,7 +3567,7 @@ const docTemplate = `{
                                 "versions": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityVersion"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                                     }
                                 }
                             }
@@ -2756,7 +3617,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityVersion"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                         }
                     },
                     "400": {
@@ -2841,7 +3702,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/services.SearchResult"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
                         }
                     },
                     "400": {
@@ -2905,7 +3766,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityItem"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -2991,7 +3852,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/services.RecommendResponse"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendResponse"
                         }
                     },
                     "400": {
@@ -3079,7 +3940,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/services.SearchResult"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
                         }
                     },
                     "400": {
@@ -3153,7 +4014,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityItem"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -3201,7 +4062,7 @@ const docTemplate = `{
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.UserNotificationChannel"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
                                     }
                                 }
                             }
@@ -3281,7 +4142,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/models.UserNotificationChannel"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -3387,7 +4248,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/models.UserNotificationChannel"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -3470,7 +4331,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/models.UserNotificationChannel"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -3621,7 +4482,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.NotificationLog"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.NotificationLog"
                                     }
                                 }
                             }
@@ -3749,7 +4610,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityRegistry"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -3816,7 +4677,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -3880,13 +4741,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -3942,7 +4803,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityRegistry"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -3976,7 +4837,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -4016,7 +4877,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -4091,7 +4952,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -4234,7 +5095,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/handlers.ItemWithAuthor"
+                                        "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
                                     }
                                 },
                                 "page": {
@@ -4325,7 +5186,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -4444,7 +5305,7 @@ const docTemplate = `{
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SyncJob"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -4483,7 +5344,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SyncLog"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -4596,7 +5457,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -4744,9 +5605,10 @@ const docTemplate = `{
         },
         "/registry/{repo}/{itemType}/{slug}/{file}": {
             "get": {
-                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. Respects visibility rules.",
+                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Respects visibility rules.",
                 "produces": [
-                    "text/plain"
+                    "text/plain",
+                    "application/octet-stream"
                 ],
                 "tags": [
                     "registry"
@@ -4762,7 +5624,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Item type (skill, mcp, etc.)",
+                        "description": "Item type (skill, mcp, subagent, command)",
                         "name": "itemType",
                         "in": "path",
                         "required": true
@@ -4776,7 +5638,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filename (e.g. SKILL.md, agent.md, command.md)",
+                        "description": "Filename (e.g. SKILL.md, agent.md, or any asset file)",
                         "name": "file",
                         "in": "path",
                         "required": true
@@ -4784,9 +5646,9 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "File content",
+                        "description": "File content (text or binary depending on file type)",
                         "schema": {
-                            "type": "string"
+                            "type": "file"
                         }
                     },
                     "403": {
@@ -4802,6 +5664,17 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -4833,7 +5706,7 @@ const docTemplate = `{
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.Repository"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                                     }
                                 }
                             }
@@ -4908,7 +5781,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.Repository"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                         }
                     },
                     "400": {
@@ -4955,7 +5828,7 @@ const docTemplate = `{
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.Repository"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                                     }
                                 }
                             }
@@ -4998,7 +5871,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.Repository"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                         }
                     },
                     "404": {
@@ -5061,7 +5934,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.Repository"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                         }
                     },
                     "400": {
@@ -5177,7 +6050,7 @@ const docTemplate = `{
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.RepoInvitation"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
                                     }
                                 }
                             }
@@ -5241,7 +6114,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.RepoInvitation"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
                         }
                     },
                     "400": {
@@ -5393,7 +6266,7 @@ const docTemplate = `{
                                 "members": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.RepoMember"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
                                     }
                                 }
                             }
@@ -5457,7 +6330,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.RepoMember"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
                         }
                     },
                     "400": {
@@ -5554,7 +6427,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.RepoMember"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
                         }
                     },
                     "400": {
@@ -5693,7 +6566,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityRegistry"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -5727,7 +6600,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handlers.CreateSyncRegistryInput"
+                            "$ref": "#/definitions/internal_handlers.CreateSyncRegistryInput"
                         }
                     }
                 ],
@@ -5735,7 +6608,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -5831,7 +6704,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -5921,7 +6794,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityRegistry"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -6054,7 +6927,7 @@ const docTemplate = `{
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SyncJob"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -6111,7 +6984,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.SyncLog"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -6275,7 +7148,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.SecurityScan"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
                         }
                     },
                     "404": {
@@ -6314,7 +7187,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.SyncJob"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
                         }
                     },
                     "404": {
@@ -6353,7 +7226,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.SyncLog"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
                         }
                     },
                     "404": {
@@ -6384,7 +7257,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.UserBehaviorSummary"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary"
                         }
                     },
                     "500": {
@@ -6429,7 +7302,7 @@ const docTemplate = `{
                                 "users": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/casdoor.CasdoorUser"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser"
                                     }
                                 }
                             }
@@ -6578,7 +7451,7 @@ const docTemplate = `{
                                 "workspaces": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
                                     }
                                 }
                             }
@@ -6627,7 +7500,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/services.CreateWorkspaceRequest"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest"
                         }
                     }
                 ],
@@ -6638,7 +7511,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -6707,7 +7580,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -6774,7 +7647,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -6840,7 +7713,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/services.UpdateWorkspaceRequest"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest"
                         }
                     }
                 ],
@@ -6851,7 +7724,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -7089,7 +7962,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/services.CreateDirectoryRequest"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
                         }
                     }
                 ],
@@ -7179,7 +8052,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/services.ReorderDirectoriesRequest"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest"
                         }
                     }
                 ],
@@ -7276,7 +8149,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/services.UpdateDirectoryRequest"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest"
                         }
                     }
                 ],
@@ -7477,7 +8350,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "casdoor.CasdoorUser": {
+        "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
                 "email": {
@@ -7503,257 +8376,13 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.CreateSyncRegistryInput": {
-            "type": "object",
-            "properties": {
-                "conflictStrategy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "excludePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "externalBranch": {
-                    "type": "string"
-                },
-                "externalUrl": {
-                    "type": "string"
-                },
-                "includePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "name": {
-                    "type": "string"
-                },
-                "syncEnabled": {
-                    "type": "boolean"
-                },
-                "syncInterval": {
-                    "type": "integer"
-                },
-                "webhookSecret": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.ItemWithAuthor": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "createdByName": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "updatedByName": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "handlers.MyItem": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoName": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "llm.SkillAnalysis": {
+        "github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis": {
             "type": "object",
             "properties": {
                 "improvements": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/llm.SkillImprovement"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
                     }
                 },
                 "overallScore": {
@@ -7773,7 +8402,7 @@ const docTemplate = `{
                 }
             }
         },
-        "llm.SkillImprovement": {
+        "github_com_costrict_costrict-web_server_internal_llm.SkillImprovement": {
             "type": "object",
             "properties": {
                 "current": {
@@ -7790,7 +8419,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.ActionType": {
+        "github_com_costrict_costrict-web_server_internal_models.ActionType": {
             "type": "string",
             "enum": [
                 "view",
@@ -7813,14 +8442,14 @@ const docTemplate = `{
                 "ActionIgnore"
             ]
         },
-        "models.BehaviorLog": {
+        "github_com_costrict_costrict-web_server_internal_models.BehaviorLog": {
             "type": "object",
             "properties": {
                 "actionType": {
-                    "$ref": "#/definitions/models.ActionType"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ActionType"
                 },
                 "context": {
-                    "$ref": "#/definitions/models.ContextType"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ContextType"
                 },
                 "createdAt": {
                     "type": "string"
@@ -7838,7 +8467,7 @@ const docTemplate = `{
                     "description": "Relations",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                         }
                     ]
                 },
@@ -7853,7 +8482,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -7869,7 +8498,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CapabilityArtifact": {
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact": {
             "type": "object",
             "properties": {
                 "artifactVersion": {
@@ -7916,7 +8545,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CapabilityAsset": {
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityAsset": {
             "type": "object",
             "properties": {
                 "contentSha": {
@@ -7954,19 +8583,19 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CapabilityItem": {
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -8009,7 +8638,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8048,12 +8677,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                     }
                 }
             }
         },
-        "models.CapabilityRegistry": {
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8074,11 +8703,11 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityItem"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
                     }
                 },
                 "lastSyncLog": {
-                    "$ref": "#/definitions/models.SyncLog"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
                 },
                 "lastSyncLogId": {
                     "type": "string"
@@ -8122,7 +8751,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.CapabilityVersion": {
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityVersion": {
             "type": "object",
             "properties": {
                 "commitMsg": {
@@ -8151,7 +8780,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.ContextType": {
+        "github_com_costrict_costrict-web_server_internal_models.ContextType": {
             "type": "string",
             "enum": [
                 "search_query",
@@ -8166,7 +8795,7 @@ const docTemplate = `{
                 "ContextBrowse"
             ]
         },
-        "models.NotificationLog": {
+        "github_com_costrict_costrict-web_server_internal_models.NotificationLog": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -8204,7 +8833,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.RepoInvitation": {
+        "github_com_costrict_costrict-web_server_internal_models.RepoInvitation": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8232,7 +8861,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "repository": {
-                    "$ref": "#/definitions/models.Repository"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
                 },
                 "role": {
                     "description": "admin | member",
@@ -8247,7 +8876,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.RepoMember": {
+        "github_com_costrict_costrict-web_server_internal_models.RepoMember": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8271,7 +8900,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.Repository": {
+        "github_com_costrict_costrict-web_server_internal_models.Repository": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8289,7 +8918,7 @@ const docTemplate = `{
                 "members": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.RepoMember"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
                     }
                 },
                 "name": {
@@ -8311,7 +8940,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.SecurityScan": {
+        "github_com_costrict_costrict-web_server_internal_models.SecurityScan": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8367,7 +8996,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.SyncJob": {
+        "github_com_costrict_costrict-web_server_internal_models.SyncJob": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8392,7 +9021,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8422,7 +9051,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.SyncLog": {
+        "github_com_costrict_costrict-web_server_internal_models.SyncLog": {
             "type": "object",
             "properties": {
                 "addedItems": {
@@ -8456,7 +9085,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8486,7 +9115,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.SystemNotificationChannel": {
+        "github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8506,7 +9135,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "systemConfig": {
-                    "type": "object"
+                    "description": "系统级配置",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
                 "type": {
                     "description": "\"wecom\" | \"feishu\" | \"webhook\"",
@@ -8521,7 +9154,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.UserBehaviorSummary": {
+        "github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary": {
             "type": "object",
             "properties": {
                 "favoriteCategories": {
@@ -8553,7 +9186,7 @@ const docTemplate = `{
                 }
             }
         },
-        "models.UserNotificationChannel": {
+        "github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -8592,14 +9225,18 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "userConfig": {
-                    "type": "object"
+                    "description": "用户自己的配置",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 },
                 "userId": {
                     "type": "string"
                 }
             }
         },
-        "models.WorkspaceDirectory": {
+        "github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8634,7 +9271,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.CreateDirectoryRequest": {
+        "github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest": {
             "type": "object",
             "required": [
                 "name",
@@ -8658,7 +9295,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.CreateWorkspaceRequest": {
+        "github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest": {
             "type": "object",
             "required": [
                 "directories",
@@ -8676,7 +9313,7 @@ const docTemplate = `{
                     "type": "array",
                     "minItems": 1,
                     "items": {
-                        "$ref": "#/definitions/services.CreateDirectoryRequest"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
                     }
                 },
                 "name": {
@@ -8689,7 +9326,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.ItemBehaviorStats": {
+        "github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
                 "averageRating": {
@@ -8727,7 +9364,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.RecommendResponse": {
+        "github_com_costrict_costrict-web_server_internal_services.RecommendResponse": {
             "type": "object",
             "properties": {
                 "generatedAt": {
@@ -8739,7 +9376,7 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/services.RecommendedItem"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendedItem"
                     }
                 },
                 "page": {
@@ -8759,19 +9396,19 @@ const docTemplate = `{
                 }
             }
         },
-        "services.RecommendedItem": {
+        "github_com_costrict_costrict-web_server_internal_services.RecommendedItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -8817,7 +9454,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8862,12 +9499,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                     }
                 }
             }
         },
-        "services.ReorderDirectoriesRequest": {
+        "github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest": {
             "type": "object",
             "required": [
                 "directoryIds"
@@ -8881,7 +9518,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.SearchResult": {
+        "github_com_costrict_costrict-web_server_internal_services.SearchResult": {
             "type": "object",
             "properties": {
                 "durationMs": {
@@ -8890,7 +9527,7 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/services.SearchResultItem"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
                     }
                 },
                 "query": {
@@ -8901,19 +9538,19 @@ const docTemplate = `{
                 }
             }
         },
-        "services.SearchResultItem": {
+        "github_com_costrict_costrict-web_server_internal_services.SearchResultItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -8956,7 +9593,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8998,12 +9635,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                     }
                 }
             }
         },
-        "services.UpdateDirectoryRequest": {
+        "github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest": {
             "type": "object",
             "properties": {
                 "isDefault": {
@@ -9023,7 +9660,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.UpdateWorkspaceRequest": {
+        "github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest": {
             "type": "object",
             "properties": {
                 "description": {
@@ -9051,7 +9688,7 @@ const docTemplate = `{
                 }
             }
         },
-        "services.WorkspaceWithDeviceStatus": {
+        "github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -9075,7 +9712,7 @@ const docTemplate = `{
                 "directories": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.WorkspaceDirectory"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory"
                     }
                 },
                 "id": {
@@ -9101,6 +9738,257 @@ const docTemplate = `{
                 },
                 "userId": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_handlers.CreateSyncRegistryInput": {
+            "type": "object",
+            "properties": {
+                "conflictStrategy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "excludePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "externalBranch": {
+                    "type": "string"
+                },
+                "externalUrl": {
+                    "type": "string"
+                },
+                "includePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "syncEnabled": {
+                    "type": "boolean"
+                },
+                "syncInterval": {
+                    "type": "integer"
+                },
+                "webhookSecret": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.ItemWithAuthor": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "createdByName": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "registry": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "updatedByName": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "internal_handlers.MyItem": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "registry": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "registryVisibility": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoName": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                    }
                 }
             }
         }

@@ -1,6 +1,6 @@
 # Default values for costrict-web-worker
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: zgsm/costrict-web-worker
@@ -34,8 +34,8 @@ resources:
     cpu: 1000m
     memory: 512Mi
   requests:
-    cpu: 200m
-    memory: 256Mi
+    cpu: 10m
+    memory: 64Mi
 
 nodeSelector: {}
 

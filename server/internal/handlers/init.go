@@ -22,7 +22,6 @@ func EnsurePublicRegistry() {
 		Name:        "public",
 		Description: "Default public registry — anyone can browse and contribute",
 		SourceType:  "internal",
-		Visibility:  "public",
 		RepoID:      "public",
 		OwnerID:     "system",
 	}

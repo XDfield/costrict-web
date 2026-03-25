@@ -438,7 +438,7 @@ func TestGetRepositoryRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", Visibility: "repo", RepoID: "repo-gr1", OwnerID: "u1",
+		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", RepoID: "repo-gr1", OwnerID: "u1",
 	})
 
 	w := get(newRepoRouter(""), "/api/repositories/repo-gr1/registry")
@@ -464,7 +464,7 @@ func TestGetRepositoryRegistry_ExternalRegistryNotReturned(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", Visibility: "repo", RepoID: "repo-gr2", OwnerID: "u1",
+		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", RepoID: "repo-gr2", OwnerID: "u1",
 	})
 
 	w := get(newRepoRouter(""), "/api/repositories/repo-gr2/registry")

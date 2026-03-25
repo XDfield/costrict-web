@@ -212,7 +212,6 @@ func main() {
 			authed.GET("/registries", handlers.ListRegistries)
 			authed.GET("/registries/my", handlers.ListMyRegistries)
 			authed.POST("/registries", handlers.CreateRegistry)
-			authed.POST("/registries/ensure-personal", handlers.EnsurePersonalRegistry)
 			authed.PUT("/registries/:id", handlers.UpdateRegistry)
 			authed.PUT("/registries/:id/transfer", handlers.TransferRegistry)
 			authed.DELETE("/registries/:id", handlers.DeleteRegistry)

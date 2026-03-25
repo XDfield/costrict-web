@@ -27,7 +27,6 @@ func newRegistryRouter(userID string) *gin.Engine {
 	r.GET("/api/registries/:id", injectUser, GetRegistry)
 	r.PUT("/api/registries/:id", injectUser, UpdateRegistry)
 	r.DELETE("/api/registries/:id", injectUser, DeleteRegistry)
-	r.POST("/api/registries/ensure-personal", injectUser, EnsurePersonalRegistry)
 	r.GET("/api/registries/my", injectUser, ListMyRegistries)
 	r.GET("/api/items/my", injectUser, ListMyItems)
 	r.PUT("/api/registries/:id/transfer", injectUser, TransferRegistry)
@@ -41,10 +40,10 @@ func newRegistryRouter(userID string) *gin.Engine {
 func TestListRegistries_Anonymous_OnlyPublic(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "pub-r1", Name: "public-reg", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		ID: "pub-r1", Name: "public-reg", SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "repo-r1", Name: "repo-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
+		ID: "repo-r1", Name: "repo-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := get(newRegistryRouter(""), "/api/registries")
@@ -62,10 +61,10 @@ func TestListRegistries_Anonymous_OnlyPublic(t *testing.T) {
 func TestListRegistries_FilterByRepoId(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "repo-r2", Name: "repo-reg2", SourceType: "internal", Visibility: "repo", RepoID: "repo-filter", OwnerID: "u1",
+		ID: "repo-r2", Name: "repo-reg2", SourceType: "internal", RepoID: "repo-filter", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "repo-r3", Name: "repo-reg3", SourceType: "internal", Visibility: "repo", RepoID: "repo-other", OwnerID: "u1",
+		ID: "repo-r3", Name: "repo-reg3", SourceType: "internal", RepoID: "repo-other", OwnerID: "u1",
 	})
 
 	w := get(newRegistryRouter(""), "/api/registries?repoId=repo-filter")
@@ -77,16 +76,13 @@ func TestListRegistries_FilterByRepoId(t *testing.T) {
 	}
 }
 
-func TestListRegistries_AuthUser_IncludesOrgAndPersonal(t *testing.T) {
+func TestListRegistries_AuthUser_IncludesOrg(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "pub-r2", Name: "public-r2", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		ID: "pub-r2", Name: "public-r2", SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "repo-r4", Name: "repo-r4", SourceType: "internal", Visibility: "repo", RepoID: "repo-2", OwnerID: "u2",
-	})
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "priv-r1", Name: "private-r1", SourceType: "internal", Visibility: "private", RepoID: "", OwnerID: "auth-user",
+		ID: "repo-r4", Name: "repo-r4", SourceType: "internal", RepoID: "repo-2", OwnerID: "u2",
 	})
 	database.DB.Create(&models.RepoMember{
 		ID: "mem-au", RepoID: "repo-2", UserID: "auth-user", Role: "member",
@@ -96,8 +92,75 @@ func TestListRegistries_AuthUser_IncludesOrgAndPersonal(t *testing.T) {
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
 	regs := body["registries"].([]interface{})
-	if len(regs) != 3 {
-		t.Fatalf("expected 3 registries (public+org+personal), got %d", len(regs))
+	if len(regs) != 2 {
+		t.Fatalf("expected 2 registries (public+org), got %d", len(regs))
+	}
+}
+
+func TestListRegistries_ExplicitPublicRepo_VisibleToAnonymous(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-pub-lr", Name: "pub-repo-lr", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-pub-lr", Name: "pub-reg-lr", SourceType: "internal", RepoID: "repo-pub-lr", OwnerID: "u1",
+	})
+	database.DB.Create(&models.Repository{ID: "repo-priv-lr", Name: "priv-repo-lr", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-priv-lr", Name: "priv-reg-lr", SourceType: "internal", RepoID: "repo-priv-lr", OwnerID: "u1",
+	})
+
+	w := get(newRegistryRouter(""), "/api/registries")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	regs := body["registries"].([]interface{})
+	// Anonymous should see only the public-repo registry
+	if len(regs) != 1 {
+		t.Fatalf("expected 1 registry from public repo for anonymous, got %d", len(regs))
+	}
+	first := regs[0].(map[string]interface{})
+	if first["id"] != "reg-pub-lr" {
+		t.Fatalf("expected reg-pub-lr, got %v", first["id"])
+	}
+}
+
+func TestListRegistries_PrivateRepo_VisibleToMemberOnly(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-priv-m", Name: "priv-m", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-priv-m", Name: "priv-m-reg", SourceType: "internal", RepoID: "repo-priv-m", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-priv-m", RepoID: "repo-priv-m", UserID: "member-lr", Role: "member",
+	})
+
+	// Member sees the private repo registry
+	w := get(newRegistryRouter("member-lr"), "/api/registries")
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	regs := body["registries"].([]interface{})
+	found := false
+	for _, r := range regs {
+		reg := r.(map[string]interface{})
+		if reg["id"] == "reg-priv-m" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected member to see private repo registry")
+	}
+
+	// Non-member does NOT see the private repo registry
+	w2 := get(newRegistryRouter("outsider"), "/api/registries")
+	var body2 map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&body2)
+	regs2 := body2["registries"].([]interface{})
+	for _, r := range regs2 {
+		reg := r.(map[string]interface{})
+		if reg["id"] == "reg-priv-m" {
+			t.Fatal("non-member should NOT see private repo registry")
+		}
 	}
 }
 
@@ -109,7 +172,7 @@ func TestCreateRegistry_Success(t *testing.T) {
 	defer setupTestDB(t)()
 
 	w := postJSON(newRegistryRouter("u1"), "/api/registries", map[string]interface{}{
-		"name": "My Registry", "ownerId": "u1", "visibility": "public",
+		"name": "My Registry", "ownerId": "u1",
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -138,7 +201,7 @@ func TestCreateRegistry_MissingRequired(t *testing.T) {
 func TestGetRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-get1", Name: "get-reg", SourceType: "internal", Visibility: "public", RepoID: "repo-1", OwnerID: "u1",
+		ID: "reg-get1", Name: "get-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := get(newRegistryRouter(""), "/api/registries/reg-get1")
@@ -167,11 +230,11 @@ func TestGetRegistry_NotFound(t *testing.T) {
 func TestUpdateRegistry_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-upd1", Name: "old-name", SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
+		ID: "reg-upd1", Name: "old-name", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-upd1", map[string]interface{}{
-		"name": "new-name", "visibility": "public",
+		"name": "new-name",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -181,9 +244,7 @@ func TestUpdateRegistry_Success(t *testing.T) {
 	if reg["name"] != "new-name" {
 		t.Fatalf("expected name=new-name, got %v", reg["name"])
 	}
-	if reg["visibility"] != "public" {
-		t.Fatalf("expected visibility=public, got %v", reg["visibility"])
-	}
+
 }
 
 func TestUpdateRegistry_NotFound(t *testing.T) {
@@ -203,7 +264,7 @@ func TestUpdateRegistry_NotFound(t *testing.T) {
 func TestDeleteRegistry_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-del1", Name: "del-reg", SourceType: "internal", Visibility: "public", RepoID: "repo-1", OwnerID: "u1",
+		ID: "reg-del1", Name: "del-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := deleteReq(newRegistryRouter("u1"), "/api/registries/reg-del1")
@@ -219,85 +280,19 @@ func TestDeleteRegistry_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// EnsurePersonalRegistry
-// ---------------------------------------------------------------------------
-
-func TestEnsurePersonalRegistry_Creates(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRegistryRouter("user-new"), "/api/registries/ensure-personal", map[string]interface{}{
-		"username": "alice",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var reg map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["name"] != "alice-skills" {
-		t.Fatalf("expected name=alice-skills, got %v", reg["name"])
-	}
-}
-
-func TestEnsurePersonalRegistry_ReturnsExisting(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "existing-personal", Name: "bob-skills", SourceType: "internal",
-		Visibility: "public", RepoID: "", OwnerID: "user-bob",
-	})
-
-	w := postJSON(newRegistryRouter("user-bob"), "/api/registries/ensure-personal", map[string]interface{}{
-		"username": "bob",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for existing registry, got %d", w.Code)
-	}
-	var reg map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["id"] != "existing-personal" {
-		t.Fatalf("expected existing registry id, got %v", reg["id"])
-	}
-}
-
-func TestEnsurePersonalRegistry_DefaultName(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRegistryRouter("user-noname"), "/api/registries/ensure-personal", map[string]interface{}{})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var reg map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["name"] != "personal" {
-		t.Fatalf("expected name=personal, got %v", reg["name"])
-	}
-}
-
-func TestEnsurePersonalRegistry_MissingOwnerID(t *testing.T) {
-	defer setupTestDB(t)()
-
-	// No authenticated user → should return 401
-	w := postJSON(newRegistryRouter(""), "/api/registries/ensure-personal", map[string]interface{}{
-		"username": "nobody",
-	})
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ListMyRegistries
 // ---------------------------------------------------------------------------
 
 func TestListMyRegistries_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-r1", Name: "my-reg1", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "owner-a",
+		ID: "my-r1", Name: "my-reg1", SourceType: "internal", RepoID: "", OwnerID: "owner-a",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-r2", Name: "my-reg2", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "owner-a",
+		ID: "my-r2", Name: "my-reg2", SourceType: "internal", RepoID: "", OwnerID: "owner-a",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "other-r", Name: "other-reg", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "owner-b",
+		ID: "other-r", Name: "other-reg", SourceType: "internal", RepoID: "", OwnerID: "owner-b",
 	})
 
 	w := get(newRegistryRouter("owner-a"), "/api/registries/my")
@@ -331,7 +326,7 @@ func TestListMyItems_Success(t *testing.T) {
 		ID: "repo-my-items", Name: "my-repo", OwnerID: "item-owner",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-items-reg", Name: "my-items-r", SourceType: "internal", Visibility: "public", RepoID: "repo-my-items", OwnerID: "item-owner",
+		ID: "my-items-reg", Name: "my-items-r", SourceType: "internal", RepoID: "repo-my-items", OwnerID: "item-owner",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "my-item-1", RegistryID: "my-items-reg", Slug: "my-skill", ItemType: "skill",
@@ -372,10 +367,39 @@ func TestListMyItems_Success(t *testing.T) {
 	}
 }
 
+func TestListMyItems_RepoVisibilityField(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-vis", Name: "vis-repo", OwnerID: "vis-owner", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-vis", Name: "vis-reg", SourceType: "internal", RepoID: "repo-vis", OwnerID: "vis-owner",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-vis", RegistryID: "reg-vis", Slug: "vis-skill", ItemType: "skill",
+		Name: "Vis Skill", Status: "active", CreatedBy: "vis-owner", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter("vis-owner"), "/api/items/my")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["repoVisibility"] != "public" {
+		t.Fatalf("expected repoVisibility=public, got %v", first["repoVisibility"])
+	}
+}
+
 func TestListMyItems_FilterByType(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-items-reg2", Name: "my-items-r2", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "item-owner2",
+		ID: "my-items-reg2", Name: "my-items-r2", SourceType: "internal", RepoID: "", OwnerID: "item-owner2",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "my-item-3", RegistryID: "my-items-reg2", Slug: "my-skill2", ItemType: "skill",
@@ -401,7 +425,7 @@ func TestListMyItems_FilterByType(t *testing.T) {
 func TestListMyItems_Pagination(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "my-items-reg3", Name: "my-items-r3", SourceType: "internal", Visibility: "public", RepoID: "", OwnerID: "item-owner3",
+		ID: "my-items-reg3", Name: "my-items-r3", SourceType: "internal", RepoID: "", OwnerID: "item-owner3",
 	})
 	for i := 0; i < 5; i++ {
 		database.DB.Create(&models.CapabilityItem{
@@ -439,6 +463,34 @@ func TestListMyItems_Pagination(t *testing.T) {
 	}
 }
 
+func TestListMyItems_PublicRepoVisibilityField(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-pub-vis", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "pub-vis-skill", ItemType: "skill",
+		Name: "Pub Vis Skill", Status: "active", CreatedBy: "pub-vis-user",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter("pub-vis-user"), "/api/items/my")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["repoVisibility"] != "public" {
+		t.Fatalf("expected repoVisibility=public for virtual public repo, got %v", first["repoVisibility"])
+	}
+}
+
 func TestListMyItems_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
 	w := get(newRegistryRouter(""), "/api/items/my")
@@ -452,7 +504,7 @@ func TestListMyItems_IncludesCreatedByInOtherRegistries(t *testing.T) {
 	defer setupTestDB(t)()
 	// Registry owned by "system", not by "user-abc".
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "public-reg", Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		ID: "public-reg", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	// Item created by "user-abc" in the public registry.
 	database.DB.Create(&models.CapabilityItem{
@@ -488,14 +540,14 @@ func TestListMyItems_IncludesCommandsFromPublicAndOwnedRepo(t *testing.T) {
 
 	// 1. Public registry (owned by "system", not by the user).
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "pub-reg-cmd", Name: "public", SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		ID: "pub-reg-cmd", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	// 2. User's own repo + registry.
 	database.DB.Create(&models.Repository{
 		ID: "repo-cmd-user", Name: "user-cmd-repo", OwnerID: userID,
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-cmd-user", Name: "user-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-cmd-user", OwnerID: userID,
+		ID: "reg-cmd-user", Name: "user-reg", SourceType: "internal", RepoID: "repo-cmd-user", OwnerID: userID,
 	})
 
 	// Command created by the user in the public registry.
@@ -555,7 +607,7 @@ func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
 	defer setupTestDB(t)()
 	// Registry owned by the user.
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "user-reg", Name: "user-r", SourceType: "internal", Visibility: "public", RepoID: "user-repo", OwnerID: "user-dedup",
+		ID: "user-reg", Name: "user-r", SourceType: "internal", RepoID: "user-repo", OwnerID: "user-dedup",
 	})
 	// Item in user's own registry AND created_by = user -> matches both sides of OR.
 	database.DB.Create(&models.CapabilityItem{
@@ -581,7 +633,7 @@ func TestTransferRegistry_Success_UpdatesItemsRepoID(t *testing.T) {
 	database.DB.Create(&models.Repository{ID: "repo-rt-src", Name: "rt-src", OwnerID: "u1"})
 	database.DB.Create(&models.Repository{ID: "repo-rt-tgt", Name: "rt-tgt", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rt", Name: "rt-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rt-src", OwnerID: "u1",
+		ID: "reg-rt", Name: "rt-reg", SourceType: "internal", RepoID: "repo-rt-src", OwnerID: "u1",
 	})
 	// Caller must be member of target repo
 	database.DB.Create(&models.RepoMember{ID: "mem-rt", RepoID: "repo-rt-tgt", UserID: "u1", Role: "member"})
@@ -641,7 +693,7 @@ func TestTransferRegistry_NotFound(t *testing.T) {
 func TestTransferRegistry_Unauthenticated(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rt-noauth", Name: "rt-noauth", SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
+		ID: "reg-rt-noauth", Name: "rt-noauth", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := putJSON(newRegistryRouter(""), "/api/registries/reg-rt-noauth/transfer", map[string]interface{}{
@@ -656,7 +708,7 @@ func TestTransferRegistry_ForbiddenNotOwnerNorAdmin(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-rtf", Name: "rtf-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rtf", Name: "rtf-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rtf", OwnerID: "u1",
+		ID: "reg-rtf", Name: "rtf-reg", SourceType: "internal", RepoID: "repo-rtf", OwnerID: "u1",
 	})
 	// u-other is only a member (not admin/owner) of the source repo, and NOT the registry owner
 	database.DB.Create(&models.RepoMember{ID: "mem-rtf", RepoID: "repo-rtf", UserID: "u-other", Role: "member"})
@@ -673,7 +725,7 @@ func TestTransferRegistry_SameRepo(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-rts", Name: "rts-repo", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rts", Name: "rts-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rts", OwnerID: "u1",
+		ID: "reg-rts", Name: "rts-reg", SourceType: "internal", RepoID: "repo-rts", OwnerID: "u1",
 	})
 	database.DB.Create(&models.RepoMember{ID: "mem-rts", RepoID: "repo-rts", UserID: "u1", Role: "owner"})
 
@@ -690,7 +742,7 @@ func TestTransferRegistry_SyncingNotAllowed(t *testing.T) {
 	database.DB.Create(&models.Repository{ID: "repo-rtsn", Name: "rtsn-repo", OwnerID: "u1"})
 	database.DB.Create(&models.Repository{ID: "repo-rtsn-tgt", Name: "rtsn-tgt", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rtsn", Name: "rtsn-reg", SourceType: "external", Visibility: "repo",
+		ID: "reg-rtsn", Name: "rtsn-reg", SourceType: "external",
 		RepoID: "repo-rtsn", OwnerID: "u1", SyncStatus: "syncing",
 	})
 	database.DB.Create(&models.RepoMember{ID: "mem-rtsn", RepoID: "repo-rtsn-tgt", UserID: "u1", Role: "member"})
@@ -708,7 +760,7 @@ func TestTransferRegistry_NotTargetRepoMember(t *testing.T) {
 	database.DB.Create(&models.Repository{ID: "repo-rtnm", Name: "rtnm-repo", OwnerID: "u1"})
 	database.DB.Create(&models.Repository{ID: "repo-rtnm-tgt", Name: "rtnm-tgt", OwnerID: "u2"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rtnm", Name: "rtnm-reg", SourceType: "internal", Visibility: "repo", RepoID: "repo-rtnm", OwnerID: "u1",
+		ID: "reg-rtnm", Name: "rtnm-reg", SourceType: "internal", RepoID: "repo-rtnm", OwnerID: "u1",
 	})
 	// u1 is NOT a member of repo-rtnm-tgt
 
@@ -725,10 +777,10 @@ func TestTransferRegistry_ItemsInOtherRegistryUnchanged(t *testing.T) {
 	database.DB.Create(&models.Repository{ID: "repo-rio-src", Name: "rio-src", OwnerID: "u1"})
 	database.DB.Create(&models.Repository{ID: "repo-rio-tgt", Name: "rio-tgt", OwnerID: "u1"})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rio-move", Name: "rio-move", SourceType: "internal", Visibility: "repo", RepoID: "repo-rio-src", OwnerID: "u1",
+		ID: "reg-rio-move", Name: "rio-move", SourceType: "internal", RepoID: "repo-rio-src", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-rio-stay", Name: "rio-stay", SourceType: "internal", Visibility: "repo", RepoID: "repo-rio-src", OwnerID: "u1",
+		ID: "reg-rio-stay", Name: "rio-stay", SourceType: "internal", RepoID: "repo-rio-src", OwnerID: "u1",
 	})
 	database.DB.Create(&models.RepoMember{ID: "mem-rio", RepoID: "repo-rio-tgt", UserID: "u1", Role: "member"})
 

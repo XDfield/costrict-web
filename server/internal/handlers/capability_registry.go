@@ -14,7 +14,7 @@ import (
 
 // ListRegistries godoc
 // @Summary      List registries
-// @Description  Get registries visible to the current user (public + repo + personal)
+// @Description  Get registries visible to the current user. Visibility is determined by the parent repository's visibility field: public repos' registries are visible to everyone, private repos' registries are visible to repo members, and registries without a repo are visible to their owner.
 // @Tags         registries
 // @Produce      json
 // @Param        repoId  query     string  false  "Filter by repository ID"
@@ -34,20 +34,18 @@ func ListRegistries(c *gin.Context) {
 		return
 	}
 
-	db.Where("visibility = 'public'").Find(&registries)
+	// Registries belonging to public repos (including the virtual "public" repo)
+	db.Where("repo_id IN (SELECT CAST(id AS TEXT) FROM repositories WHERE visibility = 'public') OR repo_id = 'public'").Find(&registries)
 
 	if userID != "" {
+		// Registries belonging to private repos the user is a member of
 		var repoIDs []string
 		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
 		if len(repoIDs) > 0 {
 			var repoRegs []models.CapabilityRegistry
-			db.Where("repo_id IN ? AND visibility = 'repo'", repoIDs).Find(&repoRegs)
+			db.Where("repo_id IN ? AND repo_id NOT IN (SELECT CAST(id AS TEXT) FROM repositories WHERE visibility = 'public')", repoIDs).Find(&repoRegs)
 			registries = append(registries, repoRegs...)
 		}
-
-		var personalRegs []models.CapabilityRegistry
-		db.Where("owner_id = ? AND visibility = 'private'", userID).Find(&personalRegs)
-		registries = append(registries, personalRegs...)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"registries": registries})
@@ -55,11 +53,11 @@ func ListRegistries(c *gin.Context) {
 
 // CreateRegistry godoc
 // @Summary      Create registry
-// @Description  Create a new skill registry
+// @Description  Create a new skill registry. Visibility is inherited from the parent repository.
 // @Tags         registries
 // @Accept       json
 // @Produce      json
-// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,visibility=string,repoId=string,ownerId=string}  true  "Registry data"
+// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,repoId=string,ownerId=string}  true  "Registry data"
 // @Success      201   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -73,7 +71,6 @@ func CreateRegistry(c *gin.Context) {
 		ExternalBranch string `json:"externalBranch"`
 		SyncEnabled    bool   `json:"syncEnabled"`
 		SyncInterval   int    `json:"syncInterval"`
-		Visibility     string `json:"visibility"`
 		RepoID         string `json:"repoId"`
 		OwnerID        string `json:"ownerId"`
 	}
@@ -98,7 +95,6 @@ func CreateRegistry(c *gin.Context) {
 		ExternalBranch: req.ExternalBranch,
 		SyncEnabled:    req.SyncEnabled,
 		SyncInterval:   req.SyncInterval,
-		Visibility:     req.Visibility,
 		RepoID:         req.RepoID,
 		OwnerID:        ownerID,
 	}
@@ -135,12 +131,12 @@ func GetRegistry(c *gin.Context) {
 
 // UpdateRegistry godoc
 // @Summary      Update registry
-// @Description  Update registry by ID
+// @Description  Update registry by ID. Note: visibility is controlled at the repository level, not the registry level.
 // @Tags         registries
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer,visibility=string}  false  "Registry data"
+// @Param        body  body      object{name=string,description=string,sourceType=string,externalUrl=string,externalBranch=string,syncEnabled=boolean,syncInterval=integer}  false  "Registry data"
 // @Success      200   {object}  models.CapabilityRegistry
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
@@ -156,7 +152,6 @@ func UpdateRegistry(c *gin.Context) {
 		ExternalBranch string `json:"externalBranch"`
 		SyncEnabled    *bool  `json:"syncEnabled"`
 		SyncInterval   int    `json:"syncInterval"`
-		Visibility     string `json:"visibility"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -192,9 +187,6 @@ func UpdateRegistry(c *gin.Context) {
 	}
 	if req.SyncInterval != 0 {
 		registry.SyncInterval = req.SyncInterval
-	}
-	if req.Visibility != "" {
-		registry.Visibility = req.Visibility
 	}
 
 	if result := db.Save(&registry); result.Error != nil {
@@ -325,61 +317,6 @@ func TransferRegistry(c *gin.Context) {
 	c.JSON(http.StatusOK, registry)
 }
 
-// EnsurePersonalRegistry godoc
-// @Summary      Ensure personal registry
-// @Description  Get or create the personal registry for a user
-// @Tags         registries
-// @Accept       json
-// @Produce      json
-// @Param        body  body      object{ownerId=string,username=string}  true  "Owner data"
-// @Success      200   {object}  models.CapabilityRegistry
-// @Success      201   {object}  models.CapabilityRegistry
-// @Failure      400   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
-// @Router       /registries/ensure-personal [post]
-func EnsurePersonalRegistry(c *gin.Context) {
-	var req struct {
-		OwnerID  string `json:"ownerId"`
-		Username string `json:"username"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	ownerID := c.GetString(middleware.UserIDKey)
-	if ownerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	db := database.GetDB()
-	var registry models.CapabilityRegistry
-	result := db.Where("owner_id = ? AND source_type = 'internal' AND repo_id = ''", ownerID).Limit(1).Find(&registry)
-	if result.Error == nil && registry.ID != "" {
-		c.JSON(http.StatusOK, registry)
-		return
-	}
-
-	name := "personal"
-	if req.Username != "" {
-		name = req.Username + "-skills"
-	}
-	registry = models.CapabilityRegistry{
-		ID:          uuid.New().String(),
-		Name:        name,
-		Description: "Personal skill registry",
-		SourceType:  "internal",
-		Visibility:  "public",
-		OwnerID:     ownerID,
-	}
-	if result := db.Create(&registry); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create registry"})
-		return
-	}
-	c.JSON(http.StatusCreated, registry)
-}
-
 // ListMyRegistries godoc
 // @Summary      List my registries
 // @Description  Get all registries owned by a user
@@ -404,8 +341,9 @@ func ListMyRegistries(c *gin.Context) {
 // MyItem represents a capability item with associated repo info
 type MyItem struct {
 	models.CapabilityItem
-	RepoID   string `json:"repoId"`
-	RepoName string `json:"repoName"`
+	RepoID         string `json:"repoId"`
+	RepoName       string `json:"repoName"`
+	RepoVisibility string `json:"repoVisibility"`
 }
 
 // ListMyItems godoc
@@ -466,24 +404,44 @@ func ListMyItems(c *gin.Context) {
 	offset := (page - 1) * pageSize
 	query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&items)
 
-	// Collect unique repo IDs and fetch repo names
+	// Supplement registryMap with any registries not yet loaded (e.g. public registry items created by the user)
+	for _, item := range items {
+		if _, ok := registryMap[item.RegistryID]; !ok {
+			var reg models.CapabilityRegistry
+			if err := db.Where("id = ?", item.RegistryID).First(&reg).Error; err == nil {
+				registryMap[reg.ID] = reg
+			}
+		}
+	}
+
+	// Collect unique repo IDs and fetch repo info (name + visibility)
 	repoIDSet := make(map[string]bool)
-	for _, reg := range registries {
+	for _, reg := range registryMap {
 		if reg.RepoID != "" {
 			repoIDSet[reg.RepoID] = true
 		}
 	}
 	repoNameMap := make(map[string]string)
+	repoVisibilityMap := make(map[string]string)
 	if len(repoIDSet) > 0 {
 		repoIDs := make([]string, 0, len(repoIDSet))
 		for id := range repoIDSet {
-			repoIDs = append(repoIDs, id)
+			if id != "public" {
+				repoIDs = append(repoIDs, id)
+			}
 		}
-		var repos []models.Repository
-		db.Where("id IN ?", repoIDs).Find(&repos)
-		for _, repo := range repos {
-			repoNameMap[repo.ID] = repo.Name
+		if len(repoIDs) > 0 {
+			var repos []models.Repository
+			db.Where("id IN ?", repoIDs).Find(&repos)
+			for _, repo := range repos {
+				repoNameMap[repo.ID] = repo.Name
+				repoVisibilityMap[repo.ID] = repo.Visibility
+			}
 		}
+	}
+	// The virtual "public" repo has no row in repositories; fill it explicitly.
+	if repoIDSet["public"] {
+		repoVisibilityMap["public"] = "public"
 	}
 
 	// Build response with repo info
@@ -494,6 +452,7 @@ func ListMyItems(c *gin.Context) {
 			CapabilityItem: item,
 			RepoID:         reg.RepoID,
 			RepoName:       repoNameMap[reg.RepoID],
+			RepoVisibility: repoVisibilityMap[reg.RepoID],
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

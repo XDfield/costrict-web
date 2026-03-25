@@ -144,6 +144,14 @@ func runPreMigrations(db *gorm.DB) error {
 				`ALTER TABLE capability_items DROP COLUMN IF EXISTS visibility`,
 			},
 		},
+		// Drop visibility column from capability_registries — visibility is now
+		// derived from the parent repository's visibility field.
+		{
+			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_registries' AND column_name='visibility'`,
+			stmts: []string{
+				`ALTER TABLE capability_registries DROP COLUMN IF EXISTS visibility`,
+			},
+		},
 		{
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='security_scans' AND column_name='revision_id'`,
 			stmts: []string{

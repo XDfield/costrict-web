@@ -67,7 +67,6 @@ func setupTestDB(t *testing.T) func() {
 			sync_status      TEXT DEFAULT 'idle',
 			sync_config      TEXT DEFAULT '{}',
 			last_sync_log_id TEXT,
-			visibility       TEXT DEFAULT 'repo',
 			repo_id          TEXT,
 			owner_id         TEXT NOT NULL,
 			created_at       DATETIME,
@@ -276,7 +275,7 @@ func TestRegistryAccess_PublicRepo(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 
 	w := get(newRouter(""), "/api/registry/public/access")
@@ -310,7 +309,7 @@ func TestRegistryAccess_PrivateRepo(t *testing.T) {
 	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-1", Name: "sangfor-reg",
-		SourceType: "internal", Visibility: "repo", RepoID: "repo-1", OwnerID: "u1",
+		SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
 
 	w := get(newRouter(""), "/api/registry/sangfor/access")
@@ -318,6 +317,41 @@ func TestRegistryAccess_PrivateRepo(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&body)
 	if body["public"] {
 		t.Fatal("expected public=false for repo-visibility registry")
+	}
+}
+
+func TestRegistryAccess_ExplicitPublicRepo(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-pub", Name: "open-source", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-pub", Name: "open-reg",
+		SourceType: "internal", RepoID: "repo-pub", OwnerID: "u1",
+	})
+
+	w := get(newRouter(""), "/api/registry/open-source/access")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]bool
+	json.NewDecoder(w.Body).Decode(&body)
+	if !body["public"] {
+		t.Fatal("expected public=true for repo with visibility=public")
+	}
+}
+
+func TestRegistryAccess_ExplicitPrivateRepo(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-priv", Name: "closed", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-priv", Name: "closed-reg",
+		SourceType: "internal", RepoID: "repo-priv", OwnerID: "u1",
+	})
+
+	w := get(newRouter(""), "/api/registry/closed/access")
+	var body map[string]bool
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["public"] {
+		t.Fatal("expected public=false for repo with visibility=private")
 	}
 }
 
@@ -329,7 +363,7 @@ func TestRegistryIndex_PublicRepo_Anonymous(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-1", RegistryID: PublicRegistryID, RepoID: "public",
@@ -362,7 +396,7 @@ func TestRegistryIndex_CommandFilename_UsesSlug(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-2", RegistryID: PublicRegistryID, RepoID: "public",
@@ -388,7 +422,7 @@ func TestRegistryIndex_PrivateRepo_Unauthenticated(t *testing.T) {
 	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-2", Name: "internal-reg",
-		SourceType: "internal", Visibility: "repo", RepoID: "repo-2", OwnerID: "u1",
+		SourceType: "internal", RepoID: "repo-2", OwnerID: "u1",
 	})
 
 	w := get(newRouter(""), "/api/registry/internal/index.json")
@@ -403,7 +437,7 @@ func TestRegistryIndex_PrivateRepo_NonMember(t *testing.T) {
 	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-3", Name: "secret-reg",
-		SourceType: "internal", Visibility: "repo", RepoID: "repo-3", OwnerID: "u1",
+		SourceType: "internal", RepoID: "repo-3", OwnerID: "u1",
 	})
 
 	w := get(newRouter("stranger"), "/api/registry/secret/index.json")
@@ -418,7 +452,7 @@ func TestRegistryIndex_PrivateRepo_Member(t *testing.T) {
 	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-4", Name: "myrepo-reg",
-		SourceType: "internal", Visibility: "repo", RepoID: "repo-4", OwnerID: "u1",
+		SourceType: "internal", RepoID: "repo-4", OwnerID: "u1",
 	})
 	database.DB.Create(&models.RepoMember{
 		ID: "mem-1", RepoID: "repo-4", UserID: "member-user", Role: "member",
@@ -433,6 +467,73 @@ func TestRegistryIndex_PrivateRepo_Member(t *testing.T) {
 	w := get(newRouter("member-user"), "/api/registry/myrepo/index.json")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body indexJSON
+	json.NewDecoder(w.Body).Decode(&body)
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(body.Items))
+	}
+}
+
+func TestRegistryIndex_ExplicitPublicRepo_Anonymous(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-idx-pub", Name: "idx-open", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idx-pub", Name: "idx-open-reg",
+		SourceType: "internal", RepoID: "repo-idx-pub", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idx-pub", RegistryID: "reg-idx-pub", RepoID: "repo-idx-pub",
+		Slug: "open-skill", ItemType: "skill",
+		Name: "Open Skill", Status: "active", CreatedBy: "u1",
+		Content: "# Open Skill", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/idx-open/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for public repo anonymous access, got %d: %s", w.Code, w.Body.String())
+	}
+	var body indexJSON
+	json.NewDecoder(w.Body).Decode(&body)
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(body.Items))
+	}
+}
+
+func TestRegistryIndex_ExplicitPrivateRepo_Unauthenticated(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-idx-priv", Name: "idx-closed", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idx-priv", Name: "idx-closed-reg",
+		SourceType: "internal", RepoID: "repo-idx-priv", OwnerID: "u1",
+	})
+
+	w := get(newRouter(""), "/api/registry/idx-closed/index.json")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for private repo unauthenticated, got %d", w.Code)
+	}
+}
+
+func TestRegistryIndex_ExplicitPrivateRepo_MemberAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-idx-m", Name: "idx-member", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idx-m", Name: "idx-member-reg",
+		SourceType: "internal", RepoID: "repo-idx-m", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-idx", RepoID: "repo-idx-m", UserID: "idx-member-user", Role: "member",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idx-m", RegistryID: "reg-idx-m", RepoID: "repo-idx-m",
+		Slug: "member-skill", ItemType: "skill",
+		Name: "Member Skill", Status: "active", CreatedBy: "u1",
+		Content: "# Member Skill", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter("idx-member-user"), "/api/registry/idx-member/index.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for private repo member, got %d: %s", w.Code, w.Body.String())
 	}
 	var body indexJSON
 	json.NewDecoder(w.Body).Decode(&body)
@@ -466,7 +567,7 @@ func TestRegistryIndex_SkillWithAssets(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-skill-assets", RegistryID: PublicRegistryID, RepoID: "public",
@@ -503,7 +604,7 @@ func TestRegistryIndex_MCPWithAssets(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	meta := `{"command":"npx"}`
 	database.DB.Create(&models.CapabilityItem{
@@ -539,7 +640,7 @@ func TestRegistryIndex_MCPFromJSONMetadata(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 
 	// Simulate an MCP item created via JSON API with metadata containing
@@ -585,7 +686,7 @@ func TestRegistryIndex_MCPMetadataDerivedFromContent(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 
 	// When no metadata is supplied, resolveMetadata should parse content as .mcp.json.
@@ -639,7 +740,7 @@ func TestDownloadRegistryFile_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl", RegistryID: PublicRegistryID, RepoID: "public",
@@ -665,7 +766,7 @@ func TestDownloadRegistryFile_MainFile(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	content := "# My Skill\nmain content"
 	database.DB.Create(&models.CapabilityItem{
@@ -688,7 +789,7 @@ func TestDownloadRegistryFile_EmptyFile(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	content := "# My Skill\nmain content"
 	database.DB.Create(&models.CapabilityItem{
@@ -714,7 +815,7 @@ func TestDownloadRegistryFile_TextAsset(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl-text-asset", RegistryID: PublicRegistryID, RepoID: "public",
@@ -752,7 +853,7 @@ func TestDownloadRegistryFile_BinaryAsset(t *testing.T) {
 
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl-binary-asset", RegistryID: PublicRegistryID, RepoID: "public",
@@ -782,7 +883,7 @@ func TestDownloadRegistryFile_NestedPath(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl-nested", RegistryID: PublicRegistryID, RepoID: "public",
@@ -807,7 +908,7 @@ func TestDownloadRegistryFile_NonexistentFile(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl-missing-file", RegistryID: PublicRegistryID, RepoID: "public",
@@ -826,7 +927,7 @@ func TestDownloadRegistryFile_PathTraversal(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-dl-path-traversal", RegistryID: PublicRegistryID, RepoID: "public",
@@ -845,7 +946,7 @@ func TestDownloadRegistryFile_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 
 	w := get(newRouter(""), "/api/registry/public/skill/nonexistent/SKILL.md")
@@ -860,7 +961,7 @@ func TestDownloadRegistryFile_RepoItem_Forbidden(t *testing.T) {
 	database.DB.Create(&repo)
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-5", Name: "corp-reg",
-		SourceType: "internal", Visibility: "repo", RepoID: "repo-5", OwnerID: "u1",
+		SourceType: "internal", RepoID: "repo-5", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-repo", RegistryID: "reg-5", RepoID: "repo-5",
@@ -875,6 +976,75 @@ func TestDownloadRegistryFile_RepoItem_Forbidden(t *testing.T) {
 	}
 }
 
+func TestDownloadRegistryFile_PublicRepo_AnonymousAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-dl-pub", Name: "dl-open", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-dl-pub", Name: "dl-open-reg",
+		SourceType: "internal", RepoID: "repo-dl-pub", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-pub", RegistryID: "reg-dl-pub", RepoID: "repo-dl-pub",
+		Slug: "open-skill", ItemType: "skill",
+		Name: "Open Skill", Status: "active", CreatedBy: "u1",
+		Content: "# Open Skill Content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter(""), "/api/registry/dl-open/skill/open-skill/SKILL.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for public repo anonymous download, got %d", w.Code)
+	}
+	if w.Body.String() != "# Open Skill Content" {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestDownloadRegistryFile_PrivateRepo_MemberAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-dl-priv", Name: "dl-closed", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-dl-priv", Name: "dl-closed-reg",
+		SourceType: "internal", RepoID: "repo-dl-priv", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-priv", RegistryID: "reg-dl-priv", RepoID: "repo-dl-priv",
+		Slug: "private-skill", ItemType: "skill",
+		Name: "Private Skill", Status: "active", CreatedBy: "u1",
+		Content: "# Private Skill Content", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-dl-priv", RepoID: "repo-dl-priv", UserID: "dl-member", Role: "member",
+	})
+
+	w := get(newRouter("dl-member"), "/api/registry/dl-closed/skill/private-skill/SKILL.md")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for private repo member download, got %d", w.Code)
+	}
+	if w.Body.String() != "# Private Skill Content" {
+		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestDownloadRegistryFile_PrivateRepo_NonMemberForbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-dl-priv2", Name: "dl-secret", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-dl-priv2", Name: "dl-secret-reg",
+		SourceType: "internal", RepoID: "repo-dl-priv2", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dl-priv2", RegistryID: "reg-dl-priv2", RepoID: "repo-dl-priv2",
+		Slug: "secret-skill2", ItemType: "skill",
+		Name: "Secret Skill", Status: "active", CreatedBy: "u1",
+		Content: "# Secret", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter("outsider"), "/api/registry/dl-secret/skill/secret-skill2/SKILL.md")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for private repo non-member, got %d", w.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DownloadItem (by ID)
 // ---------------------------------------------------------------------------
@@ -883,7 +1053,7 @@ func TestDownloadItem_PublicItem(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: PublicRegistryID, Name: "public",
-		SourceType: "internal", Visibility: "public", RepoID: "public", OwnerID: "system",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-byid", RegistryID: PublicRegistryID, RepoID: "public",

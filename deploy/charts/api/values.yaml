@@ -1,6 +1,6 @@
 # Default values for costrict-web-api
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: zgsm/costrict-web-api
@@ -38,8 +38,8 @@ resources:
     cpu: 1000m
     memory: 512Mi
   requests:
-    cpu: 200m
-    memory: 256Mi
+    cpu: 10m
+    memory: 64Mi
 
 nodeSelector: {}
 
@@ -67,6 +67,16 @@ redis:
   port: 6379
   existingSecret: ""
   existingSecretKey: password
+
+# Artifact storage persistence
+persistence:
+  enabled: true
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  existingClaim: ""
+  mountPath: /app/data/artifacts
 
 env: []
 envFrom: []
