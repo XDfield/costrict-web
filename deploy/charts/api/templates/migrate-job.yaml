@@ -1,3 +1,4 @@
+{{- if .Values.migrate.enabled | default true }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,3 +35,4 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+{{- end }}

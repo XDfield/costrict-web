@@ -19,11 +19,11 @@ serviceAccount:
 podAnnotations: {}
 
 podSecurityContext:
-  fsGroup: 1000
+  fsGroup: 0
 
 securityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
+  runAsNonRoot: false
+  runAsUser: 0
   allowPrivilegeEscalation: false
   capabilities:
     drop:
@@ -52,6 +52,10 @@ config:
   port: "8080"
   logLevel: "info"
 
+# Database migration job
+migrate:
+  enabled: false
+
 # Database configuration
 database:
   host: postgres
@@ -71,9 +75,9 @@ redis:
 # Artifact storage persistence
 persistence:
   enabled: true
-  storageClass: ""
+  storageClass: "nfs-storage"
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   size: 10Gi
   existingClaim: ""
   mountPath: /app/data/artifacts
