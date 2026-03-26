@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        chart: [gateway, api, worker, portal]
+        chart: [gateway, api, worker, portal, postgres]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       charts:
-        description: 'Charts to release (comma-separated: gateway,api,worker,portal,all)'
+        description: 'Charts to release (comma-separated: gateway,api,worker,portal,postgres,all)'
         required: false
         default: 'all'
 
@@ -52,7 +52,7 @@ jobs:
           fi
 
           if [ "$CHARTS_INPUT" = "all" ]; then
-            echo 'charts=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
+            echo 'charts=["gateway","api","worker","portal","postgres"]' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array
             CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -R . | jq -s .)
@@ -89,20 +89,37 @@ jobs:
       - name: Update chart version
         run: |
           VERSION="${{ needs.detect-charts.outputs.version }}"
-          CHART_PATH="${{ env.CHARTS_DIR }}/${{ matrix.chart }}/Chart.yaml"
+          CHART="${{ matrix.chart }}"
+          CHART_PATH="${{ env.CHARTS_DIR }}/${CHART}/Chart.yaml"
 
-          # Update version and appVersion in Chart.yaml
-          yq -i ".version = \"$VERSION\"" "$CHART_PATH"
-          yq -i ".appVersion = \"$VERSION\"" "$CHART_PATH"
+          if [ "$CHART" = "postgres" ]; then
+            # postgres chart version is based on its image tag, not the git tag
+            echo "Skipping version override for postgres — using version from Chart.yaml"
+          else
+            # Update version and appVersion in Chart.yaml
+            yq -i ".version = \"$VERSION\"" "$CHART_PATH"
+            yq -i ".appVersion = \"$VERSION\"" "$CHART_PATH"
+          fi
 
-          echo "Updated $CHART_PATH to version $VERSION"
+          echo "Chart: $CHART_PATH"
           cat "$CHART_PATH"
 
       - name: Package chart
         run: |
-          helm package ${{ env.CHARTS_DIR }}/${{ matrix.chart }} \
-            --version ${{ needs.detect-charts.outputs.version }} \
-            --destination ./packages
+          CHART="${{ matrix.chart }}"
+          CHART_DIR="${{ env.CHARTS_DIR }}/${CHART}"
+
+          if [ "$CHART" = "postgres" ]; then
+            # postgres uses its own version from Chart.yaml
+            CHART_VERSION=$(yq '.version' "${CHART_DIR}/Chart.yaml")
+            helm package "${CHART_DIR}" \
+              --version "${CHART_VERSION}" \
+              --destination ./packages
+          else
+            helm package "${CHART_DIR}" \
+              --version ${{ needs.detect-charts.outputs.version }} \
+              --destination ./packages
+          fi
 
       - name: Upload chart artifact
         uses: actions/upload-artifact@v4
@@ -143,6 +160,7 @@ jobs:
             helm install api ./costrict-web-api-${{ needs.detect-charts.outputs.version }}.tgz
             helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz
             helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz
+            helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -171,4 +189,5 @@ jobs:
           echo "helm install api ./costrict-web-api-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

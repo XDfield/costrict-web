@@ -1,0 +1,73 @@
+# Default values for costrict-web-postgres
+
+replicaCount: 1
+
+image:
+  repository: pgvector/pgvector
+  pullPolicy: IfNotPresent
+  tag: "pg16"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 5432
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# PostgreSQL configuration
+auth:
+  username: costrict
+  password: costrict_password
+  database: costrict_db
+  existingSecret: ""
+
+# Init SQL executed on first startup
+initSQL: |
+  CREATE EXTENSION IF NOT EXISTS vector;
+  GRANT ALL PRIVILEGES ON DATABASE costrict_db TO costrict;
+
+# Persistence
+persistence:
+  enabled: true
+  storageClass: "managed-nfs-storage"
+  accessModes:
+    - ReadWriteMany
+  size: 10Gi
+  existingClaim: ""
+
+# Health checks
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 15
+  periodSeconds: 10
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 5
