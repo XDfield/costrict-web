@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image:
-  repository: zgsm/costrict-web-worker
+  repository: ghcr.io/xdfield/costrict-web-worker
   pullPolicy: IfNotPresent
   tag: "latest"
 
