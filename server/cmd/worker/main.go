@@ -18,6 +18,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/worker"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 func main() {
@@ -48,6 +49,10 @@ func main() {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
 
+	// Disable GORM logging during AutoMigrate to reduce log noise
+	originalLogger := db.Logger
+	db = db.Session(&gorm.Session{Logger: db.Logger.LogMode(gormlogger.Silent)})
+
 	err = db.AutoMigrate(
 		&models.SyncLog{},
 		&models.SyncJob{},
@@ -61,6 +66,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
+
+	// Re-enable GORM logging after migration
+	_ = db.Session(&gorm.Session{Logger: originalLogger})
 
 	if err := runPostMigrations(db); err != nil {
 		log.Fatalf("Failed to run post-migrations: %v", err)
@@ -82,7 +90,7 @@ func main() {
 		concurrency = 3
 	}
 
-	pollInterval := 5 * time.Second
+	pollInterval := 30 * time.Second
 	if v := os.Getenv("WORKER_POLL_INTERVAL_SECONDS"); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
 			pollInterval = time.Duration(secs) * time.Second
@@ -125,7 +133,7 @@ func main() {
 			DB:           db,
 			ScanService:  scanSvc,
 			Concurrency:  scanConcurrency,
-			PollInterval: 3 * time.Second,
+			PollInterval: 30 * time.Second,
 		}
 		scanPool.Start()
 		log.Printf("Scan worker pool started with %d workers", scanConcurrency)

@@ -8,6 +8,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -30,7 +31,8 @@ func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*go
 	gormLogger := logger.GormLoggerConsoleWarn(slowThreshold)
 
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
-		Logger: gormLogger,
+		Logger:         gormLogger.LogMode(gormlogger.Silent),
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)

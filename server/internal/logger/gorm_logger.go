@@ -160,6 +160,11 @@ func (g *gormAdapterWarnConsole) Trace(ctx context.Context, begin time.Time, fc 
 		return
 	}
 
+	// Skip logging queries that return 0 rows (usually polling queries)
+	if rows == 0 {
+		return
+	}
+
 	// INFO → file only (console core is at WARN, so this is suppressed there).
 	getSugar().Infof("[gorm] elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 }
