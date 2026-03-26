@@ -23,13 +23,18 @@ import (
 func main() {
 	// Initialise structured logging with daily rotation and 7-day retention.
 	// Worker uses a "worker" file prefix to separate logs from the API server:
-	//   logs/worker-app.log   – all worker messages
+	//   logs/worker-app.log   – all worker messages (DEBUG+), including full SQL
 	//   logs/worker-error.log – worker errors with stack traces
+	//
+	// Console is intentionally set to WARN so routine SQL statements carrying
+	// large "content" blobs (skill text, MCP configs) are suppressed from stdout.
+	// Full SQL is always available in worker-app.log for post-mortem debugging.
 	logger.Init(logger.Config{
-		Dir:        "./logs",
-		FilePrefix: "worker",
-		MaxAgeDays: 7,
-		Console:    true,
+		Dir:          "./logs",
+		FilePrefix:   "worker",
+		MaxAgeDays:   7,
+		Console:      true,
+		ConsoleLevel: "warn",
 	})
 
 	cfg := config.Load()
