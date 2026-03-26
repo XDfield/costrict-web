@@ -7,5 +7,4 @@ WHERE NOT EXISTS (
 );
 
 -- +goose Down
-DELETE FROM system_notification_channels
-WHERE type = 'wecom' AND name = '企业微信' AND created_by = 'admin';
+-- no-op: seed data is not removed on rollback
