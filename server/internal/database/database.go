@@ -3,15 +3,35 @@ package database
 import (
 	"fmt"
 	"log"
+	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
 
+// Initialize opens a PostgreSQL connection with a custom GORM logger that:
+//   - writes all SQL statements (including full content blobs) to the log file
+//     for post-mortem debugging, and
+//   - only prints WARN / ERROR messages to the console, keeping the terminal
+//     clean.
+//
+// slowThreshold controls when a query is flagged as slow on the console.
+// Pass 0 to use the default (200 ms).
 func Initialize(databaseURL string) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
+	return InitializeWithOptions(databaseURL, 0)
+}
+
+// InitializeWithOptions is like Initialize but lets the caller tune the slow-
+// query threshold shown on the console.
+func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*gorm.DB, error) {
+	gormLogger := logger.GormLoggerConsoleWarn(slowThreshold)
+
+	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
+		Logger: gormLogger,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}

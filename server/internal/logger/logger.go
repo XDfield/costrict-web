@@ -34,12 +34,13 @@ var (
 
 // Config controls log output behaviour.
 type Config struct {
-	Dir        string // directory for log files, default "./logs"
-	FilePrefix string // prefix for log file names, e.g. "worker" => worker-app.log; empty => app.log
-	MaxSizeMB  int   // max size in MB before rotation, default 100
-	MaxAgeDays int   // max days to keep old files, default 7
-	MaxBackups int   // max number of old files to keep, default 10
-	Console    bool  // also write to stdout/stderr, default true
+	Dir          string // directory for log files, default "./logs"
+	FilePrefix   string // prefix for log file names, e.g. "worker" => worker-app.log; empty => app.log
+	MaxSizeMB    int    // max size in MB before rotation, default 100
+	MaxAgeDays   int    // max days to keep old files, default 7
+	MaxBackups   int    // max number of old files to keep, default 10
+	Console      bool   // also write to stdout/stderr, default true
+	ConsoleLevel string // minimum log level for console output: "debug"(default)|"info"|"warn"|"error"
 }
 
 // Init initialises the global loggers. It MUST be called once early in main().
@@ -150,11 +151,12 @@ func Init(cfg Config) {
 
 	// Console output (optional)
 	if cfg.Console {
+		consoleMinLevel := resolveConsoleLevel(cfg.ConsoleLevel)
 		consoleEncoder := zapcore.NewConsoleEncoder(consoleEncoderCfg)
 		consoleCore := zapcore.NewCore(
 			consoleEncoder,
 			zapcore.AddSync(os.Stdout),
-			zap.DebugLevel,
+			consoleMinLevel,
 		)
 		cores = append(cores, consoleCore)
 
@@ -238,6 +240,23 @@ func GinErrorWriter() io.Writer {
 }
 
 // ---------- internal ----------
+
+// resolveConsoleLevel converts a string level name to a zapcore.Level.
+// Accepted values (case-insensitive): "debug", "info", "warn", "error".
+// Defaults to DEBUG so that existing callers that omit ConsoleLevel keep the
+// previous behaviour.
+func resolveConsoleLevel(s string) zapcore.Level {
+	switch s {
+	case "info", "INFO":
+		return zap.InfoLevel
+	case "warn", "WARN":
+		return zap.WarnLevel
+	case "error", "ERROR":
+		return zap.ErrorLevel
+	default:
+		return zap.DebugLevel
+	}
+}
 
 func getSugar() *zap.SugaredLogger {
 	if sugar == nil {
