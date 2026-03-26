@@ -19,11 +19,11 @@ serviceAccount:
 podAnnotations: {}
 
 podSecurityContext:
-  fsGroup: 0
+  fsGroup: 1000
 
 securityContext:
-  runAsNonRoot: false
-  runAsUser: 0
+  runAsNonRoot: true
+  runAsUser: 1000
   allowPrivilegeEscalation: false
   capabilities:
     drop:
@@ -105,3 +105,8 @@ readinessProbe:
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
+
+# Runtime log directory for applications that write to ./logs
+logs:
+  enabled: true
+  mountPath: /app/logs

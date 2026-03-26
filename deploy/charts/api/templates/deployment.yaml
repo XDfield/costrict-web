@@ -100,16 +100,30 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.persistence.enabled }}
+          {{- if or .Values.persistence.enabled .Values.logs.enabled }}
           volumeMounts:
+            {{- if .Values.persistence.enabled }}
             - name: artifacts-storage
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if .Values.logs.enabled }}
+            - name: app-logs
+              mountPath: {{ .Values.logs.mountPath }}
+            {{- end }}
           {{- end }}
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: artifacts-storage
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | default (printf "%s-artifacts" (include "api.fullname" .)) }}
+        {{- if .Values.logs.enabled }}
+        - name: app-logs
+          emptyDir: {}
+        {{- end }}
+      {{- else if .Values.logs.enabled }}
+      volumes:
+        - name: app-logs
+          emptyDir: {}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

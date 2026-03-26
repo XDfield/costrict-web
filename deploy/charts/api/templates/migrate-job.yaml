@@ -35,4 +35,14 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if .Values.logs.enabled }}
+          volumeMounts:
+            - name: app-logs
+              mountPath: {{ .Values.logs.mountPath }}
+          {{- end }}
+      {{- if .Values.logs.enabled }}
+      volumes:
+        - name: app-logs
+          emptyDir: {}
+      {{- end }}
 {{- end }}
