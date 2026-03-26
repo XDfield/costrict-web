@@ -38,3 +38,13 @@ func enablePgVector(db *gorm.DB) error {
 func GetDB() *gorm.DB {
 	return DB
 }
+
+// ILike returns the case-insensitive LIKE operator appropriate for the
+// current database dialect: "ILIKE" for PostgreSQL, "LIKE" for SQLite
+// (SQLite LIKE is already case-insensitive for ASCII by default).
+func ILike(db *gorm.DB) string {
+	if db.Dialector.Name() == "postgres" {
+		return "ILIKE"
+	}
+	return "LIKE"
+}

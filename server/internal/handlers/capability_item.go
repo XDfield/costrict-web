@@ -215,94 +215,11 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 	return &item, nil
 }
 
-// ItemWithAuthor represents a capability item with author information
-type ItemWithAuthor struct {
+// ItemResponse wraps a CapabilityItem with optional repo visibility,
+// keeping a flat JSON structure compatible with the previous ItemWithAuthor.
+type ItemResponse struct {
 	models.CapabilityItem
-	CreatedByName  string `json:"createdByName"`
-	UpdatedByName  string `json:"updatedByName"`
 	RepoVisibility string `json:"repoVisibility,omitempty"`
-}
-
-// populateItemAuthors fetches user information for items and populates author names
-func populateItemAuthors(c *gin.Context, items []models.CapabilityItem) []ItemWithAuthor {
-	if CasdoorClient == nil || len(items) == 0 {
-		// Return items without author names if Casdoor is not configured
-		result := make([]ItemWithAuthor, len(items))
-		for i, item := range items {
-			result[i] = ItemWithAuthor{CapabilityItem: item}
-		}
-		return result
-	}
-
-	// Collect unique user IDs
-	userIDSet := make(map[string]bool)
-	for _, item := range items {
-		if item.CreatedBy != "" {
-			userIDSet[item.CreatedBy] = true
-		}
-		if item.UpdatedBy != "" {
-			userIDSet[item.UpdatedBy] = true
-		}
-	}
-
-	if len(userIDSet) == 0 {
-		result := make([]ItemWithAuthor, len(items))
-		for i, item := range items {
-			result[i] = ItemWithAuthor{CapabilityItem: item}
-		}
-		return result
-	}
-
-	// Convert set to slice
-	userIDs := make([]string, 0, len(userIDSet))
-	for id := range userIDSet {
-		userIDs = append(userIDs, id)
-	}
-
-	// Get token from context
-	token, _ := c.Get("accessToken")
-	tokenStr, _ := token.(string)
-
-	// Debug logging
-	log.Printf("[DEBUG] populateItemAuthors: userIDs=%v, token present=%v", userIDs, tokenStr != "")
-
-	// Fetch user information
-	userMap, err := CasdoorClient.GetUsersByIDs(tokenStr, userIDs)
-	if err != nil {
-		log.Printf("failed to fetch users: %v", err)
-		// Return items without author names on error
-		result := make([]ItemWithAuthor, len(items))
-		for i, item := range items {
-			result[i] = ItemWithAuthor{CapabilityItem: item}
-		}
-		return result
-	}
-
-	log.Printf("[DEBUG] populateItemAuthors: returned %d users from Casdoor", len(userMap))
-
-	// Populate author names
-	result := make([]ItemWithAuthor, len(items))
-	for i, item := range items {
-		itemWithAuthor := ItemWithAuthor{CapabilityItem: item}
-
-		if user, ok := userMap[item.CreatedBy]; ok {
-			itemWithAuthor.CreatedByName = user.Name
-			if user.PreferredUsername != "" {
-				itemWithAuthor.CreatedByName = user.PreferredUsername
-			}
-		}
-
-		if user, ok := userMap[item.UpdatedBy]; ok {
-			itemWithAuthor.UpdatedByName = user.Name
-			if user.PreferredUsername != "" {
-				itemWithAuthor.UpdatedByName = user.PreferredUsername
-			}
-		}
-
-		result[i] = itemWithAuthor
-	}
-
-	return result
 }
 
 // ListItems godoc
@@ -316,7 +233,7 @@ func populateItemAuthors(c *gin.Context, items []models.CapabilityItem) []ItemWi
 // @Param        search    query     string  false  "Search by name or description"
 // @Param        page      query     int     false  "Page number (default: 1)"
 // @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
-// @Success      200       {object}  object{items=[]ItemWithAuthor,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Success      200       {object}  object{items=[]models.CapabilityItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500       {object}  object{error=string}
 // @Router       /registries/{id}/items [get]
 func ListItems(c *gin.Context) {
@@ -331,7 +248,8 @@ func ListItems(c *gin.Context) {
 		query = query.Where("status = ?", status)
 	}
 	if search := c.Query("search"); search != "" {
-		query = query.Where("name LIKE ? OR description LIKE ?", "%"+search+"%", "%"+search+"%")
+		like := database.ILike(db)
+		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -351,8 +269,7 @@ func ListItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
-	itemsWithAuthors := populateItemAuthors(c, items)
-	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
 }
 
 // CreateItem godoc
@@ -434,7 +351,7 @@ func CreateItem(c *gin.Context) {
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  ItemWithAuthor
+// @Success      200  {object}  ItemResponse
 // @Failure      404  {object}  object{error=string}
 // @Router       /items/{id} [get]
 func GetItem(c *gin.Context) {
@@ -446,9 +363,7 @@ func GetItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	itemsWithAuthor := populateItemAuthors(c, []models.CapabilityItem{item})
-	resp := itemsWithAuthor[0]
-
+	resp := ItemResponse{CapabilityItem: item}
 	// Populate repo visibility from the parent repository
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
@@ -964,7 +879,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
-// @Success      200         {object}  object{items=[]ItemWithAuthor,total=integer,page=integer,pageSize=integer,hasMore=boolean}
+// @Success      200         {object}  object{items=[]object,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
 // @Router       /items [get]
 func ListAllItems(c *gin.Context) {
@@ -983,7 +898,7 @@ func ListAllItems(c *gin.Context) {
 
 	registryIDs := buildVisibleRegistryIDs(db, uid)
 	if len(registryIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"items": []ItemWithAuthor{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
+		c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
 		return
 	}
 
@@ -998,7 +913,8 @@ func ListAllItems(c *gin.Context) {
 		query = query.Where("status = 'active'")
 	}
 	if search := c.Query("search"); search != "" {
-		query = query.Where("name ILIKE ? OR description ILIKE ?", "%"+search+"%", "%"+search+"%")
+		like := database.ILike(db)
+		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
 	}
 	if category := c.Query("category"); category != "" {
 		query = query.Where("category = ?", category)
@@ -1016,8 +932,45 @@ func ListAllItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
-	itemsWithAuthors := populateItemAuthors(c, items)
-	c.JSON(http.StatusOK, gin.H{"items": itemsWithAuthors, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
+
+	// Collect unique repo IDs from preloaded registries and batch-fetch repo names
+	repoIDSet := make(map[string]bool)
+	for _, item := range items {
+		if item.Registry != nil && item.Registry.RepoID != "" {
+			repoIDSet[item.Registry.RepoID] = true
+		}
+	}
+	repoNameMap := make(map[string]string)
+	if len(repoIDSet) > 0 {
+		repoIDs := make([]string, 0, len(repoIDSet))
+		for id := range repoIDSet {
+			if id != "public" {
+				repoIDs = append(repoIDs, id)
+			}
+		}
+		if len(repoIDs) > 0 {
+			var repos []models.Repository
+			db.Select("id, name").Where("id IN ?", repoIDs).Find(&repos)
+			for _, repo := range repos {
+				repoNameMap[repo.ID] = repo.Name
+			}
+		}
+	}
+
+	// Populate repoName into each item
+	type ItemWithRepo struct {
+		models.CapabilityItem
+		RepoName string `json:"repoName,omitempty"`
+	}
+	out := make([]ItemWithRepo, len(items))
+	for i, item := range items {
+		out[i] = ItemWithRepo{CapabilityItem: item}
+		if item.Registry != nil {
+			out[i].RepoName = repoNameMap[item.Registry.RepoID]
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
 }
 
 // CreateItemDirect godoc

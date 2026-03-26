@@ -191,17 +191,18 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 	// Build hybrid search query combining semantic and keyword matching
 	var items []SearchResultItem
 
-	sql := `
+	like := database.ILike(s.db)
+	sql := fmt.Sprintf(`
 		SELECT id, registry_id, slug, item_type, name, description, category, version,
 		       content, metadata, source_path, source_sha, install_count,
 		       status, created_by, updated_by, created_at, updated_at,
 		       embedding_updated_at, experience_score,
 		       COALESCE(1 - (embedding <=> ?), 0) * 0.7 +
-		       CASE WHEN LOWER(name) LIKE LOWER(?) THEN 0.2 ELSE 0 END +
-		       CASE WHEN LOWER(description) LIKE LOWER(?) THEN 0.1 ELSE 0 END as score
+		       CASE WHEN name %s ? THEN 0.2 ELSE 0 END +
+		       CASE WHEN description %s ? THEN 0.1 ELSE 0 END as score
 		FROM capability_items
 		WHERE status = 'active'
-	`
+	`, like, like)
 
 	searchPattern := "%" + req.Query + "%"
 	args := []interface{}{vectorStr, searchPattern, searchPattern}
@@ -257,7 +258,7 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 	if len(req.RegistryIDs) > 0 {
 		countQuery = countQuery.Where("registry_id IN ?", req.RegistryIDs)
 	}
-	countQuery = countQuery.Where("LOWER(name) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?)", searchPattern, searchPattern)
+	countQuery = countQuery.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), searchPattern, searchPattern)
 	countQuery.Count(&total)
 
 	return &SearchResult{
@@ -278,8 +279,9 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 
 	query := s.db.Model(&models.CapabilityItem{}).Where("status = ?", "active")
 
+	like := database.ILike(s.db)
 	searchPattern := "%" + req.Query + "%"
-	query = query.Where("LOWER(name) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?) OR LOWER(content) LIKE LOWER(?)",
+	query = query.Where(fmt.Sprintf("name %s ? OR description %s ? OR content %s ?", like, like, like),
 		searchPattern, searchPattern, searchPattern)
 
 	if len(req.Types) > 0 {
