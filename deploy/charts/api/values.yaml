@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image:
-  repository: zgsm/costrict-web-api
+  repository: ghcr.io/xdfield/costrict-web-api
   pullPolicy: IfNotPresent
   tag: "latest"
 
