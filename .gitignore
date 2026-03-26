@@ -59,10 +59,12 @@ server/coverage
 server/coverage_handlers
 server/coverage_handlers.out
 server/*.out
+server/logs/
 
 gateway/bin/
 gateway/*.exe
 gateway/*.exe~
+gateway/logs/
 
 # Submodule
 web/
