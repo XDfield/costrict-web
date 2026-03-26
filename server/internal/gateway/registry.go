@@ -2,8 +2,9 @@ package gateway
 
 import (
 	"fmt"
-	"log"
 	"time"
+
+	"github.com/costrict/costrict-web/server/internal/logger"
 )
 
 type GatewayRegistry struct {
@@ -15,7 +16,7 @@ func NewGatewayRegistry(store Store) *GatewayRegistry {
 	initVal := time.Now().UnixMilli()
 	epoch, err := store.GetOrInitEpoch(initVal)
 	if err != nil {
-		log.Printf("[GatewayRegistry] failed to get epoch from store, using local: %v", err)
+		logger.Warn("[GatewayRegistry] failed to get epoch from store, using local: %v", err)
 		epoch = initVal
 	}
 	r := &GatewayRegistry{store: store, epoch: epoch}
@@ -78,13 +79,13 @@ func (r *GatewayRegistry) Allocate(region string) (*GatewayInfo, error) {
 
 func (r *GatewayRegistry) BindDevice(deviceID, gatewayID string) {
 	if err := r.store.BindDevice(deviceID, gatewayID); err != nil {
-		log.Printf("[GatewayRegistry] BindDevice failed: %v", err)
+		logger.Error("[GatewayRegistry] BindDevice failed: %v", err)
 	}
 }
 
 func (r *GatewayRegistry) UnbindDevice(deviceID string) {
 	if err := r.store.UnbindDevice(deviceID); err != nil {
-		log.Printf("[GatewayRegistry] UnbindDevice failed: %v", err)
+		logger.Error("[GatewayRegistry] UnbindDevice failed: %v", err)
 	}
 }
 
@@ -130,7 +131,7 @@ func (r *GatewayRegistry) doCleanup() {
 	now := time.Now().UnixMilli()
 	for _, gw := range gateways {
 		if now-gw.LastHeartbeat > GatewayHeartbeatTimeoutMs {
-			log.Printf("[GatewayRegistry] removing timed-out gateway %s", gw.ID)
+			logger.Warn("[GatewayRegistry] removing timed-out gateway %s", gw.ID)
 			_ = r.store.RemoveGateway(gw.ID)
 		}
 	}

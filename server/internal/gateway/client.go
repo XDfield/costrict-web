@@ -6,12 +6,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/costrict/costrict-web/server/internal/logger"
 )
 
 type Client struct {
@@ -60,7 +61,7 @@ func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Reque
 
 	resp, err := c.httpClient.Do(proxyReq)
 	if err != nil {
-		log.Printf("[Gateway] proxy failed: %s %s => %v", r.Method, target, err)
+		logger.Error("[Gateway] proxy failed: %s %s => %v", r.Method, target, err)
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"error":"gateway unreachable, please retry"}`))
@@ -150,7 +151,7 @@ func (c *Client) proxyWebSocket(target string, r *http.Request, w http.ResponseW
 
 	conn, err := net.DialTimeout("tcp", host, 10*time.Second)
 	if err != nil {
-		log.Printf("[Gateway] websocket proxy failed: %s %s => %v", r.Method, target, err)
+		logger.Error("[Gateway] websocket proxy failed: %s %s => %v", r.Method, target, err)
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"error":"gateway unreachable, please retry"}`))

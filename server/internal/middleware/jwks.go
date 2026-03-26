@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/costrict/costrict-web/server/internal/logger"
 )
 
 // JWKSProvider fetches and caches JSON Web Key Sets from Casdoor's OIDC endpoint.
@@ -93,12 +94,12 @@ func (p *JWKSProvider) GetKey(kid string) (*rsa.PublicKey, error) {
 // Preload fetches keys eagerly at startup. Non-fatal: logs a warning on failure.
 func (p *JWKSProvider) Preload() {
 	if err := p.refresh(); err != nil {
-		log.Printf("[JWKS] WARNING: initial key fetch failed (JWT verification will fall back to Casdoor API): %v", err)
+		logger.Warn("[JWKS] initial key fetch failed (JWT verification will fall back to Casdoor API): %v", err)
 	} else {
 		p.mu.RLock()
 		count := len(p.keys)
 		p.mu.RUnlock()
-		log.Printf("[JWKS] loaded %d signing key(s) from %s", count, p.jwksURL)
+		logger.Info("[JWKS] loaded %d signing key(s) from %s", count, p.jwksURL)
 	}
 }
 
@@ -135,7 +136,7 @@ func (p *JWKSProvider) refresh() error {
 		}
 		pub, err := parseRSAPublicKey(k)
 		if err != nil {
-			log.Printf("[JWKS] skip key %s: %v", k.Kid, err)
+			logger.Warn("[JWKS] skip key %s: %v", k.Kid, err)
 			continue
 		}
 		kid := k.Kid

@@ -3,10 +3,10 @@ package middleware
 import (
 	"bytes"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -82,13 +82,34 @@ func ErrorLogger() gin.HandlerFunc {
 
 		status := c.Writer.Status()
 		if status >= http.StatusBadRequest {
-			log.Printf("[ERROR] %s %s => %d | body: %s | errors: %s",
+			msg := "%s %s => %d | body: %s | errors: %s"
+			args := []any{
 				c.Request.Method,
 				c.Request.RequestURI,
 				status,
 				string(bodyBytes),
 				c.Errors.String(),
-			)
+			}
+
+			// 5xx = server fault → Error (with stack trace in error.log).
+			// 4xx = client fault → Warn only (no stack trace; the middleware
+			// call chain provides zero useful context).
+			if status >= http.StatusInternalServerError {
+				logger.Error(msg, args...)
+			} else {
+				logger.Warn(msg, args...)
+			}
 		}
 	}
+}
+
+// isDeviceProxyPath checks whether the URI is a device proxy request
+// (pattern: /cloud/device/<deviceID>/proxy/...).
+func isDeviceProxyPath(uri string) bool {
+	// Strip query string before matching.
+	path := uri
+	if idx := strings.Index(uri, "?"); idx != -1 {
+		path = uri[:idx]
+	}
+	return strings.HasPrefix(path, "/cloud/device/") && strings.Contains(path, "/proxy/")
 }

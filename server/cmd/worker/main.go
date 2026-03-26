@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/llm"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/worker"
@@ -20,6 +21,17 @@ import (
 )
 
 func main() {
+	// Initialise structured logging with daily rotation and 7-day retention.
+	// Worker uses a "worker" file prefix to separate logs from the API server:
+	//   logs/worker-app.log   – all worker messages
+	//   logs/worker-error.log – worker errors with stack traces
+	logger.Init(logger.Config{
+		Dir:        "./logs",
+		FilePrefix: "worker",
+		MaxAgeDays: 7,
+		Console:    true,
+	})
+
 	cfg := config.Load()
 
 	db, err := database.Initialize(cfg.DatabaseURL)

@@ -1,10 +1,10 @@
 package cloud
 
 import (
-	"log"
 	"sync"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/google/uuid"
 )
 
@@ -147,7 +147,7 @@ func (m *ConnectionManager) RouteEvent(event Event, targetConnIDs []string) {
 		case conn.Send <- event:
 			conn.LastActivity = time.Now().UnixMilli()
 		default:
-			log.Printf("[CloudSSE] WARN: connection %s send buffer full, dropping event %s", conn.ID, event.Type)
+			logger.Warn("[CloudSSE] connection %s send buffer full, dropping event %s", conn.ID, event.Type)
 		}
 	}
 }
@@ -225,7 +225,7 @@ func (m *ConnectionManager) startCleanup() {
 		m.mu.RUnlock()
 
 		for _, connID := range stale {
-			log.Printf("[CloudSSE] closing timed-out connection %s", connID)
+			logger.Warn("[CloudSSE] closing timed-out connection %s", connID)
 			m.CloseConnection(connID)
 		}
 	}

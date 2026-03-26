@@ -31,6 +31,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
@@ -44,6 +45,19 @@ import (
 )
 
 func main() {
+	// Initialise structured logging with daily rotation and 7-day retention.
+	// After this call every log.Printf in the codebase writes to logs/app.log,
+	// and logger.Error() additionally writes to logs/error.log with a stack trace.
+	logger.Init(logger.Config{
+		Dir:        "./logs",
+		MaxAgeDays: 7,
+		Console:    true,
+	})
+
+	// Redirect Gin's built-in output to our log files.
+	gin.DefaultWriter = logger.GinWriter()
+	gin.DefaultErrorWriter = logger.GinErrorWriter()
+
 	cfg := config.Load()
 
 	db, err := database.Initialize(cfg.DatabaseURL)

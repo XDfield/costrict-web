@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v4"
 )
@@ -21,7 +21,7 @@ const InternalSecretHeader = "X-Internal-Secret"
 func InternalAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if secret == "" {
-			log.Printf("[InternalAuth] INTERNAL_SECRET not configured, rejecting request")
+			logger.Error("[InternalAuth] INTERNAL_SECRET not configured, rejecting request")
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Internal API not available"})
 			return
 		}
@@ -61,7 +61,7 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			// Fallback to Casdoor API verification
 			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
 			if err != nil {
-				log.Printf("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
+				logger.Warn("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
 				c.Next()
 				return
 			}
@@ -87,7 +87,7 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			// Fallback to Casdoor API verification
 			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
 			if err != nil {
-				log.Printf("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
+				logger.Warn("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 				return
 			}
@@ -183,7 +183,7 @@ func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[fetchUserInfo] casdoor returned %d: %s, url=%s", resp.StatusCode, string(body), url)
+		logger.Warn("[fetchUserInfo] casdoor returned %d: %s, url=%s", resp.StatusCode, string(body), url)
 		return nil, fmt.Errorf("casdoor returned status %d", resp.StatusCode)
 	}
 
