@@ -1,0 +1,9 @@
+apiVersion: v2
+name: costrict-web-postgres
+description: PostgreSQL with pgvector extension for Costrict Web
+type: application
+version: 0.1.0
+appVersion: "pg16"
+maintainers:
+  - name: costrict
+    url: https://github.com/costrict
