@@ -20,7 +20,8 @@ import (
 // @Success      201   {object}  object{device=object,token=string}
 // @Failure      400   {object}  object{error=string}
 // @Failure      401   {object}  object{error=string}
-// @Failure      409   {object}  object{error=string,deviceId=string}
+// @Failure      409   {object}  object{error=string,device=object,token=string}  "Same user: returns existing device and token"
+// @Failure      409   {object}  object{error=string,deviceId=string}             "Different user: unauthorized device registration"
 // @Failure      500   {object}  object{error=string}
 // @Router       /devices [post]
 func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
@@ -39,9 +40,18 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 
 		device, token, err := svc.RegisterDevice(userID, req)
 		if err != nil {
+			if errors.Is(err, services.ErrDeviceOwnedByCaller) {
+				// Same user re-registering: return existing device info with token
+				c.JSON(http.StatusConflict, gin.H{
+					"error":  "device already registered",
+					"device": device,
+					"token":  token,
+				})
+				return
+			}
 			if errors.Is(err, services.ErrDeviceAlreadyRegistered) {
 				c.JSON(http.StatusConflict, gin.H{
-					"error":    "device already registered",
+					"error":    "unauthorized device registration: device already belongs to another user",
 					"deviceId": req.DeviceID,
 				})
 				return

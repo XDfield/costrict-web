@@ -13,6 +13,7 @@ import (
 
 var (
 	ErrDeviceAlreadyRegistered = errors.New("device already registered")
+	ErrDeviceOwnedByCaller     = errors.New("device already registered by current user")
 	ErrDeviceNotFound          = errors.New("device not found")
 )
 
@@ -56,6 +57,10 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 	var existing models.Device
 	result := s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	if result.Error == nil {
+		if existing.UserID == userID {
+			// Same user re-registering: return existing device with its token
+			return &existing, existing.Token, ErrDeviceOwnedByCaller
+		}
 		return nil, "", ErrDeviceAlreadyRegistered
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
