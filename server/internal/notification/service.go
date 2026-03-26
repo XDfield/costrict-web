@@ -53,13 +53,18 @@ func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID,
 	}()
 }
 
+// getWorkspaceID 根据设备标识符和路径查找工作空间ID。
+// 注意：传入的 deviceID 是 devices.device_id（外部设备标识符），
+// 而 workspaces.device_id 存储的是 devices.id（UUID主键），
+// 因此需要先 JOIN devices 表进行转换，不能直接用 deviceID 匹配 workspaces.device_id。
 func (s *NotificationService) getWorkspaceID(deviceID, path string) (string, error) {
 	var workspaceID string
 	err := s.db.Table("workspace_directories wd").
 		Select("w.id").
 		Joins("JOIN workspaces w ON w.id = wd.workspace_id").
-		Where("wd.path = ? AND w.device_id = ?", path, deviceID).
-		Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL").
+		Joins("JOIN devices d ON d.id::text = w.device_id").
+		Where("wd.path = ? AND d.device_id = ?", path, deviceID).
+		Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL AND d.deleted_at IS NULL").
 		Scan(&workspaceID).Error
 	if err != nil {
 		return "", err

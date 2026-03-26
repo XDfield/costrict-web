@@ -45,11 +45,11 @@ type LLMConfig struct {
 
 // EmbeddingConfig holds configuration for the embedding service
 type EmbeddingConfig struct {
-	Provider    string // openai
-	APIKey      string
-	Model       string // embedding-3
-	BaseURL     string
-	Dimensions  int // 1024 for GLM embedding
+	Provider   string // openai
+	APIKey     string
+	Model      string // embedding-3
+	BaseURL    string
+	Dimensions int // 1024 for GLM embedding
 }
 
 // SearchConfig holds configuration for search functionality
@@ -68,7 +68,7 @@ func Load() *Config {
 		log.Printf("Warning: .env file not found, using environment variables")
 	}
 
-	cloudBaseURL := getEnv("COSTRICT_CLOUD_BASE_URL", "https://app.costrict.ai")
+	cloudBaseURL := getEnv("COSTRICT_CLOUD_BASE_URL", "https://zgsm.sangfor.com/cloud")
 
 	// FRONTEND_URLS defaults to COSTRICT_CLOUD_BASE_URL when not explicitly set.
 	frontendURLs := getEnvSlice("FRONTEND_URLS", []string{cloudBaseURL})
