@@ -875,7 +875,7 @@ func AddRepoRegistry(c *gin.Context) {
 		return
 	}
 
-	userIDVal, _ := c.Get("userID")
+	userIDVal, _ := c.Get(middleware.UserIDKey)
 	ownerID, _ := userIDVal.(string)
 	if ownerID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
