@@ -1,0 +1,123 @@
+# 命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: costrict-web
+---
+# 数据库密码 Secret 正式环境手动替换
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: costrict-web
+type: Opaque
+data:
+  password: Y29zdHJpY3RfcGFzc3dvcmQ=
+  user: Y29zdHJpY3Q=
+  db: Y29zdHJpY3RfZGI=
+---
+# 初始化 SQL
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: costrict-web
+data:
+  init-db.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+    GRANT ALL PRIVILEGES ON DATABASE costrict_db TO costrict;
+---
+# PVC（1Gi 小体积，持久化）
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: costrict-web
+spec:
+  storageClassName: managed-nfs-storage
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Deployment（单实例 + 持久化）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: costrict-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: pgvector/pgvector:pg16
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: db
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: init-sql
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "costrict"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "costrict"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-sql
+        configMap:
+          name: postgres-init-sql
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: costrict-web
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
