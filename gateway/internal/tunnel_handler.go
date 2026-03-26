@@ -1,10 +1,10 @@
 package internal
 
 import (
-	"log"
 	"net/http"
 	"time"
 
+	"github.com/costrict/costrict-web/gateway/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
@@ -29,7 +29,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 
 		_, err := VerifyDeviceToken(cfg.ServerURL, cfg.InternalSecret, deviceID, token)
 		if err != nil {
-			log.Printf("[Gateway] device %s auth failed: %v", deviceID, err)
+			logger.Error("[Gateway] device %s auth failed: %v", deviceID, err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
 			return
 		}
@@ -66,7 +66,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 				}
 				failedHeartbeats++
 				if failedHeartbeats > maxFailedHeartbeat {
-					log.Printf("[Gateway] device %s heartbeat failed %d times, closing connection", deviceID, failedHeartbeats-1)
+					logger.Error("[Gateway] device %s heartbeat failed %d times, closing connection", deviceID, failedHeartbeats-1)
 					session.Close()
 					return
 				}
@@ -74,7 +74,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 				err := ws.WriteMessage(websocket.PingMessage, nil)
 				conn.mu.Unlock()
 				if err != nil {
-					log.Printf("[Gateway] device %s ping write error: %v", deviceID, err)
+					logger.Error("[Gateway] device %s ping write error: %v", deviceID, err)
 					session.Close()
 					return
 				}
@@ -85,7 +85,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 
 		go func() {
 			if err := NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
-				log.Printf("[Gateway] notify online failed for device %s: %v", deviceID, err)
+				logger.Error("[Gateway] notify online failed for device %s: %v", deviceID, err)
 			}
 		}()
 
@@ -94,7 +94,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 		manager.Close(deviceID)
 		go func() {
 			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
-				log.Printf("[Gateway] notify offline failed for device %s: %v", deviceID, err)
+				logger.Error("[Gateway] notify offline failed for device %s: %v", deviceID, err)
 			}
 		}()
 	}

@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+
+	"github.com/costrict/costrict-web/gateway/internal/logger"
 )
 
 const internalSecretHeader = "X-Internal-Secret"
@@ -87,7 +88,7 @@ func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID, secret string) {
 
 	for _, deviceID := range deviceIDs {
 		if err := NotifyOnline(serverURL, gatewayID, deviceID, secret); err != nil {
-			log.Printf("[Gateway] re-notify online failed for device %s: %v", deviceID, err)
+			logger.Error("[Gateway] re-notify online failed for device %s: %v", deviceID, err)
 		}
 	}
 }
@@ -127,7 +128,7 @@ func (m *TunnelManager) NotifyAllOffline(serverURL, gatewayID, secret string) {
 
 	for _, deviceID := range deviceIDs {
 		if err := NotifyOffline(serverURL, gatewayID, deviceID, secret); err != nil {
-			log.Printf("[Gateway] notify offline failed for device %s: %v", deviceID, err)
+			logger.Error("[Gateway] notify offline failed for device %s: %v", deviceID, err)
 		}
 	}
 }

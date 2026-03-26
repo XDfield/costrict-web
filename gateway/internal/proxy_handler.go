@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/gateway/internal/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -76,7 +76,7 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 
 		resp, err := http.ReadResponse(bufio.NewReader(stream), c.Request)
 		if err != nil {
-			log.Printf("[proxy] ReadResponse error for %s %s: %v", c.Request.Method, path, err)
+			logger.Error("[proxy] ReadResponse error for %s %s: %v", c.Request.Method, path, err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response from tunnel"})
 			return
 		}
@@ -146,7 +146,7 @@ func handleWebSocketProxy(c *gin.Context, stream io.ReadWriteCloser, path string
 	bufReader := bufio.NewReader(stream)
 	resp, err := http.ReadResponse(bufReader, c.Request)
 	if err != nil {
-		log.Printf("[proxy] ws ReadResponse error for %s: %v", path, err)
+		logger.Error("[proxy] ws ReadResponse error for %s: %v", path, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read ws upgrade response"})
 		return
 	}
@@ -165,7 +165,7 @@ func handleWebSocketProxy(c *gin.Context, stream io.ReadWriteCloser, path string
 	}
 	conn, bufrw, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("[proxy] hijack error: %v", err)
+		logger.Error("[proxy] hijack error: %v", err)
 		return
 	}
 	defer conn.Close()

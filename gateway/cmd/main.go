@@ -10,9 +10,22 @@ import (
 	"time"
 
 	gw "github.com/costrict/costrict-web/gateway/internal"
+	"github.com/costrict/costrict-web/gateway/internal/logger"
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	// Initialise structured logging with daily rotation and 7-day retention.
+	logger.Init(logger.Config{
+		Dir:        "./logs",
+		MaxAgeDays: 7,
+		Console:    true,
+	})
+
+	// Redirect Gin's built-in output to our log files.
+	gin.DefaultWriter = logger.GinWriter()
+	gin.DefaultErrorWriter = logger.GinErrorWriter()
+
 	cfg := gw.LoadConfig()
 	manager := gw.NewTunnelManager()
 

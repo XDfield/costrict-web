@@ -1,9 +1,9 @@
 package internal
 
 import (
-	"log"
 	"net/http"
 
+	"github.com/costrict/costrict-web/gateway/internal/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,7 +12,7 @@ import (
 func InternalSecretAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if secret == "" {
-			log.Printf("[Gateway] INTERNAL_SECRET not configured, rejecting proxy request")
+			logger.Error("[Gateway] INTERNAL_SECRET not configured, rejecting proxy request")
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "internal API not available"})
 			return
 		}
