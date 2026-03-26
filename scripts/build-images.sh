@@ -9,6 +9,8 @@ set -e
 REGISTRY="zgsm"
 VERSION="${1:-latest}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PLATFORMS=""
+BUILDER_NAME="costrict-multiarch"
 
 # 镜像名称
 GATEWAY_IMAGE="${REGISTRY}/costrict-web-gateway"
@@ -47,11 +49,14 @@ print_help() {
     echo "  --api         仅构建 server-api 镜像"
     echo "  --worker      仅构建 server-worker 镜像"
     echo "  --portal      仅构建 web portal 镜像"
+    echo "  --multi-arch  构建多架构镜像 (linux/amd64,linux/arm64)"
+    echo "  --push        推送镜像到仓库"
     echo ""
     echo "Examples:"
-    echo "  $0                    # 构建所有镜像，版本为 latest"
-    echo "  $0 v1.0.0             # 构建所有镜像，版本为 v1.0.0"
-    echo "  $0 v1.0.0 --gateway   # 仅构建 gateway 镜像，版本为 v1.0.0"
+    echo "  $0                              # 构建所有镜像，版本为 latest"
+    echo "  $0 v1.0.0                       # 构建所有镜像，版本为 v1.0.0"
+    echo "  $0 v1.0.0 --gateway             # 仅构建 gateway 镜像"
+    echo "  $0 v1.0.0 --multi-arch --push   # 构建多架构镜像并推送"
     echo ""
     echo "镜像列表:"
     echo "  ${GATEWAY_IMAGE}:<version>"
@@ -60,35 +65,80 @@ print_help() {
     echo "  ${PORTAL_IMAGE}:<version>"
 }
 
+# 确保 buildx builder 存在（多架构构建需要）
+ensure_buildx_builder() {
+    if [ -n "$PLATFORMS" ]; then
+        if ! docker buildx inspect "$BUILDER_NAME" &>/dev/null; then
+            log_info "Creating buildx builder: $BUILDER_NAME"
+            docker buildx create --name "$BUILDER_NAME" --use --bootstrap
+        else
+            docker buildx use "$BUILDER_NAME"
+        fi
+    fi
+}
+
+# 通用构建函数
+do_build() {
+    local image_name="$1"
+    local context="$2"
+    local dockerfile="$3"
+    local extra_args="${4:-}"
+
+    if [ -n "$PLATFORMS" ]; then
+        local push_flag=""
+        if [ "$PUSH" = "true" ]; then
+            push_flag="--push"
+        else
+            push_flag="--load"
+            # --load 不支持多平台，仅在单平台时使用
+            if [[ "$PLATFORMS" == *","* ]]; then
+                push_flag="--push"
+                log_warn "多架构构建必须配合 --push 使用，已自动启用推送"
+            fi
+        fi
+        docker buildx build \
+            --platform "$PLATFORMS" \
+            -f "$dockerfile" \
+            -t "${image_name}:${VERSION}" \
+            -t "${image_name}:latest" \
+            $extra_args \
+            $push_flag \
+            "$context"
+    else
+        docker build \
+            -f "$dockerfile" \
+            -t "${image_name}:${VERSION}" \
+            -t "${image_name}:latest" \
+            $extra_args \
+            "$context"
+    fi
+}
+
 # 构建 gateway 镜像
 build_gateway() {
     log_info "Building gateway image..."
-    cd "${PROJECT_ROOT}/gateway"
-    docker build -t "${GATEWAY_IMAGE}:${VERSION}" -t "${GATEWAY_IMAGE}:latest" .
+    do_build "${GATEWAY_IMAGE}" "${PROJECT_ROOT}/gateway" "${PROJECT_ROOT}/gateway/Dockerfile"
     log_info "Gateway image built: ${GATEWAY_IMAGE}:${VERSION}"
 }
 
 # 构建 server-api 镜像
 build_api() {
     log_info "Building server-api image..."
-    cd "${PROJECT_ROOT}/server"
-    docker build -f Dockerfile -t "${API_IMAGE}:${VERSION}" -t "${API_IMAGE}:latest" .
+    do_build "${API_IMAGE}" "${PROJECT_ROOT}/server" "${PROJECT_ROOT}/server/Dockerfile"
     log_info "Server-api image built: ${API_IMAGE}:${VERSION}"
 }
 
 # 构建 server-worker 镜像
 build_worker() {
     log_info "Building server-worker image..."
-    cd "${PROJECT_ROOT}/server"
-    docker build -f Dockerfile.worker -t "${WORKER_IMAGE}:${VERSION}" -t "${WORKER_IMAGE}:latest" .
+    do_build "${WORKER_IMAGE}" "${PROJECT_ROOT}/server" "${PROJECT_ROOT}/server/Dockerfile.worker"
     log_info "Server-worker image built: ${WORKER_IMAGE}:${VERSION}"
 }
 
 # 构建 web portal 镜像
 build_portal() {
     log_info "Building web portal image..."
-    cd "${PROJECT_ROOT}/web"
-    docker build -t "${PORTAL_IMAGE}:${VERSION}" -t "${PORTAL_IMAGE}:latest" .
+    do_build "${PORTAL_IMAGE}" "${PROJECT_ROOT}/web" "${PROJECT_ROOT}/web/Dockerfile"
     log_info "Web portal image built: ${PORTAL_IMAGE}:${VERSION}"
 }
 
@@ -126,6 +176,7 @@ push_images() {
 # 主函数
 main() {
     local build_target="all"
+    PUSH="false"
 
     # 解析参数
     while [[ $# -gt 0 ]]; do
@@ -150,9 +201,13 @@ main() {
                 build_target="portal"
                 shift
                 ;;
+            --multi-arch)
+                PLATFORMS="linux/amd64,linux/arm64"
+                shift
+                ;;
             --push)
-                push_images
-                exit 0
+                PUSH="true"
+                shift
                 ;;
             *)
                 VERSION="$1"
@@ -165,6 +220,15 @@ main() {
     if ! command -v docker &> /dev/null; then
         log_error "Docker is not installed or not in PATH"
         exit 1
+    fi
+
+    # 多架构构建需要 buildx
+    if [ -n "$PLATFORMS" ]; then
+        if ! docker buildx version &> /dev/null; then
+            log_error "Docker Buildx is required for multi-arch builds. Please install it first."
+            exit 1
+        fi
+        ensure_buildx_builder
     fi
 
     # 执行构建
@@ -185,6 +249,11 @@ main() {
             build_all
             ;;
     esac
+
+    # 推送镜像（非多架构模式下的独立推送）
+    if [ "$PUSH" = "true" ] && [ -z "$PLATFORMS" ]; then
+        push_images
+    fi
 }
 
 main "$@"

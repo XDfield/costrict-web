@@ -1,9 +1,10 @@
-# Build stage
-FROM golang:1.25-alpine AS builder
+# Build stage - use BUILDPLATFORM for native execution, cross-compile via GOARCH
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # Set proxy for build
 ARG HTTPS_PROXY
 ARG HTTP_PROXY
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -21,9 +22,9 @@ RUN go mod download
 # Copy all source code (including pre-generated docs)
 COPY . .
 
-# Build application
-RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/api
-RUN CGO_ENABLED=0 GOOS=linux go build -o migrate ./cmd/migrate
+# Build application - cross-compile for target architecture
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o server ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o migrate ./cmd/migrate
 
 # Final stage
 FROM alpine:latest
