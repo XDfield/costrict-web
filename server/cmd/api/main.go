@@ -178,6 +178,9 @@ func main() {
 		api.GET("/scan-results/:id", handlers.GetScanResult)
 		api.GET("/artifacts/:id/download", handlers.DownloadArtifact)
 
+		// User name resolution (public, results cached in memory)
+		api.GET("/users/names", handlers.GetUserNames)
+
 		// Marketplace browse (public)
 		marketplace := api.Group("/marketplace")
 		{
