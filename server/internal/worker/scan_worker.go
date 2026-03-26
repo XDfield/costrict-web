@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"gorm.io/gorm"
@@ -96,6 +97,10 @@ func (p *ScanWorkerPool) processOne() {
 		job.ItemRevision,
 		job.TriggerType,
 	)
+	if scanErr != nil {
+		logger.Error("scan job failed jobID=%s itemID=%s revision=%d err=%v",
+			job.ID, job.ItemID, job.ItemRevision, scanErr)
+	}
 	p.finalizeJob(&job, scanResult, scanErr)
 }
 
@@ -108,13 +113,18 @@ func (p *ScanWorkerPool) finalizeJob(job *models.ScanJob, result *models.Securit
 		updates["retry_count"] = job.RetryCount + 1
 		updates["scheduled_at"] = time.Now().Add(backoff)
 		updates["last_error"] = err.Error()
+		logger.Warn("scan job will retry jobID=%s itemID=%s attempt=%d/%d backoff=%s err=%v",
+			job.ID, job.ItemID, job.RetryCount+1, job.MaxAttempts, backoff, err)
 	} else if err != nil {
 		updates["status"] = "failed"
 		updates["last_error"] = err.Error()
+		logger.Error("scan job permanently failed jobID=%s itemID=%s err=%v", job.ID, job.ItemID, err)
 	} else {
 		updates["status"] = "success"
 		if result != nil {
 			updates["scan_result_id"] = result.ID
+			logger.Info("scan job succeeded jobID=%s itemID=%s scanID=%s verdict=%s",
+				job.ID, job.ItemID, result.ID, result.Verdict)
 		}
 	}
 

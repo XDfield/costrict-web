@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"gorm.io/gorm"
@@ -105,6 +106,9 @@ func (p *WorkerPool) processOne() {
 	}
 
 	result, syncErr := p.SyncService.SyncRegistry(context.Background(), job.RegistryID, opts)
+	if syncErr != nil {
+		logger.Error("sync job failed jobID=%s registryID=%s err=%v", job.ID, job.RegistryID, syncErr)
+	}
 	p.finalizeJob(&job, result, syncErr)
 }
 
@@ -117,14 +121,18 @@ func (p *WorkerPool) finalizeJob(job *models.SyncJob, result *services.SyncResul
 		updates["retry_count"] = job.RetryCount + 1
 		updates["scheduled_at"] = time.Now().Add(backoff)
 		updates["last_error"] = err.Error()
+		logger.Warn("sync job will retry jobID=%s attempt=%d/%d backoff=%s err=%v",
+			job.ID, job.RetryCount+1, job.MaxAttempts, backoff, err)
 	} else if err != nil {
 		updates["status"] = "failed"
 		updates["last_error"] = err.Error()
+		logger.Error("sync job permanently failed jobID=%s registryID=%s err=%v", job.ID, job.RegistryID, err)
 	} else {
 		updates["status"] = "success"
 		if result != nil {
 			updates["sync_log_id"] = result.LogID
 		}
+		logger.Info("sync job succeeded jobID=%s registryID=%s", job.ID, job.RegistryID)
 	}
 
 	p.DB.Model(job).Updates(updates)

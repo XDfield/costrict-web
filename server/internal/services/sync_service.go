@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -153,6 +154,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	}
 	s.DB.Create(syncLog)
 
+	logger.Info("sync started registry=%s trigger=%s dryRun=%v logID=%s",
+		registryID, opts.TriggerType, opts.DryRun, syncLog.ID)
+
 	if !opts.DryRun {
 		s.DB.Model(&registry).Updates(map[string]any{"sync_status": "syncing"})
 	}
@@ -193,6 +197,11 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			}
 			s.DB.Model(&registry).Updates(map[string]any{"sync_status": newStatus, "last_sync_log_id": syncLog.ID})
 		}
+
+		logger.Info("sync finished registry=%s status=%s duration=%s added=%d updated=%d deleted=%d skipped=%d failed=%d logID=%s",
+			registryID, result.Status, result.Duration.Round(time.Millisecond),
+			result.Added, result.Updated, result.Deleted, result.Skipped, result.Failed,
+			syncLog.ID)
 	}()
 
 	branch := registry.ExternalBranch
@@ -212,9 +221,13 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	result.PreviousSHA = registry.LastSyncSHA
 
 	if cloneResult.CommitSHA == registry.LastSyncSHA && registry.LastSyncSHA != "" {
+		logger.Info("sync skipped registry=%s sha=%s (no changes)", registryID, cloneResult.CommitSHA)
 		result.Status = "success"
 		return result, nil
 	}
+
+	logger.Info("sync cloned registry=%s sha=%s previousSha=%s files to process",
+		registryID, cloneResult.CommitSHA, registry.LastSyncSHA)
 
 	var cfg syncConfig
 	if len(registry.SyncConfig) > 0 {

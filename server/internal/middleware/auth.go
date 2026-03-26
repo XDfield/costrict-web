@@ -142,13 +142,15 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, er
 	}
 
 	// Extract sub (universal_id in Casdoor)
-	sub, _ := claims["sub"].(string)
+	sub, _ := claims["id"].(string)
 	if sub == "" {
-		// Try universal_id as fallback
+		sub, _ = claims["sub"].(string)
+	}
+	if sub == "" {
 		sub, _ = claims["universal_id"].(string)
 	}
 	if sub == "" {
-		return nil, fmt.Errorf("no sub or universal_id in token")
+		return nil, fmt.Errorf("no id, sub or universal_id in token")
 	}
 
 	name, _ := claims["name"].(string)
