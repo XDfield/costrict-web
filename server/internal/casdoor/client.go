@@ -23,13 +23,50 @@ type CasdoorClient struct {
 }
 
 type CasdoorUser struct {
-	Sub               string `json:"sub"`
-	Id                string `json:"id"`
-	Name              string `json:"name"`
+	Sub              string `json:"sub"`
+	Id               string `json:"id"`
+	Name             string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
-	Email             string `json:"email"`
-	Picture           string `json:"picture"`
-	Owner             string `json:"owner"`
+	Email            string `json:"email"`
+	Picture          string `json:"picture"`
+	Owner            string `json:"owner"`
+}
+
+// UnmarshalJSON handles both OIDC (snake_case) and Casdoor admin API (camelCase) formats.
+func (u *CasdoorUser) UnmarshalJSON(data []byte) error {
+	// Use a raw map to inspect all keys
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	str := func(keys ...string) string {
+		for _, key := range keys {
+			if v, ok := raw[key]; ok {
+				if s, ok := v.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+
+	// Match fields across OIDC snake_case and Casdoor camelCase formats
+	u.Sub = str("sub")
+	u.Id = str("id")
+	u.Name = str("name")
+	u.PreferredUsername = str("preferred_username", "displayName")
+	u.Email = str("email")
+	u.Picture = str("picture", "avatar")
+	u.Owner = str("owner")
+
+	// Casdoor admin API doesn't have "sub"; synthesize it as "owner/name"
+	// to match the OIDC sub format that the frontend stores as createdBy.
+	if u.Sub == "" && u.Owner != "" && u.Name != "" {
+		u.Sub = u.Owner + "/" + u.Name
+	}
+
+	return nil
 }
 
 type CasdoorTokenResponse struct {
@@ -295,18 +332,17 @@ func (c *CasdoorClient) GetGroups(accessToken string) ([]byte, error) {
 	return c.CallCasdoorAPI("GET", "/api/get-groups", accessToken, nil)
 }
 
-// GetUserByID retrieves a user by ID from Casdoor
+// GetUserByID retrieves a user by ID (UUID) from Casdoor
 func (c *CasdoorClient) GetUserByID(accessToken, userID string) (*CasdoorUser, error) {
-	apiURL := fmt.Sprintf("%s/api/get-user?id=%s", c.internalEndpoint, url.QueryEscape(userID))
+	apiURL := fmt.Sprintf("%s/api/get-user?userId=%s", c.internalEndpoint, url.QueryEscape(userID))
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	if accessToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-	}
+	// Use client credentials for admin API access, same as SearchUsers
+	req.SetBasicAuth(c.clientID, c.secret)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -334,43 +370,24 @@ func (c *CasdoorClient) GetUserByID(accessToken, userID string) (*CasdoorUser, e
 		return &user, nil
 	}
 
+	if wrappedResp.Data.Name == "" && wrappedResp.Data.Id == "" {
+		return nil, fmt.Errorf("user not found: %s", userID)
+	}
+
 	return &wrappedResp.Data, nil
 }
 
-// GetUsersByIDs retrieves multiple users by their IDs from Casdoor
+// GetUsersByIDs retrieves multiple users by their IDs from Casdoor.
+// Uses per-ID lookups via /api/get-user to avoid dependency on organization config.
 func (c *CasdoorClient) GetUsersByIDs(accessToken string, userIDs []string) (map[string]*CasdoorUser, error) {
-	// Get all users and filter by IDs
-	users, err := c.SearchUsers(accessToken, "")
-	if err != nil {
-		return nil, err
-	}
-
-	// Debug logging
-	fmt.Printf("[DEBUG] GetUsersByIDs: requested IDs=%v, total users returned from Casdoor=%d\n", userIDs, len(users))
-	if len(users) > 0 {
-		fmt.Printf("[DEBUG] First user: Sub=%s, Id=%s, Name=%s\n", users[0].Sub, users[0].Id, users[0].Name)
-	}
-
-	userMap := make(map[string]*CasdoorUser)
-	idSet := make(map[string]bool)
+	userMap := make(map[string]*CasdoorUser, len(userIDs))
 	for _, id := range userIDs {
-		idSet[id] = true
-	}
-
-	matchedCount := 0
-	for i := range users {
-		// Check both "sub" (OIDC standard) and "id" (Casdoor internal) fields
-		if idSet[users[i].Sub] {
-			userMap[users[i].Sub] = &users[i]
-			matchedCount++
-			fmt.Printf("[DEBUG] Matched user by Sub: %s -> %s\n", users[i].Sub, users[i].Name)
-		} else if idSet[users[i].Id] {
-			userMap[users[i].Id] = &users[i]
-			matchedCount++
-			fmt.Printf("[DEBUG] Matched user by Id: %s -> %s\n", users[i].Id, users[i].Name)
+		user, err := c.GetUserByID(accessToken, id)
+		if err != nil {
+			log.Printf("[WARN] GetUsersByIDs: failed to get user %s: %v", id, err)
+			continue
 		}
+		userMap[id] = user
 	}
-
-	fmt.Printf("[DEBUG] GetUsersByIDs: matched %d users\n", matchedCount)
 	return userMap, nil
 }
