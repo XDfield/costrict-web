@@ -405,12 +405,22 @@ func ListMyItems(c *gin.Context) {
 	query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&items)
 
 	// Supplement registryMap with any registries not yet loaded (e.g. public registry items created by the user)
+	// Batch-fetch all missing registry IDs in a single query to avoid N+1.
+	missingIDs := make(map[string]bool)
 	for _, item := range items {
 		if _, ok := registryMap[item.RegistryID]; !ok {
-			var reg models.CapabilityRegistry
-			if err := db.Where("id = ?", item.RegistryID).First(&reg).Error; err == nil {
-				registryMap[reg.ID] = reg
-			}
+			missingIDs[item.RegistryID] = true
+		}
+	}
+	if len(missingIDs) > 0 {
+		ids := make([]string, 0, len(missingIDs))
+		for id := range missingIDs {
+			ids = append(ids, id)
+		}
+		var regs []models.CapabilityRegistry
+		db.Where("id IN ?", ids).Find(&regs)
+		for _, reg := range regs {
+			registryMap[reg.ID] = reg
 		}
 	}
 
