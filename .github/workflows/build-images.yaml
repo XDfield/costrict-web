@@ -138,7 +138,7 @@ jobs:
               ;;
             portal)
               CONTEXT="./portal"
-              DOCKERFILE="./portal/packages/app/Dockerfile"
+              DOCKERFILE="./portal/packages/app-ai-native/Dockerfile"
               IMAGE_NAME="costrict-web-portal"
               ;;
           esac
