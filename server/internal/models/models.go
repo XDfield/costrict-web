@@ -72,7 +72,6 @@ type Device struct {
 	Platform        string         `gorm:"not null"                                       json:"platform"`
 	Version         string         `gorm:"not null"                                       json:"version"`
 	UserID          string         `gorm:"not null;index"                                 json:"userId"`
-	WorkspaceID     string         `gorm:"index"                                          json:"workspaceId"`
 	Status          string         `gorm:"not null;default:'offline'"                     json:"status"`
 	Label           string         `                                                      json:"label"`
 	Description     string         `gorm:"type:text"                                      json:"description"`

@@ -35,14 +35,12 @@ type RegisterDeviceRequest struct {
 	DisplayName string `json:"displayName" binding:"required"`
 	Platform    string `json:"platform" binding:"required"`
 	Version     string `json:"version" binding:"required"`
-	WorkspaceID string `json:"workspaceId"`
 }
 
 type UpdateDeviceRequest struct {
 	DisplayName string  `json:"displayName"`
 	Description *string `json:"description"`
 	Label       *string `json:"label"`
-	WorkspaceID string  `json:"workspaceId"`
 }
 
 func generateDeviceToken() (string, error) {
@@ -78,7 +76,6 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 		Platform:    req.Platform,
 		Version:     req.Version,
 		UserID:      userID,
-		WorkspaceID: req.WorkspaceID,
 		Status:      "offline",
 		Token:       token,
 	}
@@ -124,18 +121,27 @@ func (s *DeviceService) ListDevices(userID string) ([]models.Device, error) {
 }
 
 func (s *DeviceService) ListWorkspaceDevices(workspaceID, userID string, page, pageSize int) ([]models.Device, int64, error) {
-	var total int64
-	query := s.DB.Model(&models.Device{}).Where("workspace_id = ?", workspaceID)
-	if err := query.Count(&total).Error; err != nil {
+	var workspace models.Workspace
+	if err := s.DB.Where("id = ? AND user_id = ?", workspaceID, userID).First(&workspace).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []models.Device{}, 0, nil
+		}
 		return nil, 0, err
 	}
 
-	offset := (page - 1) * pageSize
-	var devices []models.Device
-	if err := query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&devices).Error; err != nil {
+	if workspace.DeviceID == "" {
+		return []models.Device{}, 0, nil
+	}
+
+	var device models.Device
+	if err := s.DB.Where("id = ? AND user_id = ?", workspace.DeviceID, userID).First(&device).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []models.Device{}, 0, nil
+		}
 		return nil, 0, err
 	}
-	return devices, total, nil
+
+	return []models.Device{device}, 1, nil
 }
 
 func (s *DeviceService) UpdateDevice(deviceID, userID string, req UpdateDeviceRequest) (*models.Device, error) {
@@ -153,9 +159,6 @@ func (s *DeviceService) UpdateDevice(deviceID, userID string, req UpdateDeviceRe
 	}
 	if req.Label != nil {
 		updates["label"] = *req.Label
-	}
-	if req.WorkspaceID != "" {
-		updates["workspace_id"] = req.WorkspaceID
 	}
 
 	if len(updates) > 0 {
