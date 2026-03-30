@@ -46,6 +46,14 @@ func CreateWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "at least one directory is required"})
 				return
 			}
+			if errors.Is(err, services.ErrDeviceNotFound) || errors.Is(err, services.ErrDeviceNotOwned) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, services.ErrDirectoryPathDuplicate) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workspace"})
 			return
 		}

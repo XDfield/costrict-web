@@ -11,11 +11,13 @@ import (
 )
 
 var (
-	ErrWorkspaceNotFound      = errors.New("workspace not found")
-	ErrWorkspaceNameExists    = errors.New("workspace name already exists")
-	ErrWorkspaceDirectoryRequired = errors.New("at least one directory is required")
-	ErrWorkspaceDirectoryNotFound = errors.New("workspace directory not found")
+	ErrWorkspaceNotFound           = errors.New("workspace not found")
+	ErrWorkspaceNameExists         = errors.New("workspace name already exists")
+	ErrWorkspaceDirectoryRequired   = errors.New("at least one directory is required")
+	ErrWorkspaceDirectoryNotFound   = errors.New("workspace directory not found")
 	ErrDefaultWorkspaceCannotDelete = errors.New("cannot delete default workspace")
+	ErrDeviceNotOwned               = errors.New("device does not belong to current user")
+	ErrDirectoryPathDuplicate       = errors.New("directory path must be unique within a workspace")
 )
 
 // WorkspaceService 工作空间服务
@@ -109,10 +111,33 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 	var existing models.Workspace
 	result := s.DB.Where("user_id = ? AND name = ?", userID, req.Name).First(&existing)
 	if result.Error == nil {
-		return nil, ErrWorkspaceNotFound
+		return nil, ErrWorkspaceNameExists
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, result.Error
+	}
+
+	// 验证设备（如果指定了设备ID）
+	if req.DeviceID != "" && s.DeviceService != nil {
+		device, err := s.DeviceService.GetDeviceByID(req.DeviceID, userID)
+		if err != nil {
+			if errors.Is(err, ErrDeviceNotFound) {
+				return nil, fmt.Errorf("%w: %s", ErrDeviceNotFound, req.DeviceID)
+			}
+			return nil, fmt.Errorf("failed to verify device: %w", err)
+		}
+		if device == nil {
+			return nil, fmt.Errorf("device not found: %s", req.DeviceID)
+		}
+	}
+
+	// 检查目录路径是否重复
+	pathMap := make(map[string]bool)
+	for i, dir := range req.Directories {
+		if pathMap[dir.Path] {
+			return nil, fmt.Errorf("duplicate directory path at position %d: %s", i+1, dir.Path)
+		}
+		pathMap[dir.Path] = true
 	}
 
 	// 事务处理
