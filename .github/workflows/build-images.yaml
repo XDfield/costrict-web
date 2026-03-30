@@ -93,11 +93,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Update portal submodule to epic/ai-native branch
+      - name: Update portal submodule to dev branch
         run: |
           cd portal
-          git fetch origin '+refs/heads/epic/ai-native:refs/remotes/origin/epic/ai-native'
-          git checkout -B epic/ai-native origin/epic/ai-native
+          git fetch origin '+refs/heads/dev:refs/remotes/origin/dev'
+          git checkout -B dev origin/dev
           echo "portal submodule commit: $(git rev-parse HEAD)"
 
       - name: Set up QEMU
