@@ -33,7 +33,7 @@ func (s *IndexerService) IndexAll(ctx context.Context) error {
 	var items []models.CapabilityItem
 
 	// Find items without embeddings
-	result := s.db.Where("embedding IS NULL OR embedding = '' OR embedding = '[]'").
+	result := s.db.Where("embedding IS NULL").
 		Where("status = ?", "active").
 		Find(&items)
 
@@ -142,7 +142,7 @@ func (s *IndexerService) GetIndexStats(ctx context.Context) (*IndexStats, error)
 
 	// Count indexed items
 	result = s.db.Model(&models.CapabilityItem{}).
-		Where("embedding IS NOT NULL AND embedding != '' AND embedding != '[]'").
+		Where("embedding IS NOT NULL").
 		Count(&stats.IndexedItems)
 	if result.Error != nil {
 		return nil, result.Error
