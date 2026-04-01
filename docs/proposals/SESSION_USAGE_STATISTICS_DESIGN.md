@@ -68,7 +68,7 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
 │  SQLite ──► extractRequestUsage()           │
 │             + git remote get-url origin     │
 │                      │                      │
-│            UsageReporter (new module)        │
+│            Usage Plugin (internal plugin)    │
 │                      │                      │
 │         POST /cloud-api/api/usage/report    │
 │         (Bearer token, CoStrict auth)       │
@@ -362,14 +362,45 @@ Authorization: Bearer <token>
 
 ## 客户端实现（opencode 侧）
 
-### 新增模块
+### 实现形态
 
-`packages/opencode/src/usage/reporter.ts` — 复用 `learning/pusher.ts` 的认证上报模式。
+采用 **opencode internal plugin** 形式实现，尽量避免侵入原有主流程代码。参考 `src/plugin/tdd` 与 `src/learning/plugin.ts` 的组织方式，新增一个 usage plugin，在 `Plugin.init()` 后随实例启动自动加载。
+
+建议文件结构：
+
+```
+packages/opencode/src/plugin/usage/
+├── index.ts                 # plugin 入口，返回 Hooks
+├── handlers/
+│   ├── index.ts
+│   ├── message-handler.ts   # 监听 MessageV2.Event.Updated，提取已完成请求
+│   └── config-handler.ts    # 读取 usage.report 等配置
+├── queue/
+│   ├── jsonl.ts             # JSONL 追加写入 / 重写
+│   ├── flush.ts             # 批量上报与重试
+│   └── scan.ts              # CLI 启动补扫
+├── git/
+│   └── repo.ts              # git_repo_url 获取与规范化
+└── report/
+    └── push.ts              # 复用 learning/pusher.ts 的认证上报模式
+```
+
+插件注册方式：
+
+- 将 `UsagePlugin` 加入 `src/plugin/index.ts` 的 `INTERNAL_PLUGINS`
+- 由 `project/bootstrap.ts` 中的 `Plugin.init()` 统一初始化
+
+这种方式的好处是：
+
+1. **逻辑隔离**：usage 上报逻辑集中在 plugin 内，不污染 session / prompt / processor 主链路
+2. **复用事件总线**：通过 `hook.event` + `Bus.subscribeAll` 机制监听消息事件
+3. **低侵入**：除极少量必要数据透传外，不需要大规模修改 opencode 原始代码
+4. **便于演进**：后续若下线或替换该能力，只需移除 plugin 注册
 
 ### 核心流程
 
 ```
-Assistant message updated / Bus event
+Plugin event hook (`message.updated`)
        │
        ▼
    extractRequestFromMessage()       ← 从 assistant message 提取单次请求用量
@@ -402,7 +433,7 @@ Assistant message updated / Bus event
 
 | 时机 | 方式 | 说明 |
 |------|------|------|
-| Assistant 消息更新 | `Bus.subscribe(MessageV2.Event.Updated)` | 仅在 assistant message 完成落盘后提取请求数据并入队 |
+| Assistant 消息更新 | usage plugin 的 `hook.event` 接收 `message.updated` | 仅在 assistant message 完成落盘后提取请求数据并入队 |
 | CLI 启动补扫 | 扫描近期 assistant message | 兜底恢复，避免进程异常退出导致遗漏 |
 | CLI 退出 | `process.on("beforeExit")` | flush 未发送的队列 |
 | 定期兜底 | `setInterval(300_000)` | 每 5 分钟 flush，防止长时间不满足阈值 |
@@ -499,6 +530,36 @@ function normalize(url: string): string {
 - **易于清理**: 直接删除文件即可清空队列
 
 **认证**: 复用 `createAuthenticatedFetch()` 处理 token 过期刷新
+
+### 与 plugin 系统的集成方式
+
+usage plugin 可直接复用 opencode 现有 plugin 运行时能力：
+
+- `PluginInput.project` / `PluginInput.worktree` / `PluginInput.directory`
+- `hook.event` 监听全局 Bus 事件
+- `process.on("beforeExit")` 做退出前 flush
+- 复用内部模块完成认证、git 信息获取、JSONL 文件写入
+
+推荐仿照 `src/plugin/tdd/index.ts`：
+
+1. plugin 初始化时注册 `beforeExit` handler
+2. plugin 初始化时执行一次补扫（scan）
+3. event hook 内按事件类型分发到 handler
+4. handler 完成入队，flush 逻辑独立管理
+
+### 对 opencode 原始代码的最小改动
+
+若要同时满足以下目标：
+
+- `request_id` 使用 `llm.ts` 生成的 `X-Request-Id`
+- `message_id` 使用 assistant message.id
+- plugin 在 `message.updated` 时直接拿到两者
+
+则建议仅做一个**最小核心改动**：
+
+> 在 assistant message 持久化结构中增加 `request_id` 字段，并在 `llm.ts` 生成请求时写入。
+
+除此之外，其余 usage 采集、队列、重试、上报逻辑均由 plugin 承担。
 
 ### 隐私控制
 
@@ -749,8 +810,9 @@ SQLite 在此量级下完全胜任：
 ```
 Client (opencode)                     Server (costrict-web)
      │                                       │
-     │  ──── Assistant message updated ───►   │
+     │  ──── message.updated event ───────►   │
      │                                        │
+     │  UsagePlugin.event()                   │
      │  extract request from message          │
      │  request_id = X-Request-Id             │
      │  message_id = assistant message.id     │
@@ -838,8 +900,8 @@ Client (opencode)                     Server (costrict-web)
 |------|------|----------|----------|
 | Phase 1 | SQLite 连接管理 (`usage_db.go`) + GORM model + AutoMigrate + UPSERT service | costrict-web | 0.5d |
 | Phase 2 | Report handler + Activity handler + 路由注册 + Swagger 注释 | costrict-web | 1d |
-| Phase 3 | UsageReporter 模块 + CoStrict auth 复用 + Bus 集成 | opencode | 1d |
-| Phase 4 | git_repo_url normalize + JSONL 队列 + 批量上报 + 重试逻辑 | opencode | 1d |
+| Phase 3 | Usage plugin 骨架 + internal plugin 注册 + event hook 集成 | opencode | 1d |
+| Phase 4 | request_id 最小透传 + git_repo_url normalize + JSONL 队列 + 批量上报 + 重试逻辑 | opencode | 1d |
 | Phase 5 | E2E 联调测试 | both | 0.5d |
 | **总计** | | | **~4d** |
 
@@ -851,9 +913,10 @@ Client (opencode)                     Server (costrict-web)
 |------|------|------|
 | 上报协议 | HTTPS REST (JSON) | 与 learning/pusher 模式一致 |
 | 认证 | CoStrict OAuth (Bearer JWT) | 复用 `createAuthenticatedFetch()` |
+| 客户端实现形态 | opencode internal plugin | 参考 TDD / Learning plugin，低侵入接入事件与生命周期 |
 | 存储 | 独立 SQLite (`data/usage_stats.db`) | 不侵入业务 PG；项目已有 SQLite 驱动；迁移 ES 路径最短 |
 | ORM | GORM (SQLite dialect) | 复用项目 GORM 生态，AutoMigrate 自动建表/索引 |
-| 幂等 | UPSERT on `(user_id, session_id, model_id)` | 防止重复上报导致数据膨胀 |
+| 幂等 | UPSERT on `(user_id, request_id)` | 按请求级唯一标识去重，适配重复上报/重试 |
 | 并发控制 | WAL 模式 + 单写连接 + 事务批量写 | SQLite 最佳实践，读写不互斥 |
 | 活跃度指标 | `COUNT(*)` per day | 一条记录就是一次 assistant 请求，语义直接且统计简单 |
 | 触发机制 | Event-driven + 批量阈值 (50条) + 定时 flush (5分钟) | 平衡实时性与网络开销 |

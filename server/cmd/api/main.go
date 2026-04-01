@@ -120,6 +120,7 @@ func main() {
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+	usageHandler := handlers.NewUsageHandler(&services.UsageService{})
 
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
@@ -201,6 +202,12 @@ func main() {
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
+
+			usage := authed.Group("/usage")
+			{
+				usage.POST("/report", usageHandler.Report)
+				usage.GET("/activity", usageHandler.Activity)
+			}
 
 			repos := authed.Group("/repositories")
 			{
