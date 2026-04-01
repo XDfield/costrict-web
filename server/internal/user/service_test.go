@@ -2,14 +2,31 @@ package user
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"testing"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/golang-jwt/jwt/v4"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+func signUserTestJWT(t *testing.T, claims jwt.MapClaims) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	return tokenString
+}
 
 func setupUserTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -116,6 +133,15 @@ func TestUserServiceGetOrCreateUserCreate(t *testing.T) {
 	if user.ID != "u1" || user.Username != "alice" {
 		t.Fatalf("unexpected created user: %+v", user)
 	}
+	if user.CasdoorID == nil || *user.CasdoorID != "u1" {
+		t.Fatalf("casdoor_id not set: %+v", user)
+	}
+	if user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != "uuid-u1" {
+		t.Fatalf("casdoor_universal_id not set: %+v", user)
+	}
+	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
+		t.Fatalf("casdoor_sub not set: %+v", user)
+	}
 }
 
 func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
@@ -139,10 +165,13 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 
 	claims := &JWTClaims{
 		ID:                "u1",
+		Sub:               "org/alice",
+		UniversalID:       "uuid-u1",
 		Name:              "alice",
 		PreferredUsername: "Alice New",
 		Email:             "new@example.com",
 		Picture:           "https://example.com/a.png",
+		Owner:             "org",
 	}
 
 	user, err := svc.GetOrCreateUser(claims)
@@ -157,6 +186,18 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	}
 	if !user.IsActive {
 		t.Fatal("expected user to be active")
+	}
+	if user.CasdoorID == nil || *user.CasdoorID != "u1" {
+		t.Fatalf("casdoor_id not backfilled: %+v", user)
+	}
+	if user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != "uuid-u1" {
+		t.Fatalf("casdoor_universal_id not backfilled: %+v", user)
+	}
+	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
+		t.Fatalf("casdoor_sub not backfilled: %+v", user)
+	}
+	if user.Organization == nil || *user.Organization != "org" {
+		t.Fatalf("organization not backfilled: %+v", user)
 	}
 }
 
@@ -192,6 +233,31 @@ func TestCachedUserServiceCacheFlow(t *testing.T) {
 	svc.InvalidateCache("u1")
 	if _, err := svc.GetUserByID(context.Background(), "u1"); err == nil {
 		t.Fatal("expected error after cache invalidation and db delete")
+	}
+}
+
+func TestParseJWTClaimsFromAccessToken(t *testing.T) {
+	tokenString := signUserTestJWT(t, jwt.MapClaims{
+		"id":                 "casdoor-id-1",
+		"sub":                "org/alice",
+		"universal_id":       "universal-1",
+		"name":               "alice",
+		"preferred_username": "Alice",
+		"email":              "alice@example.com",
+		"picture":            "https://example.com/avatar.png",
+		"owner":              "org",
+		"exp":                time.Now().Add(time.Hour).Unix(),
+	})
+
+	claims, err := ParseJWTClaimsFromAccessToken(tokenString)
+	if err != nil {
+		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
+	}
+	if claims.ID != "casdoor-id-1" || claims.Sub != "org/alice" || claims.UniversalID != "universal-1" {
+		t.Fatalf("unexpected identifiers: %+v", claims)
+	}
+	if claims.PreferredUsername != "Alice" || claims.Email != "alice@example.com" || claims.Owner != "org" {
+		t.Fatalf("unexpected profile claims: %+v", claims)
 	}
 }
 

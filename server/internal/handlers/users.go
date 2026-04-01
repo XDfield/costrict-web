@@ -208,6 +208,7 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 		claims := &userpkg.JWTClaims{
 			ID:                u.Id,
 			Sub:               u.Sub,
+			UniversalID:       u.UniversalID,
 			Name:              u.Name,
 			PreferredUsername: u.PreferredUsername,
 			Email:             u.Email,

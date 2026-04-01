@@ -158,11 +158,38 @@ func AuthCallback(c *gin.Context) {
 			claims := &userpkg.JWTClaims{
 				ID:                userInfo.User.Id,
 				Sub:               userInfo.User.Sub,
+				UniversalID:       userInfo.User.UniversalID,
 				Name:              userInfo.User.Name,
 				PreferredUsername: userInfo.User.PreferredUsername,
 				Email:             userInfo.User.Email,
 				Picture:           userInfo.User.Picture,
 				Owner:             userInfo.User.Owner,
+			}
+			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
+				if claims.ID == "" {
+					claims.ID = tokenClaims.ID
+				}
+				if claims.Sub == "" {
+					claims.Sub = tokenClaims.Sub
+				}
+				if claims.UniversalID == "" {
+					claims.UniversalID = tokenClaims.UniversalID
+				}
+				if claims.Name == "" {
+					claims.Name = tokenClaims.Name
+				}
+				if claims.PreferredUsername == "" {
+					claims.PreferredUsername = tokenClaims.PreferredUsername
+				}
+				if claims.Email == "" {
+					claims.Email = tokenClaims.Email
+				}
+				if claims.Picture == "" {
+					claims.Picture = tokenClaims.Picture
+				}
+				if claims.Owner == "" {
+					claims.Owner = tokenClaims.Owner
+				}
 			}
 			if _, err := UserModule.Service.GetOrCreateUser(claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)

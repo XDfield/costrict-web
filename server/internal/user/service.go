@@ -7,6 +7,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 	"gorm.io/gorm"
 )
 
@@ -110,6 +111,19 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		user.LastSyncAt = &now
 		user.IsActive = true
 
+		if claims.ID != "" {
+			user.CasdoorID = &claims.ID
+		}
+		if claims.UniversalID != "" {
+			user.CasdoorUniversalID = &claims.UniversalID
+		}
+		if claims.Sub != "" {
+			user.CasdoorSub = &claims.Sub
+		}
+		if claims.Owner != "" {
+			user.Organization = &claims.Owner
+		}
+
 		// Update fields that may change
 		if claims.PreferredUsername != "" {
 			user.DisplayName = &claims.PreferredUsername
@@ -179,6 +193,46 @@ func ParseJWTClaimsFromMiddleware(c *gin.Context) (*JWTClaims, error) {
 		Name:              userNameStr,
 		PreferredUsername: userNameStr,
 	}, nil
+}
+
+// ParseJWTClaimsFromAccessToken extracts relevant Casdoor claims from an access token.
+// The token is obtained directly from Casdoor during login, so this helper only decodes
+// claims to enrich profile data when /api/userinfo omits fields like id/universal_id.
+func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
+	parser := jwt.Parser{}
+	claims := jwt.MapClaims{}
+
+	if _, _, err := parser.ParseUnverified(tokenString, claims); err != nil {
+		return nil, fmt.Errorf("failed to parse access token claims: %w", err)
+	}
+
+	str := func(keys ...string) string {
+		for _, key := range keys {
+			if v, ok := claims[key]; ok {
+				if s, ok := v.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+
+	result := &JWTClaims{
+		ID:                str("id"),
+		Sub:               str("sub"),
+		UniversalID:       str("universal_id"),
+		Name:              str("name"),
+		PreferredUsername: str("preferred_username"),
+		Email:             str("email"),
+		Picture:           str("picture", "avatar"),
+		Owner:             str("owner"),
+	}
+
+	if result.ID == "" && result.Sub == "" && result.UniversalID == "" {
+		return nil, fmt.Errorf("no user identifiers found in access token")
+	}
+
+	return result, nil
 }
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
