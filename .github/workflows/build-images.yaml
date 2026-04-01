@@ -14,6 +14,11 @@ on:
         description: "Services to build (comma-separated: gateway,api,worker,portal,all)"
         required: false
         default: "all"
+      portal_branch:
+        description: "Branch for portal submodule"
+        required: false
+        default: "dev"
+        type: string
       push:
         description: "Push images to registry"
         required: false
@@ -93,11 +98,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Update portal submodule to dev branch
+      - name: Update portal submodule to target branch
         run: |
+          BRANCH="${{ inputs.portal_branch || 'dev' }}"
           cd portal
-          git fetch origin '+refs/heads/dev:refs/remotes/origin/dev'
-          git checkout -B dev origin/dev
+          git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git checkout -B "${BRANCH}" "origin/${BRANCH}"
+          echo "portal submodule branch: ${BRANCH}"
           echo "portal submodule commit: $(git rev-parse HEAD)"
 
       - name: Set up QEMU
