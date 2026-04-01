@@ -35,6 +35,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
+	"github.com/costrict/costrict-web/server/internal/project"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
@@ -305,7 +306,10 @@ func main() {
 
 			notificationModule := notification.New(db, cfg.CloudBaseURL)
 			notificationModule.RegisterRoutes(authed)
+			projectModule := project.New(db, notificationModule.Service)
+			projectModule.RegisterRoutes(authed)
 			_ = notificationModule
+			_ = projectModule
 		}
 	}
 

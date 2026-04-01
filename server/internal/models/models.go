@@ -26,19 +26,19 @@ type SystemNotificationChannel struct {
 // UserNotificationChannel 用户通知渠道配置
 // 用户在管理员启用的渠道基础上填写自己的配置（如 Webhook URL）
 type UserNotificationChannel struct {
-	ID               string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	UserID           string         `gorm:"not null;index"                                 json:"userId"`
-	SystemChannelID  string         `gorm:"index"                                          json:"systemChannelId"` // 关联系统渠道（webhook 类型可为空）
-	ChannelType      string         `gorm:"not null;index"                                 json:"channelType"`     // "wecom" | "feishu" | "webhook"
-	Name             string         `gorm:"not null"                                       json:"name"`
-	Enabled          bool           `gorm:"not null;default:true"                          json:"enabled"`
-	UserConfig       datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"userConfig" swaggertype:"object"`  // 用户自己的配置
-	TriggerEvents    pq.StringArray `gorm:"type:text[]"                                    json:"triggerEvents,omitempty" swaggertype:"array,string"`
-	LastUsedAt       *time.Time     `                                                      json:"lastUsedAt,omitempty"`
-	LastError        string         `                                                      json:"lastError,omitempty"`
-	CreatedAt        time.Time      `                                                      json:"createdAt"`
-	UpdatedAt        time.Time      `                                                      json:"updatedAt"`
-	DeletedAt        gorm.DeletedAt `gorm:"index"                                          json:"-"`
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID          string         `gorm:"not null;index"                                 json:"userId"`
+	SystemChannelID string         `gorm:"index"                                          json:"systemChannelId"` // 关联系统渠道（webhook 类型可为空）
+	ChannelType     string         `gorm:"not null;index"                                 json:"channelType"`     // "wecom" | "feishu" | "webhook"
+	Name            string         `gorm:"not null"                                       json:"name"`
+	Enabled         bool           `gorm:"not null;default:true"                          json:"enabled"`
+	UserConfig      datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"userConfig" swaggertype:"object"` // 用户自己的配置
+	TriggerEvents   pq.StringArray `gorm:"type:text[]"                                    json:"triggerEvents,omitempty" swaggertype:"array,string"`
+	LastUsedAt      *time.Time     `                                                      json:"lastUsedAt,omitempty"`
+	LastError       string         `                                                      json:"lastError,omitempty"`
+	CreatedAt       time.Time      `                                                      json:"createdAt"`
+	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
 }
 
 // UserConfig 通用用户配置（KV 存储，供其他模块使用）
@@ -124,6 +124,47 @@ type RepoInvitation struct {
 	UpdatedAt       time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 
 	Repository *Repository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
+}
+
+// Project represents a collaboration project owned by a creator and shared with members.
+type Project struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name        string         `gorm:"not null;uniqueIndex:idx_project_creator_name" json:"name"`
+	Description string         `json:"description,omitempty"`
+	CreatorID   string         `gorm:"not null;index;uniqueIndex:idx_project_creator_name" json:"creatorId"`
+	EnabledAt   *time.Time     `gorm:"index" json:"enabledAt,omitempty"`
+	ArchivedAt  *time.Time     `gorm:"index" json:"archivedAt,omitempty"`
+	Metadata    datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata,omitempty" swaggertype:"object"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// ProjectMember represents a user's membership in a project.
+type ProjectMember struct {
+	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ProjectID string         `gorm:"not null;index;uniqueIndex:idx_project_user" json:"projectId"`
+	UserID    string         `gorm:"not null;index;uniqueIndex:idx_project_user" json:"userId"`
+	Role      string         `gorm:"not null;default:'member'" json:"role"`
+	JoinedAt  time.Time      `gorm:"not null" json:"joinedAt"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// ProjectInvitation represents an invitation sent to a user for joining a project.
+type ProjectInvitation struct {
+	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ProjectID   string     `gorm:"not null;index:idx_project_invitee;index" json:"projectId"`
+	InviterID   string     `gorm:"not null;index" json:"inviterId"`
+	InviteeID   string     `gorm:"not null;index:idx_project_invitee;index:idx_invitee_status" json:"inviteeId"`
+	Role        string     `gorm:"not null;default:'member'" json:"role"`
+	Status      string     `gorm:"not null;default:'pending';index;index:idx_invitee_status" json:"status"`
+	Message     string     `json:"message,omitempty"`
+	RespondedAt *time.Time `json:"respondedAt,omitempty"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
 type CapabilityRegistry struct {
@@ -346,27 +387,27 @@ type WorkspaceDirectory struct {
 
 // User represents a local user record synchronized from Casdoor
 type User struct {
-	ID                   string    `gorm:"primaryKey;size:191" json:"id"`                   // JWT id/sub (UUID, 主键)
-	Username             string    `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`   // Casdoor name
-	DisplayName          *string   `gorm:"size:191" json:"display_name"`                    // Casdoor preferred_username
-	Email                *string   `gorm:"index:idx_user_email;size:191" json:"email"`      // Email
-	AvatarURL            *string   `gorm:"type:text" json:"avatar_url"`                    // 头像 URL
+	ID          string  `gorm:"primaryKey;size:191" json:"id"`                                   // JWT id/sub (UUID, 主键)
+	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"` // Casdoor name
+	DisplayName *string `gorm:"size:191" json:"display_name"`                                    // Casdoor preferred_username
+	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                      // Email
+	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                     // 头像 URL
 
 	// Casdoor 相关字段
-	CasdoorID            *string   `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                // JWT id (UUID)
-	CasdoorUniversalID   *string   `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"casdoor_universal_id"`      // JWT universal_id (UUID)
-	CasdoorSub           *string   `gorm:"index:idx_user_casdoor_sub;size:191" json:"casdoor_sub"`               // JWT sub (可能是 owner/name 格式)
-	Organization         *string   `gorm:"index:idx_user_organization;size:191" json:"organization"`              // Casdoor owner
+	CasdoorID          *string `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                     // JWT id (UUID)
+	CasdoorUniversalID *string `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"casdoor_universal_id"` // JWT universal_id (UUID)
+	CasdoorSub         *string `gorm:"index:idx_user_casdoor_sub;size:191" json:"casdoor_sub"`                   // JWT sub (可能是 owner/name 格式)
+	Organization       *string `gorm:"index:idx_user_organization;size:191" json:"organization"`                 // Casdoor owner
 
 	// 状态字段
-	IsActive             bool      `gorm:"not null;default:true" json:"is_active"`          // 是否激活
-	LastLoginAt          *time.Time `json:"last_login_at"`                                  // 最后登录时间
-	LastSyncAt           *time.Time `json:"last_sync_at"`                                   // 最后同步时间
+	IsActive    bool       `gorm:"not null;default:true" json:"is_active"` // 是否激活
+	LastLoginAt *time.Time `json:"last_login_at"`                          // 最后登录时间
+	LastSyncAt  *time.Time `json:"last_sync_at"`                           // 最后同步时间
 
 	// 审计字段
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // TableName 指定表名

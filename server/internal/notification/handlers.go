@@ -226,7 +226,7 @@ func ListAvailableTypesHandler(svc *NotificationService) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"channelTypes": svc.GetAvailableChannelTypes()})
+		c.JSON(http.StatusOK, gin.H{"channelTypes": svc.GetAvailableChannelTypes(), "supportedEvents": svc.GetSupportedTriggerEvents()})
 	}
 }
 
@@ -310,6 +310,13 @@ func CreateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 			if err := svc.db.Where("id = ? AND enabled = true AND deleted_at IS NULL", req.SystemChannelID).
 				First(&sc).Error; err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "system channel not found or disabled"})
+				return
+			}
+		}
+
+		for _, event := range req.TriggerEvents {
+			if !svc.IsSupportedTriggerEvent(event) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported trigger event: " + event})
 				return
 			}
 		}
@@ -423,6 +430,12 @@ func UpdateMyChannelHandler(svc *NotificationService) gin.HandlerFunc {
 			updates["user_config"] = datatypes.JSON(req.UserConfig)
 		}
 		if req.TriggerEvents != nil {
+			for _, event := range req.TriggerEvents {
+				if !svc.IsSupportedTriggerEvent(event) {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported trigger event: " + event})
+					return
+				}
+			}
 			updates["trigger_events"] = pq.StringArray(req.TriggerEvents)
 		}
 		if req.Enabled != nil {

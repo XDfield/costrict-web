@@ -16,6 +16,8 @@ definitions:
         type: string
       sub:
         type: string
+      universal_id:
+        type: string
     type: object
   handlers.CreateSyncRegistryInput:
     properties:
@@ -488,6 +490,69 @@ definitions:
       userId:
         type: string
     type: object
+  models.Project:
+    properties:
+      archivedAt:
+        type: string
+      createdAt:
+        type: string
+      creatorId:
+        type: string
+      description:
+        type: string
+      enabledAt:
+        type: string
+      id:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  models.ProjectInvitation:
+    properties:
+      createdAt:
+        type: string
+      expiresAt:
+        type: string
+      id:
+        type: string
+      inviteeId:
+        type: string
+      inviterId:
+        type: string
+      message:
+        type: string
+      projectId:
+        type: string
+      respondedAt:
+        type: string
+      role:
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  models.ProjectMember:
+    properties:
+      createdAt:
+        type: string
+      id:
+        type: string
+      joinedAt:
+        type: string
+      projectId:
+        type: string
+      role:
+        type: string
+      updatedAt:
+        type: string
+      userId:
+        type: string
+    type: object
   models.RepoInvitation:
     properties:
       createdAt:
@@ -777,6 +842,85 @@ definitions:
       workspaceId:
         type: string
     type: object
+  project.CreateInvitationRequest:
+    properties:
+      inviteeId:
+        type: string
+      message:
+        type: string
+      role:
+        type: string
+    required:
+    - inviteeId
+    type: object
+  project.CreateProjectRequest:
+    properties:
+      description:
+        type: string
+      enabledAt:
+        type: string
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  project.InvitationResponse:
+    properties:
+      invitation:
+        $ref: '#/definitions/models.ProjectInvitation'
+    type: object
+  project.InvitationsResponse:
+    properties:
+      invitations:
+        items:
+          $ref: '#/definitions/models.ProjectInvitation'
+        type: array
+    type: object
+  project.MemberResponse:
+    properties:
+      member:
+        $ref: '#/definitions/models.ProjectMember'
+    type: object
+  project.MembersResponse:
+    properties:
+      members:
+        items:
+          $ref: '#/definitions/models.ProjectMember'
+        type: array
+    type: object
+  project.ProjectResponse:
+    properties:
+      project:
+        $ref: '#/definitions/models.Project'
+    type: object
+  project.ProjectsResponse:
+    properties:
+      projects:
+        items:
+          $ref: '#/definitions/models.Project'
+        type: array
+    type: object
+  project.RespondInvitationRequest:
+    properties:
+      accept:
+        type: boolean
+    type: object
+  project.UpdateMemberRoleRequest:
+    properties:
+      role:
+        type: string
+    required:
+    - role
+    type: object
+  project.UpdateProjectRequest:
+    properties:
+      description:
+        type: string
+      enabledAt:
+        type: string
+      name:
+        type: string
+    type: object
   services.CreateDirectoryRequest:
     properties:
       isDefault:
@@ -1056,6 +1200,110 @@ definitions:
         - active
         - inactive
         - archived
+        type: string
+    type: object
+  services.UsageActivityResponse:
+    properties:
+      git_repo_url:
+        type: string
+      range:
+        properties:
+          from:
+            type: string
+          to:
+            type: string
+        type: object
+      users:
+        items:
+          $ref: '#/definitions/services.UsageUserActivity'
+        type: array
+    type: object
+  services.UsageDaily:
+    properties:
+      date:
+        type: string
+      requests:
+        type: integer
+    type: object
+  services.UsageReportItem:
+    properties:
+      cache_read_tokens:
+        type: integer
+      cache_write_tokens:
+        type: integer
+      cost:
+        type: number
+      date:
+        type: string
+      git_repo_url:
+        type: string
+      git_worktree:
+        type: string
+      input_tokens:
+        type: integer
+      message_id:
+        type: string
+      model_id:
+        type: string
+      output_tokens:
+        type: integer
+      provider_id:
+        type: string
+      reasoning_tokens:
+        type: integer
+      request_id:
+        type: string
+      rounds:
+        type: integer
+      session_id:
+        type: string
+      updated:
+        type: string
+    required:
+    - date
+    - git_repo_url
+    - message_id
+    - model_id
+    - session_id
+    - updated
+    type: object
+  services.UsageReportRequest:
+    properties:
+      device_id:
+        type: string
+      reported_at:
+        type: string
+      reports:
+        items:
+          $ref: '#/definitions/services.UsageReportItem'
+        maxItems: 500
+        minItems: 1
+        type: array
+    required:
+    - reports
+    type: object
+  services.UsageReportResponse:
+    properties:
+      accepted:
+        type: integer
+      errors:
+        items:
+          type: string
+        type: array
+      skipped:
+        type: integer
+    type: object
+  services.UsageUserActivity:
+    properties:
+      daily:
+        items:
+          $ref: '#/definitions/services.UsageDaily'
+        type: array
+      total_requests:
+        type: integer
+      user_id:
+        type: string
+      username:
         type: string
     type: object
   services.WorkspaceWithDeviceStatus:
@@ -2441,6 +2689,82 @@ paths:
       summary: Register gateway
       tags:
       - internal-gateway
+  /invitations:
+    get:
+      description: List all project invitations for the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.InvitationsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List my project invitations
+      tags:
+      - project-invitations
+  /invitations/{id}:
+    delete:
+      description: Cancel a pending invitation as the inviter
+      parameters:
+      - description: Invitation ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Cancel project invitation
+      tags:
+      - project-invitations
   /invitations/{id}/accept:
     post:
       description: Accept a pending invitation to join a repository
@@ -2531,6 +2855,63 @@ paths:
       summary: Decline an invitation
       tags:
       - invitations
+  /invitations/{id}/respond:
+    post:
+      consumes:
+      - application/json
+      description: Accept or reject a project invitation as the invitee
+      parameters:
+      - description: Invitation ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Invitation response data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/project.RespondInvitationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.InvitationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Respond to project invitation
+      tags:
+      - project-invitations
   /invitations/my:
     get:
       description: Get all pending invitations for the current user
@@ -4095,6 +4476,573 @@ paths:
       summary: List available notification channel types
       tags:
       - notification-channels
+  /projects:
+    get:
+      description: List all projects the authenticated user belongs to
+      parameters:
+      - description: Include archived projects
+        in: query
+        name: includeArchived
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.ProjectsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List my projects
+      tags:
+      - projects
+    post:
+      consumes:
+      - application/json
+      description: Create a new project and add the creator as project admin
+      parameters:
+      - description: Project data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/project.CreateProjectRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/project.ProjectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create project
+      tags:
+      - projects
+  /projects/{id}:
+    delete:
+      description: Soft delete a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete project
+      tags:
+      - projects
+    get:
+      description: Get project details for a project member
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.ProjectResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get project
+      tags:
+      - projects
+    put:
+      consumes:
+      - application/json
+      description: Update project information as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Project update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/project.UpdateProjectRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.ProjectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update project
+      tags:
+      - projects
+  /projects/{id}/archive:
+    post:
+      description: Archive a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.ProjectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Archive project
+      tags:
+      - projects
+  /projects/{id}/invitations:
+    get:
+      description: List invitation records for a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.InvitationsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List project invitations
+      tags:
+      - project-invitations
+    post:
+      consumes:
+      - application/json
+      description: Invite a user to join a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Invitation data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/project.CreateInvitationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/project.InvitationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create project invitation
+      tags:
+      - project-invitations
+  /projects/{id}/members:
+    get:
+      description: List all members of a project for project members
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.MembersResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List project members
+      tags:
+      - projects
+  /projects/{id}/members/{userId}:
+    delete:
+      description: Remove a member from a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target user ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Remove project member
+      tags:
+      - projects
+  /projects/{id}/members/{userId}/role:
+    put:
+      consumes:
+      - application/json
+      description: Update a project member role as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target user ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      - description: Role update data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/project.UpdateMemberRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.MemberResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update project member role
+      tags:
+      - projects
+  /projects/{id}/unarchive:
+    post:
+      description: Unarchive a project as project admin
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/project.ProjectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Unarchive project
+      tags:
+      - projects
   /registries:
     get:
       description: 'Get registries visible to the current user. Visibility is determined
@@ -5793,6 +6741,99 @@ paths:
       summary: Get sync log detail
       tags:
       - sync
+  /usage/activity:
+    get:
+      description: Query daily request activity for all users under the specified
+        git repository URL.
+      parameters:
+      - description: Git repository URL
+        in: query
+        name: git_repo_url
+        required: true
+        type: string
+      - description: Range in days (1-90, default 7)
+        in: query
+        name: days
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.UsageActivityResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Query usage activity
+      tags:
+      - usage
+  /usage/report:
+    post:
+      consumes:
+      - application/json
+      description: Receive batched session usage reports from authenticated CLI clients
+        and upsert them with request-level idempotency.
+      parameters:
+      - description: Usage report payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/services.UsageReportRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.UsageReportResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Report session usage
+      tags:
+      - usage
   /users/me/behavior/summary:
     get:
       description: Get a summary of user's behavior and preferences

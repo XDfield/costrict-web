@@ -24,12 +24,15 @@ func main() {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
 
-	err = db.AutoMigrate(
-		&models.User{},
-		&models.Repository{},
-		&models.RepoMember{},
-		&models.RepoInvitation{},
-		&models.SyncLog{},
+		err = db.AutoMigrate(
+			&models.User{},
+			&models.Repository{},
+			&models.RepoMember{},
+			&models.RepoInvitation{},
+			&models.Project{},
+			&models.ProjectMember{},
+			&models.ProjectInvitation{},
+			&models.SyncLog{},
 		&models.SyncJob{},
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
