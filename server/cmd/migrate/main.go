@@ -35,6 +35,8 @@ func main() {
 		&models.CapabilityVersion{},
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
+		&models.BehaviorLog{},
+		&models.ItemFavorite{},
 		&models.SecurityScan{},
 		&models.ScanJob{},
 		&models.Device{},

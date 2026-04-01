@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -220,6 +220,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 type ItemResponse struct {
 	models.CapabilityItem
 	RepoVisibility string `json:"repoVisibility,omitempty"`
+	Favorited      bool   `json:"favorited"`
 }
 
 // ListItems godoc
@@ -288,16 +289,16 @@ func ListItems(c *gin.Context) {
 func CreateItem(c *gin.Context) {
 	registryId := c.Param("id")
 	var req struct {
-		Slug        string `json:"slug" binding:"required"`
-		ItemType    string `json:"itemType" binding:"required"`
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		Category    string `json:"category"`
-		Version     string `json:"version"`
+		Slug        string          `json:"slug" binding:"required"`
+		ItemType    string          `json:"itemType" binding:"required"`
+		Name        string          `json:"name" binding:"required"`
+		Description string          `json:"description"`
+		Category    string          `json:"category"`
+		Version     string          `json:"version"`
 		Content     string          `json:"content"`
 		Metadata    json.RawMessage `json:"metadata"`
 		SourcePath  string          `json:"sourcePath"`
-		CreatedBy   string `json:"createdBy" binding:"required"`
+		CreatedBy   string          `json:"createdBy" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -367,6 +368,14 @@ func GetItem(c *gin.Context) {
 	// Populate repo visibility from the parent repository
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
+	}
+	if userID := c.GetString(middleware.UserIDKey); userID != "" {
+		var count int64
+		if err := db.Model(&models.ItemFavorite{}).
+			Where("item_id = ? AND user_id = ?", item.ID, userID).
+			Count(&count).Error; err == nil {
+			resp.Favorited = count > 0
+		}
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -999,13 +1008,13 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 // createItemFromJSON handles the original JSON-body item creation path.
 func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	var req struct {
-		RegistryID  string `json:"registryId"`
-		Slug        string `json:"slug"`
-		ItemType    string `json:"itemType" binding:"required"`
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		Category    string `json:"category"`
-		Version     string `json:"version"`
+		RegistryID  string          `json:"registryId"`
+		Slug        string          `json:"slug"`
+		ItemType    string          `json:"itemType" binding:"required"`
+		Name        string          `json:"name" binding:"required"`
+		Description string          `json:"description"`
+		Category    string          `json:"category"`
+		Version     string          `json:"version"`
 		Content     string          `json:"content"`
 		Metadata    json.RawMessage `json:"metadata"`
 		CreatedBy   string          `json:"createdBy"`

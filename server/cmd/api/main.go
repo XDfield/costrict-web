@@ -191,6 +191,7 @@ func main() {
 			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
 		}
 		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
 		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
 
 		// All routes below require authentication
@@ -247,7 +248,8 @@ func main() {
 			authed.PUT("/items/:id/transfer", handlers.TransferItemToRepo)
 			authed.POST("/items/:id/scan", handlers.TriggerItemScan)
 			authed.POST("/scan-jobs/:id/cancel", handlers.CancelScanJob)
-			authed.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+			authed.POST("/items/:id/favorite", recommendHandler.FavoriteItem)
+			authed.DELETE("/items/:id/favorite", recommendHandler.UnfavoriteItem)
 
 			authed.POST("/artifacts/upload", handlers.UploadArtifact)
 			authed.DELETE("/artifacts/:id", handlers.DeleteArtifact)

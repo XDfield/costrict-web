@@ -361,6 +361,7 @@ func TestGetItem_Found(t *testing.T) {
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-gi1", RegistryID: "reg-gi1", RepoID: "repo-1", Slug: "get-me", ItemType: "skill",
 		Name: "Get Me", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		PreviewCount: 12, InstallCount: 3, FavoriteCount: 5,
 	})
 
 	w := get(newItemRouter(""), "/api/items/item-gi1")
@@ -371,6 +372,9 @@ func TestGetItem_Found(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&item)
 	if item["id"] != "item-gi1" {
 		t.Fatalf("unexpected id: %v", item["id"])
+	}
+	if item["previewCount"] != float64(12) || item["installCount"] != float64(3) || item["favoriteCount"] != float64(5) {
+		t.Fatalf("unexpected metric fields: preview=%v install=%v favorite=%v", item["previewCount"], item["installCount"], item["favoriteCount"])
 	}
 }
 
@@ -419,6 +423,60 @@ func TestGetItem_PrivateRepoVisibilityField(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&item)
 	if item["repoVisibility"] != "private" {
 		t.Fatalf("expected repoVisibility=private, got %v", item["repoVisibility"])
+	}
+}
+
+func TestGetItem_FavoritedForCurrentUser(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-gi-fav", Name: "gi-fav-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-gi-fav", RegistryID: "reg-gi-fav", RepoID: "repo-1", Slug: "fav-item", ItemType: "skill",
+		Name: "Fav Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		FavoriteCount: 1,
+	})
+	database.DB.Create(&models.ItemFavorite{
+		ID:     "fav-gi-1",
+		ItemID: "item-gi-fav",
+		UserID: "viewer-1",
+	})
+
+	w := get(newItemRouter("viewer-1"), "/api/items/item-gi-fav")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	if item["favorited"] != true {
+		t.Fatalf("expected favorited=true, got %v", item["favorited"])
+	}
+}
+
+func TestGetItem_NotFavoritedForAnonymousUser(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-gi-anon", Name: "gi-anon-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-gi-anon", RegistryID: "reg-gi-anon", RepoID: "repo-1", Slug: "anon-item", ItemType: "skill",
+		Name: "Anon Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		FavoriteCount: 1,
+	})
+	database.DB.Create(&models.ItemFavorite{
+		ID:     "fav-gi-2",
+		ItemID: "item-gi-anon",
+		UserID: "viewer-1",
+	})
+
+	w := get(newItemRouter(""), "/api/items/item-gi-anon")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	if item["favorited"] != false {
+		t.Fatalf("expected favorited=false, got %v", item["favorited"])
 	}
 }
 
@@ -1114,7 +1172,6 @@ func TestCreateItemDirect_JSON_CrossRepoSlugAllowed(t *testing.T) {
 	}
 }
 
-
 func TestCreateItemDirect_JSON_StillWorks(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
@@ -1167,8 +1224,8 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	// Create an item via zip first.
 	initContent := "---\nname: Init Skill\ndescription: Original\nversion: 1.0.0\n---\n# Init"
 	initZip := createTestZip(map[string][]byte{
-		"SKILL.md":          []byte(initContent),
-		"scripts/setup.sh":  []byte("#!/bin/bash\necho init"),
+		"SKILL.md":         []byte(initContent),
+		"scripts/setup.sh": []byte("#!/bin/bash\necho init"),
 	})
 	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
 		"itemType": "skill",
@@ -1188,7 +1245,7 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	// Now update via archive.
 	updatedContent := "---\nname: Updated Skill\ndescription: Updated\nversion: 2.0.0\n---\n# Updated"
 	updatedZip := createTestZip(map[string][]byte{
-		"SKILL.md":         []byte(updatedContent),
+		"SKILL.md":          []byte(updatedContent),
 		"scripts/deploy.sh": []byte("#!/bin/bash\necho deploy"),
 	})
 	w = putMultipart(newItemRouter("u1"), "/api/items/"+itemID, map[string]string{

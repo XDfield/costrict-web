@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -87,7 +88,9 @@ func setupTestDB(t *testing.T) func() {
 			source_path          TEXT,
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
+			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
+			favorite_count       INTEGER DEFAULT 0,
 			status               TEXT DEFAULT 'active',
 			security_status      TEXT DEFAULT 'unscanned',
 			last_scan_id         TEXT,
@@ -169,6 +172,13 @@ func setupTestDB(t *testing.T) func() {
 			rating       INTEGER DEFAULT 0,
 			feedback     TEXT,
 			created_at   DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS item_favorites (
+			id         TEXT PRIMARY KEY,
+			item_id    TEXT NOT NULL,
+			user_id    TEXT NOT NULL,
+			created_at DATETIME,
+			UNIQUE(item_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS experience_candidates (
 			id             TEXT PRIMARY KEY,
@@ -1068,6 +1078,18 @@ func TestDownloadItem_PublicItem(t *testing.T) {
 	}
 	if w.Body.String() != "# My Skill" {
 		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		var item models.CapabilityItem
+		if err := database.DB.First(&item, "id = ?", "item-byid").Error; err == nil && item.InstallCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected install_count to be incremented after download")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -67,16 +67,16 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		Metadata:    metadataJSON,
 	}
 
-	// Only set ItemID if it's a valid UUID
+	// PostgreSQL stores UUIDs here, while tests use SQLite/TEXT IDs.
 	if req.ItemID != "" {
-		if _, err := uuid.Parse(req.ItemID); err == nil {
+		if _, err := uuid.Parse(req.ItemID); err == nil || s.db.Dialector.Name() != "postgres" {
 			log.ItemID = req.ItemID
 		}
 	}
 
-	// Only set RegistryID if it's a valid UUID
+	// PostgreSQL stores UUIDs here, while tests use SQLite/TEXT IDs.
 	if req.RegistryID != "" {
-		if _, err := uuid.Parse(req.RegistryID); err == nil {
+		if _, err := uuid.Parse(req.RegistryID); err == nil || s.db.Dialector.Name() != "postgres" {
 			log.RegistryID = req.RegistryID
 		}
 	}
@@ -95,8 +95,8 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		s.db.Model(log).Update("registry_id", log.RegistryID)
 	}
 
-	// Update item statistics
-	go s.updateItemStats(req.ItemID, req.ActionType)
+	// Keep aggregate counters in sync so list/detail APIs can return them directly.
+	s.updateItemStats(req.ItemID, req.ActionType)
 
 	return log, nil
 }
@@ -106,6 +106,11 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 	db := database.GetDB()
 
 	switch actionType {
+	case models.ActionView:
+		db.Model(&models.CapabilityItem{}).
+			Where("id = ?", itemID).
+			UpdateColumn("preview_count", gorm.Expr("preview_count + 1"))
+
 	case models.ActionInstall:
 		db.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
@@ -114,6 +119,102 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 	case models.ActionSuccess, models.ActionFail:
 		s.updateExperienceScore(itemID)
 	}
+}
+
+func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID string) (int64, bool, error) {
+	tx := s.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return 0, false, tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	favorite := models.ItemFavorite{
+		ID:     uuid.New().String(),
+		ItemID: itemID,
+		UserID: userID,
+	}
+	var existing models.ItemFavorite
+	err := tx.Where("item_id = ? AND user_id = ?", itemID, userID).First(&existing).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		tx.Rollback()
+		return 0, false, err
+	}
+
+	created := err == gorm.ErrRecordNotFound
+	if created {
+		if err := tx.Create(&favorite).Error; err != nil {
+			tx.Rollback()
+			return 0, false, err
+		}
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("id = ?", itemID).
+			UpdateColumn("favorite_count", gorm.Expr("favorite_count + 1")).Error; err != nil {
+			tx.Rollback()
+			return 0, false, err
+		}
+	}
+
+	var count int64
+	if err := tx.Model(&models.CapabilityItem{}).
+		Where("id = ?", itemID).
+		Select("favorite_count").
+		Scan(&count).Error; err != nil {
+		tx.Rollback()
+		return 0, false, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return 0, false, err
+	}
+	return count, created, nil
+}
+
+func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID string) (int64, bool, error) {
+	tx := s.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return 0, false, tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	result := tx.Where("item_id = ? AND user_id = ?", itemID, userID).Delete(&models.ItemFavorite{})
+	if result.Error != nil {
+		tx.Rollback()
+		return 0, false, result.Error
+	}
+
+	removed := result.RowsAffected > 0
+	if removed {
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("id = ?", itemID).
+			UpdateColumn("favorite_count", gorm.Expr("CASE WHEN favorite_count > 0 THEN favorite_count - 1 ELSE 0 END")).Error; err != nil {
+			tx.Rollback()
+			return 0, false, err
+		}
+	}
+
+	var count int64
+	if err := tx.Model(&models.CapabilityItem{}).
+		Where("id = ?", itemID).
+		Select("favorite_count").
+		Scan(&count).Error; err != nil {
+		tx.Rollback()
+		return 0, false, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return 0, false, err
+	}
+	return count, removed, nil
 }
 
 // updateExperienceScore updates the experience score for an item
@@ -217,6 +318,9 @@ func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID strin
 	stats.Views = actionCounts[models.ActionView]
 	stats.Clicks = actionCounts[models.ActionClick]
 	stats.Installs = actionCounts[models.ActionInstall]
+	s.db.Model(&models.ItemFavorite{}).
+		Where("item_id = ?", itemID).
+		Count(&stats.Favorites)
 	stats.Uses = actionCounts[models.ActionUse]
 	stats.Successes = actionCounts[models.ActionSuccess]
 	stats.Failures = actionCounts[models.ActionFail]
@@ -245,15 +349,16 @@ func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID strin
 
 // ItemBehaviorStats contains behavior statistics for an item
 type ItemBehaviorStats struct {
-	ItemID        string    `json:"itemId"`
-	Views         int64     `json:"views"`
-	Clicks        int64     `json:"clicks"`
-	Installs      int64     `json:"installs"`
-	Uses          int64     `json:"uses"`
-	Successes     int64     `json:"successes"`
-	Failures      int64     `json:"failures"`
-	SuccessRate   float64   `json:"successRate"`
-	AverageRating float64   `json:"averageRating"`
+	ItemID         string   `json:"itemId"`
+	Views          int64    `json:"views"`
+	Clicks         int64    `json:"clicks"`
+	Installs       int64    `json:"installs"`
+	Favorites      int64    `json:"favorites"`
+	Uses           int64    `json:"uses"`
+	Successes      int64    `json:"successes"`
+	Failures       int64    `json:"failures"`
+	SuccessRate    float64  `json:"successRate"`
+	AverageRating  float64  `json:"averageRating"`
 	RecentFeedback []string `json:"recentFeedback"`
 }
 
