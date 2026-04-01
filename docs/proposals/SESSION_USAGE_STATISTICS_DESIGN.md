@@ -25,7 +25,7 @@
 
 ## 概述
 
-将 opencode CLI 本地 SQLite 中聚合的会话用量数据上报到 costrict-web server，并在服务端实现按 `git_repo_url` + 用户维度的对话活跃度聚合查询，支持 7 天折线图展示。
+将 opencode CLI 本地 SQLite 中按**单次 assistant 请求**记录的用量数据上报到 costrict-web server，并在服务端实现按 `git_repo_url` + 用户维度的请求活跃度聚合查询，支持 7 天折线图展示。
 
 ### 核心需求
 
@@ -33,7 +33,7 @@
 |---|------|------|
 | 1 | 数据上报 | opencode CLI 定期将 session usage 汇总数据推送到 costrict-web |
 | 2 | 服务端存储 | costrict-web 使用独立 SQLite 文件持久化上报数据（不侵入业务 PostgreSQL） |
-| 3 | 活跃度查询 | 提供 API 查询指定 `git_repo_url` 下各用户近 7 天的对话次数折线图数据 |
+| 3 | 活跃度查询 | 提供 API 查询指定 `git_repo_url` 下各用户近 7 天的请求次数折线图数据 |
 
 ### 参考来源
 
@@ -65,7 +65,7 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
 ┌─────────────────────────────────────────────┐
 │  opencode CLI (client)                      │
 │                                             │
-│  SQLite ──► aggregateSessionStats()         │
+│  SQLite ──► extractRequestUsage()           │
 │             + git remote get-url origin     │
 │                      │                      │
 │            UsageReporter (new module)        │
@@ -83,7 +83,7 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
 │                                             │
 │  ┌───────────────────────────┐              │
 │  │ session_usage_reports     │ (独立 SQLite)│
-│  │ 每个 session+model 一行   │              │
+│  │ 每次请求一行              │              │
 │  │ data/usage_stats.db       │              │
 │  └───────────────────────────┘              │
 │                                             │
@@ -104,6 +104,8 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
   "reports": [
     {
       "session_id": "abc-123",
+      "request_id": "req-001",
+      "message_id": "msg-001",
       "date": "2026-03-30",
       "updated": "2026-03-30",
       "model_id": "claude-sonnet-4-20250514",
@@ -114,7 +116,7 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
       "cache_read_tokens": 1000,
       "cache_write_tokens": 500,
       "cost": 0.05,
-      "rounds": 3,
+      "rounds": 1,
       "git_repo_url": "https://github.com/zgsm-ai/opencode",
       "git_worktree": "/home/user/projects/opencode"
     }
@@ -125,6 +127,11 @@ opencode CLI 在本地 SQLite 中记录了完整的会话与消息数据（sessi
 ```
 
 字段对应关系来自 `opencode/docs/session-usage-statistics.md` 中 Target Output Fields 的定义。
+
+其中：
+
+- `request_id` 复用 `llm.ts` 中为单次模型调用生成的 `X-Request-Id`
+- `message_id` 额外记录本地已持久化的 **assistant message id**（`message.id`），作为稳定的数据来源，便于补扫、排障和后续数据校验
 
 ### 服务端数据库表（独立 SQLite）
 
@@ -144,6 +151,8 @@ CREATE TABLE IF NOT EXISTS session_usage_reports (
     user_id            TEXT    NOT NULL,
     device_id          TEXT    DEFAULT '',
     session_id         TEXT    NOT NULL,
+    request_id         TEXT    NOT NULL,
+    message_id         TEXT    NOT NULL,
     date               TEXT    NOT NULL,        -- ISO date 'YYYY-MM-DD'
     updated            TEXT    NOT NULL,        -- ISO date 'YYYY-MM-DD'
     model_id           TEXT    NOT NULL,
@@ -154,7 +163,7 @@ CREATE TABLE IF NOT EXISTS session_usage_reports (
     cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     cost               REAL    NOT NULL DEFAULT 0,
-    rounds             INTEGER NOT NULL DEFAULT 0,
+    rounds             INTEGER NOT NULL DEFAULT 1,
     git_repo_url       TEXT    NOT NULL DEFAULT '',
     git_worktree       TEXT    NOT NULL DEFAULT '',
     reported_at        TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -162,9 +171,9 @@ CREATE TABLE IF NOT EXISTS session_usage_reports (
     updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- 幂等约束：同一 user + session + model 只允许一条记录
-CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_session_model
-    ON session_usage_reports (user_id, session_id, model_id);
+-- 幂等约束：同一 user + request 只允许一条记录
+CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_request
+    ON session_usage_reports (user_id, request_id);
 
 -- 核心查询索引
 CREATE INDEX IF NOT EXISTS idx_usage_repo_user_date
@@ -189,12 +198,14 @@ import "time"
 // 字段类型使用 SQLite 兼容的通用类型，ID 由应用层生成 UUID。
 type SessionUsageReport struct {
     ID               string    `gorm:"primaryKey" json:"id"`
-    UserID           string    `gorm:"not null;uniqueIndex:uq_usage_session_model" json:"userId"`
+    UserID           string    `gorm:"not null;uniqueIndex:uq_usage_request" json:"userId"`
     DeviceID         string    `gorm:"index:idx_usage_device" json:"deviceId"`
-    SessionID        string    `gorm:"not null;uniqueIndex:uq_usage_session_model" json:"sessionId"`
+    SessionID        string    `gorm:"not null" json:"sessionId"`
+    RequestID        string    `gorm:"not null;uniqueIndex:uq_usage_request" json:"requestId"`
+    MessageID        string    `gorm:"not null" json:"messageId"`
     Date             string    `gorm:"not null" json:"date"`                  // ISO date "YYYY-MM-DD"
     Updated          string    `gorm:"not null" json:"updated"`               // ISO date "YYYY-MM-DD"
-    ModelID          string    `gorm:"not null;uniqueIndex:uq_usage_session_model" json:"modelId"`
+    ModelID          string    `gorm:"not null" json:"modelId"`
     ProviderID       string    `gorm:"not null;default:''" json:"providerId"`
     InputTokens      int64     `gorm:"not null;default:0" json:"inputTokens"`
     OutputTokens     int64     `gorm:"not null;default:0" json:"outputTokens"`
@@ -202,7 +213,7 @@ type SessionUsageReport struct {
     CacheReadTokens  int64     `gorm:"not null;default:0" json:"cacheReadTokens"`
     CacheWriteTokens int64     `gorm:"not null;default:0" json:"cacheWriteTokens"`
     Cost             float64   `gorm:"not null;default:0" json:"cost"`
-    Rounds           int       `gorm:"not null;default:0" json:"rounds"`
+    Rounds           int       `gorm:"not null;default:1" json:"rounds"`
     GitRepoURL       string    `gorm:"not null;default:'';index:idx_usage_repo_user_date;index:idx_usage_repo_date" json:"gitRepoUrl"`
     GitWorktree      string    `gorm:"not null;default:''" json:"gitWorktree"`
     ReportedAt       time.Time `gorm:"not null" json:"reportedAt"`
@@ -226,12 +237,13 @@ func (SessionUsageReport) TableName() string {
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
 | **存储引擎** | 独立 SQLite 文件 (`data/usage_stats.db`) | 不侵入业务 PG；项目已有 SQLite 驱动依赖；后续迁移 ES 路径最短 |
-| **存储粒度** | 每 session+model 一行 | 与原提案 SQL `GROUP BY s.id, modelID` 对齐；同一 session 切换 model 产生多行 |
-| **幂等机制** | `UNIQUE (user_id, session_id, model_id)` + UPSERT | 客户端可能重复上报（重启、网络重试），`INSERT OR REPLACE` / `ON CONFLICT DO UPDATE` 保证幂等 |
+| **存储粒度** | 每次 LLM 请求一行 | 原始数据单位是单次请求而不是整个 session；同一 session + model 理论上会出现多次请求，因此不能压成单行 |
+| **幂等机制** | `UNIQUE (user_id, request_id)` + UPSERT | `request_id` 复用 llm.ts 生成的 X-Request-Id；客户端重复上报时按请求级唯一标识保证幂等 |
 | **用户标识** | JWT `userId`（Casdoor） | 复用现有 RequireAuth 中间件，服务端从 token 提取，不可伪造 |
 | **git_repo_url** | 客户端上报前规范化 | 去 `.git` 后缀、SSH → HTTPS、统一小写，避免同仓库因 URL 差异导致数据分散 |
 | **时间粒度** | `date` 列按日存储 (TEXT `YYYY-MM-DD`) | 7 天折线图按 `date` GROUP BY，SQLite 无原生 DATE 类型，TEXT 存 ISO date 即可 |
 | **ID 生成** | 应用层 `uuid.New().String()` | SQLite 无 `gen_random_uuid()` 函数，由 Go 代码生成 |
+| **稳定来源字段** | `message_id = assistant message.id` | 本地 SQLite 中已持久化，适合补扫和交叉校验 |
 
 ---
 
@@ -252,6 +264,8 @@ Content-Type: application/json
   "reports": [
     {
       "session_id": "string",     // required
+      "request_id": "string",     // required, 复用 llm.ts 中生成的 X-Request-Id
+      "message_id": "string",     // required, assistant message.id，作为稳定数据来源
       "date": "2026-03-30",       // required, ISO date
       "updated": "2026-03-30",    // required, ISO date
       "model_id": "string",       // required
@@ -262,7 +276,7 @@ Content-Type: application/json
       "cache_read_tokens": 0,
       "cache_write_tokens": 0,
       "cost": 0.0,
-      "rounds": 1,                // required, >= 1
+      "rounds": 1,                // 固定为 1；记录单位是单次请求
       "git_repo_url": "string",   // required
       "git_worktree": "string"    // optional
     }
@@ -284,8 +298,8 @@ Content-Type: application/json
 **服务端处理逻辑：**
 
 1. 从 JWT 提取 `userId`
-2. 逐条校验 `reports`：`session_id`、`model_id`、`git_repo_url` 非空；`rounds >= 1`
-3. 批量 UPSERT：`INSERT ... ON CONFLICT (user_id, session_id, model_id) DO UPDATE SET ...`（SQLite 3.24+ 原生支持）
+2. 逐条校验 `reports`：`session_id`、`request_id`、`message_id`、`model_id`、`git_repo_url` 非空；`rounds >= 1`
+3. 批量 UPSERT：`INSERT ... ON CONFLICT (user_id, request_id) DO UPDATE SET ...`（SQLite 3.24+ 原生支持）
 4. 仅在 `reported_at` 新于已有记录时覆盖 token/cost/rounds 字段，防止旧数据覆盖新数据
 
 ### 活跃度查询
@@ -316,29 +330,29 @@ Authorization: Bearer <token>
       "user_id": "casdoor-user-id-1",
       "username": "alice",
       "daily": [
-        { "date": "2026-03-24", "sessions": 3 },
-        { "date": "2026-03-25", "sessions": 5 },
-        { "date": "2026-03-26", "sessions": 0 },
-        { "date": "2026-03-27", "sessions": 2 },
-        { "date": "2026-03-28", "sessions": 7 },
-        { "date": "2026-03-29", "sessions": 1 },
-        { "date": "2026-03-30", "sessions": 4 }
+        { "date": "2026-03-24", "requests": 3 },
+        { "date": "2026-03-25", "requests": 5 },
+        { "date": "2026-03-26", "requests": 0 },
+        { "date": "2026-03-27", "requests": 2 },
+        { "date": "2026-03-28", "requests": 7 },
+        { "date": "2026-03-29", "requests": 1 },
+        { "date": "2026-03-30", "requests": 4 }
       ],
-      "total_sessions": 22
+      "total_requests": 22
     },
     {
       "user_id": "casdoor-user-id-2",
       "username": "bob",
       "daily": [
-        { "date": "2026-03-24", "sessions": 1 },
-        { "date": "2026-03-25", "sessions": 0 },
-        { "date": "2026-03-26", "sessions": 3 },
-        { "date": "2026-03-27", "sessions": 0 },
-        { "date": "2026-03-28", "sessions": 2 },
-        { "date": "2026-03-29", "sessions": 0 },
-        { "date": "2026-03-30", "sessions": 1 }
+        { "date": "2026-03-24", "requests": 1 },
+        { "date": "2026-03-25", "requests": 0 },
+        { "date": "2026-03-26", "requests": 3 },
+        { "date": "2026-03-27", "requests": 0 },
+        { "date": "2026-03-28", "requests": 2 },
+        { "date": "2026-03-29", "requests": 0 },
+        { "date": "2026-03-30", "requests": 1 }
       ],
-      "total_sessions": 7
+      "total_requests": 7
     }
   ]
 }
@@ -355,31 +369,80 @@ Authorization: Bearer <token>
 ### 核心流程
 
 ```
-Session 结束 / Bus event
+Assistant message updated / Bus event
        │
        ▼
-  aggregateForSession(sessionId)    ← 复用 stats.ts 中的聚合逻辑
+   extractRequestFromMessage()       ← 从 assistant message 提取单次请求用量
+       │
+       ├─ 条件1: `role === "assistant"`
+       ├─ 条件2: `time.completed` 存在（仅完成后入队）
+       ├─ 条件3: `cost/tokens/modelID/providerID` 已落盘
+       └─ 条件4: 存在 `request_id` 与 `message_id`
        │
        ▼
-  resolveGitRepoUrl(worktree)       ← git -C <worktree> remote get-url origin
+   resolveGitRepoUrl(worktree)       ← git -C <worktree> remote get-url origin
        │
        ▼
-  normalize(url)                    ← SSH → HTTPS, 去 .git 后缀, 统一小写
+   normalize(url)                    ← SSH → HTTPS, 去 .git 后缀, 统一小写
        │
        ▼
-  enqueue(report)                   ← 写入内存队列
+   enqueue(report)                   ← 追加写入 JSONL 文件
        │
        ▼
-  flush() [debounce 5s]             ← 批量 POST /api/usage/report
+   checkBatchThreshold()             ← 检查是否达到批量阈值 (BATCH_SIZE=50)
+       │
+       ▼
+   flush() [threshold 或 定时]       ← 批量 POST /api/usage/report
+       │
+       ▼
+   删除已上报记录                    ← 重写 JSONL 文件
 ```
 
 ### 触发时机
 
 | 时机 | 方式 | 说明 |
 |------|------|------|
-| Session 结束/切换 | `Bus.subscribe(Session.Event.Updated)` | 实时上报，debounce 合并 |
+| Assistant 消息更新 | `Bus.subscribe(MessageV2.Event.Updated)` | 仅在 assistant message 完成落盘后提取请求数据并入队 |
+| CLI 启动补扫 | 扫描近期 assistant message | 兜底恢复，避免进程异常退出导致遗漏 |
 | CLI 退出 | `process.on("beforeExit")` | flush 未发送的队列 |
-| 定期兜底 | `setInterval(300_000)` | 每 5 分钟 flush，防止长会话丢数据 |
+| 定期兜底 | `setInterval(300_000)` | 每 5 分钟 flush，防止长时间不满足阈值 |
+| 批量阈值 | 队列达到 50 条 | 立即 flush，减少网络请求次数 |
+
+### JSONL 队列文件
+
+**文件位置**: `~/.costrict/usage-queue.jsonl`
+
+**文件格式**: 每行一个 JSON 对象，包含完整的上报数据 + 元数据字段
+
+```jsonl
+{"session_id":"sess-001","request_id":"req-001","message_id":"msg-001","date":"2026-04-01","updated":"2026-04-01","model_id":"claude-sonnet-4","provider_id":"anthropic","input_tokens":1000,"output_tokens":500,"reasoning_tokens":100,"cache_read_tokens":50,"cache_write_tokens":25,"cost":0.05,"rounds":1,"git_repo_url":"https://github.com/zgsm-ai/opencode","git_worktree":"/home/user/projects/opencode","queued_at":1722547200000,"retry_count":0}
+{"session_id":"sess-001","request_id":"req-002","message_id":"msg-002","date":"2026-04-01","updated":"2026-04-01","model_id":"claude-sonnet-4","provider_id":"anthropic","input_tokens":2000,"output_tokens":1000,"reasoning_tokens":200,"cache_read_tokens":100,"cache_write_tokens":50,"cost":0.10,"rounds":1,"git_repo_url":"https://github.com/zgsm-ai/opencode","git_worktree":"/home/user/projects/opencode","queued_at":1722547260000,"retry_count":0}
+```
+
+**数据结构**:
+
+```typescript
+interface UsageReport {
+  session_id: string
+  request_id: string        // 复用 llm.ts 中生成的 X-Request-Id
+  message_id: string        // assistant message.id，作为稳定数据来源
+  date: string              // ISO date "YYYY-MM-DD"
+  updated: string           // ISO date "YYYY-MM-DD"
+  model_id: string
+  provider_id: string
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cost: number
+  rounds: number            // 固定为 1，表示一次请求
+  git_repo_url: string
+  git_worktree: string
+  queued_at: number         // 入队时间戳（毫秒）
+  retry_count: number       // 重试次数
+}
+```
 
 ### git_repo_url 规范化
 
@@ -395,10 +458,47 @@ function normalize(url: string): string {
 
 ### 本地队列与重试
 
-- 内存队列，flush 失败时保留，下次重试
-- 最多保留 500 条未上报记录
-- 3 次重试后丢弃，避免永久堆积
-- 复用 `createAuthenticatedFetch()` 处理 token 过期刷新
+**存储方式**: JSONL 文件（零侵入，不修改数据库 schema）
+
+**配置参数**:
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `BATCH_SIZE` | 50 | 批量上报阈值 |
+| `MAX_RETRIES` | 3 | 最大重试次数 |
+| `FLUSH_INTERVAL` | 5 分钟 | 定时刷新间隔 |
+
+**重试机制**:
+
+1. 上报失败时，增加对应记录的 `retry_count`
+2. 下次 flush 时跳过 `retry_count >= MAX_RETRIES` 的记录
+3. 成功上报后，从队列中删除对应记录（重写 JSONL 文件）
+
+### 入队条件
+
+仅当 assistant message 已**完成落盘**时才允许入队，避免流式中间态被重复统计。建议同时满足以下条件：
+
+1. `message.info.role === "assistant"`
+2. `message.info.time.completed` 已存在
+3. `message.info.cost` 与 `message.info.tokens` 已写入
+4. 可以同时拿到 `request_id`（X-Request-Id）与 `message_id`（assistant message.id）
+
+若仅收到流式更新但 message 尚未完成，则跳过本次事件，等待后续 completed 状态再入队。
+
+**并发安全**:
+
+- 使用 `isFlushing` 标志防止并发 flush
+- 追加写入和重写文件操作在 Node.js 单线程下天然串行
+
+**优势**:
+
+- **零侵入**: 不需要修改数据库 schema
+- **简单可靠**: JSONL 格式简单，易于调试
+- **跨项目**: 全局队列，多个项目共享一个队列文件
+- **容错性强**: 文件损坏只影响单行，其他行仍可读取
+- **易于清理**: 直接删除文件即可清空队列
+
+**认证**: 复用 `createAuthenticatedFetch()` 处理 token 过期刷新
 
 ### 隐私控制
 
@@ -516,6 +616,8 @@ func (s *UsageService) BatchUpsert(userID string, items []ReportItem) (int, erro
             ID:        uuid.New().String(), // 应用层生成 UUID
             UserID:    userID,
             SessionID: item.SessionID,
+            RequestID: item.RequestID,
+            MessageID: item.MessageID,
             ModelID:   item.ModelID,
             // ... map remaining fields
         })
@@ -526,8 +628,7 @@ func (s *UsageService) BatchUpsert(userID string, items []ReportItem) (int, erro
         result := tx.Clauses(clause.OnConflict{
             Columns: []clause.Column{
                 {Name: "user_id"},
-                {Name: "session_id"},
-                {Name: "model_id"},
+                {Name: "request_id"},
             },
             DoUpdates: clause.AssignmentColumns([]string{
                 "input_tokens", "output_tokens", "reasoning_tokens",
@@ -555,12 +656,12 @@ func (s *UsageService) GetActivity(gitRepoURL string, days int) ([]DailyActivity
     var rows []struct {
         UserID   string
         Date     string
-        Sessions int64
+        Requests int64
     }
 
     // SQLite: date('now', '-6 days') 计算 6 天前的日期
     s.DB.Model(&models.SessionUsageReport{}).
-        Select("user_id, date, COUNT(DISTINCT session_id) AS sessions").
+        Select("user_id, date, COUNT(*) AS requests").
         Where("git_repo_url = ? AND date >= date('now', ?)", gitRepoURL, fmt.Sprintf("-%d days", days-1)).
         Group("user_id, date").
         Order("user_id, date").
@@ -577,7 +678,7 @@ func (s *UsageService) GetActivity(gitRepoURL string, days int) ([]DailyActivity
 SELECT
     user_id,
     date,
-    COUNT(DISTINCT session_id) AS sessions
+    COUNT(*) AS requests
 FROM session_usage_reports
 WHERE git_repo_url = ?1
   AND date >= date('now', '-6 days')
@@ -588,16 +689,16 @@ ORDER BY user_id, date;
 应用层后处理：
 
 1. 生成完整日期序列 `[from..to]`
-2. 对每个 user_id 左填充缺失日期为 `sessions: 0`
+2. 对每个 user_id 左填充缺失日期为 `requests: 0`
 3. 通过 Casdoor API 批量解析 `user_id → username`（复用 `handlers.GetUserNames` 逻辑）
 
 ---
 
 ## 活跃度计算详解
 
-### "对话次数"定义
+### "请求次数"定义
 
-**一次对话 = 一个唯一 session_id**。同一 session 内切换 model 会产生多条 `session_usage_reports` 记录，但 `COUNT(DISTINCT session_id)` 确保该 session 只计为 1 次对话。
+**一次请求 = 底表中的一条记录**。`session_usage_reports` 的记录粒度就是**单次 assistant 请求**，因此活跃度统计直接按请求数聚合：`COUNT(*)`。
 
 ### 查询流程
 
@@ -605,7 +706,7 @@ ORDER BY user_id, date;
 1. 确定日期范围: [today - (days-1), today]
 
 2. SQL 聚合 (SQLite):
-   SELECT user_id, date, COUNT(DISTINCT session_id) AS sessions
+   SELECT user_id, date, COUNT(*) AS requests
    FROM session_usage_reports
    WHERE git_repo_url = ? AND date >= date('now', '-6 days')
    GROUP BY user_id, date
@@ -613,9 +714,9 @@ ORDER BY user_id, date;
 3. 应用层组装:
    - 构建完整日期数组 date_range = [from..to]
    - 对每个 user_id:
-     - SQL 结果映射为 map[date]sessions
+     - SQL 结果映射为 map[date]requests
      - 遍历 date_range，缺失日补 0
-     - 计算 total_sessions = SUM(daily.sessions)
+     - 计算 total_requests = SUM(daily.requests)
    - 批量解析 user_id → username
 
 4. 返回 JSON
@@ -626,7 +727,7 @@ ORDER BY user_id, date;
 | 数据规模估算 | 值 |
 |---|---|
 | 活跃用户/仓库 | ~50 人 |
-| 每人每天 sessions | ~10 |
+| 每人每天 requests | ~10 |
 | 7 天数据量 | ~3,500 行 |
 | 90 天数据量 | ~45,000 行 |
 | 180 天数据量（保留上限） | ~90,000 行 |
@@ -634,7 +735,7 @@ ORDER BY user_id, date;
 SQLite 在此量级下完全胜任：
 
 - **读性能**：索引 `idx_usage_repo_user_date` 覆盖核心查询，万级数据秒回。SQLite 的 B-tree 索引对此规模极为高效
-- **写性能**：WAL 模式下写入不阻塞读取。上报频率低（每 session 一次），单次批量 UPSERT 通常 <100 条，事务耗时 <10ms
+- **写性能**：WAL 模式下写入不阻塞读取。上报频率低（客户端按批量阈值或定时 flush 上报），单次批量 UPSERT 通常 <100 条，事务耗时 <10ms
 - **并发**：SQLite 写串行化，但本场景写入频率极低、单次耗时极短，不构成瓶颈。读操作在 WAL 模式下完全并发
 - **文件大小**：90,000 行 × ~500 字节/行 ≈ 45MB，远在 SQLite 舒适区内（SQLite 理论上限 281TB）
 
@@ -648,12 +749,16 @@ SQLite 在此量级下完全胜任：
 ```
 Client (opencode)                     Server (costrict-web)
      │                                       │
-     │  ──── Session ends ────►               │
+     │  ──── Assistant message updated ───►   │
      │                                        │
-     │  aggregateSessionStats()               │
+     │  extract request from message          │
+     │  request_id = X-Request-Id             │
+     │  message_id = assistant message.id     │
      │  git remote get-url origin             │
      │  normalize(url)                        │
+     │  append usage-queue.jsonl              │
      │                                        │
+     │  [queue >= 50 or every 5 min]          │
      │  ─── POST /api/usage/report ──────►    │
      │      { reports: [...], device_id }     │
      │      Authorization: Bearer <jwt>       │
@@ -664,6 +769,8 @@ Client (opencode)                     Server (costrict-web)
      │                                        │
      │  ◄── 200 { accepted: N } ─────────     │
      │                                        │
+     │  rewrite usage-queue.jsonl             │
+     │  remove accepted records               │
      │                                        │
      │  Web Dashboard / API Consumer          │
      │                                        │
@@ -691,7 +798,7 @@ Client (opencode)                     Server (costrict-web)
 | 费用趋势 | `SUM(cost)` GROUP BY date |
 | Model 分布饼图 | `COUNT(*)` GROUP BY model_id |
 | 跨仓库对比 | 去掉 `WHERE git_repo_url = ?`，改为 `GROUP BY git_repo_url` |
-| 团队排行榜 | `ORDER BY total_sessions DESC LIMIT N` |
+| 团队排行榜 | `ORDER BY total_requests DESC LIMIT N` |
 
 ### 数据生命周期
 
@@ -732,9 +839,9 @@ Client (opencode)                     Server (costrict-web)
 | Phase 1 | SQLite 连接管理 (`usage_db.go`) + GORM model + AutoMigrate + UPSERT service | costrict-web | 0.5d |
 | Phase 2 | Report handler + Activity handler + 路由注册 + Swagger 注释 | costrict-web | 1d |
 | Phase 3 | UsageReporter 模块 + CoStrict auth 复用 + Bus 集成 | opencode | 1d |
-| Phase 4 | git_repo_url normalize + 内存队列 + 重试逻辑 | opencode | 0.5d |
+| Phase 4 | git_repo_url normalize + JSONL 队列 + 批量上报 + 重试逻辑 | opencode | 1d |
 | Phase 5 | E2E 联调测试 | both | 0.5d |
-| **总计** | | | **~3.5d** |
+| **总计** | | | **~4d** |
 
 ---
 
@@ -748,7 +855,8 @@ Client (opencode)                     Server (costrict-web)
 | ORM | GORM (SQLite dialect) | 复用项目 GORM 生态，AutoMigrate 自动建表/索引 |
 | 幂等 | UPSERT on `(user_id, session_id, model_id)` | 防止重复上报导致数据膨胀 |
 | 并发控制 | WAL 模式 + 单写连接 + 事务批量写 | SQLite 最佳实践，读写不互斥 |
-| 活跃度指标 | `COUNT(DISTINCT session_id)` per day | "一个 session = 一次对话"，直觉且准确 |
-| 触发机制 | Event-driven + debounce + periodic flush | 平衡实时性与网络开销 |
-| 客户端队列 | 内存队列 + 有限重试 | 简单可靠，无需额外依赖 |
+| 活跃度指标 | `COUNT(*)` per day | 一条记录就是一次 assistant 请求，语义直接且统计简单 |
+| 触发机制 | Event-driven + 批量阈值 (50条) + 定时 flush (5分钟) | 平衡实时性与网络开销 |
+| 客户端队列 | JSONL 文件队列 (`~/.costrict/usage-queue.jsonl`) | 零侵入，不修改 DB schema；进程重启不丢失；简单可靠 |
+| 重试机制 | retry_count 计数，超过阈值跳过 | 避免永久堆积，自动清理失败记录 |
 | 后续演进 | SQLite → ES 统计指标服务 | 过渡方案，数据结构与 ES document 天然匹配 |
