@@ -32,7 +32,7 @@
 - **资源聚合**：将设备、仓库等资源归属到项目下统一管理
 - **团队协作**：支持邀请用户加入项目，区分管理员与成员角色
 - **权限隔离**：项目级别的资源访问控制
-- **生命周期管理**：支持项目启用/归档，控制项目可用性
+- **生命周期时间**：支持记录项目启用时间与归档时间，适配临时项目与长期项目
 
 ### 设计原则
 
@@ -101,8 +101,7 @@ type Project struct {
     Name        string    // 项目名称，UNIQUE(creator_id, name)
     Description string    // 项目描述
     CreatorID   string    // 创建者 ID（Casdoor user_id）
-    Enabled     bool      // 是否启用
-    EnabledAt   *time.Time // 启用时间，非空表示已启用
+    EnabledAt   *time.Time // 启用时间（可选）
     ArchivedAt  *time.Time // 归档时间，非空表示已归档
     Metadata    datatypes.JSON // 扩展元数据
     CreatedAt   time.Time
@@ -113,21 +112,21 @@ type Project struct {
 
 **索引：**
 - `idx_creator_name`: `(creator_id, name)` UNIQUE
-- `idx_enabled`: `enabled`
 - `idx_enabled_at`: `enabled_at`
 - `idx_archived_at`: `archived_at`
 
-**项目状态说明：**
-| Enabled | EnabledAt | ArchivedAt | 状态 |
-|---------|-----------|------------|------|
-| `false` | `null` | `null` | 未启用（草稿） |
-| `true` | `非空` | `null` | 已启用（活跃） |
-| `false` | `任意` | `非空` | 已归档 |
+**生命周期说明：**
+| EnabledAt | ArchivedAt | 说明 |
+|-----------|------------|------|
+| `null` | `null` | 普通长期项目或尚未设置启用时间的项目 |
+| `非空` | `null` | 已记录启用时间的活跃项目 |
+| `任意` | `非空` | 已归档项目 |
 
-**状态转换规则：**
-- 未启用 → 已启用：设置 `enabled=true`，`enabled_at=NOW()`
-- 已启用 → 已归档：设置 `enabled=false`，`archived_at=NOW()`
-- 已归档 → 已启用：设置 `enabled=true`，`archived_at=null`
+说明：
+- `EnabledAt` 仅表示项目启用/开始时间，是可选字段
+- `ArchivedAt` 表示项目归档时间，是可选字段
+- 不存在“禁用”业务场景
+- 是否归档仅由 `ArchivedAt` 是否为空决定
 
 ### ProjectMember 表
 
@@ -199,13 +198,11 @@ type ProjectService struct {
 }
 
 // 项目管理
-func (s *ProjectService) CreateProject(creatorID, name, description string) (*models.Project, error)
+func (s *ProjectService) CreateProject(creatorID, name, description string, enabledAt *time.Time) (*models.Project, error)
 func (s *ProjectService) GetProject(projectID string) (*models.Project, error)
 func (s *ProjectService) ListProjects(userID string, includeArchived bool) ([]models.Project, error)
 func (s *ProjectService) UpdateProject(projectID, userID string, updates map[string]any) error
 func (s *ProjectService) DeleteProject(projectID, userID string) error
-func (s *ProjectService) EnableProject(projectID, userID string) error
-func (s *ProjectService) DisableProject(projectID, userID string) error
 func (s *ProjectService) ArchiveProject(projectID, userID string) error
 func (s *ProjectService) UnarchiveProject(projectID, userID string) error
 
@@ -256,8 +253,6 @@ func (s *ProjectService) checkPermission(projectID, userID string, requiredRole 
 | `GET` | `/api/projects/:id` | 项目成员 | 获取项目详情 |
 | `PUT` | `/api/projects/:id` | 项目管理员 | 更新项目信息 |
 | `DELETE` | `/api/projects/:id` | 项目管理员 | 删除项目（软删除） |
-| `POST` | `/api/projects/:id/enable` | 项目管理员 | 启用项目 |
-| `POST` | `/api/projects/:id/disable` | 项目管理员 | 禁用项目 |
 | `POST` | `/api/projects/:id/archive` | 项目管理员 | 归档项目 |
 | `POST` | `/api/projects/:id/unarchive` | 项目管理员 | 取消归档 |
 | `GET` | `/api/projects/:id/members` | 项目成员 | 列出项目成员 |
@@ -278,7 +273,7 @@ func (s *ProjectService) checkPermission(projectID, userID string, requiredRole 
 {
   "name": "AI 能力平台",
   "description": "企业级 AI 能力管理平台",
-  "enabled": true
+  "enabledAt": "2026-04-01T00:00:00Z"
 }
 
 // Response 201
@@ -288,7 +283,6 @@ func (s *ProjectService) checkPermission(projectID, userID string, requiredRole 
     "name": "AI 能力平台",
     "description": "企业级 AI 能力管理平台",
     "creatorId": "user-id",
-    "enabled": true,
     "enabledAt": "2026-04-01T00:00:00Z",
     "archivedAt": null,
     "createdAt": "2026-04-01T00:00:00Z"
@@ -322,34 +316,6 @@ func (s *ProjectService) checkPermission(projectID, userID string, requiredRole 
 }
 ```
 
-#### POST /api/projects/:id/enable
-
-```json
-// Response 200
-{
-  "project": {
-    "id": "uuid-xxx",
-    "enabled": true,
-    "enabledAt": "2026-04-01T02:00:00Z",
-    "archivedAt": null
-  }
-}
-```
-
-#### POST /api/projects/:id/disable
-
-```json
-// Response 200
-{
-  "project": {
-    "id": "uuid-xxx",
-    "enabled": false,
-    "enabledAt": "2026-04-01T00:00:00Z",
-    "archivedAt": null
-  }
-}
-```
-
 #### POST /api/projects/:id/archive
 
 ```json
@@ -357,7 +323,6 @@ func (s *ProjectService) checkPermission(projectID, userID string, requiredRole 
 {
   "project": {
     "id": "uuid-xxx",
-    "enabled": false,
     "enabledAt": "2026-04-01T00:00:00Z",
     "archivedAt": "2026-04-01T02:00:00Z"
   }
@@ -597,22 +562,19 @@ type SystemNotificationMessage struct {
    - 添加项目相关通知事件
    - 实现邀请通知触发逻辑
 
-### 阶段四：启用/归档功能（预计 1 天）
+### 阶段四：生命周期时间与归档功能（预计 1 天）
 
 1. **Service 扩展**
-   - `EnableProject`
-   - `DisableProject`
    - `ArchiveProject`
    - `UnarchiveProject`
+   - 支持在创建/更新时写入 `enabled_at`
 
 2. **API Handler 实现**
-   - 启用/禁用相关端点
    - 归档相关端点
 
 3. **状态校验**
    - 已归档项目不能再次归档
-   - 已启用项目不能重复启用
-   - 归档项目需先取消归档才能启用
+   - `enabled_at` 作为可选生命周期时间字段，不参与禁用状态机
 
 ### 阶段五：测试与文档（预计 1 天）
 
