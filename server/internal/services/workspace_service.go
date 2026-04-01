@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	ErrWorkspaceNotFound           = errors.New("workspace not found")
-	ErrWorkspaceNameExists         = errors.New("workspace name already exists")
+	ErrWorkspaceNotFound            = errors.New("workspace not found")
+	ErrWorkspaceNameExists          = errors.New("workspace name already exists")
 	ErrWorkspaceDirectoryRequired   = errors.New("at least one directory is required")
 	ErrWorkspaceDirectoryNotFound   = errors.New("workspace directory not found")
 	ErrDefaultWorkspaceCannotDelete = errors.New("cannot delete default workspace")
@@ -35,19 +35,19 @@ type WorkspaceWithDeviceStatus struct {
 
 // CreateWorkspaceRequest 创建工作空间请求
 type CreateWorkspaceRequest struct {
-	Name        string                     `json:"name" binding:"required,max=100"`
-	Description string                     `json:"description" binding:"max=500"`
-	DeviceID    string                     `json:"deviceId"`
-	Directories []CreateDirectoryRequest  `json:"directories" binding:"required,min=1"`
-	Settings    map[string]interface{}     `json:"settings"`
+	Name        string                   `json:"name" binding:"required,max=100"`
+	Description string                   `json:"description" binding:"max=500"`
+	DeviceID    string                   `json:"deviceId"`
+	Directories []CreateDirectoryRequest `json:"directories" binding:"required,min=1"`
+	Settings    map[string]interface{}   `json:"settings"`
 }
 
 // CreateDirectoryRequest 创建目录请求
 type CreateDirectoryRequest struct {
-	Name       string                 `json:"name" binding:"required,max=100"`
-	Path       string                 `json:"path" binding:"required,max=500"`
-	IsDefault  bool                   `json:"isDefault"`
-	Settings   map[string]interface{} `json:"settings"`
+	Name      string                 `json:"name" binding:"required,max=100"`
+	Path      string                 `json:"path" binding:"required,max=500"`
+	IsDefault bool                   `json:"isDefault"`
+	Settings  map[string]interface{} `json:"settings"`
 }
 
 // UpdateWorkspaceRequest 更新工作空间请求
@@ -214,27 +214,6 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 
 	// 重新加载完整数据
 	return s.GetWorkspace(workspace.ID, userID)
-}
-
-// getWorkspaceModelByDevice 内部方法：通过设备ID获取工作空间模型
-func (s *WorkspaceService) getWorkspaceModelByDevice(deviceID, userID string) (*models.Workspace, error) {
-	var workspace models.Workspace
-	result := s.DB.Preload("Directories").Where("device_id = ? AND user_id = ?", deviceID, userID).First(&workspace)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, ErrWorkspaceNotFound
-		}
-		return nil, result.Error
-	}
-
-	// 按 OrderIndex 排序目录
-	var directories []models.WorkspaceDirectory
-	if err := s.DB.Where("workspace_id = ?", workspace.ID).Order("order_index ASC").Find(&directories).Error; err != nil {
-		return nil, err
-	}
-	workspace.Directories = directories
-
-	return &workspace, nil
 }
 
 // GetWorkspace 获取工作空间详情
@@ -656,30 +635,37 @@ func (s *WorkspaceService) GetWorkspaceByDevice(deviceID, userID string) (*Works
 	}, nil
 }
 
-// EnsureDefaultWorkspace 确保用户有默认工作空间（用于首次使用）
-func (s *WorkspaceService) EnsureDefaultWorkspace(userID string) (*WorkspaceWithDeviceStatus, error) {
-	// 尝试获取默认工作空间
-	workspace, err := s.GetDefaultWorkspace(userID)
-	if err == nil {
-		return workspace, nil
+// ResolveWorkspaceForGateway resolves a workspace to device ID and default directory.
+// This is used by the gateway session service to translate workspace IDs into
+// device-specific information for proxying requests.
+func (s *WorkspaceService) ResolveWorkspaceForGateway(workspaceID, userID string) (deviceID string, directory string, err error) {
+	var workspace models.Workspace
+	result := s.DB.Where("id = ? AND user_id = ?", workspaceID, userID).First(&workspace)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return "", "", ErrWorkspaceNotFound
+		}
+		return "", "", result.Error
 	}
 
-	if !errors.Is(err, ErrWorkspaceNotFound) {
-		return nil, err
+	if workspace.DeviceID == "" {
+		return "", "", fmt.Errorf("workspace has no device bound")
 	}
 
-	// 创建默认工作空间
-	req := CreateWorkspaceRequest{
-		Name:        "Default Workspace",
-		Description: "Default workspace created automatically",
-		Directories: []CreateDirectoryRequest{
-			{
-				Name:      "Home",
-				Path:      "~/",
-				IsDefault: true,
-			},
-		},
+	// Find the default directory
+	var defaultDir models.WorkspaceDirectory
+	result = s.DB.Where("workspace_id = ? AND is_default = ?", workspaceID, true).First(&defaultDir)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			// If no default directory, use the first one
+			result = s.DB.Where("workspace_id = ?", workspaceID).Order("order_index ASC").Limit(1).First(&defaultDir)
+			if result.Error != nil {
+				return "", "", fmt.Errorf("workspace has no directories")
+			}
+		} else {
+			return "", "", result.Error
+		}
 	}
 
-	return s.CreateWorkspace(userID, req)
+	return workspace.DeviceID, defaultDir.Path, nil
 }
