@@ -12,9 +12,9 @@ import (
 // 每种渠道类型由管理员统一开关，并可配置系统级参数
 type SystemNotificationChannel struct {
 	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	Type         string         `gorm:"not null;index"                                 json:"type"`         // "wecom" | "feishu" | "webhook"
-	Name         string         `gorm:"not null"                                       json:"name"`         // 显示名，如"企业微信"
-	WorkspaceID  string         `gorm:"index"                                          json:"workspaceId"`  // 空=全局
+	Type         string         `gorm:"not null;index"                                 json:"type"`        // "wecom" | "feishu" | "webhook"
+	Name         string         `gorm:"not null"                                       json:"name"`        // 显示名，如"企业微信"
+	WorkspaceID  string         `gorm:"index"                                          json:"workspaceId"` // 空=全局
 	Enabled      bool           `gorm:"not null;default:true"                          json:"enabled"`
 	SystemConfig datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"systemConfig"` // 系统级配置
 	CreatedBy    string         `gorm:"not null"                                       json:"createdBy"`
@@ -26,19 +26,19 @@ type SystemNotificationChannel struct {
 // UserNotificationChannel 用户通知渠道配置
 // 用户在管理员启用的渠道基础上填写自己的配置（如 Webhook URL）
 type UserNotificationChannel struct {
-	ID               string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	UserID           string         `gorm:"not null;index"                                 json:"userId"`
-	SystemChannelID  string         `gorm:"index"                                          json:"systemChannelId"` // 关联系统渠道（webhook 类型可为空）
-	ChannelType      string         `gorm:"not null;index"                                 json:"channelType"`     // "wecom" | "feishu" | "webhook"
-	Name             string         `gorm:"not null"                                       json:"name"`
-	Enabled          bool           `gorm:"not null;default:true"                          json:"enabled"`
-	UserConfig       datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"userConfig"`  // 用户自己的配置
-	TriggerEvents    pq.StringArray `gorm:"type:text[]"                                    json:"triggerEvents,omitempty"`
-	LastUsedAt       *time.Time     `                                                      json:"lastUsedAt,omitempty"`
-	LastError        string         `                                                      json:"lastError,omitempty"`
-	CreatedAt        time.Time      `                                                      json:"createdAt"`
-	UpdatedAt        time.Time      `                                                      json:"updatedAt"`
-	DeletedAt        gorm.DeletedAt `gorm:"index"                                          json:"-"`
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID          string         `gorm:"not null;index"                                 json:"userId"`
+	SystemChannelID string         `gorm:"index"                                          json:"systemChannelId"` // 关联系统渠道（webhook 类型可为空）
+	ChannelType     string         `gorm:"not null;index"                                 json:"channelType"`     // "wecom" | "feishu" | "webhook"
+	Name            string         `gorm:"not null"                                       json:"name"`
+	Enabled         bool           `gorm:"not null;default:true"                          json:"enabled"`
+	UserConfig      datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"userConfig"` // 用户自己的配置
+	TriggerEvents   pq.StringArray `gorm:"type:text[]"                                    json:"triggerEvents,omitempty"`
+	LastUsedAt      *time.Time     `                                                      json:"lastUsedAt,omitempty"`
+	LastError       string         `                                                      json:"lastError,omitempty"`
+	CreatedAt       time.Time      `                                                      json:"createdAt"`
+	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
 }
 
 // UserConfig 通用用户配置（KV 存储，供其他模块使用）
@@ -111,42 +111,41 @@ type RepoMember struct {
 
 // RepoInvitation represents an invitation to join a repository
 type RepoInvitation struct {
-	ID              string     `gorm:"type:uuid;primaryKey" json:"id"`
-	RepoID          string     `gorm:"type:uuid;not null;index" json:"repoId"`
-	InviterID       string     `gorm:"type:varchar(191);not null" json:"inviterId"`
-	InviterUsername string     `gorm:"type:varchar(255)" json:"inviterUsername"`
-	InviteeID       string     `gorm:"type:varchar(191);index" json:"inviteeId"`
-	InviteeUsername string     `gorm:"type:varchar(255);not null" json:"inviteeUsername"`
-	Role            string     `gorm:"type:varchar(32);default:'member'" json:"role"`                  // admin | member
-	Status          string     `gorm:"type:varchar(32);default:'pending';index" json:"status"`         // pending | accepted | declined | cancelled
-	ExpiresAt       time.Time  `gorm:"not null" json:"expiresAt"`
-	CreatedAt       time.Time  `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt       time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
+	ID              string    `gorm:"type:uuid;primaryKey" json:"id"`
+	RepoID          string    `gorm:"type:uuid;not null;index" json:"repoId"`
+	InviterID       string    `gorm:"type:varchar(191);not null" json:"inviterId"`
+	InviterUsername string    `gorm:"type:varchar(255)" json:"inviterUsername"`
+	InviteeID       string    `gorm:"type:varchar(191);index" json:"inviteeId"`
+	InviteeUsername string    `gorm:"type:varchar(255);not null" json:"inviteeUsername"`
+	Role            string    `gorm:"type:varchar(32);default:'member'" json:"role"`          // admin | member
+	Status          string    `gorm:"type:varchar(32);default:'pending';index" json:"status"` // pending | accepted | declined | cancelled
+	ExpiresAt       time.Time `gorm:"not null" json:"expiresAt"`
+	CreatedAt       time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt       time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 
 	Repository *Repository `gorm:"foreignKey:RepoID" json:"repository,omitempty"`
 }
 
-
 type CapabilityRegistry struct {
-	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	Name        string     `gorm:"not null" json:"name"`
-	Description string     `json:"description"`
-	SourceType  string     `gorm:"not null;default:'internal'" json:"sourceType"`
-	ExternalURL    string     `json:"externalUrl"`
-	ExternalBranch string     `gorm:"default:'main'" json:"externalBranch"`
-	SyncEnabled    bool       `gorm:"default:false" json:"syncEnabled"`
-	SyncInterval   int        `gorm:"default:3600" json:"syncInterval"`
-	LastSyncedAt   *time.Time `json:"lastSyncedAt"`
-	LastSyncSHA    string     `json:"lastSyncSha"`
-	SyncStatus     string         `gorm:"default:'idle'" json:"syncStatus"` // idle | syncing | error | paused
-	SyncConfig     datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"syncConfig" swaggertype:"object"`
-	LastSyncLogID  *string        `gorm:"type:uuid" json:"lastSyncLogId"`
-	RepoID     string `json:"repoId"`
-	OwnerID    string `gorm:"not null;index" json:"ownerId"`
-	Items       []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
-	LastSyncLog *SyncLog         `gorm:"foreignKey:LastSyncLogID;references:ID" json:"lastSyncLog,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID             string           `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name           string           `gorm:"not null" json:"name"`
+	Description    string           `json:"description"`
+	SourceType     string           `gorm:"not null;default:'internal'" json:"sourceType"`
+	ExternalURL    string           `json:"externalUrl"`
+	ExternalBranch string           `gorm:"default:'main'" json:"externalBranch"`
+	SyncEnabled    bool             `gorm:"default:false" json:"syncEnabled"`
+	SyncInterval   int              `gorm:"default:3600" json:"syncInterval"`
+	LastSyncedAt   *time.Time       `json:"lastSyncedAt"`
+	LastSyncSHA    string           `json:"lastSyncSha"`
+	SyncStatus     string           `gorm:"default:'idle'" json:"syncStatus"` // idle | syncing | error | paused
+	SyncConfig     datatypes.JSON   `gorm:"type:jsonb;default:'{}'" json:"syncConfig" swaggertype:"object"`
+	LastSyncLogID  *string          `gorm:"type:uuid" json:"lastSyncLogId"`
+	RepoID         string           `json:"repoId"`
+	OwnerID        string           `gorm:"not null;index" json:"ownerId"`
+	Items          []CapabilityItem `gorm:"foreignKey:RegistryID" json:"items,omitempty"`
+	LastSyncLog    *SyncLog         `gorm:"foreignKey:LastSyncLogID;references:ID" json:"lastSyncLog,omitempty"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
 }
 
 type SyncJob struct {
@@ -193,37 +192,46 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID     string         `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
-	RepoID         string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
-	Slug           string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
-	ItemType       string         `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
-	Name           string         `gorm:"not null" json:"name"`
-	Description    string         `json:"description"`
-	Category       string         `json:"category"`
-	Version        string         `gorm:"default:'1.0.0'" json:"version"`
-	Content        string         `gorm:"type:text" json:"content"`
-	Metadata       datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	SourcePath     string         `json:"sourcePath"`
-	SourceSHA      string         `json:"sourceSha"`
-	SourceType     string         `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
-	InstallCount   int            `gorm:"default:0" json:"installCount"`
-	Status         string         `gorm:"default:'active'" json:"status"`
-	SecurityStatus string         `gorm:"default:'unscanned'" json:"securityStatus"`
-	LastScanID     *string        `json:"lastScanId,omitempty"`
-	CreatedBy string `gorm:"not null" json:"createdBy"`
-	UpdatedBy string `json:"updatedBy"`
-	Registry  *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions  []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
-	Assets    []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
-	Artifacts []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
-	CreatedAt time.Time `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID             string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID     string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
+	RepoID         string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
+	Slug           string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
+	ItemType       string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
+	Name           string               `gorm:"not null" json:"name"`
+	Description    string               `json:"description"`
+	Category       string               `json:"category"`
+	Version        string               `gorm:"default:'1.0.0'" json:"version"`
+	Content        string               `gorm:"type:text" json:"content"`
+	Metadata       datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	SourcePath     string               `json:"sourcePath"`
+	SourceSHA      string               `json:"sourceSha"`
+	SourceType     string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
+	PreviewCount   int                  `gorm:"default:0" json:"previewCount"`
+	InstallCount   int                  `gorm:"default:0" json:"installCount"`
+	FavoriteCount  int                  `gorm:"default:0" json:"favoriteCount"`
+	Status         string               `gorm:"default:'active'" json:"status"`
+	SecurityStatus string               `gorm:"default:'unscanned'" json:"securityStatus"`
+	LastScanID     *string              `json:"lastScanId,omitempty"`
+	CreatedBy      string               `gorm:"not null" json:"createdBy"`
+	UpdatedBy      string               `json:"updatedBy"`
+	Registry       *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions       []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	Assets         []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
+	Artifacts      []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	CreatedAt      time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
+	UpdatedAt      time.Time            `json:"updatedAt"`
 
 	// Vector embedding for semantic search
-	Embedding         *string    `gorm:"type:vector(1024)" json:"-"`
-	ExperienceScore   float64    `gorm:"default:0" json:"experienceScore"`
+	Embedding          *string    `gorm:"type:vector(1024)" json:"-"`
+	ExperienceScore    float64    `gorm:"default:0" json:"experienceScore"`
 	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
+}
+
+type ItemFavorite struct {
+	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_favorite" json:"itemId"`
+	UserID    string    `gorm:"type:varchar(191);not null;uniqueIndex:idx_item_favorite;index" json:"userId"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 type CapabilityVersion struct {
@@ -307,18 +315,18 @@ type ScanJob struct {
 // Workspace 工作空间
 // 用户可以创建多个工作空间，每个工作空间可以绑定多个设备和多个工作目录
 type Workspace struct {
-	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	Name        string         `gorm:"not null"                                       json:"name"`
-	Description string         `                                                      json:"description"`
-	UserID      string         `gorm:"not null;index"                                 json:"userId"`
-	DeviceID    string         `gorm:"index"                                          json:"deviceId"`           // 绑定的设备ID
-	IsDefault   bool           `gorm:"not null;default:false"                         json:"isDefault"`          // 是否为默认工作空间
-	Status      string         `gorm:"not null;default:'active'"                      json:"status"`             // active | inactive | archived
-	Settings    datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"settings"           swaggertype:"object"` // 工作空间设置
+	ID          string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name        string               `gorm:"not null"                                       json:"name"`
+	Description string               `                                                      json:"description"`
+	UserID      string               `gorm:"not null;index"                                 json:"userId"`
+	DeviceID    string               `gorm:"index"                                          json:"deviceId"`                                // 绑定的设备ID
+	IsDefault   bool                 `gorm:"not null;default:false"                         json:"isDefault"`                               // 是否为默认工作空间
+	Status      string               `gorm:"not null;default:'active'"                      json:"status"`                                  // active | inactive | archived
+	Settings    datatypes.JSON       `gorm:"type:jsonb;default:'{}'"                        json:"settings"           swaggertype:"object"` // 工作空间设置
 	Directories []WorkspaceDirectory `gorm:"foreignKey:WorkspaceID"                   json:"directories,omitempty"`
-	CreatedAt   time.Time      `                                                      json:"createdAt"`
-	UpdatedAt   time.Time      `                                                      json:"updatedAt"`
-	DeletedAt   gorm.DeletedAt `gorm:"index"                                          json:"-"`
+	CreatedAt   time.Time            `                                                      json:"createdAt"`
+	UpdatedAt   time.Time            `                                                      json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt       `gorm:"index"                                          json:"-"`
 }
 
 // WorkspaceDirectory 工作空间目录
@@ -328,8 +336,8 @@ type WorkspaceDirectory struct {
 	WorkspaceID string         `gorm:"not null;index"                                 json:"workspaceId"`
 	Name        string         `gorm:"not null"                                       json:"name"`
 	Path        string         `gorm:"not null"                                       json:"path"`
-	IsDefault   bool           `gorm:"not null;default:false"                         json:"isDefault"`          // 是否为默认目录
-	OrderIndex  int            `gorm:"not null;default:0"                             json:"orderIndex"`         // 排序索引
+	IsDefault   bool           `gorm:"not null;default:false"                         json:"isDefault"`                               // 是否为默认目录
+	OrderIndex  int            `gorm:"not null;default:0"                             json:"orderIndex"`                              // 排序索引
 	Settings    datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"settings"           swaggertype:"object"` // 目录设置（如忽略模式等）
 	CreatedAt   time.Time      `                                                      json:"createdAt"`
 	UpdatedAt   time.Time      `                                                      json:"updatedAt"`

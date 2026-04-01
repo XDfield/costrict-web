@@ -47,6 +47,8 @@ func newMarketplaceRouter(userID string) *gin.Engine {
 	r.GET("/api/marketplace/items/trending", injectUser, recommendHandler.GetTrending)
 	r.GET("/api/marketplace/items/new", injectUser, recommendHandler.GetNewAndNoteworthy)
 	r.POST("/api/items/:id/behavior", injectUser, recommendHandler.LogBehavior)
+	r.POST("/api/items/:id/favorite", injectUser, recommendHandler.FavoriteItem)
+	r.DELETE("/api/items/:id/favorite", injectUser, recommendHandler.UnfavoriteItem)
 	r.GET("/api/items/:id/stats", injectUser, recommendHandler.GetItemStats)
 
 	return r
@@ -202,24 +204,24 @@ func TestGetRecommendations_WithTypes(t *testing.T) {
 		ID: "reg-rec2", Name: "rec-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-rec-skill",
-		RegistryID:  "reg-rec2",
-		Slug:        "skill-type",
-		ItemType:    "skill",
-		Name:        "Skill Type",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-rec-skill",
+		RegistryID: "reg-rec2",
+		Slug:       "skill-type",
+		ItemType:   "skill",
+		Name:       "Skill Type",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-rec-cmd",
-		RegistryID:  "reg-rec2",
-		Slug:        "cmd-type",
-		ItemType:    "command",
-		Name:        "Command Type",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-rec-cmd",
+		RegistryID: "reg-rec2",
+		Slug:       "cmd-type",
+		ItemType:   "command",
+		Name:       "Command Type",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 
 	r := newMarketplaceRouter("")
@@ -267,14 +269,14 @@ func TestGetTrending_WithLimit(t *testing.T) {
 	})
 	for i := 0; i < 5; i++ {
 		database.DB.Create(&models.CapabilityItem{
-			ID:          "item-trend" + string(rune('a'+i)),
-			RegistryID:  "reg-trend2",
-			Slug:        "trending-skill-" + string(rune('a'+i)),
-			ItemType:    "skill",
-			Name:        "Trending Skill",
-			Status:      "active",
-			CreatedBy:   "u1",
-			Metadata:    datatypes.JSON([]byte("{}")),
+			ID:         "item-trend" + string(rune('a'+i)),
+			RegistryID: "reg-trend2",
+			Slug:       "trending-skill-" + string(rune('a'+i)),
+			ItemType:   "skill",
+			Name:       "Trending Skill",
+			Status:     "active",
+			CreatedBy:  "u1",
+			Metadata:   datatypes.JSON([]byte("{}")),
 		})
 	}
 
@@ -320,14 +322,14 @@ func TestGetNewAndNoteworthy_WithLimit(t *testing.T) {
 	})
 	for i := 0; i < 5; i++ {
 		database.DB.Create(&models.CapabilityItem{
-			ID:          "item-new" + string(rune('b'+i)),
-			RegistryID:  "reg-new2",
-			Slug:        "new-skill-" + string(rune('b'+i)),
-			ItemType:    "skill",
-			Name:        "New Skill",
-			Status:      "active",
-			CreatedBy:   "u1",
-			Metadata:    datatypes.JSON([]byte("{}")),
+			ID:         "item-new" + string(rune('b'+i)),
+			RegistryID: "reg-new2",
+			Slug:       "new-skill-" + string(rune('b'+i)),
+			ItemType:   "skill",
+			Name:       "New Skill",
+			Status:     "active",
+			CreatedBy:  "u1",
+			Metadata:   datatypes.JSON([]byte("{}")),
 		})
 	}
 
@@ -400,14 +402,14 @@ func TestLogBehavior_Success(t *testing.T) {
 		ID: "reg-behavior", Name: "behavior-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-behavior",
-		RegistryID:  "reg-behavior",
-		Slug:        "behavior-skill",
-		ItemType:    "skill",
-		Name:        "Behavior Skill",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-behavior",
+		RegistryID: "reg-behavior",
+		Slug:       "behavior-skill",
+		ItemType:   "skill",
+		Name:       "Behavior Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 
 	r := newMarketplaceRouter("")
@@ -418,6 +420,14 @@ func TestLogBehavior_Success(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-behavior").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.PreviewCount != 1 {
+		t.Fatalf("expected preview_count=1, got %d", item.PreviewCount)
+	}
 }
 
 func TestLogBehavior_MissingActionType(t *testing.T) {
@@ -426,14 +436,14 @@ func TestLogBehavior_MissingActionType(t *testing.T) {
 		ID: "reg-beh2", Name: "beh-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-beh2",
-		RegistryID:  "reg-beh2",
-		Slug:        "beh-skill",
-		ItemType:    "skill",
-		Name:        "Beh Skill",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-beh2",
+		RegistryID: "reg-beh2",
+		Slug:       "beh-skill",
+		ItemType:   "skill",
+		Name:       "Beh Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 
 	r := newMarketplaceRouter("")
@@ -467,14 +477,14 @@ func TestGetItemStats_Success(t *testing.T) {
 		ID: "reg-stats", Name: "stats-reg", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-stats",
-		RegistryID:  "reg-stats",
-		Slug:        "stats-skill",
-		ItemType:    "skill",
-		Name:        "Stats Skill",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-stats",
+		RegistryID: "reg-stats",
+		Slug:       "stats-skill",
+		ItemType:   "skill",
+		Name:       "Stats Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 	// Add some behavior logs
 	database.DB.Create(&models.BehaviorLog{
@@ -509,6 +519,9 @@ func TestGetItemStats_Success(t *testing.T) {
 	if stats.Installs != 1 {
 		t.Fatalf("expected 1 install, got %d", stats.Installs)
 	}
+	if stats.Favorites != 0 {
+		t.Fatalf("expected 0 favorites, got %d", stats.Favorites)
+	}
 }
 
 func TestGetItemStats_NoData(t *testing.T) {
@@ -517,14 +530,14 @@ func TestGetItemStats_NoData(t *testing.T) {
 		ID: "reg-stats2", Name: "stats-reg2", SourceType: "internal", OwnerID: "u1",
 	})
 	database.DB.Create(&models.CapabilityItem{
-		ID:          "item-stats2",
-		RegistryID:  "reg-stats2",
-		Slug:        "stats-skill2",
-		ItemType:    "skill",
-		Name:        "Stats Skill 2",
-		Status:      "active",
-		CreatedBy:   "u1",
-		Metadata:    datatypes.JSON([]byte("{}")),
+		ID:         "item-stats2",
+		RegistryID: "reg-stats2",
+		Slug:       "stats-skill2",
+		ItemType:   "skill",
+		Name:       "Stats Skill 2",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 
 	r := newMarketplaceRouter("")
@@ -536,5 +549,100 @@ func TestGetItemStats_NoData(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&stats)
 	if stats.Views != 0 {
 		t.Fatalf("expected 0 views, got %d", stats.Views)
+	}
+}
+
+func TestFavoriteItem_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-fav", Name: "repo-fav", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fav", Name: "fav-reg", SourceType: "internal", RepoID: "repo-fav", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fav", RegistryID: "reg-fav", RepoID: "repo-fav", Slug: "fav-skill", ItemType: "skill",
+		Name: "Favorite Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-fav")
+	w := postJSON(r, "/api/items/item-fav/favorite", map[string]interface{}{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-fav").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.FavoriteCount != 1 {
+		t.Fatalf("expected favorite_count=1, got %d", item.FavoriteCount)
+	}
+
+	var count int64
+	database.DB.Model(&models.ItemFavorite{}).Where("item_id = ? AND user_id = ?", "item-fav", "user-fav").Count(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 item_favorite row, got %d", count)
+	}
+}
+
+func TestFavoriteItem_Idempotent(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-fav2", Name: "repo-fav2", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fav2", Name: "fav-reg2", SourceType: "internal", RepoID: "repo-fav2", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fav2", RegistryID: "reg-fav2", RepoID: "repo-fav2", Slug: "fav-skill2", ItemType: "skill",
+		Name: "Favorite Skill 2", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-fav2")
+	postJSON(r, "/api/items/item-fav2/favorite", map[string]interface{}{})
+	w := postJSON(r, "/api/items/item-fav2/favorite", map[string]interface{}{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-fav2").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.FavoriteCount != 1 {
+		t.Fatalf("expected favorite_count=1 after duplicate favorite, got %d", item.FavoriteCount)
+	}
+}
+
+func TestUnfavoriteItem_Success(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-unfav", Name: "repo-unfav", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-unfav", Name: "unfav-reg", SourceType: "internal", RepoID: "repo-unfav", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-unfav", RegistryID: "reg-unfav", RepoID: "repo-unfav", Slug: "unfav-skill", ItemType: "skill",
+		Name: "Favorite Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		FavoriteCount: 1,
+	})
+	database.DB.Create(&models.ItemFavorite{
+		ID: "fav-1", ItemID: "item-unfav", UserID: "user-unfav",
+	})
+
+	r := newMarketplaceRouter("user-unfav")
+	w := deleteReq(r, "/api/items/item-unfav/favorite")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-unfav").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.FavoriteCount != 0 {
+		t.Fatalf("expected favorite_count=0, got %d", item.FavoriteCount)
 	}
 }

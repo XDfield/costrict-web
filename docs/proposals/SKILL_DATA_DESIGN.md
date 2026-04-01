@@ -179,6 +179,184 @@ CREATE TABLE capability_versions (
 
 ---
 
+## 技能统计与埋点方案
+
+### 目标
+
+`/api/items` 和 `/api/items/:id` 需要稳定返回以下三个核心统计字段：
+
+- `preview_count`：详情页真实预览量
+- `install_count`：真实安装量
+- `favorite_count`：收藏量
+
+这三个值都属于**聚合后的展示字段**，读接口只负责返回结果，不负责直接加数。所有增量更新统一由行为埋点或显式写接口驱动。
+
+### 统计字段设计
+
+在 `capability_items` 表中补充：
+
+```sql
+ALTER TABLE capability_items
+  ADD COLUMN preview_count  INTEGER DEFAULT 0,
+  ADD COLUMN favorite_count INTEGER DEFAULT 0;
+```
+
+`install_count` 继续保留，最终三个字段统一由后端维护并直接随 item 返回，避免列表页每次现算聚合。
+
+### 行为日志作为统计事实来源
+
+现有 `behavior_logs` 机制继续作为用户行为明细表，承担两类职责：
+
+- 保存可追溯的行为事件，用于推荐、分析、报表
+- 驱动 `capability_items` 上的聚合计数字段更新
+
+推荐的动作枚举：
+
+- `view`：打开 item 详情页并完成渲染
+- `install`：客户端确认安装成功
+- `favorite`：用户收藏
+- `unfavorite`：用户取消收藏
+
+说明：
+
+- `view` 和 `install` 适合保留在行为日志中
+- `favorite` / `unfavorite` 既可以进入行为日志，也必须有独立收藏关系表保证幂等
+- `GET /api/items`、`GET /api/items/:id` 这类读接口不应自动记行为，避免被预取、刷新、爬虫污染
+
+### 三个指标的口径与埋点落点
+
+#### 1. 预览量 `preview_count`
+
+预览量的定义：
+- 用户真正进入 item 详情页，并且前端完成首屏渲染后，记一次预览
+
+埋点位置：
+- 前端详情页加载成功后，调用 `POST /api/items/:id/behavior`
+- `actionType = "view"`
+
+明确不建议的做法：
+- 不在 `GET /api/items/:id` 中自动 `preview_count + 1`
+- 不把列表页曝光算作预览量
+
+原因：
+- 读接口可能被 SSR、预取、重试、机器人访问
+- 同一接口刷新会带来脏数据
+- 列表曝光和详情预览是两种不同业务语义
+
+如需统计列表曝光，应单独定义 `impression`，不要复用 `view`。
+
+#### 2. 安装量 `install_count`
+
+安装量的定义：
+- 用户在客户端完成一次有效安装后，记一次安装
+
+推荐埋点位置：
+- 客户端实际安装成功后，调用 `POST /api/items/:id/behavior`
+- `actionType = "install"`
+
+不推荐的口径：
+- 直接把 `GET /api/items/:id/download` 视为安装成功
+
+原因：
+- 下载不等于安装
+- 用户可能下载后未使用
+- 未来可能同时支持压缩包、命令直连、远程 URL 三种安装模式，统一以“客户端确认成功”作为统计口径更一致
+
+兼容策略：
+- 若第一阶段仍需保留“下载即安装”的旧逻辑，则必须与 `install` 行为埋点二选一，避免重复累计
+- 后续统一收敛到行为埋点模型，下载接口只负责返回文件或命令
+
+#### 3. 收藏量 `favorite_count`
+
+收藏量的定义：
+- 当前仍处于收藏状态的用户数
+
+这里不能只靠行为日志统计，因为：
+- 用户可能重复点击收藏
+- 用户可能取消收藏
+- 需要一个可幂等的当前状态
+
+因此需要新增关系表：
+
+```sql
+CREATE TABLE item_favorites (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id     UUID NOT NULL REFERENCES capability_items(id) ON DELETE CASCADE,
+  user_id     VARCHAR(191) NOT NULL,
+  created_at  TIMESTAMP DEFAULT NOW(),
+
+  UNIQUE(item_id, user_id)
+);
+```
+
+配套接口：
+
+```text
+POST   /api/items/:id/favorite
+DELETE /api/items/:id/favorite
+```
+
+更新规则：
+
+- `POST` 成功插入收藏关系时，`favorite_count + 1`
+- `DELETE` 成功删除收藏关系时，`favorite_count - 1`
+- 重复 `POST` 不重复加数
+- 重复 `DELETE` 不重复减数
+
+可选增强：
+- 同时写入行为日志 `favorite` / `unfavorite`，用于推荐系统和用户画像
+
+### 后端更新原则
+
+统一原则：**计数更新只发生在写路径，不发生在读路径。**
+
+建议按以下方式落地：
+
+| 指标 | 更新入口 | 更新方式 |
+|-----|---------|---------|
+| `preview_count` | `POST /api/items/:id/behavior` with `view` | 异步或事务内 `preview_count + 1` |
+| `install_count` | `POST /api/items/:id/behavior` with `install` | 异步或事务内 `install_count + 1` |
+| `favorite_count` | `POST/DELETE /api/items/:id/favorite` | 按收藏关系表变化增减 |
+
+### `/api/items` 返回约定
+
+列表接口与详情接口统一返回：
+
+```jsonc
+{
+  "id": "uuid",
+  "name": "Code Reviewer",
+  "previewCount": 1280,
+  "installCount": 356,
+  "favoriteCount": 89
+}
+```
+
+说明：
+
+- 这三个值直接来自 `capability_items` 聚合字段
+- `/api/items/:id/stats` 可继续保留，作为更完整的行为统计接口
+- `/api/items` 只返回适合列表展示的轻量统计值
+
+### 与现有项目实现的衔接建议
+
+结合当前后端实现，建议这样演进：
+
+1. 保留现有 `behavior_logs` 体系，继续承接 `view` / `install`
+2. 将 `capability_items.install_count` 的更新入口统一收敛为行为埋点，避免与下载接口重复累加
+3. 在 `capability_items` 上补 `preview_count`、`favorite_count`
+4. 新增 `item_favorites` 表和收藏接口
+5. 由前端在“详情页完成渲染”“安装成功”“点击收藏/取消收藏”这三个明确交互点进行埋点或写操作
+
+### 风险与约束
+
+- 预览量如果埋在详情读接口，会被预加载和刷新污染
+- 安装量如果同时在下载接口和行为接口更新，会发生双写重复统计
+- 收藏量如果只记录事件、不保存当前收藏关系，将无法可靠支持取消收藏与幂等
+- 如果未来引入去重策略，可在 `behavior_logs` 中结合 `user_id + session_id + item_id + action_type + 时间窗口` 做防刷
+
+---
+
 ## 三种场景的实现路径
 
 ### 场景一：研发共建（内部创作）

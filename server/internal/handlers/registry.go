@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -208,7 +210,6 @@ func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
 	return indexJSON{Version: 1, Items: items}
 }
 
-
 // DownloadItem godoc
 // @Summary      Download item content
 // @Description  Download the Markdown content of a capability item (skill/subagent/command) as a file. Access is determined by the parent repository's visibility.
@@ -237,8 +238,18 @@ func DownloadItem(c *gin.Context) {
 		return
 	}
 
-	go db.Model(&models.CapabilityItem{}).Where("id = ?", id).
-		UpdateColumn("install_count", gorm.Expr("install_count + 1"))
+	go func(item models.CapabilityItem, userID string) {
+		_, _ = services.NewBehaviorService(database.GetDB()).LogBehavior(context.Background(), services.LogBehaviorRequest{
+			UserID:     userID,
+			ItemID:     item.ID,
+			RegistryID: item.RegistryID,
+			ActionType: models.ActionInstall,
+			Context:    models.ContextDirectAccess,
+			Metadata: map[string]interface{}{
+				"source": "download",
+			},
+		})
+	}(item, userID)
 
 	filename := contentFilename(item.ItemType, item.Slug)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -204,6 +205,68 @@ func (h *RecommendHandler) LogBehavior(c *gin.Context) {
 	c.JSON(http.StatusCreated, log)
 }
 
+// FavoriteItem godoc
+// @Summary      Favorite item
+// @Description  Mark an item as favorited for the current user
+// @Tags         behavior
+// @Produce      json
+// @Param        id   path      string  true  "Item ID"
+// @Success      200  {object}  object{favorited=boolean,created=boolean,favoriteCount=integer}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/favorite [post]
+func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
+	item, uid, ok := loadAccessibleItemForMutation(c)
+	if !ok {
+		return
+	}
+
+	count, created, err := h.behaviorSvc.FavoriteItem(c.Request.Context(), item.ID, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"favorited":     true,
+		"created":       created,
+		"favoriteCount": count,
+	})
+}
+
+// UnfavoriteItem godoc
+// @Summary      Unfavorite item
+// @Description  Remove the current user's favorite mark from an item
+// @Tags         behavior
+// @Produce      json
+// @Param        id   path      string  true  "Item ID"
+// @Success      200  {object}  object{favorited=boolean,removed=boolean,favoriteCount=integer}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/favorite [delete]
+func (h *RecommendHandler) UnfavoriteItem(c *gin.Context) {
+	item, uid, ok := loadAccessibleItemForMutation(c)
+	if !ok {
+		return
+	}
+
+	count, removed, err := h.behaviorSvc.UnfavoriteItem(c.Request.Context(), item.ID, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"favorited":     false,
+		"removed":       removed,
+		"favoriteCount": count,
+	})
+}
+
 // GetItemStats godoc
 // @Summary      Get item behavior statistics
 // @Description  Get behavior statistics for a specific item
@@ -249,4 +312,26 @@ func (h *RecommendHandler) GetUserSummary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, summary)
+}
+
+func loadAccessibleItemForMutation(c *gin.Context) (*models.CapabilityItem, string, bool) {
+	userID, _ := c.Get(middleware.UserIDKey)
+	uid, _ := userID.(string)
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return nil, "", false
+	}
+
+	var item models.CapabilityItem
+	if err := database.GetDB().Preload("Registry").First(&item, "id = ?", c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return nil, "", false
+	}
+
+	if !canAccessItem(&item, uid) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return nil, "", false
+	}
+
+	return &item, uid, true
 }
