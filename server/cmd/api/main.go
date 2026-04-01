@@ -38,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
@@ -72,6 +73,7 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
+	handlers.InitUserModule(userpkg.New(db))
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {

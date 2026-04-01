@@ -9,6 +9,7 @@ require (
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.10.9
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pressly/goose/v3 v3.27.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/spf13/viper v1.19.0

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	// imported for swag to resolve casdoor.CasdoorUser in godoc annotations
+	"github.com/costrict/costrict-web/server/internal/casdoor"
 	_ "github.com/costrict/costrict-web/server/internal/casdoor"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 
 	"github.com/gin-gonic/gin"
 )
@@ -116,11 +119,37 @@ func GetUserNames(c *gin.Context) {
 		return
 	}
 
-	// Try to get access token from context (optional auth)
-	token, _ := c.Get("accessToken")
-	tokenStr, _ := token.(string)
+	names := make(map[string]string, len(unique))
+	remaining := unique
 
-	names := getCachedUserNames(tokenStr, unique)
+	if UserModule != nil && UserModule.CachedService != nil {
+		userMap, err := UserModule.CachedService.GetUsersByIDs(c.Request.Context(), unique)
+		if err == nil {
+			remaining = remaining[:0]
+			for _, id := range unique {
+				if user, ok := userMap[id]; ok && user != nil {
+					displayName := user.Username
+					if user.DisplayName != nil && *user.DisplayName != "" {
+						displayName = *user.DisplayName
+					}
+					names[id] = displayName
+				} else {
+					remaining = append(remaining, id)
+				}
+			}
+		}
+	}
+
+	if len(remaining) > 0 {
+		// Try to get access token from context (optional auth)
+		token, _ := c.Get("accessToken")
+		tokenStr, _ := token.(string)
+		fallbackNames := getCachedUserNames(tokenStr, remaining)
+		for k, v := range fallbackNames {
+			names[k] = v
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"names": names})
 }
 
@@ -142,6 +171,15 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	keyword := c.Query("q")
+	limit := 20
+
+	if UserModule != nil && UserModule.Service != nil {
+		users, err := UserModule.Service.SearchUsers(keyword, limit)
+		if err == nil && len(users) > 0 {
+			c.JSON(http.StatusOK, gin.H{"users": users})
+			return
+		}
+	}
 
 	client := CasdoorClient
 	users, err := client.SearchUsers(token.(string), keyword)
@@ -150,10 +188,32 @@ func SearchUsers(c *gin.Context) {
 		return
 	}
 
-	limit := 20
 	if len(users) > limit {
 		users = users[:limit]
 	}
 
+	if UserModule != nil && UserModule.Service != nil {
+		go backfillUsers(context.Background(), users)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
+func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
+	if UserModule == nil || UserModule.Service == nil {
+		return
+	}
+
+	for _, u := range users {
+		claims := &userpkg.JWTClaims{
+			ID:                u.Id,
+			Sub:               u.Sub,
+			Name:              u.Name,
+			PreferredUsername: u.PreferredUsername,
+			Email:             u.Email,
+			Picture:           u.Picture,
+			Owner:             u.Owner,
+		}
+		_, _ = UserModule.Service.GetOrCreateUser(claims)
+	}
 }

@@ -25,6 +25,7 @@ func main() {
 	}
 
 	err = db.AutoMigrate(
+		&models.User{},
 		&models.Repository{},
 		&models.RepoMember{},
 		&models.RepoInvitation{},
