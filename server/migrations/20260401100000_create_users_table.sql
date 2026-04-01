@@ -43,12 +43,12 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- 创建索引
-CREATE INDEX idx_user_email ON users(email);
-CREATE INDEX idx_user_casdoor_id ON users(casdoor_id);
-CREATE INDEX idx_user_casdoor_universal_id ON users(casdoor_universal_id);
-CREATE INDEX idx_user_casdoor_sub ON users(casdoor_sub);
-CREATE INDEX idx_user_organization ON users(organization);
-CREATE INDEX idx_user_deleted_at ON users(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_user_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_user_casdoor_id ON users(casdoor_id);
+CREATE INDEX IF NOT EXISTS idx_user_casdoor_universal_id ON users(casdoor_universal_id);
+CREATE INDEX IF NOT EXISTS idx_user_casdoor_sub ON users(casdoor_sub);
+CREATE INDEX IF NOT EXISTS idx_user_organization ON users(organization);
+CREATE INDEX IF NOT EXISTS idx_user_deleted_at ON users(deleted_at);
 
 -- 添加表注释
 COMMENT ON TABLE users IS '用户表 - 本地存储从 Casdoor 同步的用户信息';
