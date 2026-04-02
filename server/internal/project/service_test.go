@@ -58,6 +58,19 @@ func setupProjectTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE INDEX idx_project_invitee ON project_invitations(project_id, invitee_id)`,
 		`CREATE INDEX idx_invitee_status ON project_invitations(invitee_id, status)`,
+		`CREATE TABLE project_repositories (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			git_repo_url TEXT NOT NULL,
+			display_name TEXT,
+			source TEXT NOT NULL,
+			bound_by_user_id TEXT NOT NULL,
+			last_activity_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)`,
+		`CREATE UNIQUE INDEX idx_project_repo_unique ON project_repositories(project_id, git_repo_url)`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -67,9 +80,60 @@ func setupProjectTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func TestBindAndListProjectRepositories(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+	project, err := svc.CreateProject("admin", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	repo, err := svc.BindRepository(project.ID, "admin", "git@github.com:zgsm-ai/opencode.git", "opencode")
+	if err != nil {
+		t.Fatalf("BindRepository error: %v", err)
+	}
+	if repo.GitRepoURL != "https://github.com/zgsm-ai/opencode" {
+		t.Fatalf("unexpected normalized repo: %+v", repo)
+	}
+	if _, err := svc.BindRepository(project.ID, "admin", "https://github.com/zgsm-ai/opencode/", "dup"); !errors.Is(err, ErrRepositoryAlreadyBound) {
+		t.Fatalf("expected ErrRepositoryAlreadyBound, got %v", err)
+	}
+	repos, err := svc.ListRepositories(project.ID, "admin")
+	if err != nil {
+		t.Fatalf("ListRepositories error: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %+v", repos)
+	}
+}
+
+func TestBindRepositoryRequiresAdminAndRejectsArchivedProject(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+	project, err := svc.CreateProject("admin", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	inv, err := svc.CreateInvitation(project.ID, "admin", "member1", RoleMember, "")
+	if err != nil {
+		t.Fatalf("CreateInvitation error: %v", err)
+	}
+	if err := svc.RespondInvitation(inv.ID, "member1", true); err != nil {
+		t.Fatalf("RespondInvitation error: %v", err)
+	}
+	if _, err := svc.BindRepository(project.ID, "member1", "https://github.com/test/repo", "repo"); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
+	}
+	if err := svc.ArchiveProject(project.ID, "admin"); err != nil {
+		t.Fatalf("ArchiveProject error: %v", err)
+	}
+	if _, err := svc.BindRepository(project.ID, "admin", "https://github.com/test/repo", "repo"); !errors.Is(err, ErrProjectArchived) {
+		t.Fatalf("expected ErrProjectArchived, got %v", err)
+	}
+}
+
 func TestCreateProjectCreatesAdminMember(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	enabledAt := time.Now().UTC()
 
 	project, err := svc.CreateProject("u1", "Project A", "desc", &enabledAt)
@@ -90,7 +154,7 @@ func TestCreateProjectCreatesAdminMember(t *testing.T) {
 
 func TestCreateProjectNameUniquePerCreator(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	if _, err := svc.CreateProject("u1", "Project A", "", nil); err != nil {
 		t.Fatalf("seed CreateProject error: %v", err)
 	}
@@ -104,7 +168,7 @@ func TestCreateProjectNameUniquePerCreator(t *testing.T) {
 
 func TestCreateProjectAllowsNilEnabledAt(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -116,7 +180,7 @@ func TestCreateProjectAllowsNilEnabledAt(t *testing.T) {
 
 func TestArchiveAndUnarchiveProject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	enabledAt := time.Now().UTC()
 	project, err := svc.CreateProject("u1", "Project A", "", &enabledAt)
 	if err != nil {
@@ -146,7 +210,7 @@ func TestArchiveAndUnarchiveProject(t *testing.T) {
 
 func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -166,7 +230,7 @@ func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 
 func TestInvitationFlowAcceptAndReject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -204,7 +268,7 @@ func TestInvitationFlowAcceptAndReject(t *testing.T) {
 
 func TestOnlyAdminCanInviteAndCannotRemoveLastAdmin(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -229,7 +293,7 @@ func TestOnlyAdminCanInviteAndCannotRemoveLastAdmin(t *testing.T) {
 
 func TestExpiredInvitationCannotBeAccepted(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil)
+	svc := NewProjectService(db, nil, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)

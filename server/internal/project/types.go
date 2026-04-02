@@ -32,6 +32,82 @@ type UpdateMemberRoleRequest struct {
 	Role string `json:"role" binding:"required"`
 }
 
+type CreateProjectRepositoryRequest struct {
+	GitRepoURL  string `json:"gitRepoUrl" binding:"required"`
+	DisplayName string `json:"displayName"`
+}
+
+type ProjectRepositoryResponse struct {
+	Repository *models.ProjectRepository `json:"repository"`
+}
+
+type ListProjectRepositoriesResponse struct {
+	Repositories []models.ProjectRepository `json:"repositories"`
+}
+
+type ProjectRepoActivitySummary struct {
+	MemberCount           int   `json:"member_count"`
+	RepositoryCount       int   `json:"repository_count"`
+	ActiveMemberCount     int   `json:"active_member_count"`
+	ActiveRepositoryCount int   `json:"active_repository_count"`
+	TotalRequests         int64 `json:"total_requests"`
+}
+
+type ProjectRepoActivityRange struct {
+	Days int    `json:"days"`
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type ProjectRepoActivityProject struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ProjectMemberActiveRepo struct {
+	RepositoryID   string  `json:"repositoryId"`
+	DisplayName    string  `json:"displayName"`
+	GitRepoURL     string  `json:"gitRepoUrl"`
+	RequestCount   int64   `json:"requestCount"`
+	LastActiveDate string  `json:"lastActiveDate"`
+	InputTokens    int64   `json:"inputTokens"`
+	OutputTokens   int64   `json:"outputTokens"`
+	Cost           float64 `json:"cost"`
+}
+
+type ProjectRepoActiveMember struct {
+	UserID         string `json:"userId"`
+	Username       string `json:"username"`
+	RequestCount   int64  `json:"requestCount"`
+	LastActiveDate string `json:"lastActiveDate"`
+}
+
+type ProjectMemberRepoActivityItem struct {
+	UserID          string                    `json:"userId"`
+	Username        string                    `json:"username"`
+	Role            string                    `json:"role"`
+	ActiveRepoCount int                       `json:"activeRepoCount"`
+	TotalRequests   int64                     `json:"totalRequests"`
+	ActiveRepos     []ProjectMemberActiveRepo `json:"activeRepos"`
+}
+
+type ProjectRepositoryRepoActivityItem struct {
+	RepositoryID      string                    `json:"repositoryId"`
+	DisplayName       string                    `json:"displayName"`
+	GitRepoURL        string                    `json:"gitRepoUrl"`
+	ActiveMemberCount int                       `json:"activeMemberCount"`
+	TotalRequests     int64                     `json:"totalRequests"`
+	ActiveMembers     []ProjectRepoActiveMember `json:"activeMembers"`
+}
+
+type ProjectRepoActivityResponse struct {
+	Project      ProjectRepoActivityProject            `json:"project"`
+	Range        ProjectRepoActivityRange              `json:"range"`
+	Summary      ProjectRepoActivitySummary            `json:"summary"`
+	Members      []ProjectMemberRepoActivityItem       `json:"members"`
+	Repositories []ProjectRepositoryRepoActivityItem   `json:"repositories"`
+}
+
 type ProjectResponse struct {
 	Project *models.Project `json:"project"`
 }

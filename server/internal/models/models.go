@@ -167,6 +167,49 @@ type ProjectInvitation struct {
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
+// ProjectRepository represents an explicitly bound git repository within a project scope.
+type ProjectRepository struct {
+	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ProjectID      string         `gorm:"not null;index;uniqueIndex:idx_project_repo_unique" json:"projectId"`
+	GitRepoURL     string         `gorm:"not null;index;uniqueIndex:idx_project_repo_unique" json:"gitRepoUrl"`
+	DisplayName    string         `json:"displayName,omitempty"`
+	Source         string         `gorm:"not null;default:'manual'" json:"source"`
+	BoundByUserID  string         `gorm:"not null;index" json:"boundByUserId"`
+	LastActivityAt *time.Time     `gorm:"index" json:"lastActivityAt,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// SessionUsageReport stores per-request usage records in the dedicated usage SQLite database.
+type SessionUsageReport struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	UserID           string    `gorm:"not null;index;uniqueIndex:idx_usage_report_identity" json:"userId"`
+	DeviceID         string    `gorm:"index" json:"deviceId"`
+	SessionID        string    `gorm:"not null;index;uniqueIndex:idx_usage_report_identity" json:"sessionId"`
+	RequestID        string    `gorm:"index" json:"requestId"`
+	MessageID        string    `gorm:"not null;uniqueIndex:idx_usage_report_identity" json:"messageId"`
+	Date             time.Time `gorm:"not null;index" json:"date"`
+	Updated          time.Time `gorm:"not null" json:"updated"`
+	ModelID          string    `gorm:"not null" json:"modelId"`
+	ProviderID       string    `json:"providerId"`
+	InputTokens      int64     `json:"inputTokens"`
+	OutputTokens     int64     `json:"outputTokens"`
+	ReasoningTokens  int64     `json:"reasoningTokens"`
+	CacheReadTokens  int64     `json:"cacheReadTokens"`
+	CacheWriteTokens int64     `json:"cacheWriteTokens"`
+	Cost             float64   `json:"cost"`
+	Rounds           int       `json:"rounds"`
+	GitRepoURL       string    `gorm:"not null;index:idx_usage_repo_user_date,priority:1;index:idx_usage_repo_date,priority:1" json:"gitRepoUrl"`
+	GitWorktree      string    `json:"gitWorktree"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+func (SessionUsageReport) TableName() string {
+	return "session_usage_reports"
+}
+
 type CapabilityRegistry struct {
 	ID             string           `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Name           string           `gorm:"not null" json:"name"`

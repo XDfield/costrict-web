@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
+	"github.com/costrict/costrict-web/server/internal/services"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -41,15 +44,23 @@ var (
 	ErrCannotRemoveLastAdmin    = errors.New("cannot remove last admin")
 	ErrProjectAlreadyArchived   = errors.New("project already archived")
 	ErrProjectNotArchived       = errors.New("project is not archived")
+	ErrRepositoryAlreadyBound    = errors.New("repository already bound to project")
+	ErrRepositoryBindingNotFound = errors.New("project repository binding not found")
 )
 
-type ProjectService struct {
-	db              *gorm.DB
-	notificationSvc *notification.NotificationService
-}
+	type ProjectService struct {
+		db              *gorm.DB
+		usageSvc        interface {
+			AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
+		}
+		userService     *userpkg.UserService
+		notificationSvc *notification.NotificationService
+	}
 
-func NewProjectService(db *gorm.DB, notificationSvc *notification.NotificationService) *ProjectService {
-	return &ProjectService{db: db, notificationSvc: notificationSvc}
+func NewProjectService(db *gorm.DB, usageSvc interface {
+	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
+}, userService *userpkg.UserService, notificationSvc *notification.NotificationService) *ProjectService {
+	return &ProjectService{db: db, usageSvc: usageSvc, userService: userService, notificationSvc: notificationSvc}
 }
 
 func isValidRole(role string) bool {
@@ -406,6 +417,244 @@ func (s *ProjectService) IsProjectMember(projectID, userID string) (bool, error)
 	return true, nil
 }
 
+func (s *ProjectService) ListRepositories(projectID, userID string) ([]models.ProjectRepository, error) {
+	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
+		return nil, err
+	}
+	var repositories []models.ProjectRepository
+	if err := s.db.Where("project_id = ?", projectID).Order("created_at ASC").Find(&repositories).Error; err != nil {
+		return nil, err
+	}
+	return repositories, nil
+}
+
+func (s *ProjectService) BindRepository(projectID, operatorID, gitRepoURL, displayName string) (*models.ProjectRepository, error) {
+	if err := s.checkPermission(projectID, operatorID, RoleAdmin); err != nil {
+		return nil, err
+	}
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if project.ArchivedAt != nil {
+		return nil, ErrProjectArchived
+	}
+	normalizedRepo, err := services.NormalizeGitRepoURL(gitRepoURL)
+	if err != nil {
+		return nil, err
+	}
+	var existing models.ProjectRepository
+	if err := s.db.Where("project_id = ? AND git_repo_url = ?", projectID, normalizedRepo).First(&existing).Error; err == nil {
+		return nil, ErrRepositoryAlreadyBound
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	repository := &models.ProjectRepository{
+		ID:            uuid.NewString(),
+		ProjectID:     projectID,
+		GitRepoURL:    normalizedRepo,
+		DisplayName:   displayName,
+		Source:        "manual",
+		BoundByUserID: operatorID,
+	}
+	if err := s.db.Create(repository).Error; err != nil {
+		return nil, err
+	}
+	return repository, nil
+}
+
+func (s *ProjectService) UnbindRepository(projectID, repoBindingID, operatorID string) error {
+	if err := s.checkPermission(projectID, operatorID, RoleAdmin); err != nil {
+		return err
+	}
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+	if project.ArchivedAt != nil {
+		return ErrProjectArchived
+	}
+	result := s.db.Delete(&models.ProjectRepository{}, "project_id = ? AND id = ?", projectID, repoBindingID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrRepositoryBindingNotFound
+	}
+	return nil
+}
+
+func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days int, includeInactive bool) (*ProjectRepoActivityResponse, error) {
+	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
+		return nil, err
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return nil, err
+	}
+	members, err := s.ListMembers(projectID)
+	if err != nil {
+		return nil, err
+	}
+	var repositories []models.ProjectRepository
+	if err := s.db.Where("project_id = ?", projectID).Order("created_at ASC").Find(&repositories).Error; err != nil {
+		return nil, err
+	}
+
+	userIDs := make([]string, 0, len(members))
+	for _, member := range members {
+		userIDs = append(userIDs, member.UserID)
+	}
+	repoURLs := make([]string, 0, len(repositories))
+	for _, repo := range repositories {
+		repoURLs = append(repoURLs, repo.GitRepoURL)
+	}
+
+	userNames := make(map[string]string, len(userIDs))
+	if s.userService != nil {
+		users, err := s.userService.GetUsersByIDs(userIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, member := range members {
+			if user, ok := users[member.UserID]; ok && user != nil {
+				name := user.Username
+				if user.DisplayName != nil && *user.DisplayName != "" {
+					name = *user.DisplayName
+				}
+				userNames[member.UserID] = name
+			}
+		}
+	}
+	for _, member := range members {
+		if _, ok := userNames[member.UserID]; !ok {
+			userNames[member.UserID] = member.UserID
+		}
+	}
+
+	aggregates := []services.UsageRepoUserAggregate{}
+	if len(userIDs) > 0 && len(repoURLs) > 0 {
+		if s.usageSvc == nil {
+			return nil, services.ErrUsageQueryFailed
+		}
+		aggregates, err = s.usageSvc.AggregateProjectRepoActivity(userIDs, repoURLs, days)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	repoByURL := make(map[string]models.ProjectRepository, len(repositories))
+	for _, repo := range repositories {
+		repoByURL[repo.GitRepoURL] = repo
+	}
+
+	memberItems := make(map[string]*ProjectMemberRepoActivityItem, len(members))
+	for _, member := range members {
+		memberItems[member.UserID] = &ProjectMemberRepoActivityItem{
+			UserID:      member.UserID,
+			Username:    userNames[member.UserID],
+			Role:        member.Role,
+			ActiveRepos: []ProjectMemberActiveRepo{},
+		}
+	}
+
+	repoItems := make(map[string]*ProjectRepositoryRepoActivityItem, len(repositories))
+	for _, repo := range repositories {
+		repoItems[repo.ID] = &ProjectRepositoryRepoActivityItem{
+			RepositoryID:  repo.ID,
+			DisplayName:   repo.DisplayName,
+			GitRepoURL:    repo.GitRepoURL,
+			ActiveMembers: []ProjectRepoActiveMember{},
+		}
+	}
+
+	activeMemberSet := map[string]struct{}{}
+	activeRepoSet := map[string]struct{}{}
+	var totalRequests int64
+	for _, agg := range aggregates {
+		repoMeta, ok := repoByURL[agg.GitRepoURL]
+		if !ok {
+			continue
+		}
+		memberItem, ok := memberItems[agg.UserID]
+		if !ok {
+			continue
+		}
+		memberItem.ActiveRepos = append(memberItem.ActiveRepos, ProjectMemberActiveRepo{
+			RepositoryID:   repoMeta.ID,
+			DisplayName:    repoMeta.DisplayName,
+			GitRepoURL:     agg.GitRepoURL,
+			RequestCount:   agg.RequestCount,
+			LastActiveDate: agg.LastActiveDate,
+			InputTokens:    agg.InputTokens,
+			OutputTokens:   agg.OutputTokens,
+			Cost:           agg.TotalCost,
+		})
+		memberItem.ActiveRepoCount++
+		memberItem.TotalRequests += agg.RequestCount
+
+		repoItem := repoItems[repoMeta.ID]
+		repoItem.ActiveMembers = append(repoItem.ActiveMembers, ProjectRepoActiveMember{
+			UserID:         agg.UserID,
+			Username:       userNames[agg.UserID],
+			RequestCount:   agg.RequestCount,
+			LastActiveDate: agg.LastActiveDate,
+		})
+		repoItem.ActiveMemberCount++
+		repoItem.TotalRequests += agg.RequestCount
+
+		activeMemberSet[agg.UserID] = struct{}{}
+		activeRepoSet[repoMeta.ID] = struct{}{}
+		totalRequests += agg.RequestCount
+	}
+
+	memberList := make([]ProjectMemberRepoActivityItem, 0, len(memberItems))
+	for _, member := range members {
+		item := memberItems[member.UserID]
+		if includeInactive || item.ActiveRepoCount > 0 {
+			sort.Slice(item.ActiveRepos, func(i, j int) bool {
+				if item.ActiveRepos[i].RequestCount == item.ActiveRepos[j].RequestCount {
+					return item.ActiveRepos[i].GitRepoURL < item.ActiveRepos[j].GitRepoURL
+				}
+				return item.ActiveRepos[i].RequestCount > item.ActiveRepos[j].RequestCount
+			})
+			memberList = append(memberList, *item)
+		}
+	}
+
+	repositoryList := make([]ProjectRepositoryRepoActivityItem, 0, len(repoItems))
+	for _, repo := range repositories {
+		item := repoItems[repo.ID]
+		if includeInactive || item.ActiveMemberCount > 0 {
+			sort.Slice(item.ActiveMembers, func(i, j int) bool {
+				if item.ActiveMembers[i].RequestCount == item.ActiveMembers[j].RequestCount {
+					return item.ActiveMembers[i].UserID < item.ActiveMembers[j].UserID
+				}
+				return item.ActiveMembers[i].RequestCount > item.ActiveMembers[j].RequestCount
+			})
+			repositoryList = append(repositoryList, *item)
+		}
+	}
+
+	from, to := projectDateRange(days)
+	return &ProjectRepoActivityResponse{
+		Project: ProjectRepoActivityProject{ID: project.ID, Name: project.Name},
+		Range: ProjectRepoActivityRange{Days: days, From: from.Format("2006-01-02"), To: to.Format("2006-01-02")},
+		Summary: ProjectRepoActivitySummary{
+			MemberCount:           len(members),
+			RepositoryCount:       len(repositories),
+			ActiveMemberCount:     len(activeMemberSet),
+			ActiveRepositoryCount: len(activeRepoSet),
+			TotalRequests:         totalRequests,
+		},
+		Members:      memberList,
+		Repositories: repositoryList,
+	}, nil
+}
+
 func (s *ProjectService) checkPermission(projectID, userID, requiredRole string) error {
 	member, err := s.GetMember(projectID, userID)
 	if err != nil {
@@ -415,6 +664,12 @@ func (s *ProjectService) checkPermission(projectID, userID, requiredRole string)
 		return ErrPermissionDenied
 	}
 	return nil
+}
+
+func projectDateRange(days int) (time.Time, time.Time) {
+	toDate := time.Now().UTC()
+	fromDate := toDate.AddDate(0, 0, -(days - 1))
+	return fromDate, toDate
 }
 
 func (s *ProjectService) notifyInvitationCreated(project *models.Project, invitation *models.ProjectInvitation) {

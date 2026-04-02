@@ -39,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
+	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -74,7 +75,13 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
-	handlers.InitUserModule(userpkg.New(db))
+	userModule := userpkg.New(db)
+	handlers.InitUserModule(userModule)
+
+	usageDB, err := usagepkg.OpenSQLite(cfg.UsageSQLitePath)
+	if err != nil {
+		log.Fatalf("Failed to initialize usage sqlite: %v", err)
+	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
@@ -121,7 +128,8 @@ func main() {
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
-	usageHandler := handlers.NewUsageHandler(&services.UsageService{})
+	usageSvc := services.NewUsageService(services.NewSQLiteUsageProvider(usageDB), userModule.Service)
+	usageHandler := handlers.NewUsageHandler(usageSvc)
 
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
@@ -306,7 +314,7 @@ func main() {
 
 			notificationModule := notification.New(db, cfg.CloudBaseURL)
 			notificationModule.RegisterRoutes(authed)
-			projectModule := project.New(db, notificationModule.Service)
+			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
 			_ = notificationModule
 			_ = projectModule

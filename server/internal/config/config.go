@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Port               string
 	DatabaseURL        string
+	UsageSQLitePath    string
 	RedisURL           string
 	CloudBaseURL       string
 	FrontendURLs       []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -76,6 +77,7 @@ func Load() *Config {
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		UsageSQLitePath:    getEnv("USAGE_SQLITE_PATH", "./data/usage/usage.db"),
 		RedisURL:           getEnv("REDIS_URL", ""),
 		CloudBaseURL:       cloudBaseURL,
 		FrontendURLs:       frontendURLs,

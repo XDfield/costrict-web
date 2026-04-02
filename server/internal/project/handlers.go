@@ -3,6 +3,7 @@ package project
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
@@ -16,6 +17,10 @@ func writeError(c *gin.Context, err error) {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrProjectNameExists), errors.Is(err, ErrCannotInviteSelf), errors.Is(err, ErrUserAlreadyInProject), errors.Is(err, ErrInvitationAlreadyExists), errors.Is(err, ErrInvitationExpired), errors.Is(err, ErrInvitationHandled), errors.Is(err, ErrInvalidRole), errors.Is(err, ErrProjectArchived), errors.Is(err, ErrCannotRemoveLastAdmin), errors.Is(err, ErrProjectAlreadyArchived), errors.Is(err, ErrProjectNotArchived):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrRepositoryAlreadyBound):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, ErrRepositoryBindingNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 	}
@@ -435,5 +440,72 @@ func CancelInvitationHandler(svc *ProjectService) gin.HandlerFunc {
 			return
 		}
 		c.Status(http.StatusNoContent)
+	}
+}
+
+func ListProjectRepositoriesHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		repositories, err := svc.ListRepositories(c.Param("id"), currentUserID(c))
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, ListProjectRepositoriesResponse{Repositories: repositories})
+	}
+}
+
+func BindProjectRepositoryHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req CreateProjectRepositoryRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		repository, err := svc.BindRepository(c.Param("id"), currentUserID(c), req.GitRepoURL, req.DisplayName)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, ProjectRepositoryResponse{Repository: repository})
+	}
+}
+
+func UnbindProjectRepositoryHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := svc.UnbindRepository(c.Param("id"), c.Param("repoBindingId"), currentUserID(c)); err != nil {
+			writeError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func GetProjectRepoActivityHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		days := 7
+		if raw := c.Query("days"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 90 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "days must be between 1 and 90"})
+				return
+			}
+			days = parsed
+		}
+		includeInactive := true
+		if raw := c.Query("includeInactive"); raw != "" {
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "includeInactive must be a boolean"})
+				return
+			}
+			includeInactive = parsed
+		}
+
+		resp, err := svc.GetProjectRepoActivity(c.Param("id"), currentUserID(c), days, includeInactive)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, resp)
 	}
 }

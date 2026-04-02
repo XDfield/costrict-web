@@ -17,7 +17,7 @@ func newProjectTestRouter(t *testing.T) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	db := setupProjectTestDB(t)
-	module := New(db, nil)
+	module := NewWithDependencies(db, nil, nil, nil)
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
 		if userID := c.GetHeader("X-User-ID"); userID != "" {
@@ -169,5 +169,32 @@ func TestProjectInvitationRecordHandlers(t *testing.T) {
 	invs := decodeBody[InvitationsResponse](t, w)
 	if len(invs.Invitations) != 1 {
 		t.Fatalf("expected 1 invitation, got %+v", invs)
+	}
+}
+
+func TestProjectRepositoryHandlers(t *testing.T) {
+	r := newProjectTestRouter(t)
+	project := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "admin", map[string]any{"name": "Project A"})).Project
+
+	w := performJSON(r, http.MethodPost, "/api/projects/"+project.ID+"/repositories", "admin", map[string]any{
+		"gitRepoUrl": "git@github.com:zgsm-ai/opencode.git",
+		"displayName": "opencode",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = performJSON(r, http.MethodGet, "/api/projects/"+project.ID+"/repositories", "admin", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	repos := decodeBody[ListProjectRepositoriesResponse](t, w)
+	if len(repos.Repositories) != 1 {
+		t.Fatalf("expected 1 repository, got %+v", repos)
+	}
+
+	w = performJSON(r, http.MethodDelete, "/api/projects/"+project.ID+"/repositories/"+repos.Repositories[0].ID, "admin", nil)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d, body=%s", w.Code, w.Body.String())
 	}
 }

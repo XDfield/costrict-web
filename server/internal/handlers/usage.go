@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -87,7 +88,16 @@ func (h *UsageHandler) Activity(c *gin.Context) {
 	}
 
 	resp, err := h.usageSvc.GetActivity(gitRepoURL, days, map[string]string{})
-	_ = resp
-	_ = err
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "usage activity query is not implemented yet"})
+	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrInvalidRepoURL):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, services.ErrUsageQueryFailed):
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
