@@ -131,7 +131,8 @@ type Project struct {
 	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Name        string         `gorm:"not null;uniqueIndex:idx_project_creator_name" json:"name"`
 	Description string         `json:"description,omitempty"`
-	CreatorID   string         `gorm:"not null;index;uniqueIndex:idx_project_creator_name" json:"creatorId"`
+	CreatorID   string         `gorm:"type:text;not null;index;uniqueIndex:idx_project_creator_name" json:"creatorId"`
+	IsPinned    bool           `gorm:"column:is_pinned;->" json:"isPinned"`
 	EnabledAt   *time.Time     `gorm:"index" json:"enabledAt,omitempty"`
 	ArchivedAt  *time.Time     `gorm:"index" json:"archivedAt,omitempty"`
 	Metadata    datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata,omitempty" swaggertype:"object"`
@@ -143,9 +144,10 @@ type Project struct {
 // ProjectMember represents a user's membership in a project.
 type ProjectMember struct {
 	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ProjectID string         `gorm:"not null;index;uniqueIndex:idx_project_user" json:"projectId"`
-	UserID    string         `gorm:"not null;index;uniqueIndex:idx_project_user" json:"userId"`
+	ProjectID string         `gorm:"type:uuid;not null;index;uniqueIndex:idx_project_user" json:"projectId"`
+	UserID    string         `gorm:"type:text;not null;index;uniqueIndex:idx_project_user" json:"userId"`
 	Role      string         `gorm:"not null;default:'member'" json:"role"`
+	PinnedAt  *time.Time     `gorm:"index" json:"pinnedAt,omitempty"`
 	JoinedAt  time.Time      `gorm:"not null" json:"joinedAt"`
 	CreatedAt time.Time      `json:"createdAt"`
 	UpdatedAt time.Time      `json:"updatedAt"`
@@ -155,9 +157,9 @@ type ProjectMember struct {
 // ProjectInvitation represents an invitation sent to a user for joining a project.
 type ProjectInvitation struct {
 	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ProjectID   string     `gorm:"not null;index:idx_project_invitee;index" json:"projectId"`
-	InviterID   string     `gorm:"not null;index" json:"inviterId"`
-	InviteeID   string     `gorm:"not null;index:idx_project_invitee;index:idx_invitee_status" json:"inviteeId"`
+	ProjectID   string     `gorm:"type:uuid;not null;index:idx_project_invitee;index" json:"projectId"`
+	InviterID   string     `gorm:"type:text;not null;index" json:"inviterId"`
+	InviteeID   string     `gorm:"type:text;not null;index:idx_project_invitee;index:idx_invitee_status" json:"inviteeId"`
 	Role        string     `gorm:"not null;default:'member'" json:"role"`
 	Status      string     `gorm:"not null;default:'pending';index;index:idx_invitee_status" json:"status"`
 	Message     string     `json:"message,omitempty"`
@@ -170,11 +172,11 @@ type ProjectInvitation struct {
 // ProjectRepository represents an explicitly bound git repository within a project scope.
 type ProjectRepository struct {
 	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ProjectID      string         `gorm:"not null;index;uniqueIndex:idx_project_repo_unique" json:"projectId"`
+	ProjectID      string         `gorm:"type:uuid;not null;index;uniqueIndex:idx_project_repo_unique" json:"projectId"`
 	GitRepoURL     string         `gorm:"not null;index;uniqueIndex:idx_project_repo_unique" json:"gitRepoUrl"`
 	DisplayName    string         `json:"displayName,omitempty"`
 	Source         string         `gorm:"not null;default:'manual'" json:"source"`
-	BoundByUserID  string         `gorm:"not null;index" json:"boundByUserId"`
+	BoundByUserID  string         `gorm:"type:text;not null;index" json:"boundByUserId"`
 	LastActivityAt *time.Time     `gorm:"index" json:"lastActivityAt,omitempty"`
 	CreatedAt      time.Time      `json:"createdAt"`
 	UpdatedAt      time.Time      `json:"updatedAt"`

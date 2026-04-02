@@ -67,13 +67,17 @@ func isValidRole(role string) bool {
 	return role == RoleAdmin || role == RoleMember
 }
 
+func textEquals(column string) string {
+	return fmt.Sprintf("%s = CAST(? AS TEXT)", column)
+}
+
 func (s *ProjectService) CreateProject(creatorID, name, description string, enabledAt *time.Time) (*models.Project, error) {
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
 
 	var existing models.Project
-	if err := s.db.Where("creator_id = ? AND name = ? AND deleted_at IS NULL", creatorID, name).First(&existing).Error; err == nil {
+	if err := s.db.Where(textEquals("creator_id")+" AND name = ? AND deleted_at IS NULL", creatorID, name).First(&existing).Error; err == nil {
 		return nil, ErrProjectNameExists
 	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
@@ -119,18 +123,64 @@ func (s *ProjectService) GetProject(projectID string) (*models.Project, error) {
 	return &project, nil
 }
 
-func (s *ProjectService) ListProjects(userID string, includeArchived bool) ([]models.Project, error) {
+func (s *ProjectService) GetProjectForUser(projectID, userID string) (*models.Project, error) {
+	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
+		return nil, err
+	}
+
+	var project models.Project
+	if err := s.db.Model(&models.Project{}).
+		Select("projects.*, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
+		Joins("JOIN project_members pm ON pm.project_id = projects.id AND pm.deleted_at IS NULL").
+		Where("projects.id = ? AND "+textEquals("pm.user_id"), projectID, userID).
+		First(&project).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, err
+	}
+	return &project, nil
+}
+
+func (s *ProjectService) ListProjects(userID string, includeArchived bool, pinnedOnly bool) ([]models.Project, error) {
 	var projects []models.Project
 	query := s.db.Model(&models.Project{}).
+		Select("projects.*, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
 		Joins("JOIN project_members pm ON pm.project_id = projects.id AND pm.deleted_at IS NULL").
-		Where("pm.user_id = ?", userID)
+		Where(textEquals("pm.user_id"), userID)
 	if !includeArchived {
 		query = query.Where("projects.archived_at IS NULL")
+	}
+	if pinnedOnly {
+		query = query.Where("pm.pinned_at IS NOT NULL")
 	}
 	if err := query.Order("projects.created_at DESC").Find(&projects).Error; err != nil {
 		return nil, err
 	}
 	return projects, nil
+}
+
+func (s *ProjectService) SetProjectPin(projectID, userID string, pinned bool) error {
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+	if project.ArchivedAt != nil {
+		return ErrProjectArchived
+	}
+	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
+		return err
+	}
+
+	updates := map[string]any{"pinned_at": nil}
+	if pinned {
+		now := time.Now()
+		updates["pinned_at"] = &now
+	}
+
+	return s.db.Model(&models.ProjectMember{}).
+		Where("project_id = ? AND "+textEquals("user_id"), projectID, userID).
+		Updates(updates).Error
 }
 
 func (s *ProjectService) UpdateProject(projectID, userID string, updates map[string]any) error {
@@ -146,7 +196,7 @@ func (s *ProjectService) UpdateProject(projectID, userID string, updates map[str
 	}
 	if name, ok := updates["name"].(string); ok && name != "" && name != project.Name {
 		var existing models.Project
-		if err := s.db.Where("creator_id = ? AND name = ? AND id <> ? AND deleted_at IS NULL", project.CreatorID, name, projectID).First(&existing).Error; err == nil {
+		if err := s.db.Where(textEquals("creator_id")+" AND name = ? AND id <> ? AND deleted_at IS NULL", project.CreatorID, name, projectID).First(&existing).Error; err == nil {
 			return ErrProjectNameExists
 		}
 	}
@@ -203,7 +253,7 @@ func (s *ProjectService) ListMembers(projectID string) ([]models.ProjectMember, 
 
 func (s *ProjectService) GetMember(projectID, userID string) (*models.ProjectMember, error) {
 	var member models.ProjectMember
-	if err := s.db.Where("project_id = ? AND user_id = ?", projectID, userID).First(&member).Error; err != nil {
+	if err := s.db.Where("project_id = ? AND "+textEquals("user_id"), projectID, userID).First(&member).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotMember
 		}
@@ -236,7 +286,7 @@ func (s *ProjectService) RemoveMember(projectID, operatorID, targetUserID string
 			return ErrCannotRemoveLastAdmin
 		}
 	}
-	return s.db.Delete(&models.ProjectMember{}, "project_id = ? AND user_id = ?", projectID, targetUserID).Error
+	return s.db.Delete(&models.ProjectMember{}, "project_id = ? AND "+textEquals("user_id"), projectID, targetUserID).Error
 }
 
 func (s *ProjectService) UpdateMemberRole(projectID, operatorID, targetUserID, newRole string) error {
@@ -266,7 +316,7 @@ func (s *ProjectService) UpdateMemberRole(projectID, operatorID, targetUserID, n
 			return ErrCannotRemoveLastAdmin
 		}
 	}
-	return s.db.Model(&models.ProjectMember{}).Where("project_id = ? AND user_id = ?", projectID, targetUserID).Update("role", newRole).Error
+	return s.db.Model(&models.ProjectMember{}).Where("project_id = ? AND "+textEquals("user_id"), projectID, targetUserID).Update("role", newRole).Error
 }
 
 func (s *ProjectService) CreateInvitation(projectID, inviterID, inviteeID, role, message string) (*models.ProjectInvitation, error) {
@@ -297,7 +347,7 @@ func (s *ProjectService) CreateInvitation(projectID, inviterID, inviteeID, role,
 
 	now := time.Now()
 	var pending models.ProjectInvitation
-	if err := s.db.Where("project_id = ? AND invitee_id = ? AND status = ?", projectID, inviteeID, InvitationPending).First(&pending).Error; err == nil {
+	if err := s.db.Where("project_id = ? AND "+textEquals("invitee_id")+" AND status = ?", projectID, inviteeID, InvitationPending).First(&pending).Error; err == nil {
 		if pending.ExpiresAt == nil || pending.ExpiresAt.After(now) {
 			return nil, ErrInvitationAlreadyExists
 		}
@@ -372,7 +422,7 @@ func (s *ProjectService) ListMyInvitations(userID string) ([]models.ProjectInvit
 		Update("status", InvitationCancelled).Error
 
 	var invitations []models.ProjectInvitation
-	if err := s.db.Where("invitee_id = ?", userID).Order("created_at DESC").Find(&invitations).Error; err != nil {
+	if err := s.db.Where(textEquals("invitee_id"), userID).Order("created_at DESC").Find(&invitations).Error; err != nil {
 		return nil, err
 	}
 	return invitations, nil

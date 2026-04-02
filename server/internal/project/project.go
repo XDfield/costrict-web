@@ -30,6 +30,7 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		projects.POST("", CreateProjectHandler(m.Service))
 		projects.GET("/:id", GetProjectHandler(m.Service))
 		projects.PUT("/:id", UpdateProjectHandler(m.Service))
+		projects.PUT("/:id/pin", SetProjectPinHandler(m.Service))
 		projects.DELETE("/:id", DeleteProjectHandler(m.Service))
 		projects.POST("/:id/archive", ArchiveProjectHandler(m.Service))
 		projects.POST("/:id/unarchive", UnarchiveProjectHandler(m.Service))

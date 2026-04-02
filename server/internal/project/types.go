@@ -32,6 +32,10 @@ type UpdateMemberRoleRequest struct {
 	Role string `json:"role" binding:"required"`
 }
 
+type SetProjectPinRequest struct {
+	Pinned bool `json:"pinned"`
+}
+
 type CreateProjectRepositoryRequest struct {
 	GitRepoURL  string `json:"gitRepoUrl" binding:"required"`
 	DisplayName string `json:"displayName"`

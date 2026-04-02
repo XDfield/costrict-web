@@ -37,6 +37,7 @@ func setupProjectTestDB(t *testing.T) *gorm.DB {
 			project_id TEXT NOT NULL,
 			user_id TEXT NOT NULL,
 			role TEXT NOT NULL,
+			pinned_at DATETIME,
 			joined_at DATETIME NOT NULL,
 			created_at DATETIME,
 			updated_at DATETIME,
@@ -225,6 +226,98 @@ func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 	}
 	if updated.EnabledAt == nil || !updated.EnabledAt.Equal(enabledAt) {
 		t.Fatalf("expected enabledAt updated, got %+v", updated.EnabledAt)
+	}
+}
+
+func TestListProjectsKeepsCreatedAtOrder(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+
+	first, err := svc.CreateProject("u1", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject first error: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	second, err := svc.CreateProject("u1", "Project B", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject second error: %v", err)
+	}
+
+	if err := svc.SetProjectPin(first.ID, "u1", true); err != nil {
+		t.Fatalf("SetProjectPin error: %v", err)
+	}
+
+	projects, err := svc.ListProjects("u1", false, false)
+	if err != nil {
+		t.Fatalf("ListProjects error: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projects))
+	}
+	if projects[0].ID != second.ID || projects[0].IsPinned {
+		t.Fatalf("expected newest project first regardless of pin, got %+v", projects)
+	}
+	if projects[1].ID != first.ID || !projects[1].IsPinned {
+		t.Fatalf("expected older pinned project second with pin flag preserved, got %+v", projects)
+	}
+}
+
+func TestListProjectsCanFilterPinnedOnly(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+
+	projectA, err := svc.CreateProject("u1", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject A error: %v", err)
+	}
+	_, err = svc.CreateProject("u1", "Project B", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject B error: %v", err)
+	}
+	if err := svc.SetProjectPin(projectA.ID, "u1", true); err != nil {
+		t.Fatalf("SetProjectPin error: %v", err)
+	}
+
+	projects, err := svc.ListProjects("u1", false, true)
+	if err != nil {
+		t.Fatalf("ListProjects pinned error: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 pinned project, got %+v", projects)
+	}
+	if projects[0].ID != projectA.ID || !projects[0].IsPinned {
+		t.Fatalf("expected pinned project only, got %+v", projects)
+	}
+}
+
+func TestSetProjectPinUpdatesMemberPreference(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+
+	project, err := svc.CreateProject("admin", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	if err := svc.SetProjectPin(project.ID, "admin", true); err != nil {
+		t.Fatalf("SetProjectPin true error: %v", err)
+	}
+	member, err := svc.GetMember(project.ID, "admin")
+	if err != nil {
+		t.Fatalf("GetMember error: %v", err)
+	}
+	if member.PinnedAt == nil {
+		t.Fatalf("expected pinned_at to be set")
+	}
+
+	if err := svc.SetProjectPin(project.ID, "admin", false); err != nil {
+		t.Fatalf("SetProjectPin false error: %v", err)
+	}
+	member, err = svc.GetMember(project.ID, "admin")
+	if err != nil {
+		t.Fatalf("GetMember error after unpin: %v", err)
+	}
+	if member.PinnedAt != nil {
+		t.Fatalf("expected pinned_at to be nil, got %+v", member.PinnedAt)
 	}
 }
 

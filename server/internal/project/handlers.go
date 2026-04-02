@@ -37,6 +37,7 @@ func currentUserID(c *gin.Context) string {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        includeArchived  query     bool  false  "Include archived projects"
+// @Param        pinned           query     bool  false  "Only return projects pinned by current user"
 // @Success      200  {object}  project.ProjectsResponse
 // @Failure      401  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
@@ -44,7 +45,7 @@ func currentUserID(c *gin.Context) string {
 func ListProjectsHandler(svc *ProjectService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := currentUserID(c)
-		projects, err := svc.ListProjects(userID, c.Query("includeArchived") == "true")
+		projects, err := svc.ListProjects(userID, c.Query("includeArchived") == "true", c.Query("pinned") == "true")
 		if err != nil {
 			writeError(c, err)
 			return
@@ -97,11 +98,42 @@ func CreateProjectHandler(svc *ProjectService) gin.HandlerFunc {
 func GetProjectHandler(svc *ProjectService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		projectID := c.Param("id")
-		if err := svc.checkPermission(projectID, currentUserID(c), RoleMember); err != nil {
+		project, err := svc.GetProjectForUser(projectID, currentUserID(c))
+		if err != nil {
 			writeError(c, err)
 			return
 		}
-		project, err := svc.GetProject(projectID)
+		c.JSON(http.StatusOK, ProjectResponse{Project: project})
+	}
+}
+
+// SetProjectPinHandler godoc
+// @Summary      Pin or unpin project
+// @Description  Set personal pin status for a project the authenticated user belongs to
+// @Tags         projects
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                     true  "Project ID"
+// @Param        body  body      project.SetProjectPinRequest true  "Pin state"
+// @Success      200  {object}  project.ProjectResponse
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /projects/{id}/pin [put]
+func SetProjectPinHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req SetProjectPinRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := svc.SetProjectPin(c.Param("id"), currentUserID(c), req.Pinned); err != nil {
+			writeError(c, err)
+			return
+		}
+		project, err := svc.GetProjectForUser(c.Param("id"), currentUserID(c))
 		if err != nil {
 			writeError(c, err)
 			return

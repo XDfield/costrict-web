@@ -77,6 +77,57 @@ func TestCreateAndListProjectsHandler(t *testing.T) {
 	if len(list.Projects) != 1 || list.Projects[0].ID != created.Project.ID {
 		t.Fatalf("unexpected projects list: %+v", list)
 	}
+	if list.Projects[0].IsPinned {
+		t.Fatalf("expected new project not pinned: %+v", list.Projects[0])
+	}
+}
+
+func TestPinProjectHandlerAndListFilter(t *testing.T) {
+	r := newProjectTestRouter(t)
+	projectA := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "u1", map[string]any{"name": "Project A"})).Project
+	projectB := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "u1", map[string]any{"name": "Project B"})).Project
+
+	w := performJSON(r, http.MethodPut, "/api/projects/"+projectA.ID+"/pin", "u1", map[string]any{"pinned": true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	pinned := decodeBody[ProjectResponse](t, w).Project
+	if pinned == nil || !pinned.IsPinned {
+		t.Fatalf("expected pinned project response, got %+v", pinned)
+	}
+
+	w = performJSON(r, http.MethodGet, "/api/projects", "u1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	list := decodeBody[ProjectsResponse](t, w)
+	if len(list.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %+v", list)
+	}
+	if list.Projects[0].ID != projectB.ID || list.Projects[0].IsPinned {
+		t.Fatalf("expected latest created project first, got %+v", list.Projects)
+	}
+	if list.Projects[1].ID != projectA.ID || !list.Projects[1].IsPinned {
+		t.Fatalf("expected pinned flag retained on older project, got %+v", list.Projects)
+	}
+
+	w = performJSON(r, http.MethodGet, "/api/projects?pinned=true", "u1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	filtered := decodeBody[ProjectsResponse](t, w)
+	if len(filtered.Projects) != 1 || filtered.Projects[0].ID != projectA.ID || !filtered.Projects[0].IsPinned {
+		t.Fatalf("expected only pinned project in filtered list, got %+v", filtered)
+	}
+
+	w = performJSON(r, http.MethodGet, "/api/projects/"+projectA.ID, "u1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	detail := decodeBody[ProjectResponse](t, w)
+	if detail.Project == nil || !detail.Project.IsPinned {
+		t.Fatalf("expected detail response pinned, got %+v", detail)
+	}
 }
 
 func TestInvitationRespondAndListHandlers(t *testing.T) {
