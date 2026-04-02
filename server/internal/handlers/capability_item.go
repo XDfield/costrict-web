@@ -223,6 +223,26 @@ type ItemResponse struct {
 	Favorited      bool   `json:"favorited"`
 }
 
+func itemListSortOrder(sortBy, sortOrder string) string {
+	column := map[string]string{
+		"":              "created_at",
+		"createdAt":     "created_at",
+		"previewCount":  "preview_count",
+		"installCount":  "install_count",
+		"favoriteCount": "favorite_count",
+	}[sortBy]
+	if column == "" {
+		column = "created_at"
+	}
+
+	direction := "DESC"
+	if strings.EqualFold(sortOrder, "asc") {
+		direction = "ASC"
+	}
+
+	return fmt.Sprintf("%s %s, created_at DESC", column, direction)
+}
+
 // ListItems godoc
 // @Summary      List registry items
 // @Description  Get all items in a registry with author information
@@ -234,6 +254,8 @@ type ItemResponse struct {
 // @Param        search    query     string  false  "Search by name or description"
 // @Param        page      query     int     false  "Page number (default: 1)"
 // @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
+// @Param        sortBy    query     string  false  "Sort by createdAt, previewCount, installCount, or favoriteCount"
+// @Param        sortOrder query     string  false  "Sort order: asc or desc (default: desc)"
 // @Success      200       {object}  object{items=[]models.CapabilityItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500       {object}  object{error=string}
 // @Router       /registries/{id}/items [get]
@@ -265,7 +287,7 @@ func ListItems(c *gin.Context) {
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
 
-	result := query.Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
+	result := query.Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
@@ -888,6 +910,8 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
+// @Param        sortBy      query     string   false  "Sort by createdAt, previewCount, installCount, or favoriteCount"
+// @Param        sortOrder   query     string   false  "Sort order: asc or desc (default: desc)"
 // @Success      200         {object}  object{items=[]object,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
 // @Router       /items [get]
@@ -936,7 +960,7 @@ func ListAllItems(c *gin.Context) {
 	query.Model(&models.CapabilityItem{}).Count(&total)
 
 	var items []models.CapabilityItem
-	result := query.Preload("Registry").Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
+	result := query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
