@@ -75,7 +75,7 @@ func runGooseMigrations(db *gorm.DB) error {
 		return fmt.Errorf("failed to set goose dialect: %w", err)
 	}
 
-	if err := goose.Up(sqlDB, "."); err != nil {
+	if err := goose.Up(sqlDB, ".", goose.WithAllowMissing()); err != nil {
 		return fmt.Errorf("goose migration failed: %w", err)
 	}
 
