@@ -315,6 +315,99 @@ func TestListItems_FilterByStatus(t *testing.T) {
 	}
 }
 
+func TestListItems_SortByFavoriteCountDesc(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-li-sort-fav", Name: "sort-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-li-fav-low", RegistryID: "reg-li-sort-fav", RepoID: "repo-1", Slug: "fav-low", ItemType: "skill",
+		Name: "Fav Low", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 2,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-li-fav-high", RegistryID: "reg-li-sort-fav", RepoID: "repo-1", Slug: "fav-high", ItemType: "skill",
+		Name: "Fav High", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 8,
+	})
+
+	w := get(newItemRouter(""), "/api/registries/reg-li-sort-fav/items?sortBy=favoriteCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-li-fav-high" {
+		t.Fatalf("expected highest favoriteCount first, got %v", first["id"])
+	}
+}
+
+func TestListAllItems_SortByPreviewCountDesc(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-sort-preview", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-preview-low", RegistryID: "reg-all-sort-preview", RepoID: "public", Slug: "preview-low", ItemType: "skill",
+		Name: "Preview Low", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), PreviewCount: 3,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-preview-high", RegistryID: "reg-all-sort-preview", RepoID: "public", Slug: "preview-high", ItemType: "skill",
+		Name: "Preview High", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), PreviewCount: 11,
+	})
+
+	w := get(newItemRouter(""), "/api/items?sortBy=previewCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-all-preview-high" {
+		t.Fatalf("expected highest previewCount first, got %v", first["id"])
+	}
+}
+
+func TestListAllItems_SortByInstallCountAsc(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-sort-install", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-install-high", RegistryID: "reg-all-sort-install", RepoID: "public", Slug: "install-high", ItemType: "skill",
+		Name: "Install High", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), InstallCount: 10,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-install-low", RegistryID: "reg-all-sort-install", RepoID: "public", Slug: "install-low", ItemType: "skill",
+		Name: "Install Low", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), InstallCount: 1,
+	})
+
+	w := get(newItemRouter(""), "/api/items?sortBy=installCount&sortOrder=asc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-all-install-low" {
+		t.Fatalf("expected lowest installCount first, got %v", first["id"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateItem
 // ---------------------------------------------------------------------------
