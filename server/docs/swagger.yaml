@@ -1,6 +1,6 @@
 basePath: /api
 definitions:
-  casdoor.CasdoorUser:
+  github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser:
     properties:
       email:
         type: string
@@ -19,176 +19,11 @@ definitions:
       universal_id:
         type: string
     type: object
-  handlers.CreateSyncRegistryInput:
-    properties:
-      conflictStrategy:
-        type: string
-      description:
-        type: string
-      excludePatterns:
-        items:
-          type: string
-        type: array
-      externalBranch:
-        type: string
-      externalUrl:
-        type: string
-      includePatterns:
-        items:
-          type: string
-        type: array
-      name:
-        type: string
-      syncEnabled:
-        type: boolean
-      syncInterval:
-        type: integer
-      webhookSecret:
-        type: string
-    type: object
-  handlers.ItemResponse:
-    properties:
-      artifacts:
-        items:
-          $ref: '#/definitions/models.CapabilityArtifact'
-        type: array
-      assets:
-        items:
-          $ref: '#/definitions/models.CapabilityAsset'
-        type: array
-      category:
-        type: string
-      content:
-        type: string
-      createdAt:
-        type: string
-      createdBy:
-        type: string
-      description:
-        type: string
-      embeddingUpdatedAt:
-        type: string
-      experienceScore:
-        type: number
-      id:
-        type: string
-      installCount:
-        type: integer
-      itemType:
-        type: string
-      lastScanId:
-        type: string
-      metadata:
-        type: object
-      name:
-        type: string
-      registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
-      registryId:
-        type: string
-      repoId:
-        type: string
-      repoVisibility:
-        type: string
-      securityStatus:
-        type: string
-      slug:
-        type: string
-      sourcePath:
-        type: string
-      sourceSha:
-        type: string
-      sourceType:
-        description: direct | archive
-        type: string
-      status:
-        type: string
-      updatedAt:
-        type: string
-      updatedBy:
-        type: string
-      version:
-        type: string
-      versions:
-        items:
-          $ref: '#/definitions/models.CapabilityVersion'
-        type: array
-    type: object
-  handlers.MyItem:
-    properties:
-      artifacts:
-        items:
-          $ref: '#/definitions/models.CapabilityArtifact'
-        type: array
-      assets:
-        items:
-          $ref: '#/definitions/models.CapabilityAsset'
-        type: array
-      category:
-        type: string
-      content:
-        type: string
-      createdAt:
-        type: string
-      createdBy:
-        type: string
-      description:
-        type: string
-      embeddingUpdatedAt:
-        type: string
-      experienceScore:
-        type: number
-      id:
-        type: string
-      installCount:
-        type: integer
-      itemType:
-        type: string
-      lastScanId:
-        type: string
-      metadata:
-        type: object
-      name:
-        type: string
-      registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
-      registryId:
-        type: string
-      repoId:
-        type: string
-      repoName:
-        type: string
-      repoVisibility:
-        type: string
-      securityStatus:
-        type: string
-      slug:
-        type: string
-      sourcePath:
-        type: string
-      sourceSha:
-        type: string
-      sourceType:
-        description: direct | archive
-        type: string
-      status:
-        type: string
-      updatedAt:
-        type: string
-      updatedBy:
-        type: string
-      version:
-        type: string
-      versions:
-        items:
-          $ref: '#/definitions/models.CapabilityVersion'
-        type: array
-    type: object
-  llm.SkillAnalysis:
+  github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis:
     properties:
       improvements:
         items:
-          $ref: '#/definitions/llm.SkillImprovement'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement'
         type: array
       overallScore:
         type: integer
@@ -201,7 +36,7 @@ definitions:
           type: string
         type: array
     type: object
-  llm.SkillImprovement:
+  github_com_costrict_costrict-web_server_internal_llm.SkillImprovement:
     properties:
       current:
         type: string
@@ -212,7 +47,7 @@ definitions:
       suggested:
         type: string
     type: object
-  models.ActionType:
+  github_com_costrict_costrict-web_server_internal_models.ActionType:
     enum:
     - view
     - click
@@ -232,12 +67,12 @@ definitions:
     - ActionFail
     - ActionFeedback
     - ActionIgnore
-  models.BehaviorLog:
+  github_com_costrict_costrict-web_server_internal_models.BehaviorLog:
     properties:
       actionType:
-        $ref: '#/definitions/models.ActionType'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ActionType'
       context:
-        $ref: '#/definitions/models.ContextType'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ContextType'
       createdAt:
         type: string
       durationMs:
@@ -248,7 +83,7 @@ definitions:
         type: string
       item:
         allOf:
-        - $ref: '#/definitions/models.CapabilityItem'
+        - $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         description: Relations
       itemId:
         type: string
@@ -258,7 +93,7 @@ definitions:
         description: 1-5 for feedback
         type: integer
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       searchQuery:
@@ -268,7 +103,7 @@ definitions:
       userId:
         type: string
     type: object
-  models.CapabilityArtifact:
+  github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact:
     properties:
       artifactVersion:
         type: string
@@ -299,7 +134,7 @@ definitions:
       uploadedBy:
         type: string
     type: object
-  models.CapabilityAsset:
+  github_com_costrict_costrict-web_server_internal_models.CapabilityAsset:
     properties:
       contentSha:
         type: string
@@ -324,15 +159,15 @@ definitions:
       updatedAt:
         type: string
     type: object
-  models.CapabilityItem:
+  github_com_costrict_costrict-web_server_internal_models.CapabilityItem:
     properties:
       artifacts:
         items:
-          $ref: '#/definitions/models.CapabilityArtifact'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
         type: array
       assets:
         items:
-          $ref: '#/definitions/models.CapabilityAsset'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset'
         type: array
       category:
         type: string
@@ -348,6 +183,8 @@ definitions:
         type: string
       experienceScore:
         type: number
+      favoriteCount:
+        type: integer
       id:
         type: string
       installCount:
@@ -360,8 +197,10 @@ definitions:
         type: object
       name:
         type: string
+      previewCount:
+        type: integer
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       repoId:
@@ -387,10 +226,10 @@ definitions:
         type: string
       versions:
         items:
-          $ref: '#/definitions/models.CapabilityVersion'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
         type: array
     type: object
-  models.CapabilityRegistry:
+  github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry:
     properties:
       createdAt:
         type: string
@@ -404,10 +243,10 @@ definitions:
         type: string
       items:
         items:
-          $ref: '#/definitions/models.CapabilityItem'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         type: array
       lastSyncLog:
-        $ref: '#/definitions/models.SyncLog'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog'
       lastSyncLogId:
         type: string
       lastSyncSha:
@@ -434,7 +273,7 @@ definitions:
       updatedAt:
         type: string
     type: object
-  models.CapabilityVersion:
+  github_com_costrict_costrict-web_server_internal_models.CapabilityVersion:
     properties:
       commitMsg:
         type: string
@@ -453,7 +292,7 @@ definitions:
       revision:
         type: integer
     type: object
-  models.ContextType:
+  github_com_costrict_costrict-web_server_internal_models.ContextType:
     enum:
     - search_query
     - recommendation
@@ -465,7 +304,7 @@ definitions:
     - ContextRecommend
     - ContextDirectAccess
     - ContextBrowse
-  models.NotificationLog:
+  github_com_costrict_costrict-web_server_internal_models.NotificationLog:
     properties:
       channelType:
         type: string
@@ -490,7 +329,7 @@ definitions:
       userId:
         type: string
     type: object
-  models.Project:
+  github_com_costrict_costrict-web_server_internal_models.Project:
     properties:
       archivedAt:
         type: string
@@ -504,6 +343,8 @@ definitions:
         type: string
       id:
         type: string
+      isPinned:
+        type: boolean
       metadata:
         type: object
       name:
@@ -511,7 +352,7 @@ definitions:
       updatedAt:
         type: string
     type: object
-  models.ProjectInvitation:
+  github_com_costrict_costrict-web_server_internal_models.ProjectInvitation:
     properties:
       createdAt:
         type: string
@@ -536,13 +377,15 @@ definitions:
       updatedAt:
         type: string
     type: object
-  models.ProjectMember:
+  github_com_costrict_costrict-web_server_internal_models.ProjectMember:
     properties:
       createdAt:
         type: string
       id:
         type: string
       joinedAt:
+        type: string
+      pinnedAt:
         type: string
       projectId:
         type: string
@@ -553,7 +396,7 @@ definitions:
       userId:
         type: string
     type: object
-  models.RepoInvitation:
+  github_com_costrict_costrict-web_server_internal_models.RepoInvitation:
     properties:
       createdAt:
         type: string
@@ -572,7 +415,7 @@ definitions:
       repoId:
         type: string
       repository:
-        $ref: '#/definitions/models.Repository'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
       role:
         description: admin | member
         type: string
@@ -582,7 +425,7 @@ definitions:
       updatedAt:
         type: string
     type: object
-  models.RepoMember:
+  github_com_costrict_costrict-web_server_internal_models.RepoMember:
     properties:
       createdAt:
         type: string
@@ -598,7 +441,7 @@ definitions:
       username:
         type: string
     type: object
-  models.Repository:
+  github_com_costrict_costrict-web_server_internal_models.Repository:
     properties:
       createdAt:
         type: string
@@ -610,7 +453,7 @@ definitions:
         type: string
       members:
         items:
-          $ref: '#/definitions/models.RepoMember'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember'
         type: array
       name:
         type: string
@@ -625,7 +468,7 @@ definitions:
         description: public | private
         type: string
     type: object
-  models.SecurityScan:
+  github_com_costrict_costrict-web_server_internal_models.SecurityScan:
     properties:
       createdAt:
         type: string
@@ -663,7 +506,7 @@ definitions:
         description: safe | caution | reject
         type: string
     type: object
-  models.SyncJob:
+  github_com_costrict_costrict-web_server_internal_models.SyncJob:
     properties:
       createdAt:
         type: string
@@ -680,7 +523,7 @@ definitions:
       priority:
         type: integer
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       retryCount:
@@ -700,7 +543,7 @@ definitions:
       triggerUser:
         type: string
     type: object
-  models.SyncLog:
+  github_com_costrict_costrict-web_server_internal_models.SyncLog:
     properties:
       addedItems:
         type: integer
@@ -723,7 +566,7 @@ definitions:
       previousSha:
         type: string
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       skippedItems:
@@ -743,7 +586,7 @@ definitions:
       updatedItems:
         type: integer
     type: object
-  models.SystemNotificationChannel:
+  github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel:
     properties:
       createdAt:
         type: string
@@ -768,7 +611,7 @@ definitions:
         description: 空=全局
         type: string
     type: object
-  models.UserBehaviorSummary:
+  github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary:
     properties:
       favoriteCategories:
         items:
@@ -789,7 +632,7 @@ definitions:
       userId:
         type: string
     type: object
-  models.UserNotificationChannel:
+  github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel:
     properties:
       channelType:
         description: '"wecom" | "feishu" | "webhook"'
@@ -821,107 +664,31 @@ definitions:
       userId:
         type: string
     type: object
-  models.WorkspaceDirectory:
+  github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory:
     properties:
       createdAt:
         type: string
       id:
         type: string
       isDefault:
+        description: 是否为默认目录
         type: boolean
       name:
         type: string
       orderIndex:
+        description: 排序索引
         type: integer
       path:
         type: string
       settings:
+        description: 目录设置（如忽略模式等）
         type: object
       updatedAt:
         type: string
       workspaceId:
         type: string
     type: object
-  project.CreateInvitationRequest:
-    properties:
-      inviteeId:
-        type: string
-      message:
-        type: string
-      role:
-        type: string
-    required:
-    - inviteeId
-    type: object
-  project.CreateProjectRequest:
-    properties:
-      description:
-        type: string
-      enabledAt:
-        type: string
-      name:
-        type: string
-    required:
-    - name
-    type: object
-  project.InvitationResponse:
-    properties:
-      invitation:
-        $ref: '#/definitions/models.ProjectInvitation'
-    type: object
-  project.InvitationsResponse:
-    properties:
-      invitations:
-        items:
-          $ref: '#/definitions/models.ProjectInvitation'
-        type: array
-    type: object
-  project.MemberResponse:
-    properties:
-      member:
-        $ref: '#/definitions/models.ProjectMember'
-    type: object
-  project.MembersResponse:
-    properties:
-      members:
-        items:
-          $ref: '#/definitions/models.ProjectMember'
-        type: array
-    type: object
-  project.ProjectResponse:
-    properties:
-      project:
-        $ref: '#/definitions/models.Project'
-    type: object
-  project.ProjectsResponse:
-    properties:
-      projects:
-        items:
-          $ref: '#/definitions/models.Project'
-        type: array
-    type: object
-  project.RespondInvitationRequest:
-    properties:
-      accept:
-        type: boolean
-    type: object
-  project.UpdateMemberRoleRequest:
-    properties:
-      role:
-        type: string
-    required:
-    - role
-    type: object
-  project.UpdateProjectRequest:
-    properties:
-      description:
-        type: string
-      enabledAt:
-        type: string
-      name:
-        type: string
-    type: object
-  services.CreateDirectoryRequest:
+  github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest:
     properties:
       isDefault:
         type: boolean
@@ -938,7 +705,7 @@ definitions:
     - name
     - path
     type: object
-  services.CreateWorkspaceRequest:
+  github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest:
     properties:
       description:
         maxLength: 500
@@ -947,7 +714,7 @@ definitions:
         type: string
       directories:
         items:
-          $ref: '#/definitions/services.CreateDirectoryRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest'
         minItems: 1
         type: array
       name:
@@ -960,13 +727,15 @@ definitions:
     - directories
     - name
     type: object
-  services.ItemBehaviorStats:
+  github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats:
     properties:
       averageRating:
         type: number
       clicks:
         type: integer
       failures:
+        type: integer
+      favorites:
         type: integer
       installs:
         type: integer
@@ -985,7 +754,7 @@ definitions:
       views:
         type: integer
     type: object
-  services.RecommendResponse:
+  github_com_costrict_costrict-web_server_internal_services.RecommendResponse:
     properties:
       generatedAt:
         type: string
@@ -993,7 +762,7 @@ definitions:
         type: boolean
       items:
         items:
-          $ref: '#/definitions/services.RecommendedItem'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendedItem'
         type: array
       page:
         type: integer
@@ -1006,15 +775,15 @@ definitions:
       total:
         type: integer
     type: object
-  services.RecommendedItem:
+  github_com_costrict_costrict-web_server_internal_services.RecommendedItem:
     properties:
       artifacts:
         items:
-          $ref: '#/definitions/models.CapabilityArtifact'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
         type: array
       assets:
         items:
-          $ref: '#/definitions/models.CapabilityAsset'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset'
         type: array
       category:
         type: string
@@ -1030,6 +799,8 @@ definitions:
         type: string
       experienceScore:
         type: number
+      favoriteCount:
+        type: integer
       id:
         type: string
       installCount:
@@ -1042,10 +813,12 @@ definitions:
         type: object
       name:
         type: string
+      previewCount:
+        type: integer
       reason:
         type: string
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       repoId:
@@ -1075,10 +848,10 @@ definitions:
         type: string
       versions:
         items:
-          $ref: '#/definitions/models.CapabilityVersion'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
         type: array
     type: object
-  services.ReorderDirectoriesRequest:
+  github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest:
     properties:
       directoryIds:
         items:
@@ -1087,28 +860,28 @@ definitions:
     required:
     - directoryIds
     type: object
-  services.SearchResult:
+  github_com_costrict_costrict-web_server_internal_services.SearchResult:
     properties:
       durationMs:
         type: integer
       items:
         items:
-          $ref: '#/definitions/services.SearchResultItem'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem'
         type: array
       query:
         type: string
       total:
         type: integer
     type: object
-  services.SearchResultItem:
+  github_com_costrict_costrict-web_server_internal_services.SearchResultItem:
     properties:
       artifacts:
         items:
-          $ref: '#/definitions/models.CapabilityArtifact'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
         type: array
       assets:
         items:
-          $ref: '#/definitions/models.CapabilityAsset'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset'
         type: array
       category:
         type: string
@@ -1124,6 +897,8 @@ definitions:
         type: string
       experienceScore:
         type: number
+      favoriteCount:
+        type: integer
       id:
         type: string
       installCount:
@@ -1136,8 +911,10 @@ definitions:
         type: object
       name:
         type: string
+      previewCount:
+        type: integer
       registry:
-        $ref: '#/definitions/models.CapabilityRegistry'
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
       registryId:
         type: string
       repoId:
@@ -1165,10 +942,10 @@ definitions:
         type: string
       versions:
         items:
-          $ref: '#/definitions/models.CapabilityVersion'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
         type: array
     type: object
-  services.UpdateDirectoryRequest:
+  github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest:
     properties:
       isDefault:
         type: boolean
@@ -1182,7 +959,7 @@ definitions:
         additionalProperties: true
         type: object
     type: object
-  services.UpdateWorkspaceRequest:
+  github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest:
     properties:
       description:
         maxLength: 500
@@ -1202,7 +979,7 @@ definitions:
         - archived
         type: string
     type: object
-  services.UsageActivityResponse:
+  github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse:
     properties:
       git_repo_url:
         type: string
@@ -1215,17 +992,17 @@ definitions:
         type: object
       users:
         items:
-          $ref: '#/definitions/services.UsageUserActivity'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageUserActivity'
         type: array
     type: object
-  services.UsageDaily:
+  github_com_costrict_costrict-web_server_internal_services.UsageDaily:
     properties:
       date:
         type: string
       requests:
         type: integer
     type: object
-  services.UsageReportItem:
+  github_com_costrict_costrict-web_server_internal_services.UsageReportItem:
     properties:
       cache_read_tokens:
         type: integer
@@ -1267,7 +1044,7 @@ definitions:
     - session_id
     - updated
     type: object
-  services.UsageReportRequest:
+  github_com_costrict_costrict-web_server_internal_services.UsageReportRequest:
     properties:
       device_id:
         type: string
@@ -1275,14 +1052,14 @@ definitions:
         type: string
       reports:
         items:
-          $ref: '#/definitions/services.UsageReportItem'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportItem'
         maxItems: 500
         minItems: 1
         type: array
     required:
     - reports
     type: object
-  services.UsageReportResponse:
+  github_com_costrict_costrict-web_server_internal_services.UsageReportResponse:
     properties:
       accepted:
         type: integer
@@ -1293,11 +1070,11 @@ definitions:
       skipped:
         type: integer
     type: object
-  services.UsageUserActivity:
+  github_com_costrict_costrict-web_server_internal_services.UsageUserActivity:
     properties:
       daily:
         items:
-          $ref: '#/definitions/services.UsageDaily'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageDaily'
         type: array
       total_requests:
         type: integer
@@ -1306,7 +1083,7 @@ definitions:
       username:
         type: string
     type: object
-  services.WorkspaceWithDeviceStatus:
+  github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus:
     properties:
       createdAt:
         type: string
@@ -1323,7 +1100,7 @@ definitions:
         type: string
       directories:
         items:
-          $ref: '#/definitions/models.WorkspaceDirectory'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory'
         type: array
       id:
         type: string
@@ -1341,6 +1118,265 @@ definitions:
       updatedAt:
         type: string
       userId:
+        type: string
+    type: object
+  internal_handlers.CreateSyncRegistryInput:
+    properties:
+      conflictStrategy:
+        type: string
+      description:
+        type: string
+      excludePatterns:
+        items:
+          type: string
+        type: array
+      externalBranch:
+        type: string
+      externalUrl:
+        type: string
+      includePatterns:
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      syncEnabled:
+        type: boolean
+      syncInterval:
+        type: integer
+      webhookSecret:
+        type: string
+    type: object
+  internal_handlers.ItemResponse:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      favoriteCount:
+        type: integer
+      favorited:
+        type: boolean
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      previewCount:
+        type: integer
+      registry:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      repoVisibility:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
+        type: array
+    type: object
+  internal_handlers.MyItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      favoriteCount:
+        type: integer
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      previewCount:
+        type: integer
+      registry:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      repoName:
+        type: string
+      repoVisibility:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
+        type: array
+    type: object
+  internal_project.CreateInvitationRequest:
+    properties:
+      inviteeId:
+        type: string
+      message:
+        type: string
+      role:
+        type: string
+    required:
+    - inviteeId
+    type: object
+  internal_project.CreateProjectRequest:
+    properties:
+      description:
+        type: string
+      enabledAt:
+        type: string
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  internal_project.InvitationResponse:
+    properties:
+      invitation:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectInvitation'
+    type: object
+  internal_project.InvitationsResponse:
+    properties:
+      invitations:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectInvitation'
+        type: array
+    type: object
+  internal_project.MemberResponse:
+    properties:
+      member:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectMember'
+    type: object
+  internal_project.MembersResponse:
+    properties:
+      members:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectMember'
+        type: array
+    type: object
+  internal_project.ProjectResponse:
+    properties:
+      project:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Project'
+    type: object
+  internal_project.ProjectsResponse:
+    properties:
+      projects:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Project'
+        type: array
+    type: object
+  internal_project.RespondInvitationRequest:
+    properties:
+      accept:
+        type: boolean
+    type: object
+  internal_project.SetProjectPinRequest:
+    properties:
+      pinned:
+        type: boolean
+    type: object
+  internal_project.UpdateMemberRoleRequest:
+    properties:
+      role:
+        type: string
+    required:
+    - role
+    type: object
+  internal_project.UpdateProjectRequest:
+    properties:
+      description:
+        type: string
+      enabledAt:
+        type: string
+      name:
         type: string
     type: object
 host: localhost:8080
@@ -1369,7 +1405,7 @@ paths:
             properties:
               channels:
                 items:
-                  $ref: '#/definitions/models.SystemNotificationChannel'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel'
                 type: array
             type: object
         "401":
@@ -1417,7 +1453,7 @@ paths:
           schema:
             properties:
               channel:
-                $ref: '#/definitions/models.SystemNotificationChannel'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel'
             type: object
         "400":
           description: Bad Request
@@ -1517,7 +1553,7 @@ paths:
           schema:
             properties:
               channel:
-                $ref: '#/definitions/models.SystemNotificationChannel'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel'
             type: object
         "400":
           description: Bad Request
@@ -1649,7 +1685,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityArtifact'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
         "400":
           description: Bad Request
           schema:
@@ -2698,7 +2734,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.InvitationsResponse'
+            $ref: '#/definitions/internal_project.InvitationsResponse'
         "401":
           description: Unauthorized
           schema:
@@ -2780,7 +2816,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.RepoMember'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember'
         "400":
           description: Bad Request
           schema:
@@ -2871,14 +2907,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/project.RespondInvitationRequest'
+          $ref: '#/definitions/internal_project.RespondInvitationRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.InvitationResponse'
+            $ref: '#/definitions/internal_project.InvitationResponse'
         "400":
           description: Bad Request
           schema:
@@ -2924,7 +2960,7 @@ paths:
             properties:
               invitations:
                 items:
-                  $ref: '#/definitions/models.RepoInvitation'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation'
                 type: array
             type: object
         "401":
@@ -3052,7 +3088,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -3121,7 +3157,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/handlers.ItemResponse'
+            $ref: '#/definitions/internal_handlers.ItemResponse'
         "404":
           description: Not Found
           schema:
@@ -3176,7 +3212,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -3216,7 +3252,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/llm.SkillAnalysis'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis'
         "404":
           description: Not Found
           schema:
@@ -3252,7 +3288,7 @@ paths:
             properties:
               artifacts:
                 items:
-                  $ref: '#/definitions/models.CapabilityArtifact'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact'
                 type: array
             type: object
         "500":
@@ -3305,7 +3341,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.BehaviorLog'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.BehaviorLog'
         "400":
           description: Bad Request
           schema:
@@ -3357,6 +3393,113 @@ paths:
       summary: Download item content
       tags:
       - items
+  /items/{id}/favorite:
+    delete:
+      description: Remove the current user's favorite mark from an item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              favoriteCount:
+                type: integer
+              favorited:
+                type: boolean
+              removed:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Unfavorite item
+      tags:
+      - behavior
+    post:
+      description: Mark an item as favorited for the current user
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              created:
+                type: boolean
+              favoriteCount:
+                type: integer
+              favorited:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Favorite item
+      tags:
+      - behavior
   /items/{id}/improve:
     post:
       consumes:
@@ -3376,7 +3519,7 @@ paths:
           properties:
             improvements:
               items:
-                $ref: '#/definitions/llm.SkillImprovement'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement'
               type: array
           type: object
       produces:
@@ -3385,7 +3528,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -3431,7 +3574,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -3554,7 +3697,7 @@ paths:
                 type: integer
               results:
                 items:
-                  $ref: '#/definitions/models.SecurityScan'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan'
                 type: array
               total:
                 type: integer
@@ -3631,7 +3774,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/services.SearchResultItem'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem'
                 type: array
               page:
                 type: integer
@@ -3672,7 +3815,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.ItemBehaviorStats'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats'
         "500":
           description: Internal Server Error
           schema:
@@ -3715,7 +3858,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -3772,7 +3915,7 @@ paths:
             properties:
               versions:
                 items:
-                  $ref: '#/definitions/models.CapabilityVersion'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
                 type: array
             type: object
         "500":
@@ -3805,7 +3948,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityVersion'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
         "400":
           description: Bad Request
           schema:
@@ -3850,7 +3993,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/handlers.MyItem'
+                  $ref: '#/definitions/internal_handlers.MyItem'
                 type: array
               page:
                 type: integer
@@ -3906,7 +4049,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.SearchResult'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult'
         "400":
           description: Bad Request
           schema:
@@ -3947,7 +4090,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
                 type: array
               page:
                 type: integer
@@ -4003,7 +4146,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.RecommendResponse'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendResponse'
         "400":
           description: Bad Request
           schema:
@@ -4060,7 +4203,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.SearchResult'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult'
         "400":
           description: Bad Request
           schema:
@@ -4108,7 +4251,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
                 type: array
               page:
                 type: integer
@@ -4139,7 +4282,7 @@ paths:
             properties:
               channels:
                 items:
-                  $ref: '#/definitions/models.UserNotificationChannel'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel'
                 type: array
             type: object
         "401":
@@ -4191,7 +4334,7 @@ paths:
           schema:
             properties:
               channel:
-                $ref: '#/definitions/models.UserNotificationChannel'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel'
             type: object
         "400":
           description: Bad Request
@@ -4276,7 +4419,7 @@ paths:
           schema:
             properties:
               channel:
-                $ref: '#/definitions/models.UserNotificationChannel'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel'
             type: object
         "401":
           description: Unauthorized
@@ -4330,7 +4473,7 @@ paths:
           schema:
             properties:
               channel:
-                $ref: '#/definitions/models.UserNotificationChannel'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel'
             type: object
         "400":
           description: Bad Request
@@ -4385,7 +4528,7 @@ paths:
             properties:
               logs:
                 items:
-                  $ref: '#/definitions/models.NotificationLog'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.NotificationLog'
                 type: array
             type: object
         "401":
@@ -4484,13 +4627,17 @@ paths:
         in: query
         name: includeArchived
         type: boolean
+      - description: Only return projects pinned by current user
+        in: query
+        name: pinned
+        type: boolean
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.ProjectsResponse'
+            $ref: '#/definitions/internal_project.ProjectsResponse'
         "401":
           description: Unauthorized
           schema:
@@ -4520,14 +4667,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/project.CreateProjectRequest'
+          $ref: '#/definitions/internal_project.CreateProjectRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/project.ProjectResponse'
+            $ref: '#/definitions/internal_project.ProjectResponse'
         "400":
           description: Bad Request
           schema:
@@ -4608,7 +4755,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.ProjectResponse'
+            $ref: '#/definitions/internal_project.ProjectResponse'
         "401":
           description: Unauthorized
           schema:
@@ -4650,14 +4797,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/project.UpdateProjectRequest'
+          $ref: '#/definitions/internal_project.UpdateProjectRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.ProjectResponse'
+            $ref: '#/definitions/internal_project.ProjectResponse'
         "400":
           description: Bad Request
           schema:
@@ -4706,7 +4853,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.ProjectResponse'
+            $ref: '#/definitions/internal_project.ProjectResponse'
         "400":
           description: Bad Request
           schema:
@@ -4755,7 +4902,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.InvitationsResponse'
+            $ref: '#/definitions/internal_project.InvitationsResponse'
         "401":
           description: Unauthorized
           schema:
@@ -4797,14 +4944,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/project.CreateInvitationRequest'
+          $ref: '#/definitions/internal_project.CreateInvitationRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/project.InvitationResponse'
+            $ref: '#/definitions/internal_project.InvitationResponse'
         "400":
           description: Bad Request
           schema:
@@ -4853,7 +5000,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.MembersResponse'
+            $ref: '#/definitions/internal_project.MembersResponse'
         "401":
           description: Unauthorized
           schema:
@@ -4953,14 +5100,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/project.UpdateMemberRoleRequest'
+          $ref: '#/definitions/internal_project.UpdateMemberRoleRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.MemberResponse'
+            $ref: '#/definitions/internal_project.MemberResponse'
         "400":
           description: Bad Request
           schema:
@@ -4994,6 +5141,64 @@ paths:
       summary: Update project member role
       tags:
       - projects
+  /projects/{id}/pin:
+    put:
+      consumes:
+      - application/json
+      description: Set personal pin status for a project the authenticated user belongs
+        to
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Pin state
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_project.SetProjectPinRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_project.ProjectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Pin or unpin project
+      tags:
+      - projects
   /projects/{id}/unarchive:
     post:
       description: Unarchive a project as project admin
@@ -5009,7 +5214,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/project.ProjectResponse'
+            $ref: '#/definitions/internal_project.ProjectResponse'
         "400":
           description: Bad Request
           schema:
@@ -5063,7 +5268,7 @@ paths:
             properties:
               registries:
                 items:
-                  $ref: '#/definitions/models.CapabilityRegistry'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
                 type: array
             type: object
       summary: List registries
@@ -5106,7 +5311,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "400":
           description: Bad Request
           schema:
@@ -5167,7 +5372,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "404":
           description: Not Found
           schema:
@@ -5215,7 +5420,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "400":
           description: Bad Request
           schema:
@@ -5280,7 +5485,7 @@ paths:
                 type: boolean
               items:
                 items:
-                  $ref: '#/definitions/models.CapabilityItem'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
                 type: array
               page:
                 type: integer
@@ -5342,7 +5547,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
         "400":
           description: Bad Request
           schema:
@@ -5418,7 +5623,7 @@ paths:
             properties:
               jobs:
                 items:
-                  $ref: '#/definitions/models.SyncJob'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob'
                 type: array
               total:
                 type: integer
@@ -5443,7 +5648,7 @@ paths:
             properties:
               logs:
                 items:
-                  $ref: '#/definitions/models.SyncLog'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog'
                 type: array
               total:
                 type: integer
@@ -5519,7 +5724,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "400":
           description: Bad Request
           schema:
@@ -5569,7 +5774,7 @@ paths:
             properties:
               registries:
                 items:
-                  $ref: '#/definitions/models.CapabilityRegistry'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
                 type: array
             type: object
         "400":
@@ -5591,7 +5796,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "404":
           description: Not Found
           schema:
@@ -5739,7 +5944,7 @@ paths:
             properties:
               repositories:
                 items:
-                  $ref: '#/definitions/models.Repository'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
                 type: array
             type: object
         "500":
@@ -5789,7 +5994,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.Repository'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
         "400":
           description: Bad Request
           schema:
@@ -5851,7 +6056,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.Repository'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
         "404":
           description: Not Found
           schema:
@@ -5892,7 +6097,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.Repository'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
         "400":
           description: Bad Request
           schema:
@@ -5939,7 +6144,7 @@ paths:
             properties:
               invitations:
                 items:
-                  $ref: '#/definitions/models.RepoInvitation'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation'
                 type: array
             type: object
         "403":
@@ -5982,7 +6187,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.RepoInvitation'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation'
         "400":
           description: Bad Request
           schema:
@@ -6080,7 +6285,7 @@ paths:
             properties:
               members:
                 items:
-                  $ref: '#/definitions/models.RepoMember'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember'
                 type: array
             type: object
         "500":
@@ -6122,7 +6327,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.RepoMember'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember'
         "400":
           description: Bad Request
           schema:
@@ -6226,7 +6431,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.RepoMember'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember'
         "400":
           description: Bad Request
           schema:
@@ -6276,7 +6481,7 @@ paths:
             properties:
               registries:
                 items:
-                  $ref: '#/definitions/models.CapabilityRegistry'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
                 type: array
             type: object
       summary: List repository registries
@@ -6297,14 +6502,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/handlers.CreateSyncRegistryInput'
+          $ref: '#/definitions/internal_handlers.CreateSyncRegistryInput'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "400":
           description: Bad Request
           schema:
@@ -6400,7 +6605,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "404":
           description: Not Found
           schema:
@@ -6426,7 +6631,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityRegistry'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
         "404":
           description: Not Found
           schema:
@@ -6512,7 +6717,7 @@ paths:
             properties:
               jobs:
                 items:
-                  $ref: '#/definitions/models.SyncJob'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob'
                 type: array
               total:
                 type: integer
@@ -6549,7 +6754,7 @@ paths:
             properties:
               logs:
                 items:
-                  $ref: '#/definitions/models.SyncLog'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog'
                 type: array
               total:
                 type: integer
@@ -6616,7 +6821,7 @@ paths:
             properties:
               repositories:
                 items:
-                  $ref: '#/definitions/models.Repository'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository'
                 type: array
             type: object
         "401":
@@ -6680,7 +6885,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.SecurityScan'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan'
         "404":
           description: Not Found
           schema:
@@ -6705,7 +6910,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.SyncJob'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob'
         "404":
           description: Not Found
           schema:
@@ -6730,7 +6935,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.SyncLog'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog'
         "404":
           description: Not Found
           schema:
@@ -6761,7 +6966,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.UsageActivityResponse'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse'
         "400":
           description: Bad Request
           schema:
@@ -6800,14 +7005,14 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.UsageReportRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/services.UsageReportResponse'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportResponse'
         "400":
           description: Bad Request
           schema:
@@ -6843,7 +7048,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.UserBehaviorSummary'
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary'
         "500":
           description: Internal Server Error
           schema:
@@ -6904,7 +7109,7 @@ paths:
             properties:
               users:
                 items:
-                  $ref: '#/definitions/casdoor.CasdoorUser'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser'
                 type: array
             type: object
         "401":
@@ -7000,7 +7205,7 @@ paths:
             properties:
               workspaces:
                 items:
-                  $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus'
                 type: array
             type: object
         "401":
@@ -7031,7 +7236,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.CreateWorkspaceRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest'
       produces:
       - application/json
       responses:
@@ -7040,7 +7245,7 @@ paths:
           schema:
             properties:
               workspace:
-                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus'
             type: object
         "400":
           description: Bad Request
@@ -7132,7 +7337,7 @@ paths:
           schema:
             properties:
               workspace:
-                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus'
             type: object
         "401":
           description: Unauthorized
@@ -7173,7 +7378,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.UpdateWorkspaceRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest'
       produces:
       - application/json
       responses:
@@ -7182,7 +7387,7 @@ paths:
           schema:
             properties:
               workspace:
-                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus'
             type: object
         "400":
           description: Bad Request
@@ -7292,7 +7497,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.CreateDirectoryRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest'
       produces:
       - application/json
       responses:
@@ -7402,7 +7607,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.UpdateDirectoryRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest'
       produces:
       - application/json
       responses:
@@ -7460,7 +7665,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/services.ReorderDirectoriesRequest'
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest'
       produces:
       - application/json
       responses:
@@ -7554,7 +7759,7 @@ paths:
           schema:
             properties:
               workspace:
-                $ref: '#/definitions/services.WorkspaceWithDeviceStatus'
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus'
             type: object
         "401":
           description: Unauthorized
