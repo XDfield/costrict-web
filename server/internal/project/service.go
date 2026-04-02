@@ -366,6 +366,7 @@ func (s *ProjectService) CreateInvitation(projectID, inviterID, inviteeID, role,
 	if err := s.db.Create(invitation).Error; err != nil {
 		return nil, err
 	}
+	invitation.ProjectName = project.Name
 	s.notifyInvitationCreated(project, invitation)
 	return invitation, nil
 }
@@ -409,7 +410,12 @@ func (s *ProjectService) RespondInvitation(invitationID, userID string, accept b
 
 func (s *ProjectService) ListInvitations(projectID string) ([]models.ProjectInvitation, error) {
 	var invitations []models.ProjectInvitation
-	if err := s.db.Where("project_id = ?", projectID).Order("created_at DESC").Find(&invitations).Error; err != nil {
+	if err := s.db.Model(&models.ProjectInvitation{}).
+		Select("project_invitations.*, projects.name AS project_name").
+		Joins("JOIN projects ON projects.id = project_invitations.project_id AND projects.deleted_at IS NULL").
+		Where("project_invitations.project_id = ?", projectID).
+		Order("project_invitations.created_at DESC").
+		Find(&invitations).Error; err != nil {
 		return nil, err
 	}
 	return invitations, nil
@@ -422,7 +428,12 @@ func (s *ProjectService) ListMyInvitations(userID string) ([]models.ProjectInvit
 		Update("status", InvitationCancelled).Error
 
 	var invitations []models.ProjectInvitation
-	if err := s.db.Where(textEquals("invitee_id"), userID).Order("created_at DESC").Find(&invitations).Error; err != nil {
+	if err := s.db.Model(&models.ProjectInvitation{}).
+		Select("project_invitations.*, projects.name AS project_name").
+		Joins("JOIN projects ON projects.id = project_invitations.project_id AND projects.deleted_at IS NULL").
+		Where(textEquals("project_invitations.invitee_id"), userID).
+		Order("project_invitations.created_at DESC").
+		Find(&invitations).Error; err != nil {
 		return nil, err
 	}
 	return invitations, nil

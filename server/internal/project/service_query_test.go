@@ -24,42 +24,42 @@ func TestProjectModelUserColumnsExplicitlyUseText(t *testing.T) {
 	}{
 		{
 			name:        "Project.CreatorID",
-			field:       reflect.TypeOf(models.Project{}).Field(3),
+			field:       mustField(t, reflect.TypeOf(models.Project{}), "CreatorID"),
 			wantSnippet: "type:text",
 		},
 		{
 			name:        "ProjectMember.UserID",
-			field:       reflect.TypeOf(models.ProjectMember{}).Field(2),
+			field:       mustField(t, reflect.TypeOf(models.ProjectMember{}), "UserID"),
 			wantSnippet: "type:text",
 		},
 		{
 			name:        "ProjectMember.ProjectID",
-			field:       reflect.TypeOf(models.ProjectMember{}).Field(1),
+			field:       mustField(t, reflect.TypeOf(models.ProjectMember{}), "ProjectID"),
 			wantSnippet: "type:uuid",
 		},
 		{
 			name:        "ProjectInvitation.InviterID",
-			field:       reflect.TypeOf(models.ProjectInvitation{}).Field(2),
+			field:       mustField(t, reflect.TypeOf(models.ProjectInvitation{}), "InviterID"),
 			wantSnippet: "type:text",
 		},
 		{
 			name:        "ProjectInvitation.ProjectID",
-			field:       reflect.TypeOf(models.ProjectInvitation{}).Field(1),
+			field:       mustField(t, reflect.TypeOf(models.ProjectInvitation{}), "ProjectID"),
 			wantSnippet: "type:uuid",
 		},
 		{
 			name:        "ProjectInvitation.InviteeID",
-			field:       reflect.TypeOf(models.ProjectInvitation{}).Field(3),
+			field:       mustField(t, reflect.TypeOf(models.ProjectInvitation{}), "InviteeID"),
 			wantSnippet: "type:text",
 		},
 		{
 			name:        "ProjectRepository.ProjectID",
-			field:       reflect.TypeOf(models.ProjectRepository{}).Field(1),
+			field:       mustField(t, reflect.TypeOf(models.ProjectRepository{}), "ProjectID"),
 			wantSnippet: "type:uuid",
 		},
 		{
 			name:        "ProjectRepository.BoundByUserID",
-			field:       reflect.TypeOf(models.ProjectRepository{}).Field(5),
+			field:       mustField(t, reflect.TypeOf(models.ProjectRepository{}), "BoundByUserID"),
 			wantSnippet: "type:text",
 		},
 	}
@@ -75,4 +75,13 @@ func TestProjectModelUserColumnsExplicitlyUseText(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustField(t *testing.T, typ reflect.Type, name string) reflect.StructField {
+	t.Helper()
+	field, ok := typ.FieldByName(name)
+	if !ok {
+		t.Fatalf("field %s not found in %s", name, typ.Name())
+	}
+	return field
 }

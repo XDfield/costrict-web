@@ -10394,6 +10394,9 @@ const docTemplate = `{
                 "projectId": {
                     "type": "string"
                 },
+                "projectName": {
+                    "type": "string"
+                },
                 "respondedAt": {
                     "type": "string"
                 },

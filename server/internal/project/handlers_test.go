@@ -85,6 +85,7 @@ func TestCreateAndListProjectsHandler(t *testing.T) {
 func TestPinProjectHandlerAndListFilter(t *testing.T) {
 	r := newProjectTestRouter(t)
 	projectA := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "u1", map[string]any{"name": "Project A"})).Project
+	time.Sleep(time.Millisecond)
 	projectB := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "u1", map[string]any{"name": "Project B"})).Project
 
 	w := performJSON(r, http.MethodPut, "/api/projects/"+projectA.ID+"/pin", "u1", map[string]any{"pinned": true})
@@ -153,6 +154,9 @@ func TestInvitationRespondAndListHandlers(t *testing.T) {
 	if len(myInv.Invitations) != 1 || myInv.Invitations[0].ID != inv.ID {
 		t.Fatalf("unexpected my invitations: %+v", myInv)
 	}
+	if myInv.Invitations[0].ProjectName != "Project A" {
+		t.Fatalf("expected project name in my invitations, got %+v", myInv.Invitations[0])
+	}
 
 	w = performJSON(r, http.MethodPost, "/api/invitations/"+inv.ID+"/respond", "member1", map[string]any{"accept": true})
 	if w.Code != http.StatusOK {
@@ -220,6 +224,9 @@ func TestProjectInvitationRecordHandlers(t *testing.T) {
 	invs := decodeBody[InvitationsResponse](t, w)
 	if len(invs.Invitations) != 1 {
 		t.Fatalf("expected 1 invitation, got %+v", invs)
+	}
+	if invs.Invitations[0].ProjectName != "Project A" {
+		t.Fatalf("expected project name in project invitations, got %+v", invs.Invitations[0])
 	}
 }
 

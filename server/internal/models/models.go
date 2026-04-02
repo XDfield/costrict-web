@@ -158,6 +158,7 @@ type ProjectMember struct {
 type ProjectInvitation struct {
 	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ProjectID   string     `gorm:"type:uuid;not null;index:idx_project_invitee;index" json:"projectId"`
+	ProjectName string     `gorm:"column:project_name;->" json:"projectName,omitempty"`
 	InviterID   string     `gorm:"type:text;not null;index" json:"inviterId"`
 	InviteeID   string     `gorm:"type:text;not null;index:idx_project_invitee;index:idx_invitee_status" json:"inviteeId"`
 	Role        string     `gorm:"not null;default:'member'" json:"role"`
