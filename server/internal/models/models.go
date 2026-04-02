@@ -184,6 +184,21 @@ type ProjectRepository struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
+// UserSystemRole represents a system-level role granted to a local user.
+type UserSystemRole struct {
+	ID        string         `gorm:"primaryKey;size:36" json:"id"`
+	UserID    string         `gorm:"uniqueIndex:uk_user_system_role,priority:1;index;not null;size:191" json:"user_id"`
+	Role      string         `gorm:"uniqueIndex:uk_user_system_role,priority:2;index;not null;size:64" json:"role"`
+	GrantedBy *string        `gorm:"index;size:191" json:"granted_by"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (UserSystemRole) TableName() string {
+	return "user_system_roles"
+}
+
 // SessionUsageReport stores per-request usage records in the dedicated usage SQLite database.
 type SessionUsageReport struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`

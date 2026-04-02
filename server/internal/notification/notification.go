@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -17,6 +18,7 @@ func New(db *gorm.DB, cloudBaseURL string) *Module {
 
 func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 	admin := apiGroup.Group("/admin/notification-channels")
+	admin.Use(systemrole.RequirePlatformAdmin(m.Service.db))
 	{
 		admin.GET("", AdminListSystemChannelsHandler(m.Service))
 		admin.POST("", AdminCreateSystemChannelHandler(m.Service))

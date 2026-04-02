@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -21,6 +23,33 @@ func setupNotificationTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 	stmts := []string{
+		`CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL,
+			display_name TEXT,
+			email TEXT,
+			avatar_url TEXT,
+			casdoor_id TEXT,
+			casdoor_universal_id TEXT,
+			casdoor_sub TEXT,
+			organization TEXT,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			last_login_at DATETIME,
+			last_sync_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)`,
+		`CREATE TABLE user_system_roles (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			granted_by TEXT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)`,
+		`CREATE UNIQUE INDEX uk_user_system_role ON user_system_roles(user_id, role)`,
 		`CREATE TABLE system_notification_channels (
 			id TEXT PRIMARY KEY,
 			type TEXT NOT NULL,
@@ -67,14 +96,24 @@ func setupNotificationTestDB(t *testing.T) *gorm.DB {
 			t.Fatalf("migrate test db: %v", err)
 		}
 	}
+	seedUsers := []models.User{
+		{ID: "u1", Username: "u1", IsActive: true},
+		{ID: "u2", Username: "u2", IsActive: true},
+	}
+	for _, user := range seedUsers {
+		if err := db.Create(&user).Error; err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
 	return db
 }
 
-func newNotificationTestRouter(t *testing.T) *gin.Engine {
+func newNotificationTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	module := New(setupNotificationTestDB(t), "")
+	db := setupNotificationTestDB(t)
+	module := New(db, "")
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
 		if userID := c.GetHeader("X-User-ID"); userID != "" {
@@ -83,7 +122,7 @@ func newNotificationTestRouter(t *testing.T) *gin.Engine {
 		c.Next()
 	})
 	module.RegisterRoutes(api)
-	return r
+	return r, db
 }
 
 func performNotificationJSON(r *gin.Engine, method, path, userID string, body any) *httptest.ResponseRecorder {
@@ -100,7 +139,7 @@ func performNotificationJSON(r *gin.Engine, method, path, userID string, body an
 }
 
 func TestListAvailableTypesIncludesSupportedEvents(t *testing.T) {
-	r := newNotificationTestRouter(t)
+	r, _ := newNotificationTestRouter(t)
 	w := performNotificationJSON(r, http.MethodGet, "/api/notification-channels/available", "u1", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
@@ -127,7 +166,7 @@ func TestListAvailableTypesIncludesSupportedEvents(t *testing.T) {
 }
 
 func TestCreateMyChannelRejectsUnsupportedTriggerEvent(t *testing.T) {
-	r := newNotificationTestRouter(t)
+	r, _ := newNotificationTestRouter(t)
 	w := performNotificationJSON(r, http.MethodPost, "/api/notification-channels", "u1", map[string]any{
 		"channelType":   "webhook",
 		"name":          "my webhook",
@@ -136,5 +175,24 @@ func TestCreateMyChannelRejectsUnsupportedTriggerEvent(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminNotificationRoutesRequirePlatformAdmin(t *testing.T) {
+	r, db := newNotificationTestRouter(t)
+
+	w := performNotificationJSON(r, http.MethodGet, "/api/admin/notification-channels", "u2", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	svc := systemrole.NewSystemRoleService(db)
+	if err := svc.GrantRole("u1", systemrole.SystemRolePlatformAdmin, "u1"); err != nil {
+		t.Fatalf("grant platform admin: %v", err)
+	}
+
+	w = performNotificationJSON(r, http.MethodGet, "/api/admin/notification-channels", "u1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
 	}
 }

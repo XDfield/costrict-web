@@ -39,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -313,10 +314,13 @@ func main() {
 			}
 
 			notificationModule := notification.New(db, cfg.CloudBaseURL)
+			systemRoleModule := systemrole.New(db)
+			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
 			_ = notificationModule
+			_ = systemRoleModule
 			_ = projectModule
 		}
 	}
