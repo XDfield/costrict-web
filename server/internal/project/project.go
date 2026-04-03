@@ -19,6 +19,8 @@ func New(db *gorm.DB, notificationSvc *notification.NotificationService) *Module
 
 func NewWithDependencies(db *gorm.DB, usageSvc interface {
 	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
+	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
+	AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
 }, userSvc *userpkg.UserService, notificationSvc *notification.NotificationService) *Module {
 	return &Module{Service: NewProjectService(db, usageSvc, userSvc, notificationSvc)}
 }
@@ -29,8 +31,10 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		projects.GET("", ListProjectsHandler(m.Service))
 		projects.POST("", CreateProjectHandler(m.Service))
 		projects.GET("/:id", GetProjectHandler(m.Service))
+		projects.GET("/:id/basic", GetProjectBasicInfoHandler(m.Service))
 		projects.PUT("/:id", UpdateProjectHandler(m.Service))
 		projects.PUT("/:id/pin", SetProjectPinHandler(m.Service))
+		projects.PUT("/:id/archive-time", UpdateProjectArchiveTimeHandler(m.Service))
 		projects.DELETE("/:id", DeleteProjectHandler(m.Service))
 		projects.POST("/:id/archive", ArchiveProjectHandler(m.Service))
 		projects.POST("/:id/unarchive", UnarchiveProjectHandler(m.Service))
@@ -40,6 +44,7 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		projects.POST("/:id/invitations", CreateInvitationHandler(m.Service))
 		projects.GET("/:id/invitations", ListInvitationsHandler(m.Service))
 		projects.GET("/:id/repositories", ListProjectRepositoriesHandler(m.Service))
+		projects.GET("/:id/repository-candidates", ListProjectRepositoryCandidatesHandler(m.Service))
 		projects.POST("/:id/repositories", BindProjectRepositoryHandler(m.Service))
 		projects.DELETE("/:id/repositories/:repoBindingId", UnbindProjectRepositoryHandler(m.Service))
 		projects.GET("/:id/repo-activity", GetProjectRepoActivityHandler(m.Service))

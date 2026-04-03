@@ -131,6 +131,66 @@ func TestPinProjectHandlerAndListFilter(t *testing.T) {
 	}
 }
 
+func TestGetProjectBasicInfoHandler(t *testing.T) {
+	r := newProjectTestRouter(t)
+	enabledAt := time.Now().UTC().Truncate(time.Second)
+	created := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "u1", map[string]any{
+		"name":        "Project Basic",
+		"description": "basic info",
+		"enabledAt":   enabledAt.Format(time.RFC3339),
+	}))
+
+	w := performJSON(r, http.MethodGet, "/api/projects/"+created.Project.ID+"/basic", "u1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := decodeBody[ProjectBasicInfoResponse](t, w)
+	if resp.Project == nil {
+		t.Fatalf("expected project in response")
+	}
+	if resp.Project.ID != created.Project.ID {
+		t.Fatalf("expected id=%s, got %s", created.Project.ID, resp.Project.ID)
+	}
+	if resp.Project.Name != "Project Basic" {
+		t.Fatalf("expected name=Project Basic, got %s", resp.Project.Name)
+	}
+	if resp.Project.Description != "basic info" {
+		t.Fatalf("expected description=basic info, got %s", resp.Project.Description)
+	}
+	if resp.Project.EnabledAt == nil || !resp.Project.EnabledAt.Equal(enabledAt) {
+		t.Fatalf("expected enabledAt=%s, got %+v", enabledAt.Format(time.RFC3339), resp.Project.EnabledAt)
+	}
+	if resp.Project.ArchivedAt != nil {
+		t.Fatalf("expected archivedAt nil, got %+v", resp.Project.ArchivedAt)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal raw response: %v", err)
+	}
+	projectMap, ok := raw["project"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected raw project map, got %+v", raw)
+	}
+	if len(projectMap) != 4 {
+		t.Fatalf("expected only 4 fields in project basic info when archivedAt is nil, got %+v", projectMap)
+	}
+	for _, key := range []string{"id", "name", "description", "enabledAt"} {
+		if _, exists := projectMap[key]; !exists {
+			t.Fatalf("expected field %s in response, got %+v", key, projectMap)
+		}
+	}
+	if _, exists := projectMap["archivedAt"]; exists {
+		t.Fatalf("expected archivedAt to be omitted when nil, got %+v", projectMap)
+	}
+	for _, key := range []string{"creatorId", "isPinned", "metadata", "createdAt", "updatedAt"} {
+		if _, exists := projectMap[key]; exists {
+			t.Fatalf("unexpected field %s in response: %+v", key, projectMap)
+		}
+	}
+}
+
 func TestInvitationRespondAndListHandlers(t *testing.T) {
 	r := newProjectTestRouter(t)
 	w := performJSON(r, http.MethodPost, "/api/projects", "admin", map[string]any{"name": "Project A"})
@@ -209,6 +269,40 @@ func TestArchiveAndUnarchiveHandlers(t *testing.T) {
 	unarchived := decodeBody[ProjectResponse](t, w).Project
 	if unarchived == nil || unarchived.ArchivedAt != nil {
 		t.Fatalf("unexpected unarchived response: %+v", unarchived)
+	}
+}
+
+func TestUpdateProjectArchiveTimeHandler(t *testing.T) {
+	r := newProjectTestRouter(t)
+	project := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "admin", map[string]any{"name": "Project A"})).Project
+	performJSON(r, http.MethodPost, "/api/projects/"+project.ID+"/archive", "admin", nil)
+
+	archivedAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	w := performJSON(r, http.MethodPut, "/api/projects/"+project.ID+"/archive-time", "admin", map[string]any{
+		"archivedAt": archivedAt.Format(time.RFC3339),
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	resp := decodeBody[ProjectBasicInfoResponse](t, w)
+	if resp.Project == nil || resp.Project.ArchivedAt == nil {
+		t.Fatalf("expected archivedAt in response, got %+v", resp)
+	}
+	if !resp.Project.ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("expected archivedAt=%s, got %+v", archivedAt.Format(time.RFC3339), resp.Project.ArchivedAt)
+	}
+}
+
+func TestUpdateProjectArchiveTimeHandler_RequiresArchivedProject(t *testing.T) {
+	r := newProjectTestRouter(t)
+	project := decodeBody[ProjectResponse](t, performJSON(r, http.MethodPost, "/api/projects", "admin", map[string]any{"name": "Project A"})).Project
+
+	w := performJSON(r, http.MethodPut, "/api/projects/"+project.ID+"/archive-time", "admin", map[string]any{
+		"archivedAt": time.Now().UTC().Format(time.RFC3339),
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
 	}
 }
 

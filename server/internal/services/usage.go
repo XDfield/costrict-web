@@ -29,6 +29,8 @@ type UsageProvider interface {
 	BatchUpsert(userID, deviceID string, records []*models.SessionUsageReport) UsageReportResponse
 	GetActivity(gitRepoURL string, days int) (*UsageActivityResponse, error)
 	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoUserAggregate, error)
+	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error)
+	AggregateRepositoriesByUsers(userIDs []string, days int) ([]UsageRepoUserAggregate, error)
 }
 
 func NewUsageService(provider UsageProvider, userService *userpkg.UserService) *UsageService {
@@ -96,6 +98,12 @@ type UsageRepoUserAggregate struct {
 	InputTokens     int64   `json:"inputTokens"`
 	OutputTokens    int64   `json:"outputTokens"`
 	TotalCost       float64 `json:"totalCost"`
+}
+
+type UsageRepoDailyAggregate struct {
+	GitRepoURL   string `json:"gitRepoUrl"`
+	Date         string `json:"date"`
+	RequestCount int64  `json:"requestCount"`
 }
 
 type usageDailyAggregateRow struct {
@@ -215,6 +223,32 @@ func (s *UsageService) AggregateProjectRepoActivity(userIDs []string, repoURLs [
 		return nil, fmt.Errorf("days must be between 1 and 90")
 	}
 	return s.provider.AggregateProjectRepoActivity(userIDs, repoURLs, days)
+}
+
+func (s *UsageService) AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error) {
+	if s == nil || s.provider == nil {
+		return nil, ErrUsageQueryFailed
+	}
+	if len(userIDs) == 0 || len(repoURLs) == 0 {
+		return []UsageRepoDailyAggregate{}, nil
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	return s.provider.AggregateProjectRepoDailyActivity(userIDs, repoURLs, days)
+}
+
+func (s *UsageService) AggregateRepositoriesByUsers(userIDs []string, days int) ([]UsageRepoUserAggregate, error) {
+	if s == nil || s.provider == nil {
+		return nil, ErrUsageQueryFailed
+	}
+	if len(userIDs) == 0 {
+		return []UsageRepoUserAggregate{}, nil
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	return s.provider.AggregateRepositoriesByUsers(userIDs, days)
 }
 
 func (s *UsageService) buildUsageRecord(userID, deviceID string, item UsageReportItem) (*models.SessionUsageReport, error) {

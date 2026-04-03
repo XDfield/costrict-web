@@ -229,6 +229,42 @@ func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectArchiveTime(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+	project, err := svc.CreateProject("u1", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	if err := svc.ArchiveProject(project.ID, "u1"); err != nil {
+		t.Fatalf("ArchiveProject error: %v", err)
+	}
+	archivedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := svc.UpdateProjectArchiveTime(project.ID, "u1", archivedAt); err != nil {
+		t.Fatalf("UpdateProjectArchiveTime error: %v", err)
+	}
+	updated, err := svc.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("GetProject error: %v", err)
+	}
+	if updated.ArchivedAt == nil || !updated.ArchivedAt.Equal(archivedAt) {
+		t.Fatalf("expected archivedAt updated, got %+v", updated.ArchivedAt)
+	}
+}
+
+func TestUpdateProjectArchiveTimeRequiresArchivedProject(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+	project, err := svc.CreateProject("u1", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	err = svc.UpdateProjectArchiveTime(project.ID, "u1", time.Now().UTC())
+	if !errors.Is(err, ErrProjectNotArchived) {
+		t.Fatalf("expected ErrProjectNotArchived, got %v", err)
+	}
+}
+
 func TestListProjectsKeepsCreatedAtOrder(t *testing.T) {
 	db := setupProjectTestDB(t)
 	svc := NewProjectService(db, nil, nil, nil)

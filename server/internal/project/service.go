@@ -52,6 +52,8 @@ var (
 		db              *gorm.DB
 		usageSvc        interface {
 			AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
+			AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
+			AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
 		}
 		userService     *userpkg.UserService
 		notificationSvc *notification.NotificationService
@@ -59,6 +61,8 @@ var (
 
 func NewProjectService(db *gorm.DB, usageSvc interface {
 	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
+	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
+	AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
 }, userService *userpkg.UserService, notificationSvc *notification.NotificationService) *ProjectService {
 	return &ProjectService{db: db, usageSvc: usageSvc, userService: userService, notificationSvc: notificationSvc}
 }
@@ -142,12 +146,36 @@ func (s *ProjectService) GetProjectForUser(projectID, userID string) (*models.Pr
 	return &project, nil
 }
 
+func (s *ProjectService) GetProjectBasicInfoForUser(projectID, userID string) (*models.Project, error) {
+	if project, err := s.GetProjectForUser(projectID, userID); err == nil {
+		return project, nil
+	} else if !errors.Is(err, ErrPermissionDenied) && !errors.Is(err, ErrNotMember) && !errors.Is(err, ErrProjectNotFound) {
+		return nil, err
+	}
+
+	var invitation models.ProjectInvitation
+	now := time.Now()
+	if err := s.db.
+		Where("project_id = ? AND "+textEquals("invitee_id")+" AND status = ?", projectID, userID, InvitationPending).
+		Where("expires_at IS NULL OR expires_at >= ?", now).
+		Order("created_at DESC").
+		First(&invitation).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrPermissionDenied
+		}
+		return nil, err
+	}
+
+	return s.GetProject(projectID)
+}
+
 func (s *ProjectService) ListProjects(userID string, includeArchived bool, pinnedOnly bool) ([]models.Project, error) {
 	var projects []models.Project
-	query := s.db.Model(&models.Project{}).
-		Select("projects.*, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
-		Joins("JOIN project_members pm ON pm.project_id = projects.id AND pm.deleted_at IS NULL").
-		Where(textEquals("pm.user_id"), userID)
+	query := s.db.Table("project_members AS pm").
+		Select("projects.id, projects.name, projects.description, projects.creator_id, projects.enabled_at, projects.archived_at, projects.created_at, projects.updated_at, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
+		Joins("JOIN projects ON projects.id = pm.project_id").
+		Where(textEquals("pm.user_id"), userID).
+		Where("pm.deleted_at IS NULL")
 	if !includeArchived {
 		query = query.Where("projects.archived_at IS NULL")
 	}
@@ -241,6 +269,20 @@ func (s *ProjectService) UnarchiveProject(projectID, userID string) error {
 	return s.db.Model(&models.Project{}).Where("id = ?", projectID).Updates(map[string]any{
 		"archived_at": nil,
 	}).Error
+}
+
+func (s *ProjectService) UpdateProjectArchiveTime(projectID, userID string, archivedAt time.Time) error {
+	if err := s.checkPermission(projectID, userID, RoleAdmin); err != nil {
+		return err
+	}
+	project, err := s.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+	if project.ArchivedAt == nil {
+		return ErrProjectNotArchived
+	}
+	return s.db.Model(&models.Project{}).Where("id = ?", projectID).Update("archived_at", &archivedAt).Error
 }
 
 func (s *ProjectService) ListMembers(projectID string) ([]models.ProjectMember, error) {
@@ -545,6 +587,79 @@ func (s *ProjectService) UnbindRepository(projectID, repoBindingID, operatorID s
 	return nil
 }
 
+func (s *ProjectService) ListRepositoryCandidates(projectID, userID string, days int) ([]ProjectRepositoryCandidate, error) {
+	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
+		return nil, err
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	if s.usageSvc == nil {
+		return nil, services.ErrUsageQueryFailed
+	}
+
+	members, err := s.ListMembers(projectID)
+	if err != nil {
+		return nil, err
+	}
+	userIDs := make([]string, 0, len(members))
+	for _, member := range members {
+		userIDs = append(userIDs, member.UserID)
+	}
+
+	var existing []models.ProjectRepository
+	if err := s.db.Where("project_id = ?", projectID).Find(&existing).Error; err != nil {
+		return nil, err
+	}
+	boundRepoSet := make(map[string]struct{}, len(existing))
+	for _, repo := range existing {
+		boundRepoSet[repo.GitRepoURL] = struct{}{}
+	}
+
+	aggregates, err := s.usageSvc.AggregateRepositoriesByUsers(userIDs, days)
+	if err != nil {
+		return nil, err
+	}
+
+	type candidateAgg struct {
+		requestCount   int64
+		lastActiveDate string
+	}
+	byRepo := map[string]candidateAgg{}
+	for _, agg := range aggregates {
+		normalized, err := services.NormalizeGitRepoURL(agg.GitRepoURL)
+		if err != nil {
+			continue
+		}
+		if _, exists := boundRepoSet[normalized]; exists {
+			continue
+		}
+		current := byRepo[normalized]
+		current.requestCount += agg.RequestCount
+		if agg.LastActiveDate > current.lastActiveDate {
+			current.lastActiveDate = agg.LastActiveDate
+		}
+		byRepo[normalized] = current
+	}
+
+	items := make([]ProjectRepositoryCandidate, 0, len(byRepo))
+	for repoURL, agg := range byRepo {
+		items = append(items, ProjectRepositoryCandidate{
+			DisplayName:    candidateDisplayNameFromRepoURL(repoURL),
+			GitRepoURL:     repoURL,
+			RequestCount:   agg.requestCount,
+			LastActiveDate: agg.lastActiveDate,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].RequestCount == items[j].RequestCount {
+			return items[i].GitRepoURL < items[j].GitRepoURL
+		}
+		return items[i].RequestCount > items[j].RequestCount
+	})
+	return items, nil
+}
+
 func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days int, includeInactive bool) (*ProjectRepoActivityResponse, error) {
 	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
 		return nil, err
@@ -597,11 +712,16 @@ func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days i
 	}
 
 	aggregates := []services.UsageRepoUserAggregate{}
+	dailyAggregates := []services.UsageRepoDailyAggregate{}
 	if len(userIDs) > 0 && len(repoURLs) > 0 {
 		if s.usageSvc == nil {
 			return nil, services.ErrUsageQueryFailed
 		}
 		aggregates, err = s.usageSvc.AggregateProjectRepoActivity(userIDs, repoURLs, days)
+		if err != nil {
+			return nil, err
+		}
+		dailyAggregates, err = s.usageSvc.AggregateProjectRepoDailyActivity(userIDs, repoURLs, days)
 		if err != nil {
 			return nil, err
 		}
@@ -629,6 +749,32 @@ func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days i
 			DisplayName:   repo.DisplayName,
 			GitRepoURL:    repo.GitRepoURL,
 			ActiveMembers: []ProjectRepoActiveMember{},
+			DailyRequests: []ProjectRepoDailyRequest{},
+		}
+	}
+
+	from, to := projectDateRange(days)
+	dateKeys := make([]string, 0, days)
+	for current := from; !current.After(to); current = current.AddDate(0, 0, 1) {
+		dateKeys = append(dateKeys, current.Format("2006-01-02"))
+	}
+	for _, repo := range repositories {
+		item := repoItems[repo.ID]
+		for _, dateKey := range dateKeys {
+			item.DailyRequests = append(item.DailyRequests, ProjectRepoDailyRequest{Date: dateKey, RequestCount: 0})
+		}
+	}
+	for _, agg := range dailyAggregates {
+		repoMeta, ok := repoByURL[agg.GitRepoURL]
+		if !ok {
+			continue
+		}
+		item := repoItems[repoMeta.ID]
+		for i := range item.DailyRequests {
+			if item.DailyRequests[i].Date == agg.Date {
+				item.DailyRequests[i].RequestCount = agg.RequestCount
+				break
+			}
 		}
 	}
 
@@ -700,7 +846,6 @@ func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days i
 		}
 	}
 
-	from, to := projectDateRange(days)
 	return &ProjectRepoActivityResponse{
 		Project: ProjectRepoActivityProject{ID: project.ID, Name: project.Name},
 		Range: ProjectRepoActivityRange{Days: days, From: from.Format("2006-01-02"), To: to.Format("2006-01-02")},

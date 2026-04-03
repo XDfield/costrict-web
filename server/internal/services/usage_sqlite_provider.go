@@ -123,6 +123,80 @@ func (p *SQLiteUsageProvider) AggregateProjectRepoActivity(userIDs []string, rep
 	return result, nil
 }
 
+func (p *SQLiteUsageProvider) AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error) {
+	if p == nil || p.db == nil {
+		return nil, ErrUsageQueryFailed
+	}
+	if len(userIDs) == 0 || len(repoURLs) == 0 {
+		return []UsageRepoDailyAggregate{}, nil
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	fromDate, toDate := usageDateRange(days)
+
+	type row struct {
+		GitRepoURL   string
+		Date         string
+		RequestCount int64
+	}
+	var rows []row
+	if err := p.db.Model(&models.SessionUsageReport{}).
+		Select(`git_repo_url, date(date) AS date, COUNT(*) AS request_count`).
+		Where("user_id IN ?", userIDs).
+		Where("git_repo_url IN ?", repoURLs).
+		Where("date(date) >= ? AND date(date) <= ?", fromDate.Format("2006-01-02"), toDate.Format("2006-01-02")).
+		Group("git_repo_url, date(date)").
+		Order("git_repo_url ASC, date ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUsageQueryFailed, err)
+	}
+	result := make([]UsageRepoDailyAggregate, 0, len(rows))
+	for _, item := range rows {
+		result = append(result, UsageRepoDailyAggregate(item))
+	}
+	return result, nil
+}
+
+func (p *SQLiteUsageProvider) AggregateRepositoriesByUsers(userIDs []string, days int) ([]UsageRepoUserAggregate, error) {
+	if p == nil || p.db == nil {
+		return nil, ErrUsageQueryFailed
+	}
+	if len(userIDs) == 0 {
+		return []UsageRepoUserAggregate{}, nil
+	}
+	if days < 1 || days > 90 {
+		return nil, fmt.Errorf("days must be between 1 and 90")
+	}
+	fromDate, toDate := usageDateRange(days)
+
+	type row struct {
+		UserID          string
+		GitRepoURL      string
+		RequestCount    int64
+		FirstActiveDate string
+		LastActiveDate  string
+		InputTokens     int64
+		OutputTokens    int64
+		TotalCost       float64
+	}
+	var rows []row
+	if err := p.db.Model(&models.SessionUsageReport{}).
+		Select(`user_id, git_repo_url, COUNT(*) AS request_count, MIN(date(date)) AS first_active_date, MAX(date(date)) AS last_active_date, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cost) AS total_cost`).
+		Where("user_id IN ?", userIDs).
+		Where("date(date) >= ? AND date(date) <= ?", fromDate.Format("2006-01-02"), toDate.Format("2006-01-02")).
+		Group("user_id, git_repo_url").
+		Order("request_count DESC, user_id ASC, git_repo_url ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUsageQueryFailed, err)
+	}
+	result := make([]UsageRepoUserAggregate, 0, len(rows))
+	for _, item := range rows {
+		result = append(result, UsageRepoUserAggregate(item))
+	}
+	return result, nil
+}
+
 func usageDateRange(days int) (fromDate, toDate time.Time) {
 	toDate = time.Now().UTC()
 	fromDate = toDate.AddDate(0, 0, -(days - 1))

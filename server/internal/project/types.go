@@ -1,6 +1,7 @@
 package project
 
 import (
+	"path"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -36,9 +37,20 @@ type SetProjectPinRequest struct {
 	Pinned bool `json:"pinned"`
 }
 
+type UpdateProjectArchiveTimeRequest struct {
+	ArchivedAt *time.Time `json:"archivedAt" binding:"required"`
+}
+
 type CreateProjectRepositoryRequest struct {
 	GitRepoURL  string `json:"gitRepoUrl" binding:"required"`
 	DisplayName string `json:"displayName"`
+}
+
+type ProjectRepositoryCandidate struct {
+	DisplayName    string `json:"displayName"`
+	GitRepoURL     string `json:"gitRepoUrl"`
+	RequestCount   int64  `json:"requestCount"`
+	LastActiveDate string `json:"lastActiveDate"`
 }
 
 type ProjectRepositoryResponse struct {
@@ -47,6 +59,18 @@ type ProjectRepositoryResponse struct {
 
 type ListProjectRepositoriesResponse struct {
 	Repositories []models.ProjectRepository `json:"repositories"`
+}
+
+type ProjectRepositoryCandidatesResponse struct {
+	Repositories []ProjectRepositoryCandidate `json:"repositories"`
+}
+
+func candidateDisplayNameFromRepoURL(repoURL string) string {
+	base := path.Base(repoURL)
+	if base == "." || base == "/" || base == "" {
+		return repoURL
+	}
+	return base
 }
 
 type ProjectRepoActivitySummary struct {
@@ -86,6 +110,11 @@ type ProjectRepoActiveMember struct {
 	LastActiveDate string `json:"lastActiveDate"`
 }
 
+type ProjectRepoDailyRequest struct {
+	Date         string `json:"date"`
+	RequestCount int64  `json:"requestCount"`
+}
+
 type ProjectMemberRepoActivityItem struct {
 	UserID          string                    `json:"userId"`
 	Username        string                    `json:"username"`
@@ -102,6 +131,7 @@ type ProjectRepositoryRepoActivityItem struct {
 	ActiveMemberCount int                       `json:"activeMemberCount"`
 	TotalRequests     int64                     `json:"totalRequests"`
 	ActiveMembers     []ProjectRepoActiveMember `json:"activeMembers"`
+	DailyRequests     []ProjectRepoDailyRequest `json:"dailyRequests"`
 }
 
 type ProjectRepoActivityResponse struct {
@@ -114,6 +144,18 @@ type ProjectRepoActivityResponse struct {
 
 type ProjectResponse struct {
 	Project *models.Project `json:"project"`
+}
+
+type ProjectBasicInfo struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	EnabledAt   *time.Time `json:"enabledAt,omitempty"`
+	ArchivedAt  *time.Time `json:"archivedAt,omitempty"`
+}
+
+type ProjectBasicInfoResponse struct {
+	Project *ProjectBasicInfo `json:"project"`
 }
 
 type ProjectsResponse struct {

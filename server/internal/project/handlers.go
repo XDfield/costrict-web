@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -44,12 +46,18 @@ func currentUserID(c *gin.Context) string {
 // @Router       /projects [get]
 func ListProjectsHandler(svc *ProjectService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		startedAt := time.Now()
 		userID := currentUserID(c)
-		projects, err := svc.ListProjects(userID, c.Query("includeArchived") == "true", c.Query("pinned") == "true")
+		includeArchived := c.Query("includeArchived") == "true"
+		pinnedOnly := c.Query("pinned") == "true"
+		projects, err := svc.ListProjects(userID, includeArchived, pinnedOnly)
+		queryElapsed := time.Since(startedAt)
 		if err != nil {
+			logger.Warn("[projects.list] user=%s includeArchived=%t pinned=%t query_ms=%d total_ms=%d err=%v", userID, includeArchived, pinnedOnly, queryElapsed.Milliseconds(), time.Since(startedAt).Milliseconds(), err)
 			writeError(c, err)
 			return
 		}
+		logger.Info("[projects.list] user=%s includeArchived=%t pinned=%t count=%d query_ms=%d total_ms=%d", userID, includeArchived, pinnedOnly, len(projects), queryElapsed.Milliseconds(), time.Since(startedAt).Milliseconds())
 		c.JSON(http.StatusOK, ProjectsResponse{Projects: projects})
 	}
 }
@@ -104,6 +112,36 @@ func GetProjectHandler(svc *ProjectService) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, ProjectResponse{Project: project})
+	}
+}
+
+// GetProjectBasicInfoHandler godoc
+// @Summary      Get project basic info
+// @Description  Get basic project information for a project member
+// @Tags         projects
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id  path      string  true  "Project ID"
+// @Success      200  {object}  project.ProjectBasicInfoResponse
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /projects/{id}/basic [get]
+func GetProjectBasicInfoHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		project, err := svc.GetProjectBasicInfoForUser(c.Param("id"), currentUserID(c))
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+
+		c.JSON(http.StatusOK, ProjectBasicInfoResponse{Project: &ProjectBasicInfo{
+			ID:          project.ID,
+			Name:        project.Name,
+			Description: project.Description,
+			EnabledAt:   project.EnabledAt,
+			ArchivedAt:  project.ArchivedAt,
+		}})
 	}
 }
 
@@ -250,6 +288,54 @@ func UnarchiveProjectHandler(svc *ProjectService) gin.HandlerFunc {
 		}
 		project, _ := svc.GetProject(c.Param("id"))
 		c.JSON(http.StatusOK, ProjectResponse{Project: project})
+	}
+}
+
+// UpdateProjectArchiveTimeHandler godoc
+// @Summary      Update project archive time
+// @Description  Update archivedAt for an already archived project as project admin
+// @Tags         projects
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id    path      string                                 true  "Project ID"
+// @Param        body  body      project.UpdateProjectArchiveTimeRequest true  "Archive time update data"
+// @Success      200  {object}  project.ProjectBasicInfoResponse
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /projects/{id}/archive-time [put]
+func UpdateProjectArchiveTimeHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req UpdateProjectArchiveTimeRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.ArchivedAt == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "archivedAt is required"})
+			return
+		}
+
+		if err := svc.UpdateProjectArchiveTime(c.Param("id"), currentUserID(c), *req.ArchivedAt); err != nil {
+			writeError(c, err)
+			return
+		}
+
+		project, err := svc.GetProjectForUser(c.Param("id"), currentUserID(c))
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+
+		c.JSON(http.StatusOK, ProjectBasicInfoResponse{Project: &ProjectBasicInfo{
+			ID:          project.ID,
+			Name:        project.Name,
+			Description: project.Description,
+			EnabledAt:   project.EnabledAt,
+			ArchivedAt:  project.ArchivedAt,
+		}})
 	}
 }
 
@@ -483,6 +569,26 @@ func ListProjectRepositoriesHandler(svc *ProjectService) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, ListProjectRepositoriesResponse{Repositories: repositories})
+	}
+}
+
+func ListProjectRepositoryCandidatesHandler(svc *ProjectService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		days := 30
+		if raw := c.Query("days"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 90 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "days must be between 1 and 90"})
+				return
+			}
+			days = parsed
+		}
+		repositories, err := svc.ListRepositoryCandidates(c.Param("id"), currentUserID(c), days)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, ProjectRepositoryCandidatesResponse{Repositories: repositories})
 	}
 }
 
