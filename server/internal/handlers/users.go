@@ -11,9 +11,11 @@ import (
 	// imported for swag to resolve casdoor.CasdoorUser in godoc annotations
 	"github.com/costrict/costrict-web/server/internal/casdoor"
 	_ "github.com/costrict/costrict-web/server/internal/casdoor"
+	"github.com/costrict/costrict-web/server/internal/models"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,6 +153,70 @@ func GetUserNames(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"names": names})
+}
+
+type userBasicInfoResponse struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	AvatarURL *string `json:"avatarUrl,omitempty"`
+}
+
+// GetUserBasicInfo godoc
+// @Summary      Get user basic info
+// @Description  Query a user's basic information by user ID, including name and avatar URL.
+// @Tags         users
+// @Produce      json
+// @Param        id   query     string  true  "User ID"
+// @Success      200  {object}  object{user=handlers.userBasicInfoResponse}
+// @Failure      400  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /users/info [get]
+func GetUserBasicInfo(c *gin.Context) {
+	userID := strings.TrimSpace(c.Query("id"))
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id parameter is required"})
+		return
+	}
+
+	if UserModule == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
+		return
+	}
+
+	var (
+		user *models.User
+		err  error
+	)
+
+	if UserModule.CachedService != nil {
+		user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), userID)
+	} else if UserModule.Service != nil {
+		user, err = UserModule.Service.GetUserByID(userID)
+	} else {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
+		return
+	}
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query user"})
+		return
+	}
+
+	name := user.Username
+	if user.DisplayName != nil && *user.DisplayName != "" {
+		name = *user.DisplayName
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": userBasicInfoResponse{
+		ID:        user.ID,
+		Name:      name,
+		AvatarURL: user.AvatarURL,
+	}})
 }
 
 // SearchUsers godoc

@@ -193,6 +193,7 @@ func main() {
 
 		// User name resolution (public, results cached in memory)
 		api.GET("/users/names", handlers.GetUserNames)
+		api.GET("/users/info", handlers.GetUserBasicInfo)
 
 		// Marketplace browse (public)
 		marketplace := api.Group("/marketplace")
