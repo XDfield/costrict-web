@@ -1,15 +1,9 @@
 package logger
 
-// GormLogger returns a GORM-compatible logger adapter that separates
-// console and file output:
+// GormLogger returns a GORM-compatible logger adapter.
 //
-//   - File (app.log / worker-app.log): all SQL statements at INFO level,
-//     including slow-query details.  Full SQL is preserved here for
-//     post-mortem debugging without polluting the terminal.
-//
-//   - Console: only WARN and ERROR messages (e.g. slow queries, record-not-
-//     found, driver errors).  Routine INSERT/UPDATE statements carrying large
-//     "content" blobs are suppressed from stdout so the terminal stays clean.
+// It only emits WARN and ERROR level GORM logs, so routine SQL statements are
+// suppressed from both console and log files.
 //
 // Usage (call after logger.Init):
 //
@@ -22,7 +16,6 @@ package logger
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	gormlogger "gorm.io/gorm/logger"
@@ -51,8 +44,7 @@ func (g *gormAdapter) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 }
 
 func (g *gormAdapter) Info(ctx context.Context, msg string, data ...any) {
-	// Info-level GORM messages (e.g. migration notices) go to file only.
-	getSugar().Infof("[gorm] "+msg, data...)
+	// Suppress GORM info logs.
 }
 
 func (g *gormAdapter) Warn(ctx context.Context, msg string, data ...any) {
@@ -66,51 +58,20 @@ func (g *gormAdapter) Error(ctx context.Context, msg string, data ...any) {
 
 // Trace is called for every SQL statement.
 //
-// Strategy:
-//   - Always write to file (INFO level) — full SQL for debugging.
-//   - Write to console only when:
-//     (a) an error occurred (non-record-not-found), or
-//     (b) the query exceeded slowThreshold.
+// Only slow queries and errors are logged.
 func (g *gormAdapter) Trace(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
 	elapsed := time.Since(begin)
 	sql, rows := fc()
 
-	// --- always log to file ---
 	if err != nil && err.Error() != "record not found" {
 		getSugar().Errorf("[gorm] err=%v elapsed=%s rows=%d sql=%s", err, elapsed, rows, sql)
 	} else if elapsed >= g.slowThreshold {
 		getSugar().Warnf("[gorm] SLOW elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
-	} else {
-		getSugar().Infof("[gorm] elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 	}
-
-	// --- console suppression ---
-	// The console core in zap is already set to DEBUG, so all the above calls
-	// would appear on stdout too.  We handle console output separately here
-	// using a dedicated console-only path so we can filter out routine SQL.
-	//
-	// Because the zap tee core cannot be split post-init without re-wiring,
-	// we rely on a simple convention: routine SQL (INFO, no error, not slow)
-	// was already written to file via the tee above.  We want it NOT on console.
-	//
-	// To achieve this we would need separate console/file loggers.  For now,
-	// the simplest effective approach is to set GORM's console log level to
-	// Silent in the gorm.Config and funnel everything through this adapter,
-	// which calls getSugar() that writes to BOTH destinations.
-	//
-	// Therefore the real suppression happens by configuring GORM to use this
-	// adapter (which replaces its own console writer) AND setting the console
-	// zap core to WARN level for the gorm logger name.
-	//
-	// Practical note: if you want zero SQL on console, simply change the
-	// console core's minimum level to WARN in logger.Init (or add a filter).
-	// That is handled by the GormLoggerConsoleWarn() variant below.
-	_ = fmt.Sprintf // keep import
 }
 
-// GormLoggerConsoleWarn is like GormLogger but also upgrades the in-process
-// zap console core to WARN for all loggers (not only GORM ones).
-// Call this variant when you want a clean console with only warnings/errors.
+// GormLoggerConsoleWarn is kept for compatibility and behaves the same as
+// GormLogger: only WARN and ERROR level GORM logs are emitted.
 func GormLoggerConsoleWarn(slowThreshold time.Duration) gormlogger.Interface {
 	if slowThreshold == 0 {
 		slowThreshold = 200 * time.Millisecond
@@ -129,9 +90,7 @@ func (g *gormAdapterWarnConsole) LogMode(level gormlogger.LogLevel) gormlogger.I
 	return g
 }
 
-func (g *gormAdapterWarnConsole) Info(ctx context.Context, msg string, data ...any) {
-	getSugar().Infof("[gorm] "+msg, data...)
-}
+func (g *gormAdapterWarnConsole) Info(ctx context.Context, msg string, data ...any) {}
 
 func (g *gormAdapterWarnConsole) Warn(ctx context.Context, msg string, data ...any) {
 	getSugar().Warnf("[gorm] "+msg, data...)
@@ -141,9 +100,7 @@ func (g *gormAdapterWarnConsole) Error(ctx context.Context, msg string, data ...
 	getSugar().Errorf("[gorm] "+msg, data...)
 }
 
-// Trace writes full SQL to the file at INFO level.
-// Only slow queries (WARN) and errors (ERROR) appear on the console,
-// because the console zap core is configured at WARN level via Init.
+// Trace only logs slow queries (WARN) and errors (ERROR).
 func (g *gormAdapterWarnConsole) Trace(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
 	elapsed := time.Since(begin)
 	sql, rows := fc()
@@ -155,16 +112,7 @@ func (g *gormAdapterWarnConsole) Trace(ctx context.Context, begin time.Time, fc 
 	}
 
 	if elapsed >= g.slowThreshold {
-		// WARN → goes to both file and console (slow query alert).
 		getSugar().Warnf("[gorm] SLOW elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 		return
 	}
-
-	// Skip logging queries that return 0 rows (usually polling queries)
-	if rows == 0 {
-		return
-	}
-
-	// INFO → file only (console core is at WARN, so this is suppressed there).
-	getSugar().Infof("[gorm] elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 }
