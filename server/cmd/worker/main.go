@@ -79,11 +79,13 @@ func main() {
 		tmpDir = os.TempDir() + "/costrict-sync"
 	}
 
+	scanJobSvc := &services.ScanJobService{DB: db}
 	syncSvc := &services.SyncService{
-		DB:          db,
-		Git:         &services.GitService{TempBaseDir: tmpDir},
-		Parser:      &services.ParserService{},
-		CategorySvc: &services.CategoryService{DB: db},
+		DB:             db,
+		Git:            &services.GitService{TempBaseDir: tmpDir},
+		Parser:         &services.ParserService{},
+		ScanJobService: scanJobSvc,
+		CategorySvc:    &services.CategoryService{DB: db},
 	}
 
 	concurrency, _ := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY"))
@@ -120,9 +122,10 @@ func main() {
 
 		scanLLMClient := llm.NewClient(&llmCfg)
 		scanSvc := &services.ScanService{
-			DB:        db,
-			LLMClient: scanLLMClient,
-			ModelName: llmCfg.Model,
+			DB:          db,
+			LLMClient:   scanLLMClient,
+			ModelName:   llmCfg.Model,
+			CategorySvc: &services.CategoryService{DB: db},
 		}
 
 		scanConcurrency, _ := strconv.Atoi(os.Getenv("SCAN_WORKER_CONCURRENCY"))
