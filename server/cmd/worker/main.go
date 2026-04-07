@@ -80,9 +80,10 @@ func main() {
 	}
 
 	syncSvc := &services.SyncService{
-		DB:     db,
-		Git:    &services.GitService{TempBaseDir: tmpDir},
-		Parser: &services.ParserService{},
+		DB:          db,
+		Git:         &services.GitService{TempBaseDir: tmpDir},
+		Parser:      &services.ParserService{},
+		CategorySvc: &services.CategoryService{DB: db},
 	}
 
 	concurrency, _ := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY"))

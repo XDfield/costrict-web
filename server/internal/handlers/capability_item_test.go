@@ -38,7 +38,7 @@ func newItemRouter(userID string) *gin.Engine {
 	db := database.GetDB()
 	embeddingSvc := services.NewEmbeddingService(&config.EmbeddingConfig{Provider: "mock", Dimensions: 1024})
 	indexerSvc := services.NewIndexerService(db, embeddingSvc)
-	itemHandler := NewItemHandler(db, indexerSvc, &services.ParserService{})
+	itemHandler := NewItemHandler(db, indexerSvc, &services.ParserService{}, nil)
 
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)

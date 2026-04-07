@@ -28,23 +28,25 @@ import (
 
 // ItemHandler handles item operations with indexing support
 type ItemHandler struct {
-	db         *gorm.DB
-	indexerSvc *services.IndexerService
-	parserSvc  *services.ParserService
-	archiveSvc *services.ArchiveService
+	db          *gorm.DB
+	indexerSvc  *services.IndexerService
+	parserSvc   *services.ParserService
+	archiveSvc  *services.ArchiveService
+	categorySvc *services.CategoryService
 }
 
 // NewItemHandler creates a new item handler
-func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService) *ItemHandler {
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService) *ItemHandler {
 	var archiveSvc *services.ArchiveService
 	if parserSvc != nil {
 		archiveSvc = &services.ArchiveService{Parser: parserSvc}
 	}
 	return &ItemHandler{
-		db:         db,
-		indexerSvc: indexerSvc,
-		parserSvc:  parserSvc,
-		archiveSvc: archiveSvc,
+		db:          db,
+		indexerSvc:  indexerSvc,
+		parserSvc:   parserSvc,
+		archiveSvc:  archiveSvc,
+		categorySvc: categorySvc,
 	}
 }
 
@@ -365,6 +367,11 @@ func CreateItem(c *gin.Context) {
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
+
+	if CategorySvc != nil && req.Category != "" {
+		CategorySvc.EnsureCategory(req.Category, req.CreatedBy)
+	}
+
 	c.JSON(http.StatusCreated, *item)
 }
 
@@ -466,6 +473,9 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	}
 	if req.Category != "" {
 		item.Category = req.Category
+		if h.categorySvc != nil {
+			h.categorySvc.EnsureCategory(req.Category, uid)
+		}
 	}
 	if req.Version != "" {
 		item.Version = req.Version
@@ -617,6 +627,9 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		item.Category = v
 	} else if result.Parsed.Category != "" {
 		item.Category = result.Parsed.Category
+	}
+	if h.categorySvc != nil && item.Category != "" {
+		h.categorySvc.EnsureCategory(item.Category, updatedBy)
 	}
 	newVersion := c.PostForm("version")
 	if newVersion == "" {
@@ -1112,6 +1125,11 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
+
+	if h.categorySvc != nil && req.Category != "" {
+		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
+	}
+
 	c.JSON(http.StatusCreated, *item)
 }
 
@@ -1228,6 +1246,9 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 	if category == "" {
 		category = result.Parsed.Category
+	}
+	if h.categorySvc != nil && category != "" {
+		h.categorySvc.EnsureCategory(category, createdBy)
 	}
 	if version == "" {
 		version = result.Parsed.Version
