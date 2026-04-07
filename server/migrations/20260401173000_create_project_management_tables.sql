@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS projects (
     name text NOT NULL,
     description text DEFAULT '',
     creator_id text NOT NULL,
-    enabled boolean NOT NULL DEFAULT false,
     enabled_at timestamptz,
     archived_at timestamptz,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -24,7 +23,6 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_project_creator_name ON projects(creator_id, name);
-CREATE INDEX IF NOT EXISTS idx_projects_enabled ON projects(enabled);
 CREATE INDEX IF NOT EXISTS idx_projects_enabled_at ON projects(enabled_at);
 CREATE INDEX IF NOT EXISTS idx_projects_archived_at ON projects(archived_at);
 CREATE INDEX IF NOT EXISTS idx_projects_deleted_at ON projects(deleted_at);
