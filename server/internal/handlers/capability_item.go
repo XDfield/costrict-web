@@ -1003,14 +1003,29 @@ func ListAllItems(c *gin.Context) {
 		}
 	}
 
-	// Populate repoName into each item
+	// Batch-fetch favorited status for current user
+	favoritedSet := make(map[string]bool)
+	if uid != "" && len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		var favs []models.ItemFavorite
+		db.Where("user_id = ? AND item_id IN ?", uid, itemIDs).Find(&favs)
+		for _, fav := range favs {
+			favoritedSet[fav.ItemID] = true
+		}
+	}
+
+	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
-		RepoName string `json:"repoName,omitempty"`
+		RepoName  string `json:"repoName,omitempty"`
+		Favorited bool   `json:"favorited"`
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
-		out[i] = ItemWithRepo{CapabilityItem: item}
+		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID]}
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]
 		}
