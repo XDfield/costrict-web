@@ -113,7 +113,9 @@ func main() {
 
 	// Initialize ItemHandler with indexer and parser
 	parserSvc := &services.ParserService{}
-	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc)
+	categorySvc := &services.CategoryService{DB: db}
+	handlers.CategorySvc = categorySvc
+	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc, categorySvc)
 
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
@@ -180,6 +182,10 @@ func main() {
 
 		// User name resolution (public, results cached in memory)
 		api.GET("/users/names", handlers.GetUserNames)
+
+		// Category dictionary (public read)
+		api.GET("/categories", handlers.ListCategoriesHandler(categorySvc))
+		api.GET("/categories/:id", handlers.GetCategoryHandler(categorySvc))
 
 		// Marketplace browse (public)
 		marketplace := api.Group("/marketplace")
@@ -253,6 +259,10 @@ func main() {
 
 			authed.POST("/artifacts/upload", handlers.UploadArtifact)
 			authed.DELETE("/artifacts/:id", handlers.DeleteArtifact)
+
+			authed.POST("/categories", handlers.CreateCategoryHandler(categorySvc))
+			authed.PUT("/categories/:id", handlers.UpdateCategoryHandler(categorySvc))
+			authed.DELETE("/categories/:id", handlers.DeleteCategoryHandler(categorySvc))
 
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
