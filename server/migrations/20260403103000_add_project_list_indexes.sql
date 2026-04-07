@@ -1,3 +1,4 @@
+-- +goose Up
 -- 优化 /api/projects 列表查询：
 -- 1. project_members 先按 user_id + deleted_at 过滤，再用 project_id 回表 join projects
 -- 2. pinned 查询场景可复用 pinned_at 列
@@ -9,5 +10,6 @@ CREATE INDEX IF NOT EXISTS idx_project_members_user_deleted_pinned_project
 CREATE INDEX IF NOT EXISTS idx_projects_created_at
     ON projects(created_at DESC);
 
+-- +goose Down
 DROP INDEX IF EXISTS idx_projects_created_at;
 DROP INDEX IF EXISTS idx_project_members_user_deleted_pinned_project;
