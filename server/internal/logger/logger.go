@@ -4,7 +4,7 @@
 //
 // Two log files are maintained under the configured directory (default: ./logs):
 //   - app.log    – all messages (DEBUG, INFO, WARN, ERROR, ...)
-//   - error.log  – ERROR and above only, with full caller stack traces
+//   - error.log  – ERROR and above only
 //
 // The package exposes printf-style convenience functions (Info, Warn, Error, ...)
 // so callers do not need to manage logger instances directly.
@@ -169,12 +169,10 @@ func Init(cfg Config) {
 
 	// Build the logger.
 	// AddCaller: log the file:line of the call site.
-	// AddStacktrace(ErrorLevel): automatically capture stack traces for ERROR+.
 	// AddCallerSkip(1): skip this wrapper layer so the caller location is correct.
 	zapLogger = zap.New(core,
 		zap.AddCaller(),
 		zap.AddCallerSkip(1),
-		zap.AddStacktrace(zap.ErrorLevel),
 	)
 	sugar = zapLogger.Sugar()
 
@@ -207,7 +205,6 @@ func Warn(format string, args ...any) {
 }
 
 // Error logs an error message to both app.log and error.log.
-// A stack trace is automatically captured by zap.
 func Error(format string, args ...any) {
 	getSugar().Errorf(format, args...)
 }
@@ -217,7 +214,7 @@ func Errorf(format string, args ...any) {
 	getSugar().Errorf(format, args...)
 }
 
-// Fatal logs an error with stack trace and exits the process.
+// Fatal logs an error and exits the process.
 func Fatal(format string, args ...any) {
 	getSugar().Fatalf(format, args...)
 }
