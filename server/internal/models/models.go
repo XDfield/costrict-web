@@ -329,6 +329,19 @@ type CapabilityItem struct {
 	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
 }
 
+// ItemCategory 分类字典表，支持国际化
+type ItemCategory struct {
+	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Slug         string         `gorm:"not null;uniqueIndex"                           json:"slug"`         // 唯一标识，如 "development", "testing"
+	Icon         string         `                                                      json:"icon"`         // 图标（可选）
+	SortOrder    int            `gorm:"default:0"                                      json:"sortOrder"`    // 排序
+	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"               json:"names"`        // {"en":"Development","zh":"开发工具"}
+	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"descriptions"` // {"en":"...","zh":"..."}
+	CreatedBy    string         `gorm:"not null"                                       json:"createdBy"`
+	CreatedAt    time.Time      `                                                      json:"createdAt"`
+	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
+}
+
 type ItemFavorite struct {
 	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_favorite" json:"itemId"`

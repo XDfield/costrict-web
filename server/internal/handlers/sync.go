@@ -21,6 +21,7 @@ import (
 var (
 	JobService     *services.JobService
 	ScanJobService *services.ScanJobService
+	CategorySvc    *services.CategoryService
 	SyncScheduler  interface {
 		RegisterRegistry(registry *models.CapabilityRegistry) error
 		UnregisterRegistry(registryID string)

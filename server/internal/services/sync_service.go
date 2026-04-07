@@ -20,6 +20,7 @@ type SyncService struct {
 	Git            *GitService
 	Parser         *ParserService
 	ScanJobService *ScanJobService
+	CategorySvc    *CategoryService
 }
 
 type SyncOptions struct {
@@ -341,6 +342,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Category = parsed.Category
 				existing.Version = parsed.Version
 				existing.Content = parsed.Content
+
+				if s.CategorySvc != nil && parsed.Category != "" {
+					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
+				}
 				meta := parsed.Metadata
 				if parsed.ItemType == "mcp" {
 					normalized, err := NormalizeMCPMetadata(meta)
@@ -406,6 +411,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					result.Failed++
 					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, err))
 					continue
+				}
+
+				if s.CategorySvc != nil && parsed.Category != "" {
+					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
 				}
 
 				ver := &models.CapabilityVersion{
