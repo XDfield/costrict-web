@@ -53,6 +53,10 @@ func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID,
 	}()
 }
 
+func (s *NotificationService) TriggerMessage(userID, eventType string, msg sender.NotificationMessage) {
+	go s.send(userID, eventType, msg)
+}
+
 // getWorkspaceID 根据设备标识符和路径查找工作空间ID。
 // 注意：传入的 deviceID 是 devices.device_id（外部设备标识符），
 // 而 workspaces.device_id 存储的是 devices.id（UUID主键），
@@ -201,6 +205,29 @@ func (s *NotificationService) GetAvailableChannelTypes() []map[string]any {
 	}
 
 	return result
+}
+
+func (s *NotificationService) GetSupportedTriggerEvents() []string {
+	return []string{
+		EventSessionCompleted,
+		EventSessionFailed,
+		EventSessionAborted,
+		EventDeviceOffline,
+		EventPermissionRequired,
+		EventQuestionRequired,
+		EventSessionIdle,
+		EventProjectInvitationCreated,
+		EventSystemNotification,
+	}
+}
+
+func (s *NotificationService) IsSupportedTriggerEvent(event string) bool {
+	for _, supported := range s.GetSupportedTriggerEvents() {
+		if supported == event {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *NotificationService) buildMessage(info sessionInfo) sender.NotificationMessage {

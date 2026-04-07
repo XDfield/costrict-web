@@ -12,6 +12,16 @@ import (
 type Config struct {
 	Port               string
 	DatabaseURL        string
+	UsageSQLitePath    string
+	UsageProvider      string
+	UsageESReportBaseURL string
+	UsageESQueryBaseURL  string
+	UsageESReportPath  string
+	UsageESQueryPath   string
+	UsageESTimeoutSec  int
+	UsageESBasicUser   string
+	UsageESBasicPass   string
+	UsageESInsecureSkipVerify bool
 	RedisURL           string
 	CloudBaseURL       string
 	FrontendURLs       []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -76,6 +86,16 @@ func Load() *Config {
 	return &Config{
 		Port:               getEnv("PORT", "8080"),
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		UsageSQLitePath:    getEnv("USAGE_SQLITE_PATH", "./data/usage/usage.db"),
+		UsageProvider:      getEnv("USAGE_PROVIDER", "sqlite"),
+		UsageESReportBaseURL: getEnv("USAGE_ES_REPORT_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
+		UsageESQueryBaseURL:  getEnv("USAGE_ES_QUERY_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
+		UsageESReportPath:  getEnv("USAGE_ES_REPORT_PATH", "/internal/indicator/api/v1/session_turn_metrics"),
+		UsageESQueryPath:   getEnv("USAGE_ES_QUERY_PATH", "/costrict_session_turn_metrics/_search"),
+		UsageESTimeoutSec:  getEnvInt("USAGE_ES_TIMEOUT_SECONDS", 15),
+		UsageESBasicUser:   getEnv("USAGE_ES_BASIC_USER", ""),
+		UsageESBasicPass:   getEnv("USAGE_ES_BASIC_PASS", ""),
+		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
 		RedisURL:           getEnv("REDIS_URL", ""),
 		CloudBaseURL:       cloudBaseURL,
 		FrontendURLs:       frontendURLs,

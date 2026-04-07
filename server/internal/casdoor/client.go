@@ -25,6 +25,7 @@ type CasdoorClient struct {
 type CasdoorUser struct {
 	Sub              string `json:"sub"`
 	Id               string `json:"id"`
+	UniversalID      string `json:"universal_id"`
 	Name             string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
 	Email            string `json:"email"`
@@ -54,6 +55,7 @@ func (u *CasdoorUser) UnmarshalJSON(data []byte) error {
 	// Match fields across OIDC snake_case and Casdoor camelCase formats
 	u.Sub = str("sub")
 	u.Id = str("id")
+	u.UniversalID = str("universal_id")
 	u.Name = str("name")
 	u.PreferredUsername = str("preferred_username", "displayName")
 	u.Email = str("email")

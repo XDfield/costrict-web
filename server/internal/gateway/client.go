@@ -24,7 +24,7 @@ func NewClient(internalSecret string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout:   0,
-			Transport: &http.Transport{},
+			Transport: &http.Transport{DisableCompression: true},
 		},
 		internalSecret: internalSecret,
 	}

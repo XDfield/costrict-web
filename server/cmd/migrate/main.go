@@ -24,10 +24,16 @@ func main() {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
 
-	err = db.AutoMigrate(
-		&models.Repository{},
-		&models.RepoMember{},
-		&models.RepoInvitation{},
+		err = db.AutoMigrate(
+			&models.User{},
+			&models.UserSystemRole{},
+			&models.Repository{},
+			&models.RepoMember{},
+			&models.RepoInvitation{},
+		&models.Project{},
+		&models.ProjectMember{},
+		&models.ProjectInvitation{},
+		&models.ProjectRepository{},
 		&models.SyncLog{},
 		&models.SyncJob{},
 		&models.CapabilityRegistry{},
@@ -71,7 +77,7 @@ func runGooseMigrations(db *gorm.DB) error {
 		return fmt.Errorf("failed to set goose dialect: %w", err)
 	}
 
-	if err := goose.Up(sqlDB, "."); err != nil {
+	if err := goose.Up(sqlDB, ".", goose.WithAllowMissing()); err != nil {
 		return fmt.Errorf("goose migration failed: %w", err)
 	}
 
@@ -179,22 +185,13 @@ func runPreMigrations(db *gorm.DB) error {
 				`ALTER TABLE capability_items ADD COLUMN repo_id text NOT NULL DEFAULT 'public'`,
 			},
 		},
-		{
-			check: `SELECT 1 FROM capability_items WHERE repo_id = 'public' LIMIT 1`,
-			stmts: []string{
-				`UPDATE capability_items SET repo_id = COALESCE(
-					(SELECT COALESCE(NULLIF(cr.repo_id,''), 'public')
-					 FROM capability_registries cr
-					 WHERE cr.id = capability_items.registry_id),
-					'public'
-				) WHERE repo_id = 'public'`,
-			},
-		},
 	}
 
 	for _, m := range preMigrations {
 		var exists int
-		db.Raw(m.check).Scan(&exists)
+		if err := db.Raw(m.check).Scan(&exists).Error; err != nil {
+			return fmt.Errorf("pre-migration check failed (%s): %w", m.check, err)
+		}
 		if exists != 1 {
 			continue
 		}
@@ -205,13 +202,54 @@ func runPreMigrations(db *gorm.DB) error {
 		}
 	}
 
+	if err := backfillCapabilityItemRepoIDs(db); err != nil {
+		return fmt.Errorf("failed to backfill capability_items.repo_id before migrations: %w", err)
+	}
+
 	if err := deduplicateSlugs(db); err != nil {
 		return fmt.Errorf("failed to deduplicate slugs before composite unique index: %w", err)
 	}
 	return nil
 }
 
+func backfillCapabilityItemRepoIDs(db *gorm.DB) error {
+	var tableExists int
+	if err := db.Raw(`SELECT 1 FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA() AND table_name = 'capability_items'`).Scan(&tableExists).Error; err != nil {
+		return fmt.Errorf("checking capability_items existence: %w", err)
+	}
+	if tableExists != 1 {
+		return nil
+	}
+
+	var needsBackfill int
+	if err := db.Raw(`SELECT 1 FROM capability_items WHERE repo_id = 'public' LIMIT 1`).Scan(&needsBackfill).Error; err != nil {
+		return fmt.Errorf("checking capability_items repo_id backfill: %w", err)
+	}
+	if needsBackfill != 1 {
+		return nil
+	}
+
+	if err := db.Exec(`UPDATE capability_items SET repo_id = COALESCE(
+		(SELECT COALESCE(NULLIF(cr.repo_id,''), 'public')
+		 FROM capability_registries cr
+		 WHERE cr.id = capability_items.registry_id),
+		'public'
+	) WHERE repo_id = 'public'`).Error; err != nil {
+		return fmt.Errorf("backfilling capability_items.repo_id: %w", err)
+	}
+
+	return nil
+}
+
 func deduplicateSlugs(db *gorm.DB) error {
+	var tableExists int
+	if err := db.Raw(`SELECT 1 WHERE to_regclass('public.capability_items') IS NOT NULL`).Scan(&tableExists).Error; err != nil {
+		return fmt.Errorf("checking capability_items existence: %w", err)
+	}
+	if tableExists != 1 {
+		return nil
+	}
+
 	var idxExists int
 	db.Raw(`SELECT 1 FROM pg_indexes WHERE indexname = 'idx_item_repo_type_slug'`).Scan(&idxExists)
 	if idxExists == 1 {

@@ -42,7 +42,7 @@ const docTemplate = `{
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                        "$ref": "#/definitions/models.SystemNotificationChannel"
                                     }
                                 }
                             }
@@ -116,7 +116,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -206,7 +206,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -323,6 +323,372 @@ const docTemplate = `{
                 }
             }
         },
+        "/admin/system-roles": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List members by target system role (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/system-roles"
+                ],
+                "summary": "List users by system role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role",
+                        "name": "role",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string"
+                                },
+                                "users": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/system-roles/users/{userId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Get system roles of a specified user (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/system-roles"
+                ],
+                "summary": "Get user system roles",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "roles": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "userId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Grant a system role to a user (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/system-roles"
+                ],
+                "summary": "Grant system role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Grant role request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/system-roles/users/{userId}/{role}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Revoke a system role from a user (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/system-roles"
+                ],
+                "summary": "Revoke system role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Role",
+                        "name": "role",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/artifacts/upload": {
             "post": {
                 "description": "Upload a file artifact for a skill item",
@@ -368,7 +734,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                            "$ref": "#/definitions/models.CapabilityArtifact"
                         }
                     },
                     "400": {
@@ -666,6 +1032,70 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "type": "object"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/system-roles/me": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Get current authenticated user's system roles and capabilities",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Get current user system roles",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "capabilities": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "roles": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "userId": {
+                                    "type": "string"
+                                }
+                            }
                         }
                     },
                     "401": {
@@ -1315,7 +1745,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Conflict",
+                        "description": "Different user: unauthorized device registration",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2056,6 +2486,53 @@ const docTemplate = `{
                 }
             }
         },
+        "/invitations": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all project invitations for the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "project-invitations"
+                ],
+                "summary": "List my project invitations",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.InvitationsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/invitations/my": {
             "get": {
                 "description": "Get all pending invitations for the current user",
@@ -2075,7 +2552,7 @@ const docTemplate = `{
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                                        "$ref": "#/definitions/models.RepoInvitation"
                                     }
                                 }
                             }
@@ -2083,6 +2560,81 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/invitations/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Cancel a pending invitation as the inviter",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "project-invitations"
+                ],
+                "summary": "Cancel project invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Invitation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2118,7 +2670,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -2235,6 +2787,96 @@ const docTemplate = `{
                 }
             }
         },
+        "/invitations/{id}/respond": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Accept or reject a project invitation as the invitee",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "project-invitations"
+                ],
+                "summary": "Respond to project invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Invitation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Invitation response data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.RespondInvitationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.InvitationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/items": {
             "get": {
                 "description": "Get all skill items visible to the current user with pagination and author information",
@@ -2287,6 +2929,18 @@ const docTemplate = `{
                         "description": "Page size (default: 20, max: 100)",
                         "name": "pageSize",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort by createdAt, previewCount, installCount, or favoriteCount",
+                        "name": "sortBy",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default: desc)",
+                        "name": "sortOrder",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2301,7 +2955,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
+                                        "type": "object"
                                     }
                                 },
                                 "page": {
@@ -2365,6 +3019,9 @@ const docTemplate = `{
                                 "itemType": {
                                     "type": "string"
                                 },
+                                "metadata": {
+                                    "type": "object"
+                                },
                                 "name": {
                                     "type": "string"
                                 },
@@ -2403,7 +3060,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -2484,7 +3141,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/internal_handlers.MyItem"
+                                        "$ref": "#/definitions/handlers.MyItem"
                                     }
                                 },
                                 "page": {
@@ -2515,7 +3172,7 @@ const docTemplate = `{
         },
         "/items/{id}": {
             "get": {
-                "description": "Get skill item by ID with registry, versions and artifacts",
+                "description": "Get skill item by ID with registry, versions, artifacts and repo visibility",
                 "produces": [
                     "application/json"
                 ],
@@ -2536,7 +3193,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "404": {
@@ -2618,7 +3275,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -2723,7 +3380,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis"
+                            "$ref": "#/definitions/llm.SkillAnalysis"
                         }
                     },
                     "404": {
@@ -2779,7 +3436,7 @@ const docTemplate = `{
                                 "artifacts": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                                        "$ref": "#/definitions/models.CapabilityArtifact"
                                     }
                                 }
                             }
@@ -2860,7 +3517,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.BehaviorLog"
+                            "$ref": "#/definitions/models.BehaviorLog"
                         }
                     },
                     "400": {
@@ -2890,7 +3547,7 @@ const docTemplate = `{
         },
         "/items/{id}/download": {
             "get": {
-                "description": "Download the Markdown content of a capability item (skill/subagent/command) as a file. Respects visibility rules.",
+                "description": "Download the Markdown content of a capability item (skill/subagent/command) as a file. Access is determined by the parent repository's visibility.",
                 "produces": [
                     "text/plain"
                 ],
@@ -2939,6 +3596,172 @@ const docTemplate = `{
                 }
             }
         },
+        "/items/{id}/favorite": {
+            "post": {
+                "description": "Mark an item as favorited for the current user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "behavior"
+                ],
+                "summary": "Favorite item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "created": {
+                                    "type": "boolean"
+                                },
+                                "favoriteCount": {
+                                    "type": "integer"
+                                },
+                                "favorited": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove the current user's favorite mark from an item",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "behavior"
+                ],
+                "summary": "Unfavorite item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "favoriteCount": {
+                                    "type": "integer"
+                                },
+                                "favorited": {
+                                    "type": "boolean"
+                                },
+                                "removed": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/items/{id}/improve": {
             "post": {
                 "description": "Apply suggested improvements to a skill",
@@ -2971,7 +3794,7 @@ const docTemplate = `{
                                 "improvements": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
+                                        "$ref": "#/definitions/llm.SkillImprovement"
                                     }
                                 }
                             }
@@ -2982,7 +3805,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -3050,7 +3873,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -3241,7 +4064,7 @@ const docTemplate = `{
                                 "results": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
+                                        "$ref": "#/definitions/models.SecurityScan"
                                     }
                                 },
                                 "total": {
@@ -3358,7 +4181,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
+                                        "$ref": "#/definitions/services.SearchResultItem"
                                     }
                                 },
                                 "page": {
@@ -3421,7 +4244,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats"
+                            "$ref": "#/definitions/services.ItemBehaviorStats"
                         }
                     },
                     "500": {
@@ -3478,7 +4301,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -3567,7 +4390,7 @@ const docTemplate = `{
                                 "versions": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                                        "$ref": "#/definitions/models.CapabilityVersion"
                                     }
                                 }
                             }
@@ -3617,7 +4440,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                            "$ref": "#/definitions/models.CapabilityVersion"
                         }
                     },
                     "400": {
@@ -3702,7 +4525,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
+                            "$ref": "#/definitions/services.SearchResult"
                         }
                     },
                     "400": {
@@ -3766,7 +4589,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -3852,7 +4675,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendResponse"
+                            "$ref": "#/definitions/services.RecommendResponse"
                         }
                     },
                     "400": {
@@ -3940,7 +4763,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
+                            "$ref": "#/definitions/services.SearchResult"
                         }
                     },
                     "400": {
@@ -4014,7 +4837,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -4062,7 +4885,7 @@ const docTemplate = `{
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                        "$ref": "#/definitions/models.UserNotificationChannel"
                                     }
                                 }
                             }
@@ -4142,7 +4965,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -4248,7 +5071,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -4331,7 +5154,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -4482,7 +5305,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.NotificationLog"
+                                        "$ref": "#/definitions/models.NotificationLog"
                                     }
                                 }
                             }
@@ -4583,9 +5406,1161 @@ const docTemplate = `{
                 }
             }
         },
+        "/projects": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all projects the authenticated user belongs to",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "List my projects",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Include archived projects",
+                        "name": "includeArchived",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Only return projects pinned by current user",
+                        "name": "pinned",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Create a new project and add the creator as project admin",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Create project",
+                "parameters": [
+                    {
+                        "description": "Project data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.CreateProjectRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Get project details for a project member",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Get project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update project information as project admin",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Update project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Project update data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.UpdateProjectRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Soft delete a project as project admin",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Delete project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/archive": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Archive a project as project admin",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Archive project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/archive-time": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update archivedAt for an already archived project as project admin",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Update project archive time",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Archive time update data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.UpdateProjectArchiveTimeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectBasicInfoResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/basic": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Get basic project information for a project member",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Get project basic info",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectBasicInfoResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/invitations": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List invitation records for a project as project admin",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "project-invitations"
+                ],
+                "summary": "List project invitations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.InvitationsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Invite a user to join a project as project admin",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "project-invitations"
+                ],
+                "summary": "Create project invitation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Invitation data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.CreateInvitationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/project.InvitationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/members": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all members of a project for project members",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "List project members",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.MembersResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/members/{userId}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Remove a member from a project as project admin",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Remove project member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target user ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/members/{userId}/role": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update a project member role as project admin",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Update project member role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target user ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Role update data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.UpdateMemberRoleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.MemberResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/pin": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Set personal pin status for a project the authenticated user belongs to",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Pin or unpin project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Pin state",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/project.SetProjectPinRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/projects/{id}/unarchive": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Unarchive a project as project admin",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "projects"
+                ],
+                "summary": "Unarchive project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/project.ProjectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/registries": {
             "get": {
-                "description": "Get registries visible to the current user (public + repo + personal)",
+                "description": "Get registries visible to the current user. Visibility is determined by the parent repository's visibility field: public repos' registries are visible to everyone, private repos' registries are visible to repo members, and registries without a repo are visible to their owner.",
                 "produces": [
                     "application/json"
                 ],
@@ -4610,7 +6585,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -4619,7 +6594,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a new skill registry",
+                "description": "Create a new skill registry. Visibility is inherited from the parent repository.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4665,9 +6640,6 @@ const docTemplate = `{
                                 },
                                 "syncInterval": {
                                     "type": "integer"
-                                },
-                                "visibility": {
-                                    "type": "string"
                                 }
                             }
                         }
@@ -4677,77 +6649,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/registries/ensure-personal": {
-            "post": {
-                "description": "Get or create the personal registry for a user",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "registries"
-                ],
-                "summary": "Ensure personal registry",
-                "parameters": [
-                    {
-                        "description": "Owner data",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ownerId": {
-                                    "type": "string"
-                                },
-                                "username": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                        }
-                    },
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -4803,7 +6705,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -4837,7 +6739,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -4877,7 +6779,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -4894,7 +6796,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update registry by ID",
+                "description": "Update registry by ID. Note: visibility is controlled at the repository level, not the registry level.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4940,9 +6842,6 @@ const docTemplate = `{
                                 },
                                 "syncInterval": {
                                     "type": "integer"
-                                },
-                                "visibility": {
-                                    "type": "string"
                                 }
                             }
                         }
@@ -4952,7 +6851,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -5081,6 +6980,18 @@ const docTemplate = `{
                         "description": "Page size (default: 20, max: 100)",
                         "name": "pageSize",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort by createdAt, previewCount, installCount, or favoriteCount",
+                        "name": "sortBy",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default: desc)",
+                        "name": "sortOrder",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -5095,7 +7006,7 @@ const docTemplate = `{
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/internal_handlers.ItemWithAuthor"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -5166,6 +7077,9 @@ const docTemplate = `{
                                 "itemType": {
                                     "type": "string"
                                 },
+                                "metadata": {
+                                    "type": "object"
+                                },
                                 "name": {
                                     "type": "string"
                                 },
@@ -5186,7 +7100,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -5305,7 +7219,7 @@ const docTemplate = `{
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                                        "$ref": "#/definitions/models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -5344,7 +7258,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                                        "$ref": "#/definitions/models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -5457,7 +7371,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -5509,7 +7423,7 @@ const docTemplate = `{
         },
         "/registry/{repo}/access": {
             "get": {
-                "description": "Probe whether a registry requires authentication. Returns {\"public\":false} for non-existent repos to avoid leaking repo existence.",
+                "description": "Probe whether a registry requires authentication. Checks the parent repository's visibility. Returns {\"public\":false} for non-existent repos to avoid leaking repo existence.",
                 "produces": [
                     "application/json"
                 ],
@@ -5543,7 +7457,7 @@ const docTemplate = `{
         },
         "/registry/{repo}/index.json": {
             "get": {
-                "description": "Return the index.json for a repo's registry, filtered by the caller's access rights. Requires Bearer token for non-public registries.",
+                "description": "Return the index.json for a repo's registry, filtered by the caller's access rights. Access is determined by the parent repository's visibility. Requires Bearer token for non-public repositories.",
                 "produces": [
                     "application/json"
                 ],
@@ -5605,7 +7519,7 @@ const docTemplate = `{
         },
         "/registry/{repo}/{itemType}/{slug}/{file}": {
             "get": {
-                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Respects visibility rules.",
+                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Access is determined by the parent repository's visibility.",
                 "produces": [
                     "text/plain",
                     "application/octet-stream"
@@ -5706,7 +7620,7 @@ const docTemplate = `{
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                                        "$ref": "#/definitions/models.Repository"
                                     }
                                 }
                             }
@@ -5781,7 +7695,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "400": {
@@ -5828,7 +7742,7 @@ const docTemplate = `{
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                                        "$ref": "#/definitions/models.Repository"
                                     }
                                 }
                             }
@@ -5871,7 +7785,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "404": {
@@ -5934,7 +7848,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "400": {
@@ -6050,7 +7964,7 @@ const docTemplate = `{
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                                        "$ref": "#/definitions/models.RepoInvitation"
                                     }
                                 }
                             }
@@ -6114,7 +8028,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                            "$ref": "#/definitions/models.RepoInvitation"
                         }
                     },
                     "400": {
@@ -6266,7 +8180,7 @@ const docTemplate = `{
                                 "members": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                                        "$ref": "#/definitions/models.RepoMember"
                                     }
                                 }
                             }
@@ -6330,7 +8244,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -6427,7 +8341,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -6566,7 +8480,7 @@ const docTemplate = `{
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -6600,7 +8514,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CreateSyncRegistryInput"
+                            "$ref": "#/definitions/handlers.CreateSyncRegistryInput"
                         }
                     }
                 ],
@@ -6608,7 +8522,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -6704,7 +8618,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -6794,7 +8708,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -6927,7 +8841,7 @@ const docTemplate = `{
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                                        "$ref": "#/definitions/models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -6984,7 +8898,7 @@ const docTemplate = `{
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                                        "$ref": "#/definitions/models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -7148,7 +9062,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
+                            "$ref": "#/definitions/models.SecurityScan"
                         }
                     },
                     "404": {
@@ -7187,7 +9101,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                            "$ref": "#/definitions/models.SyncJob"
                         }
                     },
                     "404": {
@@ -7226,11 +9140,223 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                            "$ref": "#/definitions/models.SyncLog"
                         }
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/usage/activity": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Query daily request activity for all users under the specified git repository URL.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "usage"
+                ],
+                "summary": "Query usage activity",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Git repository URL",
+                        "name": "git_repo_url",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Range in days (1-90, default 7)",
+                        "name": "days",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/services.UsageActivityResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/usage/report": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Receive batched session usage reports from authenticated CLI clients and upsert them with request-level idempotency.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "usage"
+                ],
+                "summary": "Report session usage",
+                "parameters": [
+                    {
+                        "description": "Usage report payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/services.UsageReportRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/services.UsageReportResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/users/info": {
+            "get": {
+                "description": "Query a user's basic information by user ID, including name and avatar URL.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Get user basic info",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/handlers.userBasicInfoResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -7257,11 +9383,59 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary"
+                            "$ref": "#/definitions/models.UserBehaviorSummary"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/users/names": {
+            "get": {
+                "description": "Given a comma-separated list of user IDs, return a map of id -\u003e displayName. Results are served from an in-memory cache when possible.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Batch resolve user display names",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated user IDs (max 50)",
+                        "name": "ids",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "names": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -7302,7 +9476,7 @@ const docTemplate = `{
                                 "users": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser"
+                                        "$ref": "#/definitions/casdoor.CasdoorUser"
                                     }
                                 }
                             }
@@ -7451,7 +9625,7 @@ const docTemplate = `{
                                 "workspaces": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                        "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                     }
                                 }
                             }
@@ -7500,7 +9674,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest"
+                            "$ref": "#/definitions/services.CreateWorkspaceRequest"
                         }
                     }
                 ],
@@ -7511,7 +9685,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -7580,7 +9754,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -7647,7 +9821,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -7713,7 +9887,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest"
+                            "$ref": "#/definitions/services.UpdateWorkspaceRequest"
                         }
                     }
                 ],
@@ -7724,7 +9898,7 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -7962,7 +10136,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
+                            "$ref": "#/definitions/services.CreateDirectoryRequest"
                         }
                     }
                 ],
@@ -8052,7 +10226,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest"
+                            "$ref": "#/definitions/services.ReorderDirectoriesRequest"
                         }
                     }
                 ],
@@ -8149,7 +10323,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest"
+                            "$ref": "#/definitions/services.UpdateDirectoryRequest"
                         }
                     }
                 ],
@@ -8350,7 +10524,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
+        "casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
                 "email": {
@@ -8373,16 +10547,296 @@ const docTemplate = `{
                 },
                 "sub": {
                     "type": "string"
+                },
+                "universal_id": {
+                    "type": "string"
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis": {
+        "handlers.CreateSyncRegistryInput": {
+            "type": "object",
+            "properties": {
+                "conflictStrategy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "excludePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "externalBranch": {
+                    "type": "string"
+                },
+                "externalUrl": {
+                    "type": "string"
+                },
+                "includePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "syncEnabled": {
+                    "type": "boolean"
+                },
+                "syncInterval": {
+                    "type": "integer"
+                },
+                "webhookSecret": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ItemResponse": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "favoriteCount": {
+                    "type": "integer"
+                },
+                "favorited": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "previewCount": {
+                    "type": "integer"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoVisibility": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "handlers.MyItem": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "favoriteCount": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "previewCount": {
+                    "type": "integer"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoName": {
+                    "type": "string"
+                },
+                "repoVisibility": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "handlers.userBasicInfoResponse": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "llm.SkillAnalysis": {
             "type": "object",
             "properties": {
                 "improvements": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
+                        "$ref": "#/definitions/llm.SkillImprovement"
                     }
                 },
                 "overallScore": {
@@ -8402,7 +10856,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_llm.SkillImprovement": {
+        "llm.SkillImprovement": {
             "type": "object",
             "properties": {
                 "current": {
@@ -8419,7 +10873,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ActionType": {
+        "models.ActionType": {
             "type": "string",
             "enum": [
                 "view",
@@ -8442,14 +10896,14 @@ const docTemplate = `{
                 "ActionIgnore"
             ]
         },
-        "github_com_costrict_costrict-web_server_internal_models.BehaviorLog": {
+        "models.BehaviorLog": {
             "type": "object",
             "properties": {
                 "actionType": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ActionType"
+                    "$ref": "#/definitions/models.ActionType"
                 },
                 "context": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ContextType"
+                    "$ref": "#/definitions/models.ContextType"
                 },
                 "createdAt": {
                     "type": "string"
@@ -8467,7 +10921,7 @@ const docTemplate = `{
                     "description": "Relations",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     ]
                 },
@@ -8482,7 +10936,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8498,7 +10952,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact": {
+        "models.CapabilityArtifact": {
             "type": "object",
             "properties": {
                 "artifactVersion": {
@@ -8545,7 +10999,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityAsset": {
+        "models.CapabilityAsset": {
             "type": "object",
             "properties": {
                 "contentSha": {
@@ -8583,19 +11037,19 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityItem": {
+        "models.CapabilityItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -8619,6 +11073,9 @@ const docTemplate = `{
                 "experienceScore": {
                     "type": "number"
                 },
+                "favoriteCount": {
+                    "type": "integer"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -8637,8 +11094,11 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "previewCount": {
+                    "type": "integer"
+                },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -8677,12 +11137,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry": {
+        "models.CapabilityRegistry": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8703,11 +11163,11 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                        "$ref": "#/definitions/models.CapabilityItem"
                     }
                 },
                 "lastSyncLog": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                    "$ref": "#/definitions/models.SyncLog"
                 },
                 "lastSyncLogId": {
                     "type": "string"
@@ -8745,13 +11205,10 @@ const docTemplate = `{
                 },
                 "updatedAt": {
                     "type": "string"
-                },
-                "visibility": {
-                    "type": "string"
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityVersion": {
+        "models.CapabilityVersion": {
             "type": "object",
             "properties": {
                 "commitMsg": {
@@ -8780,7 +11237,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ContextType": {
+        "models.ContextType": {
             "type": "string",
             "enum": [
                 "search_query",
@@ -8795,7 +11252,7 @@ const docTemplate = `{
                 "ContextBrowse"
             ]
         },
-        "github_com_costrict_costrict-web_server_internal_models.NotificationLog": {
+        "models.NotificationLog": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -8833,7 +11290,112 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.RepoInvitation": {
+        "models.Project": {
+            "type": "object",
+            "properties": {
+                "archivedAt": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "creatorId": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "isPinned": {
+                    "type": "boolean"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProjectInvitation": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "expiresAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "inviteeId": {
+                    "type": "string"
+                },
+                "inviterId": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "projectId": {
+                    "type": "string"
+                },
+                "projectName": {
+                    "type": "string"
+                },
+                "respondedAt": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProjectMember": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "joinedAt": {
+                    "type": "string"
+                },
+                "pinnedAt": {
+                    "type": "string"
+                },
+                "projectId": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "userId": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.RepoInvitation": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8861,7 +11423,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "repository": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                    "$ref": "#/definitions/models.Repository"
                 },
                 "role": {
                     "description": "admin | member",
@@ -8876,7 +11438,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.RepoMember": {
+        "models.RepoMember": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8900,7 +11462,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.Repository": {
+        "models.Repository": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8918,7 +11480,7 @@ const docTemplate = `{
                 "members": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                        "$ref": "#/definitions/models.RepoMember"
                     }
                 },
                 "name": {
@@ -8940,7 +11502,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SecurityScan": {
+        "models.SecurityScan": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -8996,7 +11558,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SyncJob": {
+        "models.SyncJob": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -9021,7 +11583,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -9051,7 +11613,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SyncLog": {
+        "models.SyncLog": {
             "type": "object",
             "properties": {
                 "addedItems": {
@@ -9085,7 +11647,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -9115,7 +11677,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel": {
+        "models.SystemNotificationChannel": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -9136,10 +11698,7 @@ const docTemplate = `{
                 },
                 "systemConfig": {
                     "description": "系统级配置",
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "type": "object"
                 },
                 "type": {
                     "description": "\"wecom\" | \"feishu\" | \"webhook\"",
@@ -9154,7 +11713,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary": {
+        "models.UserBehaviorSummary": {
             "type": "object",
             "properties": {
                 "favoriteCategories": {
@@ -9186,7 +11745,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel": {
+        "models.UserNotificationChannel": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -9226,17 +11785,14 @@ const docTemplate = `{
                 },
                 "userConfig": {
                     "description": "用户自己的配置",
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "type": "object"
                 },
                 "userId": {
                     "type": "string"
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory": {
+        "models.WorkspaceDirectory": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -9271,7 +11827,178 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest": {
+        "project.CreateInvitationRequest": {
+            "type": "object",
+            "required": [
+                "inviteeId"
+            ],
+            "properties": {
+                "inviteeId": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.CreateProjectRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.InvitationResponse": {
+            "type": "object",
+            "properties": {
+                "invitation": {
+                    "$ref": "#/definitions/models.ProjectInvitation"
+                }
+            }
+        },
+        "project.InvitationsResponse": {
+            "type": "object",
+            "properties": {
+                "invitations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectInvitation"
+                    }
+                }
+            }
+        },
+        "project.MemberResponse": {
+            "type": "object",
+            "properties": {
+                "member": {
+                    "$ref": "#/definitions/models.ProjectMember"
+                }
+            }
+        },
+        "project.MembersResponse": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectMember"
+                    }
+                }
+            }
+        },
+        "project.ProjectBasicInfo": {
+            "type": "object",
+            "properties": {
+                "archivedAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.ProjectBasicInfoResponse": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "$ref": "#/definitions/project.ProjectBasicInfo"
+                }
+            }
+        },
+        "project.ProjectResponse": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "$ref": "#/definitions/models.Project"
+                }
+            }
+        },
+        "project.ProjectsResponse": {
+            "type": "object",
+            "properties": {
+                "projects": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Project"
+                    }
+                }
+            }
+        },
+        "project.RespondInvitationRequest": {
+            "type": "object",
+            "properties": {
+                "accept": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "project.SetProjectPinRequest": {
+            "type": "object",
+            "properties": {
+                "pinned": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "project.UpdateMemberRoleRequest": {
+            "type": "object",
+            "required": [
+                "role"
+            ],
+            "properties": {
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.UpdateProjectArchiveTimeRequest": {
+            "type": "object",
+            "required": [
+                "archivedAt"
+            ],
+            "properties": {
+                "archivedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.UpdateProjectRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.CreateDirectoryRequest": {
             "type": "object",
             "required": [
                 "name",
@@ -9295,7 +12022,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest": {
+        "services.CreateWorkspaceRequest": {
             "type": "object",
             "required": [
                 "directories",
@@ -9313,7 +12040,7 @@ const docTemplate = `{
                     "type": "array",
                     "minItems": 1,
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
+                        "$ref": "#/definitions/services.CreateDirectoryRequest"
                     }
                 },
                 "name": {
@@ -9326,7 +12053,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats": {
+        "services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
                 "averageRating": {
@@ -9336,6 +12063,9 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "failures": {
+                    "type": "integer"
+                },
+                "favorites": {
                     "type": "integer"
                 },
                 "installs": {
@@ -9364,7 +12094,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.RecommendResponse": {
+        "services.RecommendResponse": {
             "type": "object",
             "properties": {
                 "generatedAt": {
@@ -9376,7 +12106,7 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendedItem"
+                        "$ref": "#/definitions/services.RecommendedItem"
                     }
                 },
                 "page": {
@@ -9396,19 +12126,19 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.RecommendedItem": {
+        "services.RecommendedItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -9432,6 +12162,9 @@ const docTemplate = `{
                 "experienceScore": {
                     "type": "number"
                 },
+                "favoriteCount": {
+                    "type": "integer"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -9450,11 +12183,14 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "previewCount": {
+                    "type": "integer"
+                },
                 "reason": {
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -9499,12 +12235,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest": {
+        "services.ReorderDirectoriesRequest": {
             "type": "object",
             "required": [
                 "directoryIds"
@@ -9518,7 +12254,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.SearchResult": {
+        "services.SearchResult": {
             "type": "object",
             "properties": {
                 "durationMs": {
@@ -9527,7 +12263,7 @@ const docTemplate = `{
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
+                        "$ref": "#/definitions/services.SearchResultItem"
                     }
                 },
                 "query": {
@@ -9538,19 +12274,19 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.SearchResultItem": {
+        "services.SearchResultItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -9574,6 +12310,9 @@ const docTemplate = `{
                 "experienceScore": {
                     "type": "number"
                 },
+                "favoriteCount": {
+                    "type": "integer"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -9592,8 +12331,11 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "previewCount": {
+                    "type": "integer"
+                },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -9635,12 +12377,12 @@ const docTemplate = `{
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest": {
+        "services.UpdateDirectoryRequest": {
             "type": "object",
             "properties": {
                 "isDefault": {
@@ -9660,7 +12402,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest": {
+        "services.UpdateWorkspaceRequest": {
             "type": "object",
             "properties": {
                 "description": {
@@ -9688,7 +12430,163 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus": {
+        "services.UsageActivityResponse": {
+            "type": "object",
+            "properties": {
+                "git_repo_url": {
+                    "type": "string"
+                },
+                "range": {
+                    "type": "object",
+                    "properties": {
+                        "from": {
+                            "type": "string"
+                        },
+                        "to": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.UsageUserActivity"
+                    }
+                }
+            }
+        },
+        "services.UsageDaily": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string"
+                },
+                "requests": {
+                    "type": "integer"
+                }
+            }
+        },
+        "services.UsageReportItem": {
+            "type": "object",
+            "required": [
+                "date",
+                "git_repo_url",
+                "message_id",
+                "model_id",
+                "session_id",
+                "updated"
+            ],
+            "properties": {
+                "cache_read_tokens": {
+                    "type": "integer"
+                },
+                "cache_write_tokens": {
+                    "type": "integer"
+                },
+                "cost": {
+                    "type": "number"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "git_repo_url": {
+                    "type": "string"
+                },
+                "git_worktree": {
+                    "type": "string"
+                },
+                "input_tokens": {
+                    "type": "integer"
+                },
+                "message_id": {
+                    "type": "string"
+                },
+                "model_id": {
+                    "type": "string"
+                },
+                "output_tokens": {
+                    "type": "integer"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "reasoning_tokens": {
+                    "type": "integer"
+                },
+                "request_id": {
+                    "type": "string"
+                },
+                "rounds": {
+                    "type": "integer"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "updated": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.UsageReportRequest": {
+            "type": "object",
+            "required": [
+                "reports"
+            ],
+            "properties": {
+                "device_id": {
+                    "type": "string"
+                },
+                "reported_at": {
+                    "type": "string"
+                },
+                "reports": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/services.UsageReportItem"
+                    }
+                }
+            }
+        },
+        "services.UsageReportResponse": {
+            "type": "object",
+            "properties": {
+                "accepted": {
+                    "type": "integer"
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "skipped": {
+                    "type": "integer"
+                }
+            }
+        },
+        "services.UsageUserActivity": {
+            "type": "object",
+            "properties": {
+                "daily": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.UsageDaily"
+                    }
+                },
+                "total_requests": {
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.WorkspaceWithDeviceStatus": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -9712,7 +12610,7 @@ const docTemplate = `{
                 "directories": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory"
+                        "$ref": "#/definitions/models.WorkspaceDirectory"
                     }
                 },
                 "id": {
@@ -9738,257 +12636,6 @@ const docTemplate = `{
                 },
                 "userId": {
                     "type": "string"
-                }
-            }
-        },
-        "internal_handlers.CreateSyncRegistryInput": {
-            "type": "object",
-            "properties": {
-                "conflictStrategy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "excludePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "externalBranch": {
-                    "type": "string"
-                },
-                "externalUrl": {
-                    "type": "string"
-                },
-                "includePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "name": {
-                    "type": "string"
-                },
-                "syncEnabled": {
-                    "type": "boolean"
-                },
-                "syncInterval": {
-                    "type": "integer"
-                },
-                "webhookSecret": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.ItemWithAuthor": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "createdByName": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "updatedByName": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "internal_handlers.MyItem": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "registryVisibility": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoName": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-                    }
                 }
             }
         }

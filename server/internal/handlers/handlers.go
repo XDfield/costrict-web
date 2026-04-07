@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -23,9 +24,14 @@ var CasdoorClient *casdoor.CasdoorClient
 var cookieSecure bool     // whether to set Secure flag on auth cookies
 var defaultFrontendURL string   // first entry from FRONTEND_URLS, used as fallback
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
+var UserModule *userpkg.Module
 
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
+}
+
+func InitUserModule(module *userpkg.Module) {
+	UserModule = module
 }
 
 // InitCookieConfig sets cookie-related configuration from the global config.
@@ -145,6 +151,52 @@ func AuthCallback(c *gin.Context) {
 		fmt.Printf("[ERROR] ExchangeCodeForToken failed: err=%v, tokenResp=%+v\n", err, tokenResp)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
 		return
+	}
+
+	if UserModule != nil {
+		if userInfo, userErr := CasdoorClient.GetUserInfo(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
+			claims := &userpkg.JWTClaims{
+				ID:                userInfo.User.Id,
+				Sub:               userInfo.User.Sub,
+				UniversalID:       userInfo.User.UniversalID,
+				Name:              userInfo.User.Name,
+				PreferredUsername: userInfo.User.PreferredUsername,
+				Email:             userInfo.User.Email,
+				Picture:           userInfo.User.Picture,
+				Owner:             userInfo.User.Owner,
+			}
+			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
+				if claims.ID == "" {
+					claims.ID = tokenClaims.ID
+				}
+				if claims.Sub == "" {
+					claims.Sub = tokenClaims.Sub
+				}
+				if claims.UniversalID == "" {
+					claims.UniversalID = tokenClaims.UniversalID
+				}
+				if claims.Name == "" {
+					claims.Name = tokenClaims.Name
+				}
+				if claims.PreferredUsername == "" {
+					claims.PreferredUsername = tokenClaims.PreferredUsername
+				}
+				if claims.Email == "" {
+					claims.Email = tokenClaims.Email
+				}
+				if claims.Picture == "" {
+					claims.Picture = tokenClaims.Picture
+				}
+				if claims.Owner == "" {
+					claims.Owner = tokenClaims.Owner
+				}
+			}
+			if _, err := UserModule.Service.GetOrCreateUser(claims); err != nil {
+				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
+			}
+		} else if userErr != nil {
+			fmt.Printf("[WARN] GetUserInfo failed during auth callback: %v\n", userErr)
+		}
 	}
 
 	// Set auth cookie before redirect

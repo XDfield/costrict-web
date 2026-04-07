@@ -21,8 +21,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
@@ -35,9 +37,13 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
+	"github.com/costrict/costrict-web/server/internal/project"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
+	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
@@ -72,6 +78,37 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
+	userModule := userpkg.New(db)
+	handlers.InitUserModule(userModule)
+
+	var usageProvider services.UsageProvider
+	switch strings.ToLower(strings.TrimSpace(cfg.UsageProvider)) {
+	case "", "sqlite":
+		usageDB, err := usagepkg.OpenSQLite(cfg.UsageSQLitePath)
+		if err != nil {
+			log.Fatalf("Failed to initialize usage sqlite: %v", err)
+		}
+		usageProvider = services.NewSQLiteUsageProvider(usageDB)
+	case "es":
+		if strings.TrimSpace(cfg.UsageESReportBaseURL) == "" {
+			log.Fatalf("Failed to initialize usage provider: USAGE_ES_REPORT_BASE_URL is required when USAGE_PROVIDER=es")
+		}
+		if strings.TrimSpace(cfg.UsageESQueryBaseURL) == "" {
+			log.Fatalf("Failed to initialize usage provider: USAGE_ES_QUERY_BASE_URL is required when USAGE_PROVIDER=es")
+		}
+		usageProvider = services.NewESUsageProvider(services.ESUsageProviderConfig{
+			ReportBaseURL: cfg.UsageESReportBaseURL,
+			QueryBaseURL:  cfg.UsageESQueryBaseURL,
+			ReportPath: cfg.UsageESReportPath,
+			QueryPath:  cfg.UsageESQueryPath,
+			Timeout:    time.Duration(cfg.UsageESTimeoutSec) * time.Second,
+			BasicUser:  cfg.UsageESBasicUser,
+			BasicPass:  cfg.UsageESBasicPass,
+			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
+		})
+	default:
+		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%s", fmt.Sprintf("%q", cfg.UsageProvider))
+	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
@@ -120,6 +157,8 @@ func main() {
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
+	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
+	usageHandler := handlers.NewUsageHandler(usageSvc)
 
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
@@ -182,6 +221,7 @@ func main() {
 
 		// User name resolution (public, results cached in memory)
 		api.GET("/users/names", handlers.GetUserNames)
+		api.GET("/users/info", handlers.GetUserBasicInfo)
 
 		// Category dictionary (public read)
 		api.GET("/categories", handlers.ListCategoriesHandler(categorySvc))
@@ -205,6 +245,12 @@ func main() {
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
+
+			usage := authed.Group("/usage")
+			{
+				usage.POST("/report", usageHandler.Report)
+				usage.GET("/activity", usageHandler.Activity)
+			}
 
 			repos := authed.Group("/repositories")
 			{
@@ -305,8 +351,14 @@ func main() {
 			}
 
 			notificationModule := notification.New(db, cfg.CloudBaseURL)
+			systemRoleModule := systemrole.New(db)
+			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
+			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
+			projectModule.RegisterRoutes(authed)
 			_ = notificationModule
+			_ = systemRoleModule
+			_ = projectModule
 		}
 	}
 

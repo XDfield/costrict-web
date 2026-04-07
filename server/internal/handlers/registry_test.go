@@ -180,6 +180,23 @@ func setupTestDB(t *testing.T) func() {
 			created_at DATETIME,
 			UNIQUE(item_id, user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL,
+			display_name TEXT,
+			email TEXT,
+			avatar_url TEXT,
+			casdoor_id TEXT,
+			casdoor_universal_id TEXT,
+			casdoor_sub TEXT,
+			organization TEXT,
+			is_active INTEGER DEFAULT 1,
+			last_login_at DATETIME,
+			last_sync_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)`,
 		`CREATE TABLE IF NOT EXISTS experience_candidates (
 			id             TEXT PRIMARY KEY,
 			item_id        TEXT,

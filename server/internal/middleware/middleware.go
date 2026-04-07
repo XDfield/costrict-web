@@ -87,13 +87,12 @@ func ErrorLogger() gin.HandlerFunc {
 				c.Request.Method,
 				c.Request.RequestURI,
 				status,
-				string(bodyBytes),
+				logger.Truncate(string(bodyBytes), 2000),
 				c.Errors.String(),
 			}
 
-			// 5xx = server fault → Error (with stack trace in error.log).
-			// 4xx = client fault → Warn only (no stack trace; the middleware
-			// call chain provides zero useful context).
+			// 5xx = server fault → Error.
+			// 4xx = client fault → Warn only.
 			if status >= http.StatusInternalServerError {
 				logger.Error(msg, args...)
 			} else {
