@@ -15,8 +15,39 @@ import (
 	"gorm.io/gorm"
 )
 
+var allowedScanCategories = []string{
+	"frontend-development",
+	"backend-development",
+	"system-architecture",
+	"requirements-analysis",
+	"system-design",
+	"data-processing",
+	"software-testing",
+	"tdd-development",
+	"information-security",
+	"command-execution",
+	"tool-invocation",
+	"deployment-operations",
+}
+
 const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
 你需要对用户提交的 AI Agent Skill / MCP Server 配置进行安全审查。
+
+## 分类要求
+
+你还需要为该能力项选择一个最匹配的分类，只能从以下 slug 中选择一个：
+- frontend-development（前端开发）
+- backend-development（后端开发）
+- system-architecture（系统架构）
+- requirements-analysis（需求分析）
+- system-design（系统设计）
+- data-processing（数据处理）
+- software-testing（软件测试）
+- tdd-development（TDD 开发）
+- information-security（信息安全）
+- command-execution（命令执行）
+- tool-invocation（工具调用）
+- deployment-operations（部署运维）
 
 ## 审查维度
 
@@ -50,6 +81,7 @@ const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
 严格输出以下 JSON，不要添加任何额外文字：
 
 {
+  "category": "从固定分类 slug 列表中选择一个",
   "risk_level": "clean | low | medium | high | extreme",
   "verdict": "safe | caution | reject",
   "red_flags": ["具体描述发现的红线行为，引用原文"],
@@ -86,6 +118,7 @@ const scanUserPromptTemplate = `请对以下 AI 能力项进行安全审查：
 const maxInputRunes = 6000
 
 type ScanReport struct {
+	Category        string      `json:"category"`
 	RiskLevel       string      `json:"risk_level"`
 	Verdict         string      `json:"verdict"`
 	RedFlags        []string    `json:"red_flags"`
@@ -101,9 +134,10 @@ type Permissions struct {
 }
 
 type ScanService struct {
-	DB        *gorm.DB
-	LLMClient *llm.Client
-	ModelName string
+	DB          *gorm.DB
+	LLMClient   *llm.Client
+	ModelName   string
+	CategorySvc *CategoryService
 }
 
 func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision int, triggerType string) (*models.SecurityScan, error) {
@@ -140,6 +174,7 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		ItemRevision: itemRevision,
 		TriggerType:  triggerType,
 		ScanModel:    s.ModelName,
+		Category:     reportCategoryValue(report),
 		DurationMs:   durationMs,
 		RawOutput:    rawOutput,
 	}
@@ -180,10 +215,17 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		return nil, dbErr
 	}
 
-	s.DB.Model(&item).Updates(map[string]any{
+	itemUpdates := map[string]any{
 		"security_status": report.RiskLevel,
 		"last_scan_id":    scanRecord.ID,
-	})
+	}
+	if scanRecord.Category != "" {
+		itemUpdates["category"] = scanRecord.Category
+	}
+	s.DB.Model(&item).Updates(itemUpdates)
+	if scanRecord.Category != "" && s.CategorySvc != nil {
+		_, _ = s.CategorySvc.EnsureCategory(scanRecord.Category, "scan")
+	}
 
 	return scanRecord, nil
 }
@@ -218,8 +260,18 @@ func (s *ScanService) callLLM(ctx context.Context, userPrompt string) (*ScanRepo
 	if !isValidVerdict(report.Verdict) {
 		return nil, raw, fmt.Errorf("invalid verdict in LLM output: %q", report.Verdict)
 	}
+	if !isValidScanCategory(report.Category) {
+		return nil, raw, fmt.Errorf("invalid category in LLM output: %q", report.Category)
+	}
 
 	return &report, raw, nil
+}
+
+func reportCategoryValue(report *ScanReport) string {
+	if report == nil {
+		return ""
+	}
+	return strings.TrimSpace(report.Category)
 }
 
 func extractJSON(s string) string {
@@ -255,6 +307,16 @@ func isValidVerdict(v string) bool {
 	switch v {
 	case "safe", "caution", "reject":
 		return true
+	}
+	return false
+}
+
+func isValidScanCategory(v string) bool {
+	v = strings.TrimSpace(v)
+	for _, category := range allowedScanCategories {
+		if v == category {
+			return true
+		}
 	}
 	return false
 }

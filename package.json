@@ -11,6 +11,7 @@
     "dev:all": "concurrently \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:gateway\"",
     "build:api": "cd server && go build -o bin/server ./cmd/api",
     "build:worker": "cd server && go build -o bin/worker ./cmd/worker",
+    "backfill:scan": "cd server && go run ./cmd/worker -- scan-backfill",
     "build:gateway": "cd gateway && go build -o bin/gateway ./cmd",
     "build": "npm run build:api && npm run build:worker && npm run build:gateway",
     "docker:up": "docker-compose up -d",

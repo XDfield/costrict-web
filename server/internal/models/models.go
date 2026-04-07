@@ -397,6 +397,7 @@ type SecurityScan struct {
 	ItemRevision    int            `gorm:"not null;default:0" json:"itemRevision"`
 	TriggerType     string         `gorm:"not null" json:"triggerType"` // create | update | sync | manual
 	ScanModel       string         `json:"scanModel"`
+	Category        string         `gorm:"default:''" json:"category"`
 	RiskLevel       string         `gorm:"default:''" json:"riskLevel"` // clean | low | medium | high | extreme
 	Verdict         string         `gorm:"default:''" json:"verdict"`   // safe | caution | reject
 	RedFlags        datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags" swaggertype:"array,object"`
