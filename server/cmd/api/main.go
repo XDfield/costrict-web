@@ -21,8 +21,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
@@ -79,9 +81,33 @@ func main() {
 	userModule := userpkg.New(db)
 	handlers.InitUserModule(userModule)
 
-	usageDB, err := usagepkg.OpenSQLite(cfg.UsageSQLitePath)
-	if err != nil {
-		log.Fatalf("Failed to initialize usage sqlite: %v", err)
+	var usageProvider services.UsageProvider
+	switch strings.ToLower(strings.TrimSpace(cfg.UsageProvider)) {
+	case "", "sqlite":
+		usageDB, err := usagepkg.OpenSQLite(cfg.UsageSQLitePath)
+		if err != nil {
+			log.Fatalf("Failed to initialize usage sqlite: %v", err)
+		}
+		usageProvider = services.NewSQLiteUsageProvider(usageDB)
+	case "es":
+		if strings.TrimSpace(cfg.UsageESReportBaseURL) == "" {
+			log.Fatalf("Failed to initialize usage provider: USAGE_ES_REPORT_BASE_URL is required when USAGE_PROVIDER=es")
+		}
+		if strings.TrimSpace(cfg.UsageESQueryBaseURL) == "" {
+			log.Fatalf("Failed to initialize usage provider: USAGE_ES_QUERY_BASE_URL is required when USAGE_PROVIDER=es")
+		}
+		usageProvider = services.NewESUsageProvider(services.ESUsageProviderConfig{
+			ReportBaseURL: cfg.UsageESReportBaseURL,
+			QueryBaseURL:  cfg.UsageESQueryBaseURL,
+			ReportPath: cfg.UsageESReportPath,
+			QueryPath:  cfg.UsageESQueryPath,
+			Timeout:    time.Duration(cfg.UsageESTimeoutSec) * time.Second,
+			BasicUser:  cfg.UsageESBasicUser,
+			BasicPass:  cfg.UsageESBasicPass,
+			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
+		})
+	default:
+		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%s", fmt.Sprintf("%q", cfg.UsageProvider))
 	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
@@ -131,7 +157,7 @@ func main() {
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
-	usageSvc := services.NewUsageService(services.NewSQLiteUsageProvider(usageDB), userModule.Service)
+	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
 	usageHandler := handlers.NewUsageHandler(usageSvc)
 
 	// Start background indexing (every hour)

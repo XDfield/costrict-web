@@ -44,7 +44,9 @@ func (h *UsageHandler) Report(c *gin.Context) {
 		return
 	}
 
-	result := h.usageSvc.BatchUpsert(userID, req)
+	accessToken, _ := c.Get("accessToken")
+	accessTokenStr, _ := accessToken.(string)
+	result := h.usageSvc.BatchUpsert(userID, accessTokenStr, req)
 	if len(result.Errors) == 1 && result.Accepted == 0 && result.Skipped > 0 {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Errors[0]})
 		return

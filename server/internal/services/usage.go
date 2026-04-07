@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"path"
 	"sort"
@@ -26,7 +25,7 @@ type UsageService struct {
 }
 
 type UsageProvider interface {
-	BatchUpsert(userID, deviceID string, records []*models.SessionUsageReport) UsageReportResponse
+	BatchUpsert(userID, deviceID, accessToken, clientVersion string, records []*models.SessionUsageReport) UsageReportResponse
 	GetActivity(gitRepoURL string, days int) (*UsageActivityResponse, error)
 	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoUserAggregate, error)
 	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error)
@@ -57,9 +56,10 @@ type UsageReportItem struct {
 }
 
 type UsageReportRequest struct {
-	Reports    []UsageReportItem `json:"reports" binding:"required,min=1,max=500"`
-	DeviceID   string            `json:"device_id"`
-	ReportedAt string            `json:"reported_at"`
+	Reports       []UsageReportItem `json:"reports" binding:"required,min=1,max=500"`
+	DeviceID      string            `json:"device_id"`
+	ReportedAt    string            `json:"reported_at"`
+	ClientVersion string            `json:"client_version"`
 }
 
 type UsageReportResponse struct {
@@ -156,7 +156,7 @@ func NormalizeGitRepoURL(raw string) (string, error) {
 	return normalized, nil
 }
 
-func (s *UsageService) BatchUpsert(userID string, req UsageReportRequest) UsageReportResponse {
+func (s *UsageService) BatchUpsert(userID, accessToken string, req UsageReportRequest) UsageReportResponse {
 	result := UsageReportResponse{}
 	if s == nil || s.provider == nil {
 		result.Errors = append(result.Errors, "usage storage is not configured")
@@ -173,10 +173,9 @@ func (s *UsageService) BatchUpsert(userID string, req UsageReportRequest) UsageR
 			continue
 		}
 		records = append(records, record)
-		log.Printf("[usage.report] user=%s device=%s request=%s session=%s repo=%s model=%s provider=%s cost=%f input=%d output=%d reasoning=%d cache_read=%d cache_write=%d updated=%s date=%s message=%s", userID, req.DeviceID, item.RequestID, item.SessionID, record.GitRepoURL, item.ModelID, item.ProviderID, item.Cost, item.InputTokens, item.OutputTokens, item.ReasoningTokens, item.CacheReadTokens, item.CacheWriteTokens, item.Updated, item.Date, item.MessageID)
 	}
 
-	providerResult := s.provider.BatchUpsert(userID, req.DeviceID, records)
+	providerResult := s.provider.BatchUpsert(userID, req.DeviceID, accessToken, req.ClientVersion, records)
 	providerResult.Skipped += result.Skipped
 	providerResult.Errors = append(result.Errors, providerResult.Errors...)
 	return providerResult
@@ -277,8 +276,8 @@ func (s *UsageService) buildUsageRecord(userID, deviceID string, item UsageRepor
 		SessionID:        item.SessionID,
 		RequestID:        item.RequestID,
 		MessageID:        item.MessageID,
-		Date:             recordedDate.UTC(),
-		Updated:          updatedAt.UTC(),
+		Date:             recordedDate,
+		Updated:          updatedAt,
 		ModelID:          item.ModelID,
 		ProviderID:       item.ProviderID,
 		InputTokens:      item.InputTokens,

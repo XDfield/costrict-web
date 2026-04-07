@@ -54,7 +54,8 @@ func TestBatchUpsertIdempotent(t *testing.T) {
 	db, userSvc := setupUsageTestDB(t)
 	svc := NewUsageService(NewSQLiteUsageProvider(db), userSvc)
 	req := UsageReportRequest{
-		DeviceID: "d1",
+		DeviceID:      "d1",
+		ClientVersion: "costrict-cli-1.0.0",
 		Reports: []UsageReportItem{{
 			SessionID:  "s1",
 			RequestID:  "r1",
@@ -75,7 +76,7 @@ func TestBatchUpsertIdempotent(t *testing.T) {
 			GitRepoURL: "https://github.com/zgsm-ai/opencode/",
 		}},
 	}
-	resp := svc.BatchUpsert("u1", req)
+	resp := svc.BatchUpsert("u1", "token-1", req)
 	if resp.Accepted != 2 || resp.Skipped != 0 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}

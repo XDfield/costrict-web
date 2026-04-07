@@ -17,7 +17,7 @@ func NewSQLiteUsageProvider(db *gorm.DB) *SQLiteUsageProvider {
 	return &SQLiteUsageProvider{db: db}
 }
 
-func (p *SQLiteUsageProvider) BatchUpsert(userID, deviceID string, records []*models.SessionUsageReport) UsageReportResponse {
+func (p *SQLiteUsageProvider) BatchUpsert(userID, deviceID, accessToken, clientVersion string, records []*models.SessionUsageReport) UsageReportResponse {
 	result := UsageReportResponse{}
 	if p == nil || p.db == nil {
 		result.Errors = append(result.Errors, "usage storage is not configured")
