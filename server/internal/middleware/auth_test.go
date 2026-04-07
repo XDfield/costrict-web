@@ -281,8 +281,8 @@ func TestParseJWTToken_MissingSubClaim(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing sub claim, got nil")
 	}
-	if got := err.Error(); got != "no sub or universal_id in token" {
-		t.Errorf("expected 'no sub or universal_id in token', got %q", got)
+	if got := err.Error(); got != "no id, sub or universal_id in token" {
+		t.Errorf("expected 'no id, sub or universal_id in token', got %q", got)
 	}
 }
 
