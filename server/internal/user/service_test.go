@@ -85,6 +85,40 @@ func TestUserServiceGetUsersByIDs(t *testing.T) {
 	}
 }
 
+func TestUserServiceGetUsersByUniversalIDs(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	uuid1 := "uuid-u1"
+	uuid2 := "uuid-u2"
+	seed := []models.User{
+		{ID: "u1", Username: "alice", CasdoorUniversalID: &uuid1, IsActive: true},
+		{ID: "u2", Username: "bob", CasdoorUniversalID: &uuid2, IsActive: true},
+	}
+	for _, u := range seed {
+		if err := db.Create(&u).Error; err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
+
+	got, err := svc.GetUsersByUniversalIDs([]string{"uuid-u1", "uuid-u2", "uuid-u3"})
+	if err != nil {
+		t.Fatalf("GetUsersByUniversalIDs error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(got))
+	}
+	if got["uuid-u1"] == nil || got["uuid-u1"].ID != "u1" {
+		t.Fatalf("expected uuid-u1 -> u1, got %+v", got["uuid-u1"])
+	}
+	if got["uuid-u2"] == nil || got["uuid-u2"].ID != "u2" {
+		t.Fatalf("expected uuid-u2 -> u2, got %+v", got["uuid-u2"])
+	}
+	if _, ok := got["uuid-u3"]; ok {
+		t.Fatalf("did not expect uuid-u3 in result")
+	}
+}
+
 func TestUserServiceSearchUsers(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewUserService(db)

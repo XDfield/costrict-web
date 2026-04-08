@@ -18,7 +18,7 @@ import (
 
 const (
 	esRepoField        = "user_metrics.git_repo"
-	esUserField        = "user_id"
+	esUserField        = "universal_id"
 	esTimeField        = "@timestamp"
 	esDayFormat        = "2006-01-02"
 	esDateHistogramFormat = "yyyy-MM-dd"

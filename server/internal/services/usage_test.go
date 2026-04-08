@@ -11,6 +11,45 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+type usageProviderStub struct {
+	getActivityFunc                    func(gitRepoURL string, days int) (*UsageActivityResponse, error)
+	aggregateProjectRepoActivityFunc   func(userIDs []string, repoURLs []string, days int) ([]UsageRepoUserAggregate, error)
+	aggregateProjectRepoDailyFunc      func(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error)
+	aggregateRepositoriesByUsersFunc   func(userIDs []string, days int) ([]UsageRepoUserAggregate, error)
+}
+
+func (s *usageProviderStub) BatchUpsert(userID, deviceID, accessToken, clientVersion string, records []*models.SessionUsageReport) UsageReportResponse {
+	return UsageReportResponse{}
+}
+
+func (s *usageProviderStub) GetActivity(gitRepoURL string, days int) (*UsageActivityResponse, error) {
+	if s.getActivityFunc != nil {
+		return s.getActivityFunc(gitRepoURL, days)
+	}
+	return &UsageActivityResponse{}, nil
+}
+
+func (s *usageProviderStub) AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoUserAggregate, error) {
+	if s.aggregateProjectRepoActivityFunc != nil {
+		return s.aggregateProjectRepoActivityFunc(userIDs, repoURLs, days)
+	}
+	return nil, nil
+}
+
+func (s *usageProviderStub) AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error) {
+	if s.aggregateProjectRepoDailyFunc != nil {
+		return s.aggregateProjectRepoDailyFunc(userIDs, repoURLs, days)
+	}
+	return nil, nil
+}
+
+func (s *usageProviderStub) AggregateRepositoriesByUsers(userIDs []string, days int) ([]UsageRepoUserAggregate, error) {
+	if s.aggregateRepositoriesByUsersFunc != nil {
+		return s.aggregateRepositoriesByUsersFunc(userIDs, days)
+	}
+	return nil, nil
+}
+
 func setupUsageTestDB(t *testing.T) (*gorm.DB, *userpkg.UserService) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
@@ -127,5 +166,64 @@ func TestGetActivityAggregatesByUserAndDay(t *testing.T) {
 	}
 	if resp.Users[0].Username != "alice" {
 		t.Fatalf("expected resolved username alice, got %s", resp.Users[0].Username)
+	}
+}
+
+func TestUsageServiceGetActivityESMapsUniversalIDBackToLocalUser(t *testing.T) {
+	db, userSvc := setupUsageTestDB(t)
+	uuid1 := "uuid-u1"
+	if err := db.Model(&models.User{}).Where("id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
+		t.Fatalf("update user universal id: %v", err)
+	}
+	svc := NewUsageService(&ESUsageProvider{}, userSvc)
+	users := []UsageUserActivity{{
+		UserID:        uuid1,
+		Username:      uuid1,
+		TotalRequests: 3,
+		Daily:         []UsageDaily{{Date: "2026-04-01", Requests: 3}},
+	}}
+
+	if err := svc.rewriteUserIDsFromUniversal(users); err != nil {
+		t.Fatalf("rewriteUserIDsFromUniversal error: %v", err)
+	}
+	if users[0].UserID != "u1" {
+		t.Fatalf("expected local user id u1, got %s", users[0].UserID)
+	}
+
+	names, err := svc.resolveUserNames([]string{users[0].UserID}, nil)
+	if err != nil {
+		t.Fatalf("resolveUserNames error: %v", err)
+	}
+	if names[users[0].UserID] != "alice" {
+		t.Fatalf("expected resolved username alice, got %s", names[users[0].UserID])
+	}
+}
+
+func TestUsageServiceAggregateProjectRepoActivityESQueriesByUniversalIDAndRestoresLocalID(t *testing.T) {
+	db, userSvc := setupUsageTestDB(t)
+	uuid1 := "uuid-u1"
+	if err := db.Model(&models.User{}).Where("id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
+		t.Fatalf("update user universal id: %v", err)
+	}
+	svc := NewUsageService(&ESUsageProvider{}, userSvc)
+
+	queryUserIDs, restore, err := svc.prepareProviderUserIDs([]string{"u1"})
+	if err != nil {
+		t.Fatalf("prepareProviderUserIDs error: %v", err)
+	}
+	if len(queryUserIDs) != 1 || queryUserIDs[0] != uuid1 {
+		t.Fatalf("expected provider query universal id %s, got %+v", uuid1, queryUserIDs)
+	}
+
+	aggs := []UsageRepoUserAggregate{{
+		UserID:          uuid1,
+		GitRepoURL:      "https://github.com/zgsm-ai/opencode",
+		RequestCount:    5,
+		FirstActiveDate: "2026-04-01",
+		LastActiveDate:  "2026-04-02",
+	}}
+	restore(aggs)
+	if aggs[0].UserID != "u1" {
+		t.Fatalf("expected restored local user id u1, got %s", aggs[0].UserID)
 	}
 }

@@ -62,6 +62,28 @@ func (s *UserService) GetUsersByIDs(userIDs []string) (map[string]*models.User, 
 	return userMap, nil
 }
 
+// GetUsersByUniversalIDs retrieves multiple users by their Casdoor universal IDs.
+func (s *UserService) GetUsersByUniversalIDs(universalIDs []string) (map[string]*models.User, error) {
+	if len(universalIDs) == 0 {
+		return make(map[string]*models.User), nil
+	}
+
+	var users []*models.User
+	err := s.db.Where("casdoor_universal_id IN ?", universalIDs).Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+
+	userMap := make(map[string]*models.User, len(users))
+	for _, user := range users {
+		if user == nil || user.CasdoorUniversalID == nil || *user.CasdoorUniversalID == "" {
+			continue
+		}
+		userMap[*user.CasdoorUniversalID] = user
+	}
+	return userMap, nil
+}
+
 // SearchUsers searches users by username or email keyword
 func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, error) {
 	var users []*models.User

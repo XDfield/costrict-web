@@ -197,6 +197,9 @@ func (s *UsageService) GetActivity(gitRepoURL string, days int, names map[string
 	if err != nil {
 		return nil, err
 	}
+	if err := s.rewriteUserIDsFromUniversal(resp.Users); err != nil {
+		return nil, err
+	}
 	userIDs := make([]string, 0, len(resp.Users))
 	for _, item := range resp.Users {
 		userIDs = append(userIDs, item.UserID)
@@ -221,7 +224,16 @@ func (s *UsageService) AggregateProjectRepoActivity(userIDs []string, repoURLs [
 	if days < 1 || days > 90 {
 		return nil, fmt.Errorf("days must be between 1 and 90")
 	}
-	return s.provider.AggregateProjectRepoActivity(userIDs, repoURLs, days)
+	queryUserIDs, restore, err := s.prepareProviderUserIDs(userIDs)
+	if err != nil {
+		return nil, err
+	}
+	aggs, err := s.provider.AggregateProjectRepoActivity(queryUserIDs, repoURLs, days)
+	if err != nil {
+		return nil, err
+	}
+	restore(aggs)
+	return aggs, nil
 }
 
 func (s *UsageService) AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]UsageRepoDailyAggregate, error) {
@@ -234,7 +246,11 @@ func (s *UsageService) AggregateProjectRepoDailyActivity(userIDs []string, repoU
 	if days < 1 || days > 90 {
 		return nil, fmt.Errorf("days must be between 1 and 90")
 	}
-	return s.provider.AggregateProjectRepoDailyActivity(userIDs, repoURLs, days)
+	queryUserIDs, _, err := s.prepareProviderUserIDs(userIDs)
+	if err != nil {
+		return nil, err
+	}
+	return s.provider.AggregateProjectRepoDailyActivity(queryUserIDs, repoURLs, days)
 }
 
 func (s *UsageService) AggregateRepositoriesByUsers(userIDs []string, days int) ([]UsageRepoUserAggregate, error) {
@@ -247,7 +263,16 @@ func (s *UsageService) AggregateRepositoriesByUsers(userIDs []string, days int) 
 	if days < 1 || days > 90 {
 		return nil, fmt.Errorf("days must be between 1 and 90")
 	}
-	return s.provider.AggregateRepositoriesByUsers(userIDs, days)
+	queryUserIDs, restore, err := s.prepareProviderUserIDs(userIDs)
+	if err != nil {
+		return nil, err
+	}
+	aggs, err := s.provider.AggregateRepositoriesByUsers(queryUserIDs, days)
+	if err != nil {
+		return nil, err
+	}
+	restore(aggs)
+	return aggs, nil
 }
 
 func (s *UsageService) buildUsageRecord(userID, deviceID string, item UsageReportItem) (*models.SessionUsageReport, error) {
@@ -320,6 +345,28 @@ func (s *UsageService) resolveUserNames(userIDs []string, provided map[string]st
 				result[userID] = displayName
 			}
 		}
+
+		stillMissing := make([]string, 0, len(missing))
+		for _, userID := range missing {
+			if _, ok := result[userID]; !ok {
+				stillMissing = append(stillMissing, userID)
+			}
+		}
+		if len(stillMissing) > 0 {
+			usersByUniversal, err := s.userService.GetUsersByUniversalIDs(stillMissing)
+			if err != nil {
+				return nil, err
+			}
+			for _, userID := range stillMissing {
+				if user, ok := usersByUniversal[userID]; ok && user != nil {
+					displayName := user.Username
+					if user.DisplayName != nil && *user.DisplayName != "" {
+						displayName = *user.DisplayName
+					}
+					result[userID] = displayName
+				}
+			}
+		}
 	}
 
 	for _, userID := range userIDs {
@@ -328,6 +375,68 @@ func (s *UsageService) resolveUserNames(userIDs []string, provided map[string]st
 		}
 	}
 	return result, nil
+}
+
+func (s *UsageService) prepareProviderUserIDs(userIDs []string) ([]string, func([]UsageRepoUserAggregate), error) {
+	restore := func(_ []UsageRepoUserAggregate) {}
+	if len(userIDs) == 0 || s == nil || s.userService == nil {
+		return userIDs, restore, nil
+	}
+	if _, ok := s.provider.(*ESUsageProvider); !ok {
+		return userIDs, restore, nil
+	}
+
+	usersByID, err := s.userService.GetUsersByIDs(userIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	queryUserIDs := make([]string, 0, len(userIDs))
+	localByUniversal := make(map[string]string, len(userIDs))
+	for _, userID := range userIDs {
+		if user, ok := usersByID[userID]; ok && user != nil && user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "" {
+			universalID := *user.CasdoorUniversalID
+			queryUserIDs = append(queryUserIDs, universalID)
+			localByUniversal[universalID] = userID
+			continue
+		}
+		queryUserIDs = append(queryUserIDs, userID)
+	}
+
+	restore = func(items []UsageRepoUserAggregate) {
+		for i := range items {
+			if localID, ok := localByUniversal[items[i].UserID]; ok {
+				items[i].UserID = localID
+			}
+		}
+	}
+	return queryUserIDs, restore, nil
+}
+
+func (s *UsageService) rewriteUserIDsFromUniversal(users []UsageUserActivity) error {
+	if len(users) == 0 || s == nil || s.userService == nil {
+		return nil
+	}
+	if _, ok := s.provider.(*ESUsageProvider); !ok {
+		return nil
+	}
+
+	universalIDs := make([]string, 0, len(users))
+	for _, item := range users {
+		if item.UserID != "" {
+			universalIDs = append(universalIDs, item.UserID)
+		}
+	}
+	usersByUniversal, err := s.userService.GetUsersByUniversalIDs(universalIDs)
+	if err != nil {
+		return err
+	}
+	for i := range users {
+		if user, ok := usersByUniversal[users[i].UserID]; ok && user != nil {
+			users[i].UserID = user.ID
+		}
+	}
+	return nil
 }
 
 func parseUsageTime(raw string) (time.Time, error) {
