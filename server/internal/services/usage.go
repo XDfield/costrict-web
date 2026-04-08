@@ -40,6 +40,7 @@ type UsageReportItem struct {
 	SessionID        string  `json:"session_id" binding:"required"`
 	RequestID        string  `json:"request_id"`
 	MessageID        string  `json:"message_id" binding:"required"`
+	RequestTime      string  `json:"request_time"`
 	Date             string  `json:"date" binding:"required"`
 	Updated          string  `json:"updated" binding:"required"`
 	ModelID          string  `json:"model_id" binding:"required"`
@@ -286,6 +287,13 @@ func (s *UsageService) buildUsageRecord(userID, deviceID string, item UsageRepor
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid date", ErrInvalidUsageReport)
 	}
+	requestTime := recordedDate
+	if strings.TrimSpace(item.RequestTime) != "" {
+		requestTime, err = parseUsageTime(item.RequestTime)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid request_time", ErrInvalidUsageReport)
+		}
+	}
 	updatedAt, err := parseUsageTime(item.Updated)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid updated", ErrInvalidUsageReport)
@@ -301,6 +309,7 @@ func (s *UsageService) buildUsageRecord(userID, deviceID string, item UsageRepor
 		SessionID:        item.SessionID,
 		RequestID:        item.RequestID,
 		MessageID:        item.MessageID,
+		RequestTime:      requestTime,
 		Date:             recordedDate,
 		Updated:          updatedAt,
 		ModelID:          item.ModelID,
@@ -433,7 +442,7 @@ func (s *UsageService) rewriteUserIDsFromUniversal(users []UsageUserActivity) er
 	}
 	for i := range users {
 		if user, ok := usersByUniversal[users[i].UserID]; ok && user != nil {
-			users[i].UserID = user.ID
+			users[i].UserID = user.SubjectID
 		}
 	}
 	return nil

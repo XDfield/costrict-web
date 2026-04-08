@@ -60,8 +60,8 @@ func setupUsageTestDB(t *testing.T) (*gorm.DB, *userpkg.UserService) {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	users := []models.User{
-		{ID: "u1", Username: "alice"},
-		{ID: "u2", Username: "bob"},
+		{SubjectID: "u1", Username: "alice"},
+		{SubjectID: "u2", Username: "bob"},
 	}
 	for _, user := range users {
 		if err := db.Create(&user).Error; err != nil {
@@ -99,6 +99,7 @@ func TestBatchUpsertIdempotent(t *testing.T) {
 			SessionID:  "s1",
 			RequestID:  "r1",
 			MessageID:  "m1",
+			RequestTime: "2026-04-01T09:59:30Z",
 			Date:       "2026-04-01T10:00:00Z",
 			Updated:    "2026-04-01T10:00:01Z",
 			ModelID:    "glm-4",
@@ -108,6 +109,7 @@ func TestBatchUpsertIdempotent(t *testing.T) {
 			SessionID:  "s1",
 			RequestID:  "r1b",
 			MessageID:  "m1",
+			RequestTime: "2026-04-01T09:59:45Z",
 			Date:       "2026-04-01T10:00:00Z",
 			Updated:    "2026-04-01T10:01:00Z",
 			ModelID:    "glm-4",
@@ -135,6 +137,29 @@ func TestBatchUpsertIdempotent(t *testing.T) {
 	}
 	if report.GitRepoURL != "https://github.com/zgsm-ai/opencode" {
 		t.Fatalf("unexpected normalized repo: %s", report.GitRepoURL)
+	}
+	if got := report.RequestTime.UTC().Format(time.RFC3339); got != "2026-04-01T09:59:45Z" {
+		t.Fatalf("unexpected request time: %s", got)
+	}
+}
+
+func TestBuildUsageRecordDefaultsRequestTimeToDate(t *testing.T) {
+	_, userSvc := setupUsageTestDB(t)
+	svc := NewUsageService(&usageProviderStub{}, userSvc)
+	record, err := svc.buildUsageRecord("u1", "d1", UsageReportItem{
+		SessionID:  "s1",
+		MessageID:  "m1",
+		Date:       "2026-04-01T10:00:00Z",
+		Updated:    "2026-04-01T10:00:01Z",
+		ModelID:    "glm-4",
+		Rounds:     1,
+		GitRepoURL: "https://github.com/zgsm-ai/opencode",
+	})
+	if err != nil {
+		t.Fatalf("buildUsageRecord error: %v", err)
+	}
+	if !record.RequestTime.Equal(record.Date) {
+		t.Fatalf("expected request time to default to date, got %s vs %s", record.RequestTime, record.Date)
 	}
 }
 
@@ -172,7 +197,7 @@ func TestGetActivityAggregatesByUserAndDay(t *testing.T) {
 func TestUsageServiceGetActivityESMapsUniversalIDBackToLocalUser(t *testing.T) {
 	db, userSvc := setupUsageTestDB(t)
 	uuid1 := "uuid-u1"
-	if err := db.Model(&models.User{}).Where("id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
+	if err := db.Model(&models.User{}).Where("subject_id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
 		t.Fatalf("update user universal id: %v", err)
 	}
 	svc := NewUsageService(&ESUsageProvider{}, userSvc)
@@ -202,7 +227,7 @@ func TestUsageServiceGetActivityESMapsUniversalIDBackToLocalUser(t *testing.T) {
 func TestUsageServiceAggregateProjectRepoActivityESQueriesByUniversalIDAndRestoresLocalID(t *testing.T) {
 	db, userSvc := setupUsageTestDB(t)
 	uuid1 := "uuid-u1"
-	if err := db.Model(&models.User{}).Where("id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
+	if err := db.Model(&models.User{}).Where("subject_id = ?", "u1").Update("casdoor_universal_id", uuid1).Error; err != nil {
 		t.Fatalf("update user universal id: %v", err)
 	}
 	svc := NewUsageService(&ESUsageProvider{}, userSvc)

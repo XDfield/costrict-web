@@ -25,6 +25,11 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
+func TestMain(m *testing.M) {
+	SetSubjectResolver(nil)
+	m.Run()
+}
+
 // generateTestRSAKey generates a 2048-bit RSA key pair for testing.
 func generateTestRSAKey(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
@@ -602,6 +607,7 @@ func TestRequireAuth_NoTokenReturns401(t *testing.T) {
 }
 
 func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
+	SetSubjectResolver(nil)
 	key := generateTestRSAKey(t)
 	kid := "test-kid"
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
@@ -644,6 +650,7 @@ func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
 }
 
 func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
+	SetSubjectResolver(nil)
 	// Mock Casdoor server that returns user info
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/userinfo" {
@@ -741,6 +748,7 @@ func TestOptionalAuth_NoTokenPassesThroughWithoutUserID(t *testing.T) {
 }
 
 func TestOptionalAuth_ValidJWTSetsUserID(t *testing.T) {
+	SetSubjectResolver(nil)
 	key := generateTestRSAKey(t)
 	kid := "test-kid"
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
@@ -812,6 +820,7 @@ func TestOptionalAuth_InvalidJWTAndCasdoorFailureStillPassesThrough(t *testing.T
 }
 
 func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
+	SetSubjectResolver(nil)
 	// Mock Casdoor server that returns user info
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/userinfo" {
@@ -848,6 +857,50 @@ func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
 	}
 	if capturedUserID != "casdoor-opt-user" {
 		t.Errorf("expected userId 'casdoor-opt-user', got %q", capturedUserID)
+	}
+}
+
+func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
+	defer SetSubjectResolver(nil)
+	SetSubjectResolver(func(claims AuthClaims) (string, string, error) {
+		if claims.UniversalID != "universal-123" {
+			t.Fatalf("expected universal id universal-123, got %+v", claims)
+		}
+		return "subject-123", "resolved-user", nil
+	})
+
+	key := generateTestRSAKey(t)
+	kid := "subject-kid"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"id":                 "legacy-id",
+		"sub":                "legacy-sub",
+		"universal_id":       "universal-123",
+		"preferred_username": "legacy-name",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	var capturedUserID string
+	var capturedUserName string
+	router := gin.New()
+	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.GET("/protected", func(c *gin.Context) {
+		capturedUserID = c.GetString(UserIDKey)
+		capturedUserName = c.GetString(UserNameKey)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	w := performRequest(router, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if capturedUserID != "subject-123" {
+		t.Fatalf("expected resolved subject id, got %q", capturedUserID)
+	}
+	if capturedUserName != "resolved-user" {
+		t.Fatalf("expected resolved user name, got %q", capturedUserName)
 	}
 }
 

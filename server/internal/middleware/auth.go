@@ -16,6 +16,23 @@ const UserIDKey = "userId"
 const UserNameKey = "userName"
 const InternalSecretHeader = "X-Internal-Secret"
 
+type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsername string, err error)
+
+type AuthClaims struct {
+	ID                string
+	Sub               string
+	UniversalID       string
+	Name              string
+	PreferredUsername string
+	Email             string
+}
+
+var subjectResolver SubjectResolver
+
+func SetSubjectResolver(resolver SubjectResolver) {
+	subjectResolver = resolver
+}
+
 // InternalAuth validates requests from internal services (gateway, etc.) using a shared secret.
 // If secret is empty, all requests are rejected to prevent misconfiguration.
 func InternalAuth(secret string) gin.HandlerFunc {
@@ -67,8 +84,7 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			}
 		}
 
-		c.Set(UserIDKey, userInfo.Sub)
-		c.Set(UserNameKey, userInfo.PreferredUsername)
+		setAuthContext(c, userInfo)
 		c.Set("accessToken", token)
 		c.Next()
 	}
@@ -93,26 +109,29 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			}
 		}
 
-		c.Set(UserIDKey, userInfo.Sub)
-		c.Set(UserNameKey, userInfo.PreferredUsername)
+		setAuthContext(c, userInfo)
 		c.Set("accessToken", token)
 		c.Next()
 	}
 }
 
 type casdoorUserInfo struct {
+	ID               string `json:"id"`
 	Sub              string `json:"sub"`
+	UniversalID      string `json:"universal_id"`
 	Name             string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
 	Email            string `json:"email"`
 }
 
 type casdoorUserinfoResponse struct {
-	Status string `json:"status"`
-	Msg    string `json:"msg"`
-	Sub    string `json:"sub"`
-	Name   string `json:"name"`
-	Email  string `json:"email"`
+	Status      string `json:"status"`
+	Msg         string `json:"msg"`
+	ID          string `json:"id"`
+	Sub         string `json:"sub"`
+	UniversalID string `json:"universal_id"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
 }
 
 // parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
@@ -161,7 +180,9 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, er
 	email, _ := claims["email"].(string)
 
 	return &casdoorUserInfo{
+		ID:               strClaim(claims, "id"),
 		Sub:              sub,
+		UniversalID:      strClaim(claims, "universal_id"),
 		Name:             name,
 		PreferredUsername: preferredUsername,
 		Email:            email,
@@ -204,9 +225,45 @@ func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
 	}
 
 	return &casdoorUserInfo{
+		ID:               casdoorResp.ID,
 		Sub:              casdoorResp.Sub,
+		UniversalID:      casdoorResp.UniversalID,
 		Name:             casdoorResp.Name,
 		PreferredUsername: casdoorResp.Name,
 		Email:            casdoorResp.Email,
 	}, nil
+}
+
+func setAuthContext(c *gin.Context, userInfo *casdoorUserInfo) {
+	userID := userInfo.Sub
+	userName := userInfo.PreferredUsername
+	if subjectResolver != nil {
+		resolvedID, resolvedName, err := subjectResolver(AuthClaims{
+			ID:                userInfo.ID,
+			Sub:               userInfo.Sub,
+			UniversalID:       userInfo.UniversalID,
+			Name:              userInfo.Name,
+			PreferredUsername: userInfo.PreferredUsername,
+			Email:             userInfo.Email,
+		})
+		if err == nil {
+			if resolvedID != "" {
+				userID = resolvedID
+			}
+			if resolvedName != "" {
+				userName = resolvedName
+			}
+		}
+	}
+	c.Set(UserIDKey, userID)
+	c.Set(UserNameKey, userName)
+}
+
+func strClaim(claims jwt.MapClaims, key string) string {
+	if v, ok := claims[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }

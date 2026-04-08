@@ -207,6 +207,7 @@ type SessionUsageReport struct {
 	SessionID        string    `gorm:"not null;index;uniqueIndex:idx_usage_report_identity" json:"sessionId"`
 	RequestID        string    `gorm:"index" json:"requestId"`
 	MessageID        string    `gorm:"not null;uniqueIndex:idx_usage_report_identity" json:"messageId"`
+	RequestTime      time.Time `json:"requestTime"`
 	Date             time.Time `gorm:"not null;index" json:"date"`
 	Updated          time.Time `gorm:"not null" json:"updated"`
 	ModelID          string    `gorm:"not null" json:"modelId"`
@@ -462,16 +463,17 @@ type WorkspaceDirectory struct {
 
 // User represents a local user record synchronized from Casdoor
 type User struct {
-	ID          string  `gorm:"primaryKey;size:191" json:"id"`                                   // JWT id/sub (UUID, 主键)
-	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"` // Casdoor name
-	DisplayName *string `gorm:"size:191" json:"display_name"`                                    // Casdoor preferred_username
-	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                      // Email
-	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                     // 头像 URL
+	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`                                  // Local database primary key, internal only
+	SubjectID   string  `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"` // Stable application-level user identifier used across business tables and request context
+	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`      // Casdoor name
+	DisplayName *string `gorm:"size:191" json:"display_name"`                                         // Casdoor preferred_username
+	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                           // Email
+	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                          // Avatar URL
 
 	// Casdoor 相关字段
-	CasdoorID          *string `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                     // JWT id (UUID)
-	CasdoorUniversalID *string `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"casdoor_universal_id"` // JWT universal_id (UUID)
-	CasdoorSub         *string `gorm:"index:idx_user_casdoor_sub;size:191" json:"casdoor_sub"`                   // JWT sub (可能是 owner/name 格式)
+	CasdoorID          *string `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                     // Casdoor id claim, used only for compatibility lookup
+	CasdoorUniversalID *string `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"casdoor_universal_id"` // Stable Casdoor universal_id used for identity binding
+	CasdoorSub         *string `gorm:"index:idx_user_casdoor_sub;size:191" json:"casdoor_sub"`                   // Casdoor sub claim, used for compatibility lookup and migration
 	Organization       *string `gorm:"index:idx_user_organization;size:191" json:"organization"`                 // Casdoor owner
 
 	// 状态字段

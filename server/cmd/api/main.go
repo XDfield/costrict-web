@@ -38,12 +38,12 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/project"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
-	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
@@ -173,6 +173,16 @@ func main() {
 	// Initialize JWKS provider for JWT signature verification
 	jwksProvider := middleware.NewJWKSProvider(casdoorEndpoint)
 	jwksProvider.Preload()
+	middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
+		return userModule.Service.ResolveSubjectID(&userpkg.JWTClaims{
+			ID:                claims.ID,
+			Sub:               claims.Sub,
+			UniversalID:       claims.UniversalID,
+			Name:              claims.Name,
+			PreferredUsername: claims.PreferredUsername,
+			Email:             claims.Email,
+		})
+	})
 
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())

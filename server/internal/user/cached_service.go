@@ -32,7 +32,7 @@ func (s *CachedUserService) GetUserByID(ctx context.Context, userID string) (*mo
 	}
 
 	var user models.User
-	if err := s.db.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("subject_id = ?", userID).First(&user).Error; err != nil {
 		return nil, err
 	}
 
@@ -60,13 +60,13 @@ func (s *CachedUserService) GetUsersByIDs(ctx context.Context, userIDs []string)
 	}
 
 	var users []*models.User
-	if err := s.db.WithContext(ctx).Where("id IN ?", missing).Find(&users).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("subject_id IN ?", missing).Find(&users).Error; err != nil {
 		return nil, err
 	}
 
 	for _, user := range users {
-		result[user.ID] = user
-		s.cache.Set(user.ID, user, cache.DefaultExpiration)
+		result[user.SubjectID] = user
+		s.cache.Set(user.SubjectID, user, cache.DefaultExpiration)
 	}
 
 	return result, nil
@@ -85,7 +85,7 @@ func (s *CachedUserService) WarmupCache(ctx context.Context) error {
 	}
 
 	for _, user := range users {
-		s.cache.Set(user.ID, user, cache.DefaultExpiration)
+		s.cache.Set(user.SubjectID, user, cache.DefaultExpiration)
 	}
 
 	return nil

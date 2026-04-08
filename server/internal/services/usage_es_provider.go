@@ -313,7 +313,7 @@ func (p *ESUsageProvider) reportRecord(deviceID, accessToken, clientVersion stri
 			"model":          record.ModelID,
 			"provider":       record.ProviderID,
 			"client_version": strings.TrimSpace(clientVersion),
-			"request_time":   record.Date.Format(time.RFC3339),
+			"request_time":   firstTime(record.RequestTime, record.Date).Format(time.RFC3339),
 			"mode":           "code",
 		},
 	})
@@ -341,6 +341,15 @@ func (p *ESUsageProvider) reportRecord(deviceID, accessToken, clientVersion stri
 		return fmt.Errorf("report to es failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(payload)))
 	}
 	return nil
+}
+
+func firstTime(items ...time.Time) time.Time {
+	for _, item := range items {
+		if !item.IsZero() {
+			return item
+		}
+	}
+	return time.Time{}
 }
 
 func (p *ESUsageProvider) search(payload esSearchRequest) ([]esFlatRepoUserDay, error) {

@@ -286,6 +286,40 @@ func Logout(c *gin.Context) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	if UserModule != nil {
+		var (
+			user *models.User
+			err  error
+		)
+		if UserModule.CachedService != nil {
+			user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
+		} else if UserModule.Service != nil {
+			user, err = UserModule.Service.GetUserByID(currentUserID)
+		}
+		if err == nil && user != nil {
+			name := user.Username
+			if user.DisplayName != nil && *user.DisplayName != "" {
+				name = *user.DisplayName
+			}
+			c.JSON(http.StatusOK, gin.H{"user": gin.H{
+				"id":                 user.SubjectID,
+				"subjectId":          user.SubjectID,
+				"name":               name,
+				"username":           user.Username,
+				"email":              user.Email,
+				"avatarUrl":          user.AvatarURL,
+				"casdoorUniversalId": user.CasdoorUniversalID,
+			}})
+			return
+		}
+	}
+
 	token, exists := c.Get("accessToken")
 	if !exists || token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})

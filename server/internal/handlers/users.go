@@ -213,7 +213,7 @@ func GetUserBasicInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"user": userBasicInfoResponse{
-		ID:        user.ID,
+		ID:        user.SubjectID,
 		Name:      name,
 		AvatarURL: user.AvatarURL,
 	}})

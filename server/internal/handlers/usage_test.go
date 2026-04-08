@@ -28,7 +28,7 @@ func setupUsageHandlerTest(t *testing.T) (*gin.Engine, *gorm.DB) {
 	if err := db.AutoMigrate(&models.User{}, &models.SessionUsageReport{}); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
-	if err := db.Create(&models.User{ID: "u1", Username: "alice"}).Error; err != nil {
+	if err := db.Create(&models.User{SubjectID: "u1", Username: "alice"}).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	r := gin.New()
@@ -51,6 +51,7 @@ func TestUsageReportHandler(t *testing.T) {
 		"reports": []map[string]any{{
 			"session_id":   "s1",
 			"message_id":   "m1",
+			"request_time": "2026-04-01T09:59:59Z",
 			"date":         "2026-04-01T10:00:00Z",
 			"updated":      "2026-04-01T10:00:01Z",
 			"model_id":     "glm-4",
@@ -72,6 +73,13 @@ func TestUsageReportHandler(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 usage row, got %d", count)
+	}
+	var row models.SessionUsageReport
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("load usage row: %v", err)
+	}
+	if got := row.RequestTime.UTC().Format(time.RFC3339); got != "2026-04-01T09:59:59Z" {
+		t.Fatalf("unexpected request time: %s", got)
 	}
 }
 

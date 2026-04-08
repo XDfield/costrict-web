@@ -85,7 +85,7 @@ func (s *SystemRoleService) GrantRole(userID, role, operatorID string) error {
 	}
 
 	var user models.User
-	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := s.db.Where("subject_id = ?", userID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrSystemRoleUserNotFound
 		}
@@ -149,7 +149,7 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error) 
 	var users []models.User
 	query := s.db.Model(&models.User{}).
 		Distinct("users.*").
-		Joins("JOIN user_system_roles usr ON usr.user_id = users.id AND usr.deleted_at IS NULL")
+		Joins("JOIN user_system_roles usr ON usr.user_id = users.subject_id AND usr.deleted_at IS NULL")
 
 	if role == SystemRoleBusinessAdmin {
 		query = query.Where("usr.role IN ?", []string{SystemRoleBusinessAdmin, SystemRolePlatformAdmin})

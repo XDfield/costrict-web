@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -12,6 +14,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var errDryRunRollback = errors.New("dry-run rollback")
+
 func main() {
 	cfg := config.Load()
 
@@ -20,12 +24,31 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "user-subject-ids":
+			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
+			if err := backfillLegacyUserReferences(db, dryRun); err != nil {
+				if dryRun && errors.Is(err, errDryRunRollback) {
+					log.Println("Legacy user reference dry-run completed successfully")
+					return
+				}
+				log.Fatalf("Failed to backfill legacy user references: %v", err)
+			}
+			if dryRun {
+				log.Println("Legacy user reference dry-run completed successfully")
+			} else {
+				log.Println("Legacy user reference backfill completed successfully")
+			}
+			return
+		}
+	}
+
 	if err := runPreMigrations(db); err != nil {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
 
-		err = db.AutoMigrate(
-			&models.User{},
+	err = db.AutoMigrate(
 			&models.UserSystemRole{},
 			&models.Repository{},
 			&models.RepoMember{},
@@ -239,6 +262,157 @@ func backfillCapabilityItemRepoIDs(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func backfillLegacyUserReferences(db *gorm.DB, dryRun bool) error {
+	type userMapping struct {
+		SubjectID          string
+		CasdoorUniversalID *string
+		CasdoorID          *string
+		CasdoorSub         *string
+	}
+
+	var users []userMapping
+	if err := db.Table("users").Select("subject_id, casdoor_universal_id, casdoor_id, casdoor_sub").Find(&users).Error; err != nil {
+		return fmt.Errorf("load user mappings: %w", err)
+	}
+
+	mapping := make(map[string]string, len(users)*4)
+	for _, user := range users {
+		if user.SubjectID == "" {
+			continue
+		}
+		mapping[user.SubjectID] = user.SubjectID
+		if user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "" {
+			mapping[*user.CasdoorUniversalID] = user.SubjectID
+		}
+		if user.CasdoorID != nil && *user.CasdoorID != "" {
+			mapping[*user.CasdoorID] = user.SubjectID
+		}
+		if user.CasdoorSub != nil && *user.CasdoorSub != "" {
+			mapping[*user.CasdoorSub] = user.SubjectID
+		}
+	}
+
+	updates := []struct {
+		table  string
+		column string
+	}{
+		{"system_notification_channels", "created_by"},
+		{"user_notification_channels", "user_id"},
+		{"user_configs", "user_id"},
+		{"notification_logs", "user_id"},
+		{"devices", "user_id"},
+		{"repositories", "owner_id"},
+		{"repo_members", "user_id"},
+		{"repo_invitations", "inviter_id"},
+		{"repo_invitations", "invitee_id"},
+		{"projects", "creator_id"},
+		{"project_members", "user_id"},
+		{"project_invitations", "inviter_id"},
+		{"project_invitations", "invitee_id"},
+		{"project_repositories", "bound_by_user_id"},
+		{"user_system_roles", "user_id"},
+		{"user_system_roles", "granted_by"},
+		{"capability_registries", "owner_id"},
+		{"sync_jobs", "trigger_user"},
+		{"sync_logs", "trigger_user"},
+		{"capability_items", "created_by"},
+		{"capability_items", "updated_by"},
+		{"item_categories", "created_by"},
+		{"item_favorites", "user_id"},
+		{"capability_versions", "created_by"},
+		{"capability_artifacts", "uploaded_by"},
+		{"scan_jobs", "trigger_user"},
+		{"workspaces", "user_id"},
+		{"behavior_logs", "user_id"},
+	}
+
+	type tableStat struct {
+		UpdatedRows int
+		Unresolved  map[string]int
+	}
+	stats := make(map[string]*tableStat, len(updates))
+	getStat := func(table, column string) *tableStat {
+		key := table + "." + column
+		if stats[key] == nil {
+			stats[key] = &tableStat{Unresolved: map[string]int{}}
+		}
+		return stats[key]
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, target := range updates {
+			rows, err := tx.Table(target.table).Select(target.column).Where(target.column+" IS NOT NULL AND "+target.column+" <> ''").Rows()
+			if err != nil {
+				return fmt.Errorf("scan %s.%s: %w", target.table, target.column, err)
+			}
+			values := map[string]struct{}{}
+			for rows.Next() {
+				var value string
+				if err := rows.Scan(&value); err != nil {
+					rows.Close()
+					return fmt.Errorf("read %s.%s: %w", target.table, target.column, err)
+				}
+				if value != "" {
+					values[value] = struct{}{}
+				}
+			}
+			rows.Close()
+
+			for legacyValue := range values {
+				subjectID, ok := mapping[legacyValue]
+				if !ok {
+					getStat(target.table, target.column).Unresolved[legacyValue]++
+					continue
+				}
+				if subjectID == legacyValue {
+					continue
+				}
+
+				var affected int64
+				if dryRun {
+					if err := tx.Table(target.table).Where(target.column+" = ?", legacyValue).Count(&affected).Error; err != nil {
+						return fmt.Errorf("count %s.%s for %s: %w", target.table, target.column, legacyValue, err)
+					}
+				} else {
+					result := tx.Exec(
+						fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", target.table, target.column, target.column),
+						subjectID,
+						legacyValue,
+					)
+					if result.Error != nil {
+						return fmt.Errorf("update %s.%s from %s to %s: %w", target.table, target.column, legacyValue, subjectID, result.Error)
+					}
+					affected = result.RowsAffected
+				}
+				getStat(target.table, target.column).UpdatedRows += int(affected)
+			}
+		}
+
+		log.Printf("user-subject-ids summary (dry-run=%v)", dryRun)
+		for _, target := range updates {
+			key := target.table + "." + target.column
+			stat := stats[key]
+			if stat == nil {
+				continue
+			}
+			if stat.UpdatedRows > 0 {
+				log.Printf("  [%s] updated rows: %d", key, stat.UpdatedRows)
+			}
+			if len(stat.Unresolved) > 0 {
+				log.Printf("  [%s] unresolved identifiers:", key)
+				for legacyValue, seenCount := range stat.Unresolved {
+					log.Printf("    - %s (seen %d times)", legacyValue, seenCount)
+				}
+			}
+		}
+
+		if dryRun {
+			return errDryRunRollback
+		}
+		return nil
+	})
 }
 
 func deduplicateSlugs(db *gorm.DB) error {

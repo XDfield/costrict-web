@@ -28,7 +28,7 @@ func (p *SQLiteUsageProvider) BatchUpsert(userID, deviceID, accessToken, clientV
 		if err := p.db.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "session_id"}, {Name: "message_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"device_id", "request_id", "date", "updated", "model_id", "provider_id",
+				"device_id", "request_id", "request_time", "date", "updated", "model_id", "provider_id",
 				"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens",
 				"cost", "rounds", "git_repo_url", "git_worktree", "updated_at",
 			}),

@@ -8,6 +8,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,6 +34,20 @@ func newRepoRouter(userID string) *gin.Engine {
 	return r
 }
 
+func newAuthRouter(userID string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	injectUser := func(c *gin.Context) {
+		if userID != "" {
+			c.Set(middleware.UserIDKey, userID)
+		}
+		c.Set("accessToken", "fake-token")
+		c.Next()
+	}
+	r.GET("/api/auth/me", injectUser, GetCurrentUser)
+	return r
+}
+
 // ---------------------------------------------------------------------------
 // buildSyncConfigJSON
 // ---------------------------------------------------------------------------
@@ -52,6 +67,63 @@ func TestBuildSyncConfigJSON(t *testing.T) {
 	includes := out["includePatterns"].([]interface{})
 	if len(includes) != 1 || includes[0] != "*.md" {
 		t.Fatalf("unexpected includePatterns: %v", includes)
+	}
+}
+
+func TestGetCurrentUserReturnsLocalSubjectUser(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	displayName := "Alice"
+	email := "alice@example.com"
+	avatar := "https://example.com/a.png"
+	casdoorUniversalID := "uuid-u1"
+	if err := database.DB.Create(&models.User{
+		SubjectID:          "usr_local_1",
+		Username:           "alice",
+		DisplayName:        &displayName,
+		Email:              &email,
+		AvatarURL:          &avatar,
+		CasdoorUniversalID: &casdoorUniversalID,
+		IsActive:           true,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	w := get(newAuthRouter("usr_local_1"), "/api/auth/me")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		User struct {
+			ID                 string  `json:"id"`
+			SubjectID          string  `json:"subjectId"`
+			Name               string  `json:"name"`
+			Username           string  `json:"username"`
+			Email              *string `json:"email"`
+			AvatarURL          *string `json:"avatarUrl"`
+			CasdoorUniversalID *string `json:"casdoorUniversalId"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.User.ID != "usr_local_1" || body.User.SubjectID != "usr_local_1" {
+		t.Fatalf("expected subject_id based response, got %+v", body.User)
+	}
+	if body.User.Name != "Alice" || body.User.Username != "alice" {
+		t.Fatalf("unexpected name fields: %+v", body.User)
+	}
+	if body.User.Email == nil || *body.User.Email != email {
+		t.Fatalf("unexpected email: %+v", body.User)
+	}
+	if body.User.AvatarURL == nil || *body.User.AvatarURL != avatar {
+		t.Fatalf("unexpected avatar: %+v", body.User)
+	}
+	if body.User.CasdoorUniversalID == nil || *body.User.CasdoorUniversalID != casdoorUniversalID {
+		t.Fatalf("unexpected casdoor universal id: %+v", body.User)
 	}
 }
 

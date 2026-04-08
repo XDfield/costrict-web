@@ -15,17 +15,19 @@ func newUserRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/api/users/info", GetUserBasicInfo)
+	r.GET("/api/users/names", GetUserNames)
 	return r
 }
 
 func TestGetUserBasicInfo_Success(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
 
 	avatarURL := "https://example.com/avatar.png"
 	displayName := "Alice"
 	if err := database.DB.Create(&models.User{
-		ID:          "u1",
+		SubjectID:   "u1",
 		Username:    "alice",
 		DisplayName: &displayName,
 		AvatarURL:   &avatarURL,
@@ -62,10 +64,11 @@ func TestGetUserBasicInfo_Success(t *testing.T) {
 
 func TestGetUserBasicInfo_FallbackToUsername(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
 
 	if err := database.DB.Create(&models.User{
-		ID:       "u2",
+		SubjectID: "u2",
 		Username: "bob",
 		IsActive: true,
 	}).Error; err != nil {
@@ -92,6 +95,7 @@ func TestGetUserBasicInfo_FallbackToUsername(t *testing.T) {
 
 func TestGetUserBasicInfo_MissingID(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
 
 	w := get(newUserRouter(), "/api/users/info")
@@ -102,6 +106,7 @@ func TestGetUserBasicInfo_MissingID(t *testing.T) {
 
 func TestGetUserBasicInfo_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
 
 	w := get(newUserRouter(), "/api/users/info?id=missing")

@@ -48,7 +48,7 @@ func TestUserServiceGetUserByID(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewUserService(db)
 
-	user := models.User{ID: "u1", Username: "alice", IsActive: true}
+	user := models.User{SubjectID: "u1", Username: "alice", IsActive: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestUserServiceGetUserByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserByID error: %v", err)
 	}
-	if got.ID != "u1" || got.Username != "alice" {
+	if got.SubjectID != "u1" || got.Username != "alice" {
 		t.Fatalf("unexpected user: %+v", got)
 	}
 }
@@ -67,8 +67,8 @@ func TestUserServiceGetUsersByIDs(t *testing.T) {
 	svc := NewUserService(db)
 
 	seed := []models.User{
-		{ID: "u1", Username: "alice", IsActive: true},
-		{ID: "u2", Username: "bob", IsActive: true},
+		{SubjectID: "u1", Username: "alice", IsActive: true},
+		{SubjectID: "u2", Username: "bob", IsActive: true},
 	}
 	for _, u := range seed {
 		if err := db.Create(&u).Error; err != nil {
@@ -92,8 +92,8 @@ func TestUserServiceGetUsersByUniversalIDs(t *testing.T) {
 	uuid1 := "uuid-u1"
 	uuid2 := "uuid-u2"
 	seed := []models.User{
-		{ID: "u1", Username: "alice", CasdoorUniversalID: &uuid1, IsActive: true},
-		{ID: "u2", Username: "bob", CasdoorUniversalID: &uuid2, IsActive: true},
+		{SubjectID: "u1", Username: "alice", CasdoorUniversalID: &uuid1, IsActive: true},
+		{SubjectID: "u2", Username: "bob", CasdoorUniversalID: &uuid2, IsActive: true},
 	}
 	for _, u := range seed {
 		if err := db.Create(&u).Error; err != nil {
@@ -108,10 +108,10 @@ func TestUserServiceGetUsersByUniversalIDs(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 users, got %d", len(got))
 	}
-	if got["uuid-u1"] == nil || got["uuid-u1"].ID != "u1" {
+	if got["uuid-u1"] == nil || got["uuid-u1"].SubjectID != "u1" {
 		t.Fatalf("expected uuid-u1 -> u1, got %+v", got["uuid-u1"])
 	}
-	if got["uuid-u2"] == nil || got["uuid-u2"].ID != "u2" {
+	if got["uuid-u2"] == nil || got["uuid-u2"].SubjectID != "u2" {
 		t.Fatalf("expected uuid-u2 -> u2, got %+v", got["uuid-u2"])
 	}
 	if _, ok := got["uuid-u3"]; ok {
@@ -126,9 +126,9 @@ func TestUserServiceSearchUsers(t *testing.T) {
 	display := "Alice Smith"
 	email := "alice@example.com"
 	seed := []models.User{
-		{ID: "u1", Username: "alice", DisplayName: &display, Email: &email, IsActive: true},
-		{ID: "u2", Username: "bob", IsActive: true},
-		{ID: "u3", Username: "inactive", IsActive: false},
+		{SubjectID: "u1", Username: "alice", DisplayName: &display, Email: &email, IsActive: true},
+		{SubjectID: "u2", Username: "bob", IsActive: true},
+		{SubjectID: "u3", Username: "inactive", IsActive: false},
 	}
 	for _, u := range seed {
 		if err := db.Create(&u).Error; err != nil {
@@ -140,7 +140,7 @@ func TestUserServiceSearchUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchUsers error: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "u1" {
+	if len(got) != 1 || got[0].SubjectID != "u1" {
 		t.Fatalf("unexpected search result: %+v", got)
 	}
 }
@@ -164,8 +164,11 @@ func TestUserServiceGetOrCreateUserCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateUser create error: %v", err)
 	}
-	if user.ID != "u1" || user.Username != "alice" {
+	if user.SubjectID == "" || user.SubjectID == "uuid-u1" || user.SubjectID == "org/alice" || user.SubjectID == "u1" || user.Username != "alice" {
 		t.Fatalf("unexpected created user: %+v", user)
+	}
+	if len(user.SubjectID) < 5 || user.SubjectID[:4] != "usr_" {
+		t.Fatalf("expected local subject_id with usr_ prefix, got %+v", user)
 	}
 	if user.CasdoorID == nil || *user.CasdoorID != "u1" {
 		t.Fatalf("casdoor_id not set: %+v", user)
@@ -186,7 +189,7 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	oldEmail := "old@example.com"
 	now := time.Now().Add(-time.Hour)
 	seed := models.User{
-		ID:          "u1",
+		SubjectID:   "legacy-u1",
 		Username:    "alice",
 		DisplayName: &oldName,
 		Email:       &oldEmail,
@@ -212,6 +215,9 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateUser update error: %v", err)
 	}
+	if user.SubjectID != "legacy-u1" {
+		t.Fatalf("existing local subject_id should remain unchanged: %+v", user)
+	}
 	if user.DisplayName == nil || *user.DisplayName != "Alice New" {
 		t.Fatalf("display name not updated: %+v", user)
 	}
@@ -235,11 +241,40 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	}
 }
 
+func TestUserServiceGetOrCreateUserKeepsLocalSubjectIDAcrossLogins(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	claims := &JWTClaims{
+		ID:                "u1",
+		Sub:               "org/alice",
+		UniversalID:       "uuid-u1",
+		Name:              "alice",
+		PreferredUsername: "Alice",
+		Email:             "alice@example.com",
+	}
+
+	first, err := svc.GetOrCreateUser(claims)
+	if err != nil {
+		t.Fatalf("first GetOrCreateUser error: %v", err)
+	}
+	second, err := svc.GetOrCreateUser(claims)
+	if err != nil {
+		t.Fatalf("second GetOrCreateUser error: %v", err)
+	}
+	if first.SubjectID == "" || len(first.SubjectID) < 5 || first.SubjectID[:4] != "usr_" {
+		t.Fatalf("expected first local subject_id, got %+v", first)
+	}
+	if second.SubjectID != first.SubjectID {
+		t.Fatalf("expected stable local subject_id across logins, got first=%s second=%s", first.SubjectID, second.SubjectID)
+	}
+}
+
 func TestCachedUserServiceCacheFlow(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewCachedUserService(db)
 
-	user := models.User{ID: "u1", Username: "alice", IsActive: true}
+	user := models.User{SubjectID: "u1", Username: "alice", IsActive: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -248,11 +283,11 @@ func TestCachedUserServiceCacheFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first GetUserByID error: %v", err)
 	}
-	if got1.ID != "u1" {
+	if got1.SubjectID != "u1" {
 		t.Fatalf("unexpected user: %+v", got1)
 	}
 
-	if err := db.Delete(&models.User{}, "id = ?", "u1").Error; err != nil {
+	if err := db.Delete(&models.User{}, "subject_id = ?", "u1").Error; err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
 
@@ -260,7 +295,7 @@ func TestCachedUserServiceCacheFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cached GetUserByID error: %v", err)
 	}
-	if got2.ID != "u1" {
+	if got2.SubjectID != "u1" {
 		t.Fatalf("unexpected cached user: %+v", got2)
 	}
 
@@ -300,9 +335,9 @@ func TestCachedUserServiceGetUsersByIDsAndWarmup(t *testing.T) {
 	svc := NewCachedUserService(db)
 
 	seed := []models.User{
-		{ID: "u1", Username: "alice", IsActive: true},
-		{ID: "u2", Username: "bob", IsActive: true},
-		{ID: "u3", Username: "inactive", IsActive: false},
+		{SubjectID: "u1", Username: "alice", IsActive: true},
+		{SubjectID: "u2", Username: "bob", IsActive: true},
+		{SubjectID: "u3", Username: "inactive", IsActive: false},
 	}
 	for _, u := range seed {
 		if err := db.Create(&u).Error; err != nil {

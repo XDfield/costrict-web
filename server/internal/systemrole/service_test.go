@@ -20,9 +20,9 @@ func setupSystemRoleTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate test db: %v", err)
 	}
 	users := []models.User{
-		{ID: "u1", Username: "u1", IsActive: true},
-		{ID: "u2", Username: "u2", IsActive: true},
-		{ID: "u3", Username: "u3", IsActive: true},
+		{SubjectID: "u1", Username: "u1", IsActive: true},
+		{SubjectID: "u2", Username: "u2", IsActive: true},
+		{SubjectID: "u3", Username: "u3", IsActive: true},
 	}
 	for _, user := range users {
 		if err := db.Create(&user).Error; err != nil {

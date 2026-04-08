@@ -181,7 +181,8 @@ func setupTestDB(t *testing.T) func() {
 			UNIQUE(item_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS users (
-			id TEXT PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			subject_id TEXT NOT NULL,
 			username TEXT NOT NULL,
 			display_name TEXT,
 			email TEXT,
@@ -195,7 +196,8 @@ func setupTestDB(t *testing.T) func() {
 			last_sync_at DATETIME,
 			created_at DATETIME,
 			updated_at DATETIME,
-			deleted_at DATETIME
+			deleted_at DATETIME,
+			UNIQUE(subject_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS experience_candidates (
 			id             TEXT PRIMARY KEY,
