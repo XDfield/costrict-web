@@ -408,6 +408,41 @@ func TestListAllItems_SortByInstallCountAsc(t *testing.T) {
 	}
 }
 
+func TestListAllItems_FavoritedFilter(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-fav", Name: "fav-filter-reg", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fav-yes", RegistryID: "reg-all-fav", RepoID: "public", Slug: "fav-yes", ItemType: "skill",
+		Name: "Favorited Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fav-no", RegistryID: "reg-all-fav", RepoID: "public", Slug: "fav-no", ItemType: "skill",
+		Name: "Not Favorited", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.ItemFavorite{
+		ID: "fav-filter-1", ItemID: "item-fav-yes", UserID: "fav-user",
+	})
+
+	w := get(newItemRouter("fav-user"), "/api/items?favorited=true")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 favorited item, got %d", len(items))
+	}
+	if items[0].(map[string]interface{})["id"] != "item-fav-yes" {
+		t.Fatalf("expected item-fav-yes, got %v", items[0].(map[string]interface{})["id"])
+	}
+	if body["total"].(float64) != 1 {
+		t.Fatalf("expected total=1, got %v", body["total"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateItem
 // ---------------------------------------------------------------------------
