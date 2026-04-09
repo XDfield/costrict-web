@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/pathutil"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -180,7 +181,7 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 		directory := &models.WorkspaceDirectory{
 			WorkspaceID: workspace.ID,
 			Name:        dirReq.Name,
-			Path:        dirReq.Path,
+			Path:        pathutil.NormalizeWorkspacePath(dirReq.Path),
 			IsDefault:   dirReq.IsDefault,
 			OrderIndex:  i,
 		}
@@ -420,7 +421,7 @@ func (s *WorkspaceService) AddDirectory(workspaceID, userID string, req CreateDi
 	directory := &models.WorkspaceDirectory{
 		WorkspaceID: workspaceID,
 		Name:        req.Name,
-		Path:        req.Path,
+		Path:        pathutil.NormalizeWorkspacePath(req.Path),
 		IsDefault:   req.IsDefault,
 		OrderIndex:  maxOrder + 1,
 	}
@@ -469,7 +470,7 @@ func (s *WorkspaceService) UpdateDirectory(workspaceID, directoryID, userID stri
 	}
 
 	if req.Path != "" {
-		updates["path"] = req.Path
+		updates["path"] = pathutil.NormalizeWorkspacePath(req.Path)
 	}
 
 	if req.Settings != nil {

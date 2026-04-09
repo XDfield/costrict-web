@@ -9,6 +9,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
+	"github.com/costrict/costrict-web/server/internal/pathutil"
 	"gorm.io/gorm"
 )
 
@@ -63,18 +64,28 @@ func (s *NotificationService) TriggerMessage(userID, eventType string, msg sende
 // 因此需要先 JOIN devices 表进行转换，不能直接用 deviceID 匹配 workspaces.device_id。
 func (s *NotificationService) getWorkspaceID(deviceID, path string) (string, error) {
 	var workspaceID string
+	normalizedPath := pathutil.NormalizeWorkspacePath(path)
 	err := s.db.Table("workspace_directories wd").
 		Select("w.id").
 		Joins("JOIN workspaces w ON w.id = wd.workspace_id").
-		Joins("JOIN devices d ON d.id::text = w.device_id").
-		Where("wd.path = ? AND d.device_id = ?", path, deviceID).
+		Joins("JOIN devices d ON CAST(d.id AS TEXT) = w.device_id").
+		Where("wd.path = ? AND d.device_id = ?", normalizedPath, deviceID).
 		Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL AND d.deleted_at IS NULL").
 		Scan(&workspaceID).Error
+	if err == nil && workspaceID == "" && normalizedPath != path {
+		err = s.db.Table("workspace_directories wd").
+			Select("w.id").
+			Joins("JOIN workspaces w ON w.id = wd.workspace_id").
+			Joins("JOIN devices d ON CAST(d.id AS TEXT) = w.device_id").
+			Where("wd.path = ? AND d.device_id = ?", path, deviceID).
+			Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL AND d.deleted_at IS NULL").
+			Scan(&workspaceID).Error
+	}
 	if err != nil {
 		return "", err
 	}
 	if workspaceID == "" {
-		return "", fmt.Errorf("workspace not found for deviceID=%s, path=%s", deviceID, path)
+		return "", fmt.Errorf("workspace not found for deviceID=%s, path=%s", deviceID, normalizedPath)
 	}
 	return workspaceID, nil
 }

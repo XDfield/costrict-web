@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
@@ -24,7 +23,8 @@ func setupNotificationTestDB(t *testing.T) *gorm.DB {
 	}
 	stmts := []string{
 		`CREATE TABLE users (
-			id TEXT PRIMARY KEY,
+			id INTEGER PRIMARY KEY,
+			subject_id TEXT,
 			username TEXT NOT NULL,
 			display_name TEXT,
 			email TEXT,
@@ -96,14 +96,11 @@ func setupNotificationTestDB(t *testing.T) *gorm.DB {
 			t.Fatalf("migrate test db: %v", err)
 		}
 	}
-	seedUsers := []models.User{
-		{ID: "u1", Username: "u1", IsActive: true},
-		{ID: "u2", Username: "u2", IsActive: true},
+	if err := db.Exec(`INSERT INTO users (id, subject_id, username, is_active) VALUES (?, ?, ?, ?)`, 1, "u1", "u1", true).Error; err != nil {
+		t.Fatalf("seed user u1: %v", err)
 	}
-	for _, user := range seedUsers {
-		if err := db.Create(&user).Error; err != nil {
-			t.Fatalf("seed user: %v", err)
-		}
+	if err := db.Exec(`INSERT INTO users (id, subject_id, username, is_active) VALUES (?, ?, ?, ?)`, 2, "u2", "u2", true).Error; err != nil {
+		t.Fatalf("seed user u2: %v", err)
 	}
 	return db
 }
@@ -194,5 +191,55 @@ func TestAdminNotificationRoutesRequirePlatformAdmin(t *testing.T) {
 	w = performNotificationJSON(r, http.MethodGet, "/api/admin/notification-channels", "u1", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetWorkspaceIDNormalizesWindowsPath(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+
+	stmts := []string{
+		`CREATE TABLE devices (
+			id TEXT PRIMARY KEY,
+			device_id TEXT NOT NULL,
+			deleted_at DATETIME
+		)`,
+		`CREATE TABLE workspaces (
+			id TEXT PRIMARY KEY,
+			device_id TEXT NOT NULL,
+			deleted_at DATETIME
+		)`,
+		`CREATE TABLE workspace_directories (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			deleted_at DATETIME
+		)`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("migrate test db: %v", err)
+		}
+	}
+
+	if err := db.Exec(`INSERT INTO devices (id, device_id) VALUES (?, ?)`, "dev-uuid-1", "device-1").Error; err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO workspaces (id, device_id) VALUES (?, ?)`, "ws-1", "dev-uuid-1").Error; err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO workspace_directories (id, workspace_id, path) VALUES (?, ?, ?)`, "wd-1", "ws-1", "D:/DEV/myclaw").Error; err != nil {
+		t.Fatalf("seed workspace directory: %v", err)
+	}
+
+	svc := NewNotificationService(db, "")
+	workspaceID, err := svc.getWorkspaceID("device-1", `D:\DEV\myclaw`)
+	if err != nil {
+		t.Fatalf("get workspace id: %v", err)
+	}
+	if workspaceID != "ws-1" {
+		t.Fatalf("expected workspace id ws-1, got %s", workspaceID)
 	}
 }
