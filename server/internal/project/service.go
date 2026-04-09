@@ -137,6 +137,7 @@ func (s *ProjectService) GetProjectForUser(projectID, userID string) (*models.Pr
 		Select("projects.*, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
 		Joins("JOIN project_members pm ON pm.project_id = projects.id AND pm.deleted_at IS NULL").
 		Where("projects.id = ? AND "+textEquals("pm.user_id"), projectID, userID).
+		Where("projects.deleted_at IS NULL").
 		First(&project).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrProjectNotFound
@@ -175,7 +176,8 @@ func (s *ProjectService) ListProjects(userID string, includeArchived bool, pinne
 		Select("projects.id, projects.name, projects.description, projects.creator_id, projects.enabled_at, projects.archived_at, projects.created_at, projects.updated_at, CASE WHEN pm.pinned_at IS NULL THEN FALSE ELSE TRUE END AS is_pinned").
 		Joins("JOIN projects ON projects.id = pm.project_id").
 		Where(textEquals("pm.user_id"), userID).
-		Where("pm.deleted_at IS NULL")
+		Where("pm.deleted_at IS NULL").
+		Where("projects.deleted_at IS NULL")
 	if !includeArchived {
 		query = query.Where("projects.archived_at IS NULL")
 	}

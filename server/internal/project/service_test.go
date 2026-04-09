@@ -326,6 +326,31 @@ func TestListProjectsCanFilterPinnedOnly(t *testing.T) {
 	}
 }
 
+func TestListProjectsExcludesDeletedProjects(t *testing.T) {
+	db := setupProjectTestDB(t)
+	svc := NewProjectService(db, nil, nil, nil)
+
+	project, err := svc.CreateProject("u1", "Project A", "", nil)
+	if err != nil {
+		t.Fatalf("CreateProject error: %v", err)
+	}
+	if err := svc.DeleteProject(project.ID, "u1"); err != nil {
+		t.Fatalf("DeleteProject error: %v", err)
+	}
+
+	projects, err := svc.ListProjects("u1", false, false)
+	if err != nil {
+		t.Fatalf("ListProjects error: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("expected deleted projects excluded, got %+v", projects)
+	}
+
+	if _, err := svc.GetProjectForUser(project.ID, "u1"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("expected ErrProjectNotFound for deleted project, got %v", err)
+	}
+}
+
 func TestSetProjectPinUpdatesMemberPreference(t *testing.T) {
 	db := setupProjectTestDB(t)
 	svc := NewProjectService(db, nil, nil, nil)
