@@ -10,28 +10,29 @@ import (
 )
 
 type Config struct {
-	Port               string
-	DatabaseURL        string
-	UsageSQLitePath    string
-	UsageProvider      string
-	UsageESReportBaseURL string
-	UsageESQueryBaseURL  string
-	UsageESReportPath  string
-	UsageESQueryPath   string
-	UsageESTimeoutSec  int
-	UsageESBasicUser   string
-	UsageESBasicPass   string
+	Port                      string
+	DatabaseURL               string
+	UsageSQLitePath           string
+	UsageProvider             string
+	UsageESReportBaseURL      string
+	UsageESQueryBaseURL       string
+	UsageESReportPath         string
+	UsageESQueryPath          string
+	UsageESTimeoutSec         int
+	UsageESBasicUser          string
+	UsageESBasicPass          string
 	UsageESInsecureSkipVerify bool
-	RedisURL           string
-	CloudBaseURL       string
-	FrontendURLs       []string // Allowed frontend origins for OAuth redirects; first entry is the default
-	InternalSecret     string
-	CookieSecure       bool     // Set auth cookie with Secure flag (HTTPS only); default true
-	CORSAllowedOrigins []string // Allowed CORS origins; empty means allow all (insecure, dev only)
-	Casdoor            CasdoorConfig
-	LLM                LLMConfig
-	Embedding          EmbeddingConfig
-	Search             SearchConfig
+	RedisURL                  string
+	CloudBaseURL              string
+	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
+	InternalSecret            string
+	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	Casdoor                   CasdoorConfig
+	LLM                       LLMConfig
+	Embedding                 EmbeddingConfig
+	Search                    SearchConfig
+	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
 }
 
 type CasdoorConfig struct {
@@ -84,24 +85,24 @@ func Load() *Config {
 	frontendURLs := getEnvSlice("FRONTEND_URLS", []string{cloudBaseURL})
 
 	return &Config{
-		Port:               getEnv("PORT", "8080"),
-		DatabaseURL:        getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
-		UsageSQLitePath:    getEnv("USAGE_SQLITE_PATH", "./data/usage/usage.db"),
-		UsageProvider:      getEnv("USAGE_PROVIDER", "sqlite"),
-		UsageESReportBaseURL: getEnv("USAGE_ES_REPORT_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
-		UsageESQueryBaseURL:  getEnv("USAGE_ES_QUERY_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
-		UsageESReportPath:  getEnv("USAGE_ES_REPORT_PATH", "/internal/indicator/api/v1/session_turn_metrics"),
-		UsageESQueryPath:   getEnv("USAGE_ES_QUERY_PATH", "/costrict_session_turn_metrics/_search"),
-		UsageESTimeoutSec:  getEnvInt("USAGE_ES_TIMEOUT_SECONDS", 15),
-		UsageESBasicUser:   getEnv("USAGE_ES_BASIC_USER", ""),
-		UsageESBasicPass:   getEnv("USAGE_ES_BASIC_PASS", ""),
+		Port:                      getEnv("PORT", "8080"),
+		DatabaseURL:               getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		UsageSQLitePath:           getEnv("USAGE_SQLITE_PATH", "./data/usage/usage.db"),
+		UsageProvider:             getEnv("USAGE_PROVIDER", "sqlite"),
+		UsageESReportBaseURL:      getEnv("USAGE_ES_REPORT_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
+		UsageESQueryBaseURL:       getEnv("USAGE_ES_QUERY_BASE_URL", getEnv("USAGE_ES_BASE_URL", "")),
+		UsageESReportPath:         getEnv("USAGE_ES_REPORT_PATH", "/internal/indicator/api/v1/session_turn_metrics"),
+		UsageESQueryPath:          getEnv("USAGE_ES_QUERY_PATH", "/costrict_session_turn_metrics/_search"),
+		UsageESTimeoutSec:         getEnvInt("USAGE_ES_TIMEOUT_SECONDS", 15),
+		UsageESBasicUser:          getEnv("USAGE_ES_BASIC_USER", ""),
+		UsageESBasicPass:          getEnv("USAGE_ES_BASIC_PASS", ""),
 		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
-		RedisURL:           getEnv("REDIS_URL", ""),
-		CloudBaseURL:       cloudBaseURL,
-		FrontendURLs:       frontendURLs,
-		InternalSecret:     getEnv("INTERNAL_SECRET", ""),
-		CookieSecure:       getEnvBool("COOKIE_SECURE", true),
-		CORSAllowedOrigins: getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
+		RedisURL:                  getEnv("REDIS_URL", ""),
+		CloudBaseURL:              cloudBaseURL,
+		FrontendURLs:              frontendURLs,
+		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
+		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
+		CORSAllowedOrigins:        getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
 			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			InternalEndpoint: getEnv("CASDOOR_INTERNAL_ENDPOINT", ""),
@@ -129,6 +130,7 @@ func Load() *Config {
 			DefaultLimit:        getEnvInt("SEARCH_DEFAULT_LIMIT", 20),
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
 		},
+		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
 	}
 }
 

@@ -28,6 +28,11 @@ var allowedScanCategories = []string{
 	"command-execution",
 	"tool-invocation",
 	"deployment-operations",
+	"document-editing",
+	"meeting-management",
+	"task-scheduling",
+	"file-management",
+	"team-collaboration",
 }
 
 const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
@@ -48,6 +53,11 @@ const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
 - command-execution（命令执行）
 - tool-invocation（工具调用）
 - deployment-operations（部署运维）
+- document-editing（文档编辑）
+- meeting-management（会议管理）
+- task-scheduling（任务调度）
+- file-management（文件管理）
+- team-collaboration（团队协作）
 
 ## 审查维度
 

@@ -921,6 +921,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        search      query     string   false  "Search by name or description"
 // @Param        category    query     string   false  "Filter by category"
 // @Param        registryId  query     string   false  "Filter by registry ID"
+// @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
 // @Param        sortBy      query     string   false  "Sort by createdAt, previewCount, installCount, or favoriteCount"
@@ -967,6 +968,9 @@ func ListAllItems(c *gin.Context) {
 	}
 	if registryID := c.Query("registryId"); registryID != "" {
 		query = query.Where("registry_id = ?", registryID)
+	}
+	if c.Query("favorited") == "true" && uid != "" {
+		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", uid)
 	}
 
 	var total int64

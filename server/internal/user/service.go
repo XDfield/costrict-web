@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/golang-jwt/jwt/v4"
-	"gorm.io/gorm/clause"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // JWTClaims represents the parsed JWT token claims from Casdoor
@@ -27,12 +27,22 @@ type JWTClaims struct {
 
 // UserService provides user data operations
 type UserService struct {
-	db *gorm.DB
+	db           *gorm.DB
+	syncInterval time.Duration
 }
 
 // NewUserService creates a new UserService instance
 func NewUserService(db *gorm.DB) *UserService {
-	return &UserService{db: db}
+	return &UserService{db: db, syncInterval: 15 * time.Minute}
+}
+
+// NewUserServiceWithConfig creates a new UserService instance with config
+func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService {
+	interval := time.Duration(syncIntervalMinutes) * time.Minute
+	if syncIntervalMinutes <= 0 {
+		interval = 15 * time.Minute
+	}
+	return &UserService{db: db, syncInterval: interval}
 }
 
 // GetUserByID retrieves a user by ID
@@ -173,40 +183,57 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	now := time.Now()
 
 	if found {
-		// User exists, update last login time and mutable fields
+		// User exists, check if we need to update
+		// Only update if it's been more than syncInterval since last sync to reduce DB writes
+		shouldUpdate := false
+		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > s.syncInterval {
+			shouldUpdate = true
+		}
+
+		// Check if any critical fields need updating
 		if user.SubjectID == "" {
 			user.SubjectID = subjectID
+			shouldUpdate = true
 		}
-		user.LastLoginAt = &now
-		user.LastSyncAt = &now
-		user.IsActive = true
-
-		if claims.ID != "" {
+		if !user.IsActive {
+			user.IsActive = true
+			shouldUpdate = true
+		}
+		if claims.ID != "" && (user.CasdoorID == nil || *user.CasdoorID != claims.ID) {
 			user.CasdoorID = &claims.ID
+			shouldUpdate = true
 		}
-		if claims.UniversalID != "" {
+		if claims.UniversalID != "" && (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != claims.UniversalID) {
 			user.CasdoorUniversalID = &claims.UniversalID
+			shouldUpdate = true
 		}
-		if claims.Sub != "" {
+		if claims.Sub != "" && (user.CasdoorSub == nil || *user.CasdoorSub != claims.Sub) {
 			user.CasdoorSub = &claims.Sub
+			shouldUpdate = true
 		}
-		if claims.Owner != "" {
+		if claims.Owner != "" && (user.Organization == nil || *user.Organization != claims.Owner) {
 			user.Organization = &claims.Owner
+			shouldUpdate = true
 		}
-
-		// Update fields that may change
-		if claims.PreferredUsername != "" {
+		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
 			user.DisplayName = &claims.PreferredUsername
+			shouldUpdate = true
 		}
-		if claims.Email != "" {
+		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
 			user.Email = &claims.Email
+			shouldUpdate = true
 		}
-		if claims.Picture != "" {
+		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
 			user.AvatarURL = &claims.Picture
+			shouldUpdate = true
 		}
 
-		if err := s.db.Save(&user).Error; err != nil {
-			return nil, fmt.Errorf("failed to update user: %w", err)
+		if shouldUpdate {
+			user.LastLoginAt = &now
+			user.LastSyncAt = &now
+			if err := s.db.Save(&user).Error; err != nil {
+				return nil, fmt.Errorf("failed to update user: %w", err)
+			}
 		}
 
 		return &user, nil
@@ -214,18 +241,18 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 
 	// 3. User doesn't exist, create new user
 	user = models.User{
-		SubjectID:            subjectID,
-		Username:             claims.Name,
-		DisplayName:          stringPtr(claims.PreferredUsername),
-		Email:                stringPtr(claims.Email),
-		AvatarURL:            stringPtr(claims.Picture),
-		CasdoorID:            stringPtr(claims.ID),
-		CasdoorUniversalID:   stringPtr(claims.UniversalID),
-		CasdoorSub:           stringPtr(claims.Sub),
-		Organization:         stringPtr(claims.Owner),
-		IsActive:             true,
-		LastLoginAt:          &now,
-		LastSyncAt:           &now,
+		SubjectID:          subjectID,
+		Username:           claims.Name,
+		DisplayName:        stringPtr(claims.PreferredUsername),
+		Email:              stringPtr(claims.Email),
+		AvatarURL:          stringPtr(claims.Picture),
+		CasdoorID:          stringPtr(claims.ID),
+		CasdoorUniversalID: stringPtr(claims.UniversalID),
+		CasdoorSub:         stringPtr(claims.Sub),
+		Organization:       stringPtr(claims.Owner),
+		IsActive:           true,
+		LastLoginAt:        &now,
+		LastSyncAt:         &now,
 	}
 
 	if err := s.db.Create(&user).Error; err != nil {
