@@ -27,12 +27,22 @@ type JWTClaims struct {
 
 // UserService provides user data operations
 type UserService struct {
-	db *gorm.DB
+	db           *gorm.DB
+	syncInterval time.Duration
 }
 
 // NewUserService creates a new UserService instance
 func NewUserService(db *gorm.DB) *UserService {
-	return &UserService{db: db}
+	return &UserService{db: db, syncInterval: 15 * time.Minute}
+}
+
+// NewUserServiceWithConfig creates a new UserService instance with config
+func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService {
+	interval := time.Duration(syncIntervalMinutes) * time.Minute
+	if syncIntervalMinutes <= 0 {
+		interval = 15 * time.Minute
+	}
+	return &UserService{db: db, syncInterval: interval}
 }
 
 // GetUserByID retrieves a user by ID
@@ -174,9 +184,9 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 
 	if found {
 		// User exists, check if we need to update
-		// Only update if it's been more than 3 minutes since last sync to reduce DB writes
+		// Only update if it's been more than syncInterval since last sync to reduce DB writes
 		shouldUpdate := false
-		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > 3*time.Minute {
+		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > s.syncInterval {
 			shouldUpdate = true
 		}
 

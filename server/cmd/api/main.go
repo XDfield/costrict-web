@@ -38,12 +38,12 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/project"
-	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
+	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
@@ -78,7 +78,7 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
-	userModule := userpkg.New(db)
+	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes)
 	handlers.InitUserModule(userModule)
 
 	var usageProvider services.UsageProvider
@@ -97,13 +97,13 @@ func main() {
 			log.Fatalf("Failed to initialize usage provider: USAGE_ES_QUERY_BASE_URL is required when USAGE_PROVIDER=es")
 		}
 		usageProvider = services.NewESUsageProvider(services.ESUsageProviderConfig{
-			ReportBaseURL: cfg.UsageESReportBaseURL,
-			QueryBaseURL:  cfg.UsageESQueryBaseURL,
-			ReportPath: cfg.UsageESReportPath,
-			QueryPath:  cfg.UsageESQueryPath,
-			Timeout:    time.Duration(cfg.UsageESTimeoutSec) * time.Second,
-			BasicUser:  cfg.UsageESBasicUser,
-			BasicPass:  cfg.UsageESBasicPass,
+			ReportBaseURL:      cfg.UsageESReportBaseURL,
+			QueryBaseURL:       cfg.UsageESQueryBaseURL,
+			ReportPath:         cfg.UsageESReportPath,
+			QueryPath:          cfg.UsageESQueryPath,
+			Timeout:            time.Duration(cfg.UsageESTimeoutSec) * time.Second,
+			BasicUser:          cfg.UsageESBasicUser,
+			BasicPass:          cfg.UsageESBasicPass,
 			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
 		})
 	default:
