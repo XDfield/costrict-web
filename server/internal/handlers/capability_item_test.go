@@ -707,6 +707,89 @@ func TestDeleteItem_Success(t *testing.T) {
 	}
 }
 
+func TestDeleteItem_CleansDependentRecords(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-di2", Name: "di-reg-2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-di2", RegistryID: "reg-di2", RepoID: "repo-1", Slug: "delete-me-2", ItemType: "skill",
+		Name: "Delete Me 2", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-di2-1", ItemID: "item-di2", Revision: 1, Content: "v1", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-di2", ItemID: "item-di2", RelPath: "README.md", TextContent: ptrString("hello"),
+	})
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "artifact-di2", ItemID: "item-di2", Filename: "upload.zip", FileSize: 10,
+		ChecksumSHA256: "abc", StorageKey: "k", ArtifactVersion: "1.0.0", UploadedBy: "u1",
+	})
+	database.DB.Create(&models.ItemFavorite{
+		ID: "fav-di2", ItemID: "item-di2", UserID: "u2",
+	})
+	database.DB.Create(&models.BehaviorLog{
+		ID: "blog-di2", ItemID: "item-di2", ActionType: models.ActionView, Context: models.ContextBrowse,
+	})
+	if err := database.DB.Exec(
+		`INSERT INTO security_scans (id, item_id, revision_id, trigger_type, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"scan-di2", "item-di2", "rev-1", "manual", "pending", time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to insert security scan: %v", err)
+	}
+
+	w := deleteReq(newItemRouter("u1"), "/api/items/item-di2")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	assertItemRelatedRowsDeleted(t, "item-di2")
+}
+
+func assertItemRelatedRowsDeleted(t *testing.T, itemID string) {
+	t.Helper()
+
+	checks := []struct {
+		name  string
+		model any
+	}{
+		{"item", &models.CapabilityItem{}},
+		{"version", &models.CapabilityVersion{}},
+		{"asset", &models.CapabilityAsset{}},
+		{"artifact", &models.CapabilityArtifact{}},
+		{"favorite", &models.ItemFavorite{}},
+		{"behavior", &models.BehaviorLog{}},
+	}
+
+	for _, c := range checks {
+		var n int64
+		q := database.DB.Model(c.model)
+		if c.name == "item" {
+			q = q.Where("id = ?", itemID)
+		} else {
+			q = q.Where("item_id = ?", itemID)
+		}
+		if err := q.Count(&n).Error; err != nil {
+			t.Fatalf("count %s failed: %v", c.name, err)
+		}
+		if n != 0 {
+			t.Fatalf("expected %s rows deleted for %s, got %d", c.name, itemID, n)
+		}
+	}
+
+	var scanCount int64
+	if err := database.DB.Table("security_scans").Where("item_id = ?", itemID).Count(&scanCount).Error; err != nil {
+		t.Fatalf("count security_scans failed: %v", err)
+	}
+	if scanCount != 0 {
+		t.Fatalf("expected security_scans rows deleted for %s, got %d", itemID, scanCount)
+	}
+}
+
+func ptrString(v string) *string { return &v }
+
 // ---------------------------------------------------------------------------
 // ListItemVersions
 // ---------------------------------------------------------------------------
