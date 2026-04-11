@@ -65,6 +65,38 @@ type NotificationLog struct {
 	CreatedAt     time.Time  `                                                      json:"createdAt"`
 }
 
+// ChannelConfig 双向 Channel 渠道配置（用户配置）
+type ChannelConfig struct {
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID          string         `gorm:"not null;index"                                 json:"userId"`
+	ChannelType     string         `gorm:"not null;index"                                 json:"channelType"`
+	Name            string         `gorm:"not null"                                       json:"name"`
+	Enabled         bool           `gorm:"not null;default:true"                          json:"enabled"`
+	Config          datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"config" swaggertype:"object"`
+	WebhookVerified bool           `gorm:"not null;default:false"                         json:"webhookVerified"`
+	LastActiveAt    *time.Time     `                                                      json:"lastActiveAt,omitempty"`
+	LastError       string         `                                                      json:"lastError,omitempty"`
+	CreatedAt       time.Time      `                                                      json:"createdAt"`
+	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
+
+type DeviceRelease struct {
+	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Version      string    `gorm:"not null;uniqueIndex:idx_release_version_platform" json:"version"`
+	Platform     string    `gorm:"not null;uniqueIndex:idx_release_version_platform" json:"platform"`
+	Changelog    string    `gorm:"type:text" json:"changelog"`
+	DownloadURL  string    `gorm:"not null" json:"downloadUrl"`
+	SHA256       string    `gorm:"not null" json:"sha256"`
+	BinarySize   int64     `gorm:"not null" json:"binarySize"`
+	Force        bool      `gorm:"not null;default:false" json:"force"`
+	MinClientVer string    `json:"minClientVersion,omitempty"`
+	Channel      string    `gorm:"not null;default:'stable'" json:"channel"`
+	CreatedBy    string    `gorm:"not null" json:"createdBy"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 type Device struct {
 	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	DeviceID        string         `gorm:"uniqueIndex;not null;index:idx_device_id_deleted_at" json:"deviceId"`

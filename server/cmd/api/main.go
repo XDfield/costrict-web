@@ -28,6 +28,9 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/channel"
+	_ "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	_ "github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -197,6 +200,7 @@ func main() {
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	deviceSvc := &services.DeviceService{DB: db}
+	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
 	api := r.Group("/api")
@@ -209,6 +213,8 @@ func main() {
 		}
 
 		// === Public read-only endpoints (OptionalAuth, no login required) ===
+		api.GET("/updates/check", handlers.UpdateCheckHandler(updateSvc))
+		api.POST("/devices/:deviceID/heartbeat", handlers.DeviceHeartbeatHandler(deviceSvc))
 		api.GET("/registries/public", handlers.GetPublicRegistry)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)
@@ -342,6 +348,14 @@ func main() {
 				devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 				devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
 			}
+
+			releases := authed.Group("/releases")
+			{
+				releases.GET("", handlers.ListReleasesHandler(updateSvc))
+				releases.POST("", handlers.CreateReleaseHandler(updateSvc))
+				releases.GET("/:id", handlers.GetReleaseHandler(updateSvc))
+				releases.DELETE("/:id", handlers.DeleteReleaseHandler(updateSvc))
+			}
 			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
 
 			// Workspace routes
@@ -364,6 +378,10 @@ func main() {
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
+
+			channelModule := channel.New(db, &channel.EchoMessageHandler{})
+			channelModule.RegisterRoutes(r.Group("/api"), authed)
+
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
 			_ = notificationModule

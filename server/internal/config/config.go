@@ -24,6 +24,7 @@ type Config struct {
 	UsageESInsecureSkipVerify bool
 	RedisURL                  string
 	CloudBaseURL              string
+	ReleaseDownloadBaseURL    string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
 	InternalSecret            string
 	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
@@ -99,6 +100,7 @@ func Load() *Config {
 		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
+		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		FrontendURLs:              frontendURLs,
 		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
 		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
