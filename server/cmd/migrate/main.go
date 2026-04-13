@@ -9,6 +9,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
@@ -49,8 +50,13 @@ func main() {
 	}
 
 	err = db.AutoMigrate(
-			&models.UserSystemRole{},
-			&models.Repository{},
+		&team.TeamSession{},
+		&team.TeamSessionMember{},
+		&team.TeamTask{},
+		&team.TeamApprovalRequest{},
+		&team.TeamRepoAffinity{},
+		&models.UserSystemRole{},
+		&models.Repository{},
 			&models.RepoMember{},
 			&models.RepoInvitation{},
 		&models.Project{},

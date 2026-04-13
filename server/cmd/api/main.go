@@ -42,6 +42,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -372,13 +373,15 @@ func main() {
 		}
 	}
 
+	var redisClient *redis.Client
 	var store gateway.Store
 	if cfg.RedisURL != "" {
 		opt, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
 			log.Fatalf("Invalid REDIS_URL: %v", err)
 		}
-		store = gateway.NewRedisStore(redis.NewClient(opt))
+		redisClient = redis.NewClient(opt)
+		store = gateway.NewRedisStore(redisClient)
 		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
 	} else {
 		store = gateway.NewMemoryStore()
@@ -406,6 +409,14 @@ func main() {
 
 	// Device proxy: require user auth + device ownership check
 	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
+
+	// Cloud Team module
+	teamModule := teampkg.New(db, redisClient)
+	teamAPIGroup := r.Group("/api")
+	teamAPIGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+	teamWSGroup := r.Group("/ws")
+	teamWSGroup.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
+	teamModule.RegisterRoutes(teamAPIGroup, teamWSGroup)
 
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
