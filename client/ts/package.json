@@ -15,13 +15,16 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:e2e": "node --test dist/e2e/*.test.js",
+    "test:e2e:ts": "npx ts-node --project tsconfig.e2e.json e2e/team-e2e.test.ts"
   },
   "files": ["dist"],
   "dependencies": {
     "uuid": "^11.0.0"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
     "typescript": "^5.4.0",
