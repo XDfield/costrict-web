@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "lib": ["ES2022"],
     "types": ["node"],
     "declaration": false,
@@ -19,7 +19,6 @@
   "exclude": ["node_modules", "dist"],
   "ts-node": {
     "esm": true,
-    "transpileOnly": true,
-    "experimentalResolver": true
+    "transpileOnly": true
   }
 }

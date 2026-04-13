@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test:e2e": "node --test dist/e2e/*.test.js",
-    "test:e2e:ts": "npx ts-node --project tsconfig.e2e.json e2e/team-e2e.test.ts"
+    "test:e2e:ts": "npx tsx e2e/team-e2e.test.ts"
   },
   "files": ["dist"],
   "dependencies": {
