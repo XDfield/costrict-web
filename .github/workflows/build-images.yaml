@@ -96,14 +96,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false
-
-      - name: Checkout portal submodule with PAT
-        run: |
-          # 配置 git 使用 PAT 访问私有仓库
-          git config --global url."https://x-access-token:${{ secrets.PORTAL_PAT }}@github.com/".insteadOf "https://github.com/"
-          # 初始化并更新 portal 子模块
-          git submodule update --init -- portal
+          submodules: recursive
 
       - name: Update portal submodule to target branch
         run: |
