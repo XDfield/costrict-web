@@ -8,8 +8,8 @@ ARG TARGETARCH
 
 WORKDIR /app
 
-# Install ca-certificates, git, and gcc for CGO (required by go-sqlite3)
-RUN apk add --no-cache ca-certificates git gcc musl-dev
+# Install ca-certificates and build dependencies
+RUN apk add --no-cache ca-certificates git
 
 # Set Go module proxy
 ENV GOPROXY=https://goproxy.cn,direct
@@ -22,9 +22,9 @@ RUN go mod download
 # Copy all source code (including pre-generated docs)
 COPY . .
 
-# Build application with CGO enabled (go-sqlite3 requires cgo)
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -o server ./cmd/api
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build -o migrate ./cmd/migrate
+# Build application - cross-compile for target architecture
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o server ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o migrate ./cmd/migrate
 
 # Final stage
 FROM alpine:latest
@@ -33,7 +33,7 @@ FROM alpine:latest
 ARG HTTPS_PROXY
 ARG HTTP_PROXY
 
-RUN apk --no-cache add ca-certificates musl
+RUN apk --no-cache add ca-certificates
 
 # Create non-root user for security
 RUN addgroup -g 1000 -S appgroup && \
