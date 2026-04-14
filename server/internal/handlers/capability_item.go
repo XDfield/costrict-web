@@ -819,8 +819,38 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 func DeleteItem(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
-	result := db.Delete(&models.CapabilityItem{}, "id = ?", id)
-	if result.Error != nil {
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// Some environments may not have all tables yet (older schemas/tests).
+		// Delete dependencies in a defensive order when tables exist.
+		deletions := []struct {
+			model any
+			name  string
+		}{
+			{model: &models.BehaviorLog{}, name: "behavior logs"},
+			{model: &models.ItemFavorite{}, name: "item favorites"},
+			{model: &models.ScanJob{}, name: "scan jobs"},
+			{model: &models.SecurityScan{}, name: "security scans"},
+			{model: &models.CapabilityAsset{}, name: "capability assets"},
+			{model: &models.CapabilityArtifact{}, name: "capability artifacts"},
+			{model: &models.CapabilityVersion{}, name: "capability versions"},
+		}
+
+		for _, d := range deletions {
+			if !tx.Migrator().HasTable(d.model) {
+				continue
+			}
+			if err := tx.Where("item_id = ?", id).Delete(d.model).Error; err != nil {
+				return fmt.Errorf("failed to delete %s: %w", d.name, err)
+			}
+		}
+
+		if err := tx.Delete(&models.CapabilityItem{}, "id = ?", id).Error; err != nil {
+			return fmt.Errorf("failed to delete item: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item"})
 		return
 	}

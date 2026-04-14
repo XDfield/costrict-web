@@ -1,4 +1,4 @@
 [submodule "portal"]
 	path = portal
-	url = git@github.com:zgsm-ai/opencode.git
+	url = git@github.com:zgsm-sangfor/opencode.git
 	branch = epic/ai-native
