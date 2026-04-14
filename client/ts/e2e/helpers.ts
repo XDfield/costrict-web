@@ -267,6 +267,19 @@ export function loadTestConfig(): TestConfig {
 }
 
 /**
+ * Create a new team session on the server and return its ID.
+ * Must be called before starting any TeamClient that uses the session.
+ */
+export async function createSession(
+  serverUrl: string,
+  token: string,
+  name?: string
+): Promise<string> {
+  const { TeamClient } = await import('../src/index.js');
+  return TeamClient.createSession(serverUrl, token, name);
+}
+
+/**
  * Retry a function with exponential backoff
  */
 export async function retry<T>(

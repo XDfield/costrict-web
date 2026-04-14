@@ -634,8 +634,10 @@ func (h *Handler) GetLeader(c *gin.Context) {
 // Explore godoc
 // @Summary      Synchronous remote code explore (Leader → Teammate)
 // @Description  Leader sends explore queries targeting a specific Teammate machine.
-//               The cloud server forwards the request via WebSocket, waits up to 30 s
-//               for the result, and returns it synchronously.
+//
+//	The cloud server forwards the request via WebSocket, waits up to 30 s
+//	for the result, and returns it synchronously.
+//
 // @Tags         team
 // @Accept       json
 // @Produce      json
@@ -729,8 +731,8 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	// Update member status to online
 	if m, _ := h.store.GetMemberByMachine(sessionID, machineID); m != nil {
 		h.store.UpdateMember(m.ID, map[string]any{ //nolint:errcheck
-			"status":          MemberStatusOnline,
-			"last_heartbeat":  time.Now(),
+			"status":         MemberStatusOnline,
+			"last_heartbeat": time.Now(),
 		})
 	}
 
@@ -977,10 +979,22 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 		taskID, _ := evt.Payload["taskId"].(string)
 		errMsg, _ := evt.Payload["errorMessage"].(string)
 		if taskID != "" {
-			h.store.UpdateTask(taskID, map[string]any{ //nolint:errcheck
-				"status":        TaskStatusFailed,
-				"error_message": errMsg,
-			})
+			retried, err := h.store.RetryTask(taskID)
+			if err == nil && retried != nil {
+				// Re-dispatch to the same assigned member
+				if retried.AssignedMemberID != nil {
+					member, _ := h.store.GetMember(*retried.AssignedMemberID)
+					if member != nil {
+						h.hub.SendToMachine(conn.SessionID, member.MachineID,
+							newEvent(EventTaskAssigned, conn.SessionID, map[string]any{"task": retried}))
+					}
+				}
+			} else {
+				h.store.UpdateTask(taskID, map[string]any{ //nolint:errcheck
+					"status":        TaskStatusFailed,
+					"error_message": errMsg,
+				})
+			}
 		}
 		h.hub.Broadcast(conn.SessionID, evt)
 

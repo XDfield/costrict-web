@@ -37,11 +37,21 @@ export class WSConnection {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private outboundQueue: string[] = [];
   private queueFull = false;
+  private connectedResolvers: Array<() => void> = [];
+  private connected = false;
 
   public onEvent: EventHandler = () => undefined;
 
   constructor(cfg: TeamClientConfig) {
     this.cfg = cfg;
+  }
+
+  /** Resolves as soon as the WebSocket connection is open (or immediately if already open). */
+  waitConnected(): Promise<void> {
+    if (this.connected) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.connectedResolvers.push(resolve);
+    });
   }
 
   /** Starts the connection loop. Resolves when the signal fires. */
@@ -111,6 +121,10 @@ export class WSConnection {
         }
         this.outboundQueue = [];
         this.startPing(ws);
+        // Notify waitConnected() waiters.
+        this.connected = true;
+        const resolvers = this.connectedResolvers.splice(0);
+        for (const r of resolvers) r();
       };
 
       ws.onmessage = (ev) => {
@@ -130,6 +144,7 @@ export class WSConnection {
       };
 
       ws.onclose = () => {
+        this.connected = false;
         this.clearTimers();
         this.ws = null;
         signal.removeEventListener('abort', onAbort);

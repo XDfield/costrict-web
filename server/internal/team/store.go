@@ -124,6 +124,35 @@ func (s *Store) UpdateTask(id string, updates map[string]any) error {
 	return s.db.Model(&TeamTask{}).Where("id = ?", id).Updates(updates).Error
 }
 
+// RetryTask increments retry_count and resets the task to pending/assigned so it
+// can be dispatched again. Returns the updated task, or nil if the task has
+// exhausted its retries or does not exist.
+func (s *Store) RetryTask(taskID string) (*TeamTask, error) {
+	var task TeamTask
+	if err := s.db.First(&task, "id = ?", taskID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if task.RetryCount >= task.MaxRetries {
+		return nil, nil
+	}
+	updates := map[string]any{
+		"retry_count":   task.RetryCount + 1,
+		"status":        TaskStatusAssigned,
+		"error_message": "",
+		"claimed_at":    nil,
+		"started_at":    nil,
+	}
+	if err := s.db.Model(&TeamTask{}).Where("id = ?", taskID).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+	task.RetryCount++
+	task.Status = TaskStatusAssigned
+	return &task, nil
+}
+
 // ClaimTask atomically transitions a task from pending/assigned → claimed.
 func (s *Store) ClaimTask(taskID, memberID string) error {
 	now := time.Now()

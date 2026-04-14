@@ -10,10 +10,11 @@
  *   E2E_SESSION_ID — Optional session ID (auto-generated if not set)
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import { TeamClient, MemberRoleLeader, MemberRoleTeammate } from '../src/index.js';
 import type { TaskSpec, TaskResult, Member } from '../src/types.js';
 import {
-  generateSessionId,
+  createSession,
   generateMachineId,
   loadTestConfig,
   delay,
@@ -42,7 +43,7 @@ const TEST_TIMEOUT = 60000; // 60 seconds
 async function testBasicTaskExecution(): Promise<void> {
   console.log('\n=== Test: Basic Task Execution ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collector = new TaskExecutionCollector();
 
   // Create Teammate
@@ -57,8 +58,8 @@ async function testBasicTaskExecution(): Promise<void> {
 
   // Create Leader with simple task plan
   const taskSpecs: TaskSpec[] = [
-    { id: 'task-1', description: 'Echo Hello', priority: 9 },
-    { id: 'task-2', description: 'Echo World', priority: 8 },
+    { id: uuidv4(), description: 'Echo Hello', priority: 9 },
+    { id: uuidv4(), description: 'Echo World', priority: 8 },
   ];
 
   const leaderClient = new TeamClient({
@@ -72,7 +73,7 @@ async function testBasicTaskExecution(): Promise<void> {
 
   try {
     // Start Teammate first
-    const teammatePromise = teammateClient.start();
+    await teammateClient.start();
     await delay(500); // Give teammate time to register
 
     // Start Leader and submit plan
@@ -106,7 +107,7 @@ async function testBasicTaskExecution(): Promise<void> {
 async function testTaskDependencyChain(): Promise<void> {
   console.log('\n=== Test: Task Dependency Chain ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collector = new TaskExecutionCollector();
 
   // Create Teammate
@@ -168,7 +169,7 @@ async function testTaskDependencyChain(): Promise<void> {
 async function testParallelTaskExecution(): Promise<void> {
   console.log('\n=== Test: Parallel Task Execution ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collector = new TaskExecutionCollector();
   const startTimes = new Map<string, number>();
 
@@ -239,7 +240,7 @@ async function testParallelTaskExecution(): Promise<void> {
 async function testDiamondDependencyGraph(): Promise<void> {
   console.log('\n=== Test: Diamond Dependency Graph ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collector = new TaskExecutionCollector();
 
   const teammateClient = new TeamClient({
@@ -304,7 +305,7 @@ async function testDiamondDependencyGraph(): Promise<void> {
 async function testApprovalWorkflow(): Promise<void> {
   console.log('\n=== Test: Approval Workflow ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   let approvalRequested = false;
 
   // Teammate that requests approval
@@ -335,7 +336,7 @@ async function testApprovalWorkflow(): Promise<void> {
     role: MemberRoleLeader,
   })
     .withLeaderPlugin(new MockLeaderPlugin([
-      { id: 'approval-task', description: 'Test Approval Task', priority: 9 },
+      { id: uuidv4(), description: 'Test Approval Task', priority: 9 },
     ]))
     .withApprovalPlugin(new MockApprovalPlugin(true));
 
@@ -365,7 +366,7 @@ async function testApprovalWorkflow(): Promise<void> {
 async function testMultipleTeammates(): Promise<void> {
   console.log('\n=== Test: Multiple Teammates ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collectors: TaskExecutionCollector[] = [];
   const clients: TeamClient[] = [];
 
@@ -430,7 +431,7 @@ async function testMultipleTeammates(): Promise<void> {
 async function testTaskRetry(): Promise<void> {
   console.log('\n=== Test: Task Retry on Failure ===');
 
-  const sessionId = generateSessionId();
+  const sessionId = await createSession(config.serverUrl, config.token);
   const collector = new TaskExecutionCollector();
   let attemptCount = 0;
 
@@ -461,7 +462,7 @@ async function testTaskRetry(): Promise<void> {
     role: MemberRoleLeader,
   }).withLeaderPlugin(
     new MockLeaderPlugin([
-      { id: 'retry-task', description: 'Retry Test Task', priority: 9, maxRetries: 3 },
+      { id: uuidv4(), description: 'Retry Test Task', priority: 9, maxRetries: 3 },
     ])
   );
 

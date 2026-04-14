@@ -120,8 +120,9 @@ export class TeamClient {
         );
     }
 
-    // Start WS (will keep reconnecting until signal fires).
-    await this.ws.start(combinedSignal);
+    // Start WS loop in the background, then wait until the connection is open.
+    void this.ws.start(combinedSignal);
+    await this.ws.waitConnected();
   }
 
   /**
@@ -182,6 +183,32 @@ export class TeamClient {
       `/api/team/sessions/${this.cfg.sessionId}/members`
     );
     return resp?.members ?? [];
+  }
+
+  /**
+   * Creates a new team session on the server and returns the session ID.
+   * Call this before constructing TeamClient instances that share the session.
+   */
+  static async createSession(
+    serverUrl: string,
+    token: string,
+    name?: string
+  ): Promise<string> {
+    const url = serverUrl.replace(/\/$/, '') + '/api/team/sessions';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ name: name ?? 'e2e-test-session' }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+      throw new Error(`HTTP ${res.status} /api/team/sessions: ${err.error ?? res.statusText}`);
+    }
+    const data = await res.json() as { id: string };
+    return data.id;
   }
 }
 

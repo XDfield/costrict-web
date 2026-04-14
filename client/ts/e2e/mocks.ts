@@ -43,10 +43,16 @@ export class MockLeaderPlugin implements LeaderPlugin {
     input: PlanTasksInput
   ): Promise<TaskSpec[]> {
     this.onPlanCalled?.(input);
-    // Return copies with IDs assigned if not present
-    return this.taskSpecs.map((spec) => ({
+
+    // Pick online teammates to assign tasks to (round-robin)
+    const teammates = input.members.filter((m) => m.role === 'teammate');
+
+    return this.taskSpecs.map((spec, i) => ({
       ...spec,
       id: spec.id ?? uuidv4(),
+      assignedMemberId: teammates.length > 0
+        ? teammates[i % teammates.length].id
+        : spec.assignedMemberId,
     }));
   }
 }
