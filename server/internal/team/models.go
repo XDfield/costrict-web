@@ -25,18 +25,23 @@ type TeamSession struct {
 
 // TeamSessionMember represents a member (machine) in a team session.
 type TeamSessionMember struct {
-	ID            string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	SessionID     string         `gorm:"type:uuid;not null;index;uniqueIndex:idx_team_member_session_machine" json:"sessionId"`
-	UserID        string         `gorm:"not null;index" json:"userId"`
-	MachineID     string         `gorm:"not null;uniqueIndex:idx_team_member_session_machine" json:"machineId"`
-	MachineName   string         `json:"machineName,omitempty"`
-	Role          string         `gorm:"not null;default:'teammate'" json:"role"`
-	Status        string         `gorm:"not null;default:'online'" json:"status"`
-	ConnectedAt   time.Time      `json:"connectedAt"`
-	LastHeartbeat time.Time      `json:"lastHeartbeat"`
-	CreatedAt     time.Time      `json:"createdAt"`
-	UpdatedAt     time.Time      `json:"updatedAt"`
-	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                   string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	SessionID            string         `gorm:"type:uuid;not null;index;uniqueIndex:idx_team_member_session_machine" json:"sessionId"`
+	UserID               string         `gorm:"not null;index" json:"userId"`
+	MachineID            string         `gorm:"not null;uniqueIndex:idx_team_member_session_machine" json:"machineId"`
+	MachineName          string         `json:"machineName,omitempty"`
+	Role                 string         `gorm:"not null;default:'teammate'" json:"role"`
+	Status               string         `gorm:"not null;default:'online'" json:"status"`
+	ConnectedAt          time.Time      `json:"connectedAt"`
+	LastHeartbeat        time.Time      `json:"lastHeartbeat"`
+	CpuIdlePercent       float64        `gorm:"default:0" json:"cpuIdlePercent,omitempty"`
+	MemoryFreeMB         float64        `gorm:"default:0" json:"memoryFreeMB,omitempty"`
+	RTTMs                float64        `gorm:"default:0" json:"rttMs,omitempty"`
+	HeartbeatSuccessRate float64        `gorm:"default:0" json:"heartbeatSuccessRate,omitempty"`
+	ReportedRepoURLs     pq.StringArray `gorm:"type:text[]" json:"reportedRepoUrls,omitempty"`
+	CreatedAt            time.Time      `json:"createdAt"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
+	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // TeamTask represents a task within a team session.

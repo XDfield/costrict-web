@@ -83,6 +83,26 @@ func (h *Handler) GetSession(c *gin.Context) {
 	c.JSON(http.StatusOK, sess)
 }
 
+// ListSessions godoc
+// @Summary      List sessions for the current user
+// @Tags         team
+// @Produce      json
+// @Success      200  {object}  object{sessions=[]TeamSession}
+// @Router       /team/sessions [get]
+func (h *Handler) ListSessions(c *gin.Context) {
+	userID := c.GetString("userId")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	sessions, err := h.store.ListSessionsByCreator(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+}
+
 // UpdateSession godoc
 // @Summary      Update team session status
 // @Tags         team
@@ -92,7 +112,29 @@ func (h *Handler) GetSession(c *gin.Context) {
 // @Param        body  body  object{status=string}  true  "Status"
 // @Success      200   {object}  TeamSession
 // @Router       /team/sessions/:id [patch]
+// requireSessionLeader checks that the caller is the session creator or the current
+// leader. Returns the session on success, writes error response and returns nil on failure.
+func (h *Handler) requireSessionLeader(c *gin.Context) *TeamSession {
+	sessionID := c.Param("id")
+	sess, err := h.store.GetSession(sessionID)
+	if err != nil || sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return nil
+	}
+	userID := c.GetString("userId")
+	leaderMachineID := h.hub.GetLeaderMachineID(sessionID)
+	if sess.CreatorID != userID && leaderMachineID == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the session creator or leader can perform this action"})
+		return nil
+	}
+	return sess
+}
+
 func (h *Handler) UpdateSession(c *gin.Context) {
+	sess := h.requireSessionLeader(c)
+	if sess == nil {
+		return
+	}
 	var req struct {
 		Status string `json:"status"`
 		Name   string `json:"name"`
@@ -114,13 +156,13 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 		return
 	}
 
-	if err := h.store.UpdateSession(c.Param("id"), updates); err != nil {
+	if err := h.store.UpdateSession(sess.ID, updates); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
 		return
 	}
 
-	sess, _ := h.store.GetSession(c.Param("id"))
-	c.JSON(http.StatusOK, sess)
+	updated, _ := h.store.GetSession(sess.ID)
+	c.JSON(http.StatusOK, updated)
 }
 
 // DeleteSession godoc
@@ -130,6 +172,9 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 // @Success      200  {object}  object{message=string}
 // @Router       /team/sessions/:id [delete]
 func (h *Handler) DeleteSession(c *gin.Context) {
+	if sess := h.requireSessionLeader(c); sess == nil {
+		return
+	}
 	sessionID := c.Param("id")
 	if err := h.store.DeleteSession(sessionID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
@@ -278,6 +323,12 @@ func (h *Handler) SubmitTaskPlan(c *gin.Context) {
 		}
 	}
 
+		// Auto-assign tasks via P1-P5 repo affinity scheduling
+		schedCtx, schedErr := h.buildSchedulingContext(sessionID)
+		if schedErr == nil {
+			req.Tasks = ScheduleTasks(*schedCtx, req.Tasks)
+		}
+
 	if err := h.store.CreateTasks(req.Tasks); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tasks"})
 		return
@@ -297,6 +348,152 @@ func (h *Handler) SubmitTaskPlan(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"tasks": req.Tasks})
+}
+
+// DecomposeTask godoc
+// @Summary      Decompose a prompt into sub-tasks using LLM (Leader)
+// @Tags         team
+// @Accept       json
+// @Produce      json
+// @Param        id    path  string  true  "Session ID"
+// @Param        body  body  DecomposeRequest  true  "Prompt to decompose"
+// @Success      201   {object}  object{tasks=[]TeamTask}
+// @Failure      503   {object}  object{error=string}
+// @Router       /team/sessions/:id/decompose [post]
+func (h *Handler) DecomposeTask(c *gin.Context) {
+	sessionID := c.Param("id")
+	sess, err := h.store.GetSession(sessionID)
+	if err != nil || sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	var req DecomposeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
+		return
+	}
+
+	// Validate fencing token — only the current leader may decompose
+	if req.FencingToken != 0 {
+		if !h.hub.ValidateFencingToken(sessionID, req.FencingToken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "stale leader: fencing token rejected"})
+			return
+		}
+	}
+
+	// Pick an online teammate to delegate decomposition to
+	_, targetMachineID, err := pickDecomposeTarget(h.hub, h.store, sessionID)
+	if err != nil {
+		// No teammate available — fallback to a single task
+		tasks := buildFallbackTasks(req.Prompt, sessionID)
+		schedCtx, schedErr := h.buildSchedulingContext(sessionID)
+		if schedErr == nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+		if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tasks"})
+			return
+		}
+		h.hub.Broadcast(sessionID, newEvent(EventTaskPlanSubmit, sessionID, map[string]any{"tasks": tasks}))
+		h.notifyAssignedMachines(sessionID, tasks)
+		c.JSON(http.StatusCreated, gin.H{"tasks": tasks})
+		return
+	}
+
+	requestID := uuid.New().String()
+
+	// Register a channel to receive the decompose result
+	resultCh := h.hub.RegisterDecompose(requestID)
+	defer h.hub.CancelDecompose(requestID)
+
+	// Send decompose.request to the target teammate via WS
+	evt := newEvent(EventDecomposeRequest, sessionID, map[string]any{
+		"requestId": requestID,
+		"prompt":    req.Prompt,
+		"context":   req.Context,
+	})
+	h.hub.SendToMachine(sessionID, targetMachineID, evt)
+
+	// Wait up to 60 s for the decompose.result
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	select {
+	case result := <-resultCh:
+		// Parse the result items into TeamTask records
+		itemsRaw, ok := result.Payload["tasks"].([]any)
+		if !ok || len(itemsRaw) == 0 {
+			tasks := buildFallbackTasks(req.Prompt, sessionID)
+			if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tasks"})
+				return
+			}
+			h.hub.Broadcast(sessionID, newEvent(EventTaskPlanSubmit, sessionID, map[string]any{"tasks": tasks}))
+			c.JSON(http.StatusCreated, gin.H{"tasks": tasks})
+			return
+		}
+
+		var tasks []TeamTask
+		for _, raw := range itemsRaw {
+			data, _ := json.Marshal(raw)
+			var item DecomposeResultItem
+			if json.Unmarshal(data, &item) != nil || item.Description == "" {
+				continue
+			}
+			tasks = append(tasks, item.toTeamTask(sessionID))
+		}
+		if len(tasks) == 0 {
+			tasks = buildFallbackTasks(req.Prompt, sessionID)
+		}
+
+		// Auto-assign tasks via P1-P5 repo affinity scheduling
+		schedCtx, schedErr := h.buildSchedulingContext(sessionID)
+		if schedErr == nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+
+		if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tasks"})
+			return
+		}
+
+		// Broadcast task plan to all session members
+		h.hub.Broadcast(sessionID, newEvent(EventTaskPlanSubmit, sessionID, map[string]any{"tasks": tasks}))
+
+		// Notify assigned machines
+		for _, task := range tasks {
+			if task.AssignedMemberID == nil {
+				continue
+			}
+			member, _ := h.store.GetMember(*task.AssignedMemberID)
+			if member == nil {
+				continue
+			}
+			h.hub.SendToMachine(sessionID, member.MachineID,
+				newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task}))
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"tasks": tasks})
+
+		case <-ctx.Done():
+			// Timeout — fallback to single task
+			tasks := buildFallbackTasks(req.Prompt, sessionID)
+			schedCtx, schedErr := h.buildSchedulingContext(sessionID)
+			if schedErr == nil {
+				tasks = ScheduleTasks(*schedCtx, tasks)
+			}
+			if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tasks"})
+				return
+			}
+			h.hub.Broadcast(sessionID, newEvent(EventTaskPlanSubmit, sessionID, map[string]any{"tasks": tasks}))
+			h.notifyAssignedMachines(sessionID, tasks)
+			c.JSON(http.StatusGatewayTimeout, gin.H{
+				"error": "decompose request timed out (teammate did not respond within 60s)",
+				"tasks": tasks,
+			})
+	}
 }
 
 // ListTasks godoc
@@ -424,6 +621,22 @@ func (h *Handler) ListApprovals(c *gin.Context) {
 // @Router       /team/approvals/:approvalId [patch]
 func (h *Handler) RespondApproval(c *gin.Context) {
 	approvalID := c.Param("approvalId")
+	// Only the leader can respond to approvals
+	approval, err := h.store.GetApproval(approvalID)
+	if err != nil || approval == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "approval not found"})
+		return
+	}
+	leaderMachineID := h.hub.GetLeaderMachineID(approval.SessionID)
+	machineID := c.Query("machineId")
+	if machineID == "" {
+		machineID = c.GetString("machineId")
+	}
+	if leaderMachineID != "" && machineID != leaderMachineID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the leader can respond to approvals"})
+		return
+	}
+
 	var req struct {
 		Status   string `json:"status" binding:"required"` // approved | rejected
 		Feedback string `json:"feedback"`
@@ -444,7 +657,7 @@ func (h *Handler) RespondApproval(c *gin.Context) {
 		return
 	}
 
-	approval, _ := h.store.GetApproval(approvalID)
+	approval, _ = h.store.GetApproval(approvalID)
 	if approval != nil {
 		// Notify the requesting member
 		member, _ := h.store.GetMember(approval.RequesterID)
@@ -556,35 +769,74 @@ func (h *Handler) GetProgress(c *gin.Context) {
 func (h *Handler) ElectLeader(c *gin.Context) {
 	sessionID := c.Param("id")
 	var req struct {
-		MachineID string `json:"machineId" binding:"required"`
+		MachineID            string   `json:"machineId" binding:"required"`
+		Repos                []string `json:"repos,omitempty"`
+		HeartbeatSuccessRate float64  `json:"heartbeatSuccessRate,omitempty"`
+		CPUIdlePercent       float64  `json:"cpuIdlePercent,omitempty"`
+		MemoryFreeMB         float64  `json:"memoryFreeMB,omitempty"`
+		RTTMs                float64  `json:"rttMs,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "machineId is required"})
 		return
 	}
 
+	// Persist capability data regardless of election outcome
+	m, _ := h.store.GetMemberByMachine(sessionID, req.MachineID)
+	if m != nil {
+		caps := LeaderCapability{
+			MachineID:            req.MachineID,
+			RepoURLs:             req.Repos,
+			HeartbeatSuccessRate: req.HeartbeatSuccessRate,
+			CPUIdlePercent:       req.CPUIdlePercent,
+			MemoryFreeMB:         req.MemoryFreeMB,
+			RTTMs:                req.RTTMs,
+		}
+		h.store.UpdateMemberCapabilities(m.ID, caps) //nolint:errcheck
+	}
+
 	token, elected := h.hub.TryAcquireLeader(sessionID, req.MachineID)
+
+	// Compute leader score for the candidate
+	var score *LeaderScore
 	if elected {
+		// Fetch session target repos for scoring context
+		targetRepos, _ := h.store.GetSessionTargetRepos(sessionID)
+		s := ScoreLeaderCandidate(LeaderCapability{
+			MachineID:            req.MachineID,
+			RepoURLs:             req.Repos,
+			HeartbeatSuccessRate: req.HeartbeatSuccessRate,
+			CPUIdlePercent:       req.CPUIdlePercent,
+			MemoryFreeMB:         req.MemoryFreeMB,
+			RTTMs:                req.RTTMs,
+		}, targetRepos)
+		score = &s
+
 		// Update member role and persist leader info to DB
 		h.store.UpdateSession(sessionID, map[string]any{ //nolint:errcheck
 			"leader_machine_id": req.MachineID,
 			"fencing_token":     token,
 		})
-		m, _ := h.store.GetMemberByMachine(sessionID, req.MachineID)
 		if m != nil {
 			h.store.UpdateMember(m.ID, map[string]any{"role": MemberRoleLeader}) //nolint:errcheck
 		}
-		h.hub.Broadcast(sessionID, newEvent(EventLeaderElected, sessionID, map[string]any{
+		broadcastPayload := map[string]any{
 			"leaderId":     req.MachineID,
 			"fencingToken": token,
-		}))
+			"score":        score,
+		}
+		h.hub.Broadcast(sessionID, newEvent(EventLeaderElected, sessionID, broadcastPayload))
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"elected":      elected,
 		"fencingToken": token,
 		"leaderId":     h.hub.GetLeaderMachineID(sessionID),
-	})
+	}
+	if score != nil {
+		resp["score"] = score
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // LeaderHeartbeat godoc
@@ -599,11 +851,30 @@ func (h *Handler) ElectLeader(c *gin.Context) {
 func (h *Handler) LeaderHeartbeat(c *gin.Context) {
 	sessionID := c.Param("id")
 	var req struct {
-		MachineID string `json:"machineId" binding:"required"`
+		MachineID            string   `json:"machineId" binding:"required"`
+		Repos                []string `json:"repos,omitempty"`
+		HeartbeatSuccessRate float64  `json:"heartbeatSuccessRate,omitempty"`
+		CPUIdlePercent       float64  `json:"cpuIdlePercent,omitempty"`
+		MemoryFreeMB         float64  `json:"memoryFreeMB,omitempty"`
+		RTTMs                float64  `json:"rttMs,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "machineId is required"})
 		return
+	}
+
+	// Persist capability updates from the leader
+	m, _ := h.store.GetMemberByMachine(sessionID, req.MachineID)
+	if m != nil {
+		caps := LeaderCapability{
+			MachineID:            req.MachineID,
+			RepoURLs:             req.Repos,
+			HeartbeatSuccessRate: req.HeartbeatSuccessRate,
+			CPUIdlePercent:       req.CPUIdlePercent,
+			MemoryFreeMB:         req.MemoryFreeMB,
+			RTTMs:                req.RTTMs,
+		}
+		h.store.UpdateMemberCapabilities(m.ID, caps) //nolint:errcheck
 	}
 
 	renewed := h.hub.RenewLeader(sessionID, req.MachineID)
@@ -652,10 +923,19 @@ func (h *Handler) Explore(c *gin.Context) {
 	var req struct {
 		TargetMachineID string `json:"targetMachineId" binding:"required"`
 		Queries         []any  `json:"queries"`
+		FencingToken    int64  `json:"fencingToken,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "targetMachineId is required"})
 		return
+	}
+
+	// Only the current leader may issue explore requests
+	if req.FencingToken != 0 {
+		if !h.hub.ValidateFencingToken(sessionID, req.FencingToken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "stale leader: fencing token rejected"})
+			return
+		}
 	}
 
 	requestID := uuid.New().String()
@@ -744,6 +1024,20 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		}
 	}
 
+	// Replay events since lastEventId (for reconnection catch-up)
+	lastEventID := c.Query("lastEventId")
+	if lastEventID != "" {
+		replayed := h.hub.ReplayEvents(sessionID, lastEventID)
+		for _, evt := range replayed {
+			if data, err := jsonMarshal(evt); err == nil {
+				select {
+				case wsConn.Send <- data:
+				default:
+				}
+			}
+		}
+	}
+
 	// Notify session peers that this machine came online
 	h.hub.Broadcast(sessionID, newEvent(EventTeammateStatus, sessionID, map[string]any{
 		"machineId": machineID,
@@ -801,6 +1095,9 @@ func (h *Handler) wsReadPump(conn *WSConnection) {
 		if m, _ := h.store.GetMemberByMachine(conn.SessionID, conn.MachineID); m != nil {
 			h.store.UpdateMember(m.ID, map[string]any{"status": MemberStatusOffline}) //nolint:errcheck
 		}
+
+		// Interrupt tasks currently running on this machine
+		h.interruptTasksForMember(conn.SessionID, conn.MachineID)
 
 		// Release leader lock if this machine was the leader
 		h.hub.ReleaseLeader(conn.SessionID, conn.MachineID)
@@ -934,6 +1231,12 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 		if len(tasks) == 0 {
 			return
 		}
+		// Auto-assign tasks via P1-P5 repo affinity scheduling
+		schedCtx, schedErr := h.buildSchedulingContext(conn.SessionID)
+		if schedErr == nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+
 		if err := h.store.CreateTasks(tasks); err != nil {
 			return
 		}
@@ -950,6 +1253,34 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 		}
 
 	case EventLeaderHeartbeat:
+		// Parse optional capability updates from heartbeat event
+		var hbcaps LeaderCapability
+		hbcaps.MachineID = conn.MachineID
+		if repos, ok := evt.Payload["repos"].([]any); ok {
+			for _, r := range repos {
+				if s, ok := r.(string); ok {
+					hbcaps.RepoURLs = append(hbcaps.RepoURLs, s)
+				}
+			}
+		}
+		if v, ok := evt.Payload["heartbeatSuccessRate"].(float64); ok {
+			hbcaps.HeartbeatSuccessRate = v
+		}
+		if v, ok := evt.Payload["cpuIdlePercent"].(float64); ok {
+			hbcaps.CPUIdlePercent = v
+		}
+		if v, ok := evt.Payload["memoryFreeMB"].(float64); ok {
+			hbcaps.MemoryFreeMB = v
+		}
+		if v, ok := evt.Payload["rttMs"].(float64); ok {
+			hbcaps.RTTMs = v
+		}
+		if len(hbcaps.RepoURLs) > 0 || hbcaps.HeartbeatSuccessRate > 0 || hbcaps.CPUIdlePercent > 0 || hbcaps.MemoryFreeMB > 0 || hbcaps.RTTMs > 0 {
+			m, _ := h.store.GetMemberByMachine(conn.SessionID, conn.MachineID)
+			if m != nil {
+				h.store.UpdateMemberCapabilities(m.ID, hbcaps) //nolint:errcheck
+			}
+		}
 		h.hub.RenewLeader(conn.SessionID, conn.MachineID)
 		h.hub.MarkPresence(conn.SessionID, conn.MachineID)
 
@@ -1124,20 +1455,59 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 			h.hub.SendToMachine(conn.SessionID, fromMachineID, evt)
 		}
 
+	case EventDecomposeResult:
+		requestID, _ := evt.Payload["requestId"].(string)
+		// If a synchronous HTTP decompose call is waiting, deliver to it.
+		if requestID != "" {
+			h.hub.DeliverDecompose(requestID, evt)
+		}
+
 	case EventLeaderElect:
+		// Parse capability data from WS event (backward compatible)
+		var caps LeaderCapability
+		caps.MachineID = conn.MachineID
+		if repos, ok := evt.Payload["repos"].([]any); ok {
+			for _, r := range repos {
+				if s, ok := r.(string); ok {
+					caps.RepoURLs = append(caps.RepoURLs, s)
+				}
+			}
+		}
+		if v, ok := evt.Payload["heartbeatSuccessRate"].(float64); ok {
+			caps.HeartbeatSuccessRate = v
+		}
+		if v, ok := evt.Payload["cpuIdlePercent"].(float64); ok {
+			caps.CPUIdlePercent = v
+		}
+		if v, ok := evt.Payload["memoryFreeMB"].(float64); ok {
+			caps.MemoryFreeMB = v
+		}
+		if v, ok := evt.Payload["rttMs"].(float64); ok {
+			caps.RTTMs = v
+		}
+
+		// Persist capabilities regardless of election outcome
+		m, _ := h.store.GetMemberByMachine(conn.SessionID, conn.MachineID)
+		if m != nil {
+			h.store.UpdateMemberCapabilities(m.ID, caps) //nolint:errcheck
+		}
+
 		token, elected := h.hub.TryAcquireLeader(conn.SessionID, conn.MachineID)
 		if elected {
+			targetRepos, _ := h.store.GetSessionTargetRepos(conn.SessionID)
+			score := ScoreLeaderCandidate(caps, targetRepos)
+
 			h.store.UpdateSession(conn.SessionID, map[string]any{ //nolint:errcheck
 				"leader_machine_id": conn.MachineID,
 				"fencing_token":     token,
 			})
-			m, _ := h.store.GetMemberByMachine(conn.SessionID, conn.MachineID)
 			if m != nil {
 				h.store.UpdateMember(m.ID, map[string]any{"role": MemberRoleLeader}) //nolint:errcheck
 			}
 			h.hub.Broadcast(conn.SessionID, newEvent(EventLeaderElected, conn.SessionID, map[string]any{
 				"leaderId":     conn.MachineID,
 				"fencingToken": token,
+				"score":        score,
 			}))
 		}
 	}
@@ -1165,6 +1535,74 @@ func (h *Handler) notifyUnlockedTasks(sessionID, completedTaskID string) {
 	}
 }
 
+// interruptTasksForMember finds all running tasks assigned to a member
+// whose machineID matches, transitions them to "interrupted", and broadcasts
+// the change so the leader and other teammates see it immediately.
+func (h *Handler) interruptTasksForMember(sessionID, machineID string) {
+	member, _ := h.store.GetMemberByMachine(sessionID, machineID)
+	if member == nil {
+		return
+	}
+	tasks, err := h.store.ListTasks(sessionID)
+	if err != nil {
+		return
+	}
+	for _, t := range tasks {
+		if t.AssignedMemberID == nil || *t.AssignedMemberID != member.ID {
+			continue
+		}
+		if t.Status != TaskStatusRunning && t.Status != TaskStatusClaimed {
+			continue
+		}
+		h.store.UpdateTask(t.ID, map[string]any{ //nolint:errcheck
+			"status": TaskStatusInterrupted,
+		})
+		h.hub.Broadcast(sessionID, newEvent(EventTaskInterrupted, sessionID, map[string]any{
+			"taskId":    t.ID,
+			"machineId": machineID,
+		}))
+	}
+}
+
+// buildSchedulingContext assembles the data needed by ScheduleTasks from the
+// current session state. It filters members to only those with active WS
+// connections (Hub.IsMachineOnline is the source of truth).
+func (h *Handler) buildSchedulingContext(sessionID string) (*SchedulingContext, error) {
+	allMembers, err := h.store.ListMembers(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// Keep only members whose machine has a live WS connection
+	var onlineMembers []TeamSessionMember
+	for _, m := range allMembers {
+		if h.hub.IsMachineOnline(sessionID, m.MachineID) {
+			onlineMembers = append(onlineMembers, m)
+		}
+	}
+
+	affinities, err := h.store.ListAllRepoAffinities(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	running, err := h.store.GetRunningAssignedTasks(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	memberLoad, err := h.store.GetMemberLoadInfo(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SchedulingContext{
+		Members:        onlineMembers,
+		RepoAffinities: affinities,
+		RunningTasks:   running,
+		MemberLoad:     memberLoad,
+	}, nil
+}
+
 func newEvent(eventType, sessionID string, payload map[string]any) CloudEvent {
 	return CloudEvent{
 		EventID:   uuid.New().String(),
@@ -1177,4 +1615,20 @@ func newEvent(eventType, sessionID string, payload map[string]any) CloudEvent {
 
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+// notifyAssignedMachines sends task.assigned events to all machines that
+// received an assignment in the current batch.
+func (h *Handler) notifyAssignedMachines(sessionID string, tasks []TeamTask) {
+	for _, task := range tasks {
+		if task.AssignedMemberID == nil {
+			continue
+		}
+		member, _ := h.store.GetMember(*task.AssignedMemberID)
+		if member == nil {
+			continue
+		}
+		h.hub.SendToMachine(sessionID, member.MachineID,
+			newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task}))
+	}
 }

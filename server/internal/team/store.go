@@ -404,3 +404,113 @@ func (s *Store) GetProgress(sessionID string) (*SessionProgress, error) {
 
 	return p, nil
 }
+
+// ─── Scheduling support ──────────────────────────────────────────────────
+
+// ListAllRepoAffinities returns every repo affinity entry for a session.
+func (s *Store) ListAllRepoAffinities(sessionID string) ([]TeamRepoAffinity, error) {
+	var affinities []TeamRepoAffinity
+	err := s.db.Where("session_id = ?", sessionID).Find(&affinities).Error
+	return affinities, err
+}
+
+// GetMemberLoadInfo returns per-member load summary for scheduling.
+func (s *Store) GetMemberLoadInfo(sessionID string) (map[string]MemberLoadInfo, error) {
+	type memberStatusCount struct {
+		MemberID string
+		Status   string
+		Count    int64
+	}
+	var rows []memberStatusCount
+	if err := s.db.Model(&TeamTask{}).
+		Select("assigned_member_id as member_id, status, count(*) as count").
+		Where("session_id = ? AND assigned_member_id IS NOT NULL", sessionID).
+		Group("assigned_member_id, status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]MemberLoadInfo)
+	for _, r := range rows {
+		load := result[r.MemberID]
+		switch r.Status {
+		case TaskStatusRunning, TaskStatusClaimed:
+			load.RunningCount += int(r.Count)
+		case TaskStatusAssigned:
+			load.AssignedCount += int(r.Count)
+		case TaskStatusCompleted:
+			load.CompletedCount += r.Count
+		case TaskStatusFailed:
+			load.FailedCount += r.Count
+		}
+		result[r.MemberID] = load
+	}
+
+	// Build ActiveRepoURLs per member from running/assigned tasks
+	var activeTasks []TeamTask
+	s.db.Select("id, assigned_member_id, repo_affinity").
+		Where("session_id = ? AND status IN ? AND assigned_member_id IS NOT NULL",
+			sessionID, []string{TaskStatusRunning, TaskStatusAssigned, TaskStatusClaimed}).
+		Find(&activeTasks)
+	for _, t := range activeTasks {
+		if t.AssignedMemberID == nil {
+			continue
+		}
+		load := result[*t.AssignedMemberID]
+		if load.ActiveRepoURLs == nil {
+			load.ActiveRepoURLs = make(map[string]bool)
+		}
+		for _, url := range t.RepoAffinity {
+			load.ActiveRepoURLs[url] = true
+		}
+		result[*t.AssignedMemberID] = load
+	}
+
+	return result, nil
+}
+
+// GetRunningAssignedTasks returns all tasks that are currently running,
+// assigned, or claimed.
+func (s *Store) GetRunningAssignedTasks(sessionID string) ([]TeamTask, error) {
+	var tasks []TeamTask
+	err := s.db.Where("session_id = ? AND status IN ?",
+		sessionID, []string{TaskStatusRunning, TaskStatusAssigned, TaskStatusClaimed}).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+// UpdateMemberCapabilities persists a leader candidate's capability data.
+func (s *Store) UpdateMemberCapabilities(memberID string, caps LeaderCapability) error {
+	updates := map[string]any{
+		"cpu_idle_percent":       caps.CPUIdlePercent,
+		"memory_free_mb":        caps.MemoryFreeMB,
+		"rtt_ms":                caps.RTTMs,
+		"heartbeat_success_rate": caps.HeartbeatSuccessRate,
+	}
+	if len(caps.RepoURLs) > 0 {
+		updates["reported_repo_urls"] = caps.RepoURLs
+	}
+	return s.db.Model(&TeamSessionMember{}).Where("id = ?", memberID).Updates(updates).Error
+}
+
+// GetSessionTargetRepos returns the distinct set of repo URLs referenced by
+// all tasks in the session (used for leader scoring context).
+func (s *Store) GetSessionTargetRepos(sessionID string) ([]string, error) {
+	var tasks []TeamTask
+	if err := s.db.Select("repo_affinity").
+		Where("session_id = ? AND repo_affinity IS NOT NULL", sessionID).
+		Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	for _, t := range tasks {
+		for _, url := range t.RepoAffinity {
+			seen[url] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for url := range seen {
+		result = append(result, url)
+	}
+	return result, nil
+}

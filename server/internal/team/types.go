@@ -32,6 +32,8 @@ const (
 	EventTaskProgress      = "task.progress"
 	EventTaskComplete      = "task.complete"
 	EventTaskFail          = "task.fail"
+	EventDecomposeRequest  = "decompose.request"
+	EventDecomposeResult   = "decompose.result"
 	EventApprovalRequest   = "approval.request"
 	EventApprovalRespond   = "approval.respond"
 	EventMessageSend       = "message.send"
@@ -45,6 +47,7 @@ const (
 // Event types: Cloud → Client
 const (
 	EventTaskAssigned      = "task.assigned"
+	EventTaskInterrupted   = "task.interrupted"
 	EventApprovalPush      = "approval.push"
 	EventApprovalResponse  = "approval.response"
 	EventMessageReceive    = "message.receive"
@@ -78,12 +81,13 @@ const (
 
 // Task statuses
 const (
-	TaskStatusPending   = "pending"
-	TaskStatusAssigned  = "assigned"
-	TaskStatusClaimed   = "claimed"
-	TaskStatusRunning   = "running"
-	TaskStatusCompleted = "completed"
-	TaskStatusFailed    = "failed"
+	TaskStatusPending     = "pending"
+	TaskStatusAssigned    = "assigned"
+	TaskStatusClaimed     = "claimed"
+	TaskStatusRunning     = "running"
+	TaskStatusCompleted   = "completed"
+	TaskStatusFailed      = "failed"
+	TaskStatusInterrupted = "interrupted"
 )
 
 // WebSocket configuration defaults
@@ -93,6 +97,7 @@ const (
 	DefaultLeaderLockTTLSec          = 30
 	DefaultLeaderHeartbeatSec        = 10
 	DefaultEventBacklogTTLMin        = 60
+	DefaultEventLogMaxLen            = 200 // max events kept in Redis list for replay
 	DefaultMaxConnectionsPerSession  = 20
 	DefaultSendChannelCapacity       = 256
 	WSPingIntervalSec                = 30
@@ -106,4 +111,5 @@ const (
 	redisKeyFencingToken = "team:session:%s:fencing_token"
 	redisKeyPresence     = "team:session:%s:presence:%s"
 	redisKeyBacklog      = "team:session:%s:backlog:%s"
+	redisKeyEventLog     = "team:session:%s:events" // recent event log for replay
 )

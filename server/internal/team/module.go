@@ -35,6 +35,7 @@ func (m *Module) RegisterRoutes(apiGroup, wsGroup *gin.RouterGroup) {
 		sessions := team.Group("/sessions")
 		{
 			sessions.POST("", m.Handler.CreateSession)
+			sessions.GET("", m.Handler.ListSessions)
 			sessions.GET("/:id", m.Handler.GetSession)
 			sessions.PATCH("/:id", m.Handler.UpdateSession)
 			sessions.DELETE("/:id", m.Handler.DeleteSession)
@@ -45,6 +46,7 @@ func (m *Module) RegisterRoutes(apiGroup, wsGroup *gin.RouterGroup) {
 
 			sessions.POST("/:id/tasks", m.Handler.SubmitTaskPlan)
 			sessions.GET("/:id/tasks", m.Handler.ListTasks)
+			sessions.POST("/:id/decompose", m.Handler.DecomposeTask)
 
 			sessions.GET("/:id/approvals", m.Handler.ListApprovals)
 

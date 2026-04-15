@@ -33,15 +33,42 @@ type Hub struct {
 	// exploreMu guards exploreChans
 	exploreMu   sync.Mutex
 	exploreChans map[string]chan CloudEvent // requestID → result channel
+
+	// decomposeMu guards decomposeChans
+	decomposeMu   sync.Mutex
+	decomposeChans map[string]chan CloudEvent // requestID → result channel
+
+	// leaderExpiryMu guards leaderExpiredSent
+	leaderExpiryMu   sync.Mutex
+	leaderExpiredSent map[string]bool // sessionID → already broadcast leader.expired
+
+	stopCh chan struct{} // closed on Close() to stop background goroutines
 }
 
 func NewHub(rc *redis.Client) *Hub {
-	return &Hub{
-		conns:        make(map[string]*WSConnection),
-		sessionConns: make(map[string]map[string]struct{}),
-		machineConns: make(map[string]string),
-		redis:        rc,
-		exploreChans: make(map[string]chan CloudEvent),
+	h := &Hub{
+		conns:             make(map[string]*WSConnection),
+		sessionConns:      make(map[string]map[string]struct{}),
+		machineConns:      make(map[string]string),
+		redis:             rc,
+		exploreChans:      make(map[string]chan CloudEvent),
+		decomposeChans:    make(map[string]chan CloudEvent),
+		leaderExpiredSent: make(map[string]bool),
+		stopCh:            make(chan struct{}),
+	}
+	if rc != nil {
+		go h.watchLeaderExpiry()
+	}
+	return h
+}
+
+// Close stops background goroutines. Call on server shutdown.
+func (h *Hub) Close() {
+	select {
+	case <-h.stopCh:
+		// already closed
+	default:
+		close(h.stopCh)
 	}
 }
 
@@ -162,6 +189,7 @@ func (h *Hub) TryAcquireLeader(sessionID, machineID string) (int64, bool) {
 	if h.redis == nil {
 		// No Redis: first caller always wins (single-node mode)
 		token, _ := h.incrFencingToken(sessionID)
+		h.ResetLeaderExpiredSent(sessionID)
 		return token, true
 	}
 	ctx := context.Background()
@@ -176,6 +204,7 @@ func (h *Hub) TryAcquireLeader(sessionID, machineID string) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
+	h.ResetLeaderExpiredSent(sessionID)
 	return token, true
 }
 
@@ -239,6 +268,15 @@ func (h *Hub) ValidateFencingToken(sessionID string, token int64) bool {
 	return token >= current
 }
 
+// IsMachineOnline returns true if the machine has an active WS connection
+// in the session. More reliable than DB status which may lag.
+func (h *Hub) IsMachineOnline(sessionID, machineID string) bool {
+	h.mu.RLock()
+	_, ok := h.machineConns[machineKey(sessionID, machineID)]
+	h.mu.RUnlock()
+	return ok
+}
+
 // ─── Presence ──────────────────────────────────────────────────────────────
 
 // MarkPresence records a machine's last-seen timestamp in Redis.
@@ -270,6 +308,9 @@ func (h *Hub) deliver(conn *WSConnection, evt CloudEvent) {
 	default:
 		// Drop if channel full; caller may handle reconnect
 	}
+
+	// Append to the session event log for lastEventId replay
+	h.appendEventLog(conn.SessionID, evt)
 }
 
 func (h *Hub) appendBacklog(sessionID, machineID string, evt CloudEvent) {
@@ -295,6 +336,142 @@ func (h *Hub) incrFencingToken(sessionID string) (int64, error) {
 	ctx := context.Background()
 	key := fmt.Sprintf(redisKeyFencingToken, sessionID)
 	return h.redis.Incr(ctx, key).Result()
+}
+
+// appendEventLog stores the event in a Redis list for lastEventId-based replay.
+// The list is capped to DefaultEventLogMaxLen entries using LTRIM.
+func (h *Hub) appendEventLog(sessionID string, evt CloudEvent) {
+	if h.redis == nil {
+		return
+	}
+	ctx := context.Background()
+	key := fmt.Sprintf(redisKeyEventLog, sessionID)
+	data, err := json.Marshal(evt)
+	if err != nil {
+		return
+	}
+	pipe := h.redis.Pipeline()
+	pipe.RPush(ctx, key, data)
+	pipe.LTrim(ctx, key, 0, int64(DefaultEventLogMaxLen-1))
+	pipe.Expire(ctx, key, time.Duration(DefaultEventBacklogTTLMin)*time.Minute)
+	pipe.Exec(ctx) //nolint:errcheck
+}
+
+// ReplayEvents returns all events after the given lastEventId from the session
+// event log. Returns nil if no Redis or no events to replay.
+func (h *Hub) ReplayEvents(sessionID, lastEventID string) []CloudEvent {
+	if h.redis == nil || lastEventID == "" {
+		return nil
+	}
+	ctx := context.Background()
+	key := fmt.Sprintf(redisKeyEventLog, sessionID)
+
+	data, err := h.redis.LRange(ctx, key, 0, -1).Result()
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+
+	// Find the position of lastEventID and return everything after it
+	startIdx := -1
+	for i, raw := range data {
+		var evt CloudEvent
+		if json.Unmarshal([]byte(raw), &evt) == nil && evt.EventID == lastEventID {
+			startIdx = i
+			break
+		}
+	}
+
+	if startIdx < 0 {
+		// Event ID not found in log — replay everything (conservative)
+		var events []CloudEvent
+		for _, raw := range data {
+			var evt CloudEvent
+			if json.Unmarshal([]byte(raw), &evt) == nil {
+				events = append(events, evt)
+			}
+		}
+		return events
+	}
+
+	// Return events after the found position
+	var events []CloudEvent
+	for _, raw := range data[startIdx+1:] {
+		var evt CloudEvent
+		if json.Unmarshal([]byte(raw), &evt) == nil {
+			events = append(events, evt)
+		}
+	}
+	return events
+}
+
+// ─── Leader expiry watcher ──────────────────────────────────────────────
+
+// watchLeaderExpiry subscribes to Redis keyspace notifications for leader
+// lock key expiry events. When a leader lock expires, it broadcasts
+// leader.expired to the session so clients can trigger re-election.
+func (h *Hub) watchLeaderExpiry() {
+	ctx := context.Background()
+
+	// Enable expiry notifications on the connection
+	h.redis.ConfigSet(ctx, "notify-keyspace-events", "Ex")
+
+	sub := h.redis.PSubscribe(ctx, "__keyevent@0__:expired")
+	defer sub.Close()
+
+	ch := sub.Channel()
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			// Key pattern: team:session:<sessionID>:leader_lock
+			sessionID := extractSessionFromLockKey(msg.Payload)
+			if sessionID == "" {
+				continue
+			}
+			// Deduplicate: only broadcast once per expiry until a new leader is elected
+			h.leaderExpiryMu.Lock()
+			if h.leaderExpiredSent[sessionID] {
+				h.leaderExpiryMu.Unlock()
+				continue
+			}
+			h.leaderExpiredSent[sessionID] = true
+			h.leaderExpiryMu.Unlock()
+
+			h.Broadcast(sessionID, CloudEvent{
+				EventID:   fmt.Sprintf("le-exp-%d", time.Now().UnixMilli()),
+				Type:      EventLeaderExpired,
+				SessionID: sessionID,
+				Timestamp: time.Now().UnixMilli(),
+				Payload:   map[string]any{"reason": "ttl_expired"},
+			})
+		}
+	}
+}
+
+// ResetLeaderExpiredSent clears the dedup flag when a new leader is elected,
+// so future expirations can be broadcast.
+func (h *Hub) ResetLeaderExpiredSent(sessionID string) {
+	h.leaderExpiryMu.Lock()
+	delete(h.leaderExpiredSent, sessionID)
+	h.leaderExpiryMu.Unlock()
+}
+
+// extractSessionFromLockKey parses "team:session:<id>:leader_lock" → "<id>".
+func extractSessionFromLockKey(key string) string {
+	// Expected: team:session:UUID:leader_lock
+	const prefix = "team:session:"
+	const suffix = ":leader_lock"
+	if len(key) <= len(prefix)+len(suffix) {
+		return ""
+	}
+	if key[:len(prefix)] != prefix || key[len(key)-len(suffix):] != suffix {
+		return ""
+	}
+	return key[len(prefix) : len(key)-len(suffix)]
 }
 
 func machineKey(sessionID, machineID string) string {
@@ -335,4 +512,38 @@ func (h *Hub) CancelExplore(requestID string) {
 	h.exploreMu.Lock()
 	delete(h.exploreChans, requestID)
 	h.exploreMu.Unlock()
+}
+
+// ─── Synchronous decompose channels ──────────────────────────────────────
+// Used to pair a decompose HTTP call with its decompose.result WebSocket
+// response from the target teammate machine.
+
+// RegisterDecompose creates a buffered channel for an outgoing decompose request.
+func (h *Hub) RegisterDecompose(requestID string) chan CloudEvent {
+	ch := make(chan CloudEvent, 1)
+	h.decomposeMu.Lock()
+	h.decomposeChans[requestID] = ch
+	h.decomposeMu.Unlock()
+	return ch
+}
+
+// DeliverDecompose sends the result event to a waiting RegisterDecompose channel.
+func (h *Hub) DeliverDecompose(requestID string, evt CloudEvent) {
+	h.decomposeMu.Lock()
+	ch, ok := h.decomposeChans[requestID]
+	h.decomposeMu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case ch <- evt:
+	default:
+	}
+}
+
+// CancelDecompose removes the channel for the given requestID.
+func (h *Hub) CancelDecompose(requestID string) {
+	h.decomposeMu.Lock()
+	delete(h.decomposeChans, requestID)
+	h.decomposeMu.Unlock()
 }
