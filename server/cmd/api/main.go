@@ -29,8 +29,8 @@ import (
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/channel"
-	_ "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
-	_ "github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
+	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -379,7 +379,9 @@ func main() {
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
 
-			channelModule := channel.New(db, &channel.EchoMessageHandler{})
+			channel.RegisterAdapter(wechat.NewWeChatAdapter())
+			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
+			channelModule := channel.New(db, &channel.EchoMessageHandler{}, cfg.CloudBaseURL, cfg.Channels.EnabledTypes)
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
