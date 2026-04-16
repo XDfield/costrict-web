@@ -82,6 +82,7 @@ func main() {
 		&models.UserConfig{},
 		&models.NotificationLog{},
 		&models.ItemCategory{},
+		&models.DeviceRelease{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database: %v", err)

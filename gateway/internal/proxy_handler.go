@@ -65,11 +65,38 @@ func DeviceProxyHandler(manager *TunnelManager) gin.HandlerFunc {
 			requestURI += "?" + c.Request.URL.RawQuery
 		}
 		c.Request.RequestURI = requestURI
-		// 强制 keep-alive，防止设备端响应带 Connection: close
-		c.Request.Close = false
-		c.Request.Header.Del("Connection")
 
-		if err := c.Request.Write(stream); err != nil {
+		// Read body before writing to tunnel, since gin may have consumed it
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read request body"})
+			return
+		}
+
+		// Manually write HTTP request to tunnel to avoid chunked encoding
+		// from http.Request.Write() which the device-side tunnel can't parse
+		var reqBuf bytes.Buffer
+		fmt.Fprintf(&reqBuf, "%s %s HTTP/1.1\r\n", c.Request.Method, requestURI)
+		for k, vs := range c.Request.Header {
+			switch http.CanonicalHeaderKey(k) {
+			case "Transfer-Encoding", "Connection":
+				continue
+			}
+			for _, v := range vs {
+				fmt.Fprintf(&reqBuf, "%s: %s\r\n", k, v)
+			}
+		}
+		fmt.Fprintf(&reqBuf, "Host: %s\r\n", c.Request.Host)
+		fmt.Fprintf(&reqBuf, "Connection: keep-alive\r\n")
+		if len(bodyBytes) > 0 {
+			fmt.Fprintf(&reqBuf, "Content-Length: %d\r\n", len(bodyBytes))
+		}
+		reqBuf.WriteString("\r\n")
+		if len(bodyBytes) > 0 {
+			reqBuf.Write(bodyBytes)
+		}
+
+		if _, err := stream.Write(reqBuf.Bytes()); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to write request to tunnel"})
 			return
 		}

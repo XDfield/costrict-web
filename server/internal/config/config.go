@@ -24,15 +24,30 @@ type Config struct {
 	UsageESInsecureSkipVerify bool
 	RedisURL                  string
 	CloudBaseURL              string
+	ReleaseDownloadBaseURL    string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
 	InternalSecret            string
 	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
 	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
 	Casdoor                   CasdoorConfig
+	Channels                  ChannelSystemConfig
 	LLM                       LLMConfig
 	Embedding                 EmbeddingConfig
 	Search                    SearchConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+}
+
+type ChannelSystemConfig struct {
+	EnabledTypes []string // Channel types available for user configuration; empty means all enabled
+	WeCom        WeComSystemConfig
+}
+
+type WeComSystemConfig struct {
+	CorpID         string
+	AgentID        int
+	Secret         string
+	Token          string
+	EncodingAESKey string
 }
 
 type CasdoorConfig struct {
@@ -99,6 +114,7 @@ func Load() *Config {
 		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
+		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		FrontendURLs:              frontendURLs,
 		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
 		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
@@ -131,6 +147,16 @@ func Load() *Config {
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		Channels: ChannelSystemConfig{
+			EnabledTypes: getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
+			WeCom: WeComSystemConfig{
+				CorpID:         getEnv("WECOM_CORP_ID", ""),
+				AgentID:        getEnvInt("WECOM_AGENT_ID", 0),
+				Secret:         getEnv("WECOM_SECRET", ""),
+				Token:          getEnv("WECOM_TOKEN", ""),
+				EncodingAESKey: getEnv("WECOM_ENCODING_AES_KEY", ""),
+			},
+		},
 	}
 }
 
