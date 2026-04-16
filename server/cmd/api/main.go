@@ -223,6 +223,8 @@ func main() {
 		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
+		api.POST("/releases", middleware.SystemTokenAuth(cfg.SystemToken), handlers.CreateReleaseHandler(updateSvc))
+
 		// Items read (anonymous can preview public items)
 		api.GET("/items", handlers.ListAllItems)
 		api.GET("/items/:id", handlers.GetItem)
@@ -349,13 +351,6 @@ func main() {
 				devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
 			}
 
-			releases := authed.Group("/releases")
-			{
-				releases.GET("", handlers.ListReleasesHandler(updateSvc))
-				releases.POST("", handlers.CreateReleaseHandler(updateSvc))
-				releases.GET("/:id", handlers.GetReleaseHandler(updateSvc))
-				releases.DELETE("/:id", handlers.DeleteReleaseHandler(updateSvc))
-			}
 			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
 
 			// Workspace routes

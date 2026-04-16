@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
@@ -85,55 +84,12 @@ func CreateReleaseHandler(updateSvc *services.UpdateService) gin.HandlerFunc {
 			return
 		}
 
-		release, err := updateSvc.CreateRelease(userID, req)
+		releases, err := updateSvc.CreateRelease(userID, req)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create release"})
 			return
 		}
 
-		c.JSON(http.StatusCreated, gin.H{"release": release})
-	}
-}
-
-func ListReleasesHandler(updateSvc *services.UpdateService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		platform := c.Query("platform")
-		releases, err := updateSvc.ListReleases(platform)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list releases"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"releases": releases})
-	}
-}
-
-func GetReleaseHandler(updateSvc *services.UpdateService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		release, err := updateSvc.GetRelease(id)
-		if err != nil {
-			if errors.Is(err, services.ErrReleaseNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get release"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"release": release})
-	}
-}
-
-func DeleteReleaseHandler(updateSvc *services.UpdateService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		if err := updateSvc.DeleteRelease(id); err != nil {
-			if errors.Is(err, services.ErrReleaseNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "release not found"})
-				return
-			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete release"})
-			return
-		}
-		c.Status(http.StatusNoContent)
+		c.JSON(http.StatusCreated, gin.H{"releases": releases})
 	}
 }
