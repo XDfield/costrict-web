@@ -48,7 +48,7 @@ func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService
 // GetUserByID retrieves a user by ID
 func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 	var user models.User
-	err := s.db.Where("subject_id = ?", userID).First(&user).Error
+	err := s.db.Where("subject_id = ?", userID).Take(&user).Error
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	var user models.User
 	found := false
 	if claims.UniversalID != "" {
-		err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).First(&user).Error
+		err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
@@ -156,7 +156,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 	}
 	if !found && claims.ID != "" {
-		err := s.db.Where("casdoor_id = ?", claims.ID).First(&user).Error
+		err := s.db.Where("casdoor_id = ?", claims.ID).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
@@ -164,7 +164,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 	}
 	if !found && claims.Sub != "" {
-		err := s.db.Where("casdoor_sub = ?", claims.Sub).First(&user).Error
+		err := s.db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
@@ -172,7 +172,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 	}
 	if !found && claims.Name != "" {
-		err := s.db.Where("username = ?", claims.Name).First(&user).Error
+		err := s.db.Where("username = ?", claims.Name).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
@@ -262,7 +262,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				Where("casdoor_universal_id = ?", claims.UniversalID).
 				Or("casdoor_id = ?", claims.ID).
 				Or("casdoor_sub = ?", claims.Sub).
-				First(&existing).Error
+				Take(&existing).Error
 			if err == nil {
 				return &existing, nil
 			}
