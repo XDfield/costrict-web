@@ -15,6 +15,7 @@ import (
 const UserIDKey = "userId"
 const UserNameKey = "userName"
 const InternalSecretHeader = "X-Internal-Secret"
+const SystemTokenHeader = "X-System-Token"
 
 type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsername string, err error)
 
@@ -49,6 +50,25 @@ func InternalAuth(secret string) gin.HandlerFunc {
 			return
 		}
 
+		c.Next()
+	}
+}
+
+func SystemTokenAuth(token string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if token == "" {
+			logger.Error("[SystemTokenAuth] SYSTEM_TOKEN not configured, rejecting request")
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "System API not available"})
+			return
+		}
+
+		provided := c.GetHeader(SystemTokenHeader)
+		if provided == "" || provided != token {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Invalid system token"})
+			return
+		}
+
+		c.Set(UserIDKey, "system")
 		c.Next()
 	}
 }

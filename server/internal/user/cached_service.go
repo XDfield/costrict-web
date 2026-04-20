@@ -32,7 +32,7 @@ func (s *CachedUserService) GetUserByID(ctx context.Context, userID string) (*mo
 	}
 
 	var user models.User
-	if err := s.db.WithContext(ctx).Where("subject_id = ?", userID).First(&user).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("subject_id = ?", userID).Take(&user).Error; err != nil {
 		return nil, err
 	}
 

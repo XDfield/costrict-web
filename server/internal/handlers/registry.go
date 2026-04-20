@@ -83,6 +83,20 @@ type indexJSON struct {
 	Items   []indexItem `json:"items"`
 }
 
+type registryIndexItemRow struct {
+	ID          string `gorm:"column:id"`
+	Slug        string `gorm:"column:slug"`
+	ItemType    string `gorm:"column:item_type"`
+	Name        string `gorm:"column:name"`
+	Description string `gorm:"column:description"`
+	Metadata    []byte `gorm:"column:metadata"`
+}
+
+type registryIndexAssetRow struct {
+	ItemID  string `gorm:"column:item_id"`
+	RelPath string `gorm:"column:rel_path"`
+}
+
 // RegistryIndex godoc
 // @Summary      Get registry index
 // @Description  Return the index.json for a repo's registry, filtered by the caller's access rights. Access is determined by the parent repository's visibility. Requires Bearer token for non-public repositories.
@@ -160,17 +174,33 @@ func RegistryIndex(c *gin.Context) {
 
 // buildRegistryIndex builds the index JSON response for a list of registry IDs
 func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
-	var capabilityItems []models.CapabilityItem
-	db.Where("registry_id IN ? AND status = 'active'", registryIDs).Find(&capabilityItems)
+	var capabilityItems []registryIndexItemRow
+	db.Model(&models.CapabilityItem{}).
+		Select("id", "slug", "item_type", "name", "description", "metadata").
+		Where("registry_id IN ? AND status = 'active'", registryIDs).
+		Find(&capabilityItems)
 
 	itemIDs := make([]string, 0, len(capabilityItems))
 	for _, si := range capabilityItems {
 		itemIDs = append(itemIDs, si.ID)
 	}
 
-	var allAssets []models.CapabilityAsset
+	var allAssets []registryIndexAssetRow
 	if len(itemIDs) > 0 {
-		db.Where("item_id IN ?", itemIDs).Find(&allAssets)
+		// Avoid a single oversized IN query and only fetch fields needed for index.json.
+		const assetBatchSize = 500
+		for start := 0; start < len(itemIDs); start += assetBatchSize {
+			end := start + assetBatchSize
+			if end > len(itemIDs) {
+				end = len(itemIDs)
+			}
+			var batch []registryIndexAssetRow
+			db.Model(&models.CapabilityAsset{}).
+				Select("item_id", "rel_path").
+				Where("item_id IN ?", itemIDs[start:end]).
+				Find(&batch)
+			allAssets = append(allAssets, batch...)
+		}
 	}
 
 	assetsByItem := make(map[string][]string, len(itemIDs))
@@ -196,7 +226,7 @@ func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
 		case "command":
 			entry.Files = append([]string{si.Slug + ".md"}, assetPaths...)
 		case "mcp":
-			if len(si.Metadata) > 0 {
+			if len(si.Metadata) > 0 && string(si.Metadata) != "{}" {
 				entry.MCP = json.RawMessage(si.Metadata)
 			}
 			if len(assetPaths) > 0 {

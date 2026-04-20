@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"golang.org/x/mod/semver"
 	"gorm.io/gorm"
 )
 
@@ -13,20 +14,24 @@ var (
 )
 
 type UpdateService struct {
-	DB                  *gorm.DB
-	ReleaseDownloadURL  string
+	DB                 *gorm.DB
+	ReleaseDownloadURL string
+}
+
+type PlatformAsset struct {
+	Platform    string `json:"platform" binding:"required"`
+	DownloadURL string `json:"downloadUrl" binding:"required"`
+	SHA256      string `json:"sha256" binding:"required"`
+	BinarySize  int64  `json:"binarySize" binding:"required"`
 }
 
 type CreateReleaseRequest struct {
-	Version      string `json:"version" binding:"required"`
-	Platform     string `json:"platform" binding:"required"`
-	Changelog    string `json:"changelog"`
-	DownloadURL  string `json:"downloadUrl" binding:"required"`
-	SHA256       string `json:"sha256" binding:"required"`
-	BinarySize   int64  `json:"binarySize" binding:"required"`
-	Force        bool   `json:"force"`
-	MinClientVer string `json:"minClientVersion"`
-	Channel      string `json:"channel"`
+	Version      string           `json:"version" binding:"required"`
+	Assets       []PlatformAsset  `json:"assets" binding:"required,min=1"`
+	Changelog    string          `json:"changelog"`
+	Force        bool            `json:"force"`
+	MinClientVer string          `json:"minClientVersion"`
+	Channel      string          `json:"channel"`
 }
 
 type UpdateCheckRequest struct {
@@ -35,7 +40,7 @@ type UpdateCheckRequest struct {
 }
 
 type UpdateCheckResponse struct {
-	Available     bool   `json:"available"`
+	CanUpdate     bool   `json:"can_update"`
 	Version       string `json:"version"`
 	Changelog     string `json:"changelog,omitempty"`
 	DownloadURL   string `json:"download_url,omitempty"`
@@ -54,14 +59,12 @@ func (s *UpdateService) CheckForUpdate(req UpdateCheckRequest) (*UpdateCheckResp
 		First(&release).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &UpdateCheckResponse{Available: false}, nil
+			return &UpdateCheckResponse{CanUpdate: false}, nil
 		}
 		return nil, err
 	}
 
-	if !isNewer(release.Version, req.Version) {
-		return &UpdateCheckResponse{Available: false}, nil
-	}
+	canUpdate := isNewer(release.Version, req.Version)
 
 	downloadURL := release.DownloadURL
 	if s.ReleaseDownloadURL != "" && downloadURL == "" {
@@ -69,7 +72,7 @@ func (s *UpdateService) CheckForUpdate(req UpdateCheckRequest) (*UpdateCheckResp
 	}
 
 	return &UpdateCheckResponse{
-		Available:    true,
+		CanUpdate:    canUpdate,
 		Version:      release.Version,
 		Changelog:    release.Changelog,
 		DownloadURL:  downloadURL,
@@ -81,71 +84,50 @@ func (s *UpdateService) CheckForUpdate(req UpdateCheckRequest) (*UpdateCheckResp
 	}, nil
 }
 
-func (s *UpdateService) CreateRelease(userID string, req CreateReleaseRequest) (*models.DeviceRelease, error) {
+func (s *UpdateService) CreateRelease(userID string, req CreateReleaseRequest) ([]models.DeviceRelease, error) {
 	channel := req.Channel
 	if channel == "" {
 		channel = "stable"
 	}
 
-	release := &models.DeviceRelease{
-		Version:      req.Version,
-		Platform:     req.Platform,
-		Changelog:    req.Changelog,
-		DownloadURL:  req.DownloadURL,
-		SHA256:       req.SHA256,
-		BinarySize:   req.BinarySize,
-		Force:        req.Force,
-		MinClientVer: req.MinClientVer,
-		Channel:      channel,
-		CreatedBy:    userID,
+	releases := make([]models.DeviceRelease, 0, len(req.Assets))
+	for _, asset := range req.Assets {
+		release := models.DeviceRelease{
+			Version:      req.Version,
+			Platform:     asset.Platform,
+			Changelog:    req.Changelog,
+			DownloadURL:  asset.DownloadURL,
+			SHA256:       asset.SHA256,
+			BinarySize:   asset.BinarySize,
+			Force:        req.Force,
+			MinClientVer: req.MinClientVer,
+			Channel:      channel,
+			CreatedBy:    userID,
+		}
+		releases = append(releases, release)
 	}
 
-	if err := s.DB.Create(release).Error; err != nil {
-		return nil, err
-	}
-	return release, nil
-}
-
-func (s *UpdateService) ListReleases(platform string) ([]models.DeviceRelease, error) {
-	var releases []models.DeviceRelease
-	q := s.DB.Order("created_at DESC")
-	if platform != "" {
-		q = q.Where("platform = ?", platform)
-	}
-	if err := q.Find(&releases).Error; err != nil {
+	if err := s.DB.Create(&releases).Error; err != nil {
 		return nil, err
 	}
 	return releases, nil
 }
 
-func (s *UpdateService) GetRelease(id string) (*models.DeviceRelease, error) {
-	var release models.DeviceRelease
-	if err := s.DB.Where("id = ?", id).First(&release).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrReleaseNotFound
-		}
-		return nil, err
-	}
-	return &release, nil
-}
-
-func (s *UpdateService) DeleteRelease(id string) error {
-	result := s.DB.Where("id = ?", id).Delete(&models.DeviceRelease{})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrReleaseNotFound
-	}
-	return nil
-}
-
 func isNewer(candidate, current string) bool {
-	if candidate == current {
-		return false
+	cv := normalizeSemver(candidate)
+	cur := normalizeSemver(current)
+	if cur == "" {
+		return cv != ""
 	}
-	if current == "" || current == "dev" || current == "0.0.0" {
-		return candidate != ""
+	return semver.Compare(cv, cur) > 0
+}
+
+func normalizeSemver(v string) string {
+	if v == "" || v == "dev" || v == "0.0.0" {
+		return ""
 	}
-	return candidate > current
+	if v[0] != 'v' {
+		return "v" + v
+	}
+	return v
 }
