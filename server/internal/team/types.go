@@ -47,6 +47,7 @@ const (
 // Event types: Cloud → Client
 const (
 	EventTaskAssigned      = "task.assigned"
+	EventTaskTerminate     = "task.terminate"
 	EventTaskInterrupted   = "task.interrupted"
 	EventApprovalPush      = "approval.push"
 	EventApprovalResponse  = "approval.response"

@@ -147,6 +147,12 @@ Scheduler 按亲和性规则分配 assignedTeammate
 提交 TaskPlan 到云端
 ```
 
+**拆解目标选择（Decompose Target Selection）：**
+
+1. 优先选择在线的**非 Leader Teammate** 作为 `decompose.request` 目标  
+2. 若无可用 Teammate，且 Leader 在线，则**回退为 Leader 自拆解**（发送给 Leader 自己）  
+3. 若 Leader 也不可用，则降级为单任务 fallback（粗粒度任务）
+
 #### 3.1.2 远程代码探查（Remote Explore）
 
 Leader 通过云端向 Teammate 发起只读探查请求，Teammate 在**受限沙箱**中执行（仅允许 `rg`、`grep`、`ls`、`find`、`git log` 等只读命令，与 OMX `omx-explore` 的 allowlist 机制一致），防止探查操作意外触发写入。
@@ -193,7 +199,7 @@ Leader                    云端 Message Bus              Teammate
 
 **超时与降级：**
 - 探查请求超时（默认 30s）→ Leader 基于用户描述做粗粒度拆解，`fileHints` 留空
-- Teammate 离线 → 从 Registry 选择同仓库的其他 Teammate；无可用 Teammate → 降级为粗粒度拆解
+- Teammate 离线 → 从 Registry 选择同仓库的其他 Teammate；无可用 Teammate 且 Leader 在线 → Leader 自拆解；Leader 也不可用 → 降级为粗粒度拆解
 
 #### 3.1.3 仓库亲和性分析
 

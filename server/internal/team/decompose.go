@@ -63,7 +63,10 @@ func buildFallbackTasks(prompt, sessionID string) []TeamTask {
 	}
 }
 
-// pickDecomposeTarget selects an online teammate to delegate decomposition to.
+// pickDecomposeTarget selects a decomposition target.
+// Strategy:
+// 1) Prefer an online non-leader teammate.
+// 2) If none is available, fall back to the online leader machine itself.
 // Returns (memberID, machineID, error).
 func pickDecomposeTarget(hub *Hub, store *Store, sessionID string) (string, string, error) {
 	leaderMachineID := hub.GetLeaderMachineID(sessionID)
@@ -71,18 +74,30 @@ func pickDecomposeTarget(hub *Hub, store *Store, sessionID string) (string, stri
 	if err != nil || len(members) == 0 {
 		return "", "", fmt.Errorf("no teammates available")
 	}
+
+	var leaderMemberID string
+
 	for _, m := range members {
-		if m.MachineID == leaderMachineID {
-			continue // skip leader itself
-		}
 		if m.Status != MemberStatusOnline {
 			continue
 		}
-		// Verify the machine has an active WS connection
-		if hub.SessionConnCount(sessionID) == 0 {
+		// Verify the selected machine itself has an active WS connection.
+		// SessionConnCount(sessionID) only tells whether *someone* is connected,
+		// which may still select an offline/stale member and cause 60s timeouts.
+		if !hub.IsMachineOnline(sessionID, m.MachineID) {
+			continue
+		}
+		if leaderMachineID != "" && m.MachineID == leaderMachineID {
+			leaderMemberID = m.ID
 			continue
 		}
 		return m.ID, m.MachineID, nil
 	}
-	return "", "", fmt.Errorf("no online teammate available for decomposition")
+
+	// No online teammate available; allow leader self-decomposition.
+	if leaderMachineID != "" && hub.IsMachineOnline(sessionID, leaderMachineID) {
+		return leaderMemberID, leaderMachineID, nil
+	}
+
+	return "", "", fmt.Errorf("no online teammate or leader available for decomposition")
 }

@@ -2,6 +2,7 @@ package team
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -48,7 +49,19 @@ func (s *Store) ListSessionsByCreator(creatorID string) ([]TeamSession, error) {
 // ─── Member ────────────────────────────────────────────────────────────────
 
 func (s *Store) CreateMember(m *TeamSessionMember) error {
-	return s.db.Create(m).Error
+	// Backward-compatible insert: older databases may not yet have newer
+	// capability columns on team_session_members.
+	return s.db.Select(
+		"ID",
+		"SessionID",
+		"UserID",
+		"MachineID",
+		"MachineName",
+		"Role",
+		"Status",
+		"ConnectedAt",
+		"LastHeartbeat",
+	).Create(m).Error
 }
 
 func (s *Store) GetMember(id string) (*TeamSessionMember, error) {
@@ -63,6 +76,27 @@ func (s *Store) GetMember(id string) (*TeamSessionMember, error) {
 func (s *Store) GetMemberByMachine(sessionID, machineID string) (*TeamSessionMember, error) {
 	var m TeamSessionMember
 	err := s.db.Where("session_id = ? AND machine_id = ?", sessionID, machineID).First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &m, err
+}
+
+// GetMemberByMachineUnscoped returns a member by session+machine, including soft-deleted rows.
+func (s *Store) GetMemberByMachineUnscoped(sessionID, machineID string) (*TeamSessionMember, error) {
+	var m TeamSessionMember
+	err := s.db.Unscoped().Where("session_id = ? AND machine_id = ?", sessionID, machineID).First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &m, err
+}
+
+// GetMemberByMachineAnySessionUnscoped returns a member by machine across any session,
+// including soft-deleted rows. Used for legacy schemas that enforced global machine uniqueness.
+func (s *Store) GetMemberByMachineAnySessionUnscoped(machineID string) (*TeamSessionMember, error) {
+	var m TeamSessionMember
+	err := s.db.Unscoped().Where("machine_id = ?", machineID).Order("updated_at DESC").First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -310,7 +344,9 @@ func (s *Store) GetProgress(sessionID string) (*SessionProgress, error) {
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	p := &SessionProgress{}
+	p := &SessionProgress{
+		Teammates: []TeammateProgress{},
+	}
 	for _, r := range rows {
 		p.TotalTasks += r.Count
 		switch r.Status {
@@ -490,7 +526,16 @@ func (s *Store) UpdateMemberCapabilities(memberID string, caps LeaderCapability)
 	if len(caps.RepoURLs) > 0 {
 		updates["reported_repo_urls"] = caps.RepoURLs
 	}
-	return s.db.Model(&TeamSessionMember{}).Where("id = ?", memberID).Updates(updates).Error
+	err := s.db.Model(&TeamSessionMember{}).Where("id = ?", memberID).Updates(updates).Error
+	if err == nil {
+		return nil
+	}
+	// Compatibility fallback for databases that haven't applied the migration yet.
+	// Missing capability columns should not break join/election flow.
+	if strings.Contains(err.Error(), "SQLSTATE 42703") || strings.Contains(err.Error(), "does not exist") {
+		return nil
+	}
+	return err
 }
 
 // GetSessionTargetRepos returns the distinct set of repo URLs referenced by
