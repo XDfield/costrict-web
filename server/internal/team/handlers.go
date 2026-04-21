@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -21,12 +22,17 @@ var upgrader = websocket.Upgrader{
 
 // Handler holds the dependencies for all team HTTP/WS endpoints.
 type Handler struct {
-	store *Store
-	hub   *Hub
+	store              *Store
+	hub                *Hub
+	pushAssignedTaskFn func(ctx context.Context, sessionID string, machineID string, userID string, task TeamTask) error
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
 	return &Handler{store: store, hub: hub}
+}
+
+func (h *Handler) SetAssignedTaskPusher(fn func(ctx context.Context, sessionID string, machineID string, userID string, task TeamTask) error) {
+	h.pushAssignedTaskFn = fn
 }
 
 // ─── Session ───────────────────────────────────────────────────────────────
@@ -447,8 +453,7 @@ func (h *Handler) SubmitTaskPlan(c *gin.Context) {
 		if member == nil {
 			continue
 		}
-		evt := newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task})
-		h.hub.SendToMachine(sessionID, member.MachineID, evt)
+		h.dispatchAssignedTaskToMachine(sessionID, member, task)
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"tasks": req.Tasks})
@@ -601,8 +606,7 @@ func (h *Handler) DecomposeTask(c *gin.Context) {
 			if member == nil {
 				continue
 			}
-			h.hub.SendToMachine(sessionID, member.MachineID,
-				newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task}))
+			h.dispatchAssignedTaskToMachine(sessionID, member, task)
 		}
 
 		c.JSON(http.StatusCreated, gin.H{"tasks": tasks})
@@ -1446,8 +1450,7 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 			if member == nil {
 				continue
 			}
-			h.hub.SendToMachine(conn.SessionID, member.MachineID,
-				newEvent(EventTaskAssigned, conn.SessionID, map[string]any{"task": task}))
+			h.dispatchAssignedTaskToMachine(conn.SessionID, member, task)
 		}
 
 	case EventLeaderHeartbeat:
@@ -1514,8 +1517,7 @@ func (h *Handler) dispatchClientEvent(conn *WSConnection, evt CloudEvent) {
 				if retried.AssignedMemberID != nil {
 					member, _ := h.store.GetMember(*retried.AssignedMemberID)
 					if member != nil {
-						h.hub.SendToMachine(conn.SessionID, member.MachineID,
-							newEvent(EventTaskAssigned, conn.SessionID, map[string]any{"task": retried}))
+						h.dispatchAssignedTaskToMachine(conn.SessionID, member, *retried)
 					}
 				}
 			} else {
@@ -1728,8 +1730,7 @@ func (h *Handler) notifyUnlockedTasks(sessionID, completedTaskID string) {
 		if member == nil {
 			continue
 		}
-		h.hub.SendToMachine(sessionID, member.MachineID,
-			newEvent(EventTaskAssigned, sessionID, map[string]any{"task": t}))
+		h.dispatchAssignedTaskToMachine(sessionID, member, t)
 	}
 }
 
@@ -1826,7 +1827,28 @@ func (h *Handler) notifyAssignedMachines(sessionID string, tasks []TeamTask) {
 		if member == nil {
 			continue
 		}
-		h.hub.SendToMachine(sessionID, member.MachineID,
-			newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task}))
+		h.dispatchAssignedTaskToMachine(sessionID, member, task)
 	}
+}
+
+func (h *Handler) dispatchAssignedTaskToMachine(sessionID string, member *TeamSessionMember, task TeamTask) {
+	if member == nil {
+		return
+	}
+	machineID := member.MachineID
+
+	h.hub.SendToMachine(sessionID, machineID,
+		newEvent(EventTaskAssigned, sessionID, map[string]any{"task": task}))
+
+	if h.pushAssignedTaskFn == nil || machineID == "" {
+		return
+	}
+
+	// Push through the cloud gateway path asynchronously so HTTP/WS handlers
+	// never block on device reachability.
+	go func(pushedTask TeamTask, targetMachineID string, targetUserID string) {
+		if err := h.pushAssignedTaskFn(context.Background(), sessionID, targetMachineID, targetUserID, pushedTask); err != nil {
+			logger.Warn("[team] push assigned task failed session=%s task=%s machine=%s: %v", sessionID, pushedTask.ID, targetMachineID, err)
+		}
+	}(task, machineID, member.UserID)
 }
