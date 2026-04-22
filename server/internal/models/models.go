@@ -362,6 +362,9 @@ type CapabilityItem struct {
 	Embedding          *string    `gorm:"type:vector(1024)" json:"-"`
 	ExperienceScore    float64    `gorm:"default:0" json:"experienceScore"`
 	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
+
+	// Tags loaded separately (not persisted by GORM)
+	Tags []ItemTagDict `gorm:"-" json:"tags,omitempty"`
 }
 
 // ItemCategory 分类字典表，支持国际化
@@ -381,6 +384,26 @@ type ItemFavorite struct {
 	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_favorite" json:"itemId"`
 	UserID    string    `gorm:"type:varchar(191);not null;uniqueIndex:idx_item_favorite;index" json:"userId"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ItemTagDict tag 字典表，支持 tag 分类和国际化
+type ItemTagDict struct {
+	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Slug         string         `gorm:"not null;uniqueIndex" json:"slug"`
+	TagClass     string         `gorm:"not null;default:'custom'" json:"tagClass"` // system | functional | custom
+	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"names"`
+	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"descriptions"`
+	CreatedBy    string         `gorm:"not null" json:"createdBy"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	UpdatedAt    time.Time      `json:"updatedAt"`
+}
+
+// ItemTag item-tag 关联表（多对多）
+type ItemTag struct {
+	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_tag" json:"itemId"`
+	TagID     string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_tag;index" json:"tagId"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

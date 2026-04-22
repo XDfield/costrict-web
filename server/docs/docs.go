@@ -3371,7 +3371,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/handlers.ItemResponse"
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3586,7 +3586,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handlers.ItemResponse"
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3899,7 +3899,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handlers.ConsistencyCheckResponse"
+                            "$ref": "#/definitions/internal_handlers.ConsistencyCheckResponse"
                         }
                     },
                     "400": {
@@ -4772,7 +4772,7 @@ const docTemplate = `{
                                 "versions": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/handlers.VersionResponse"
+                                        "$ref": "#/definitions/internal_handlers.VersionResponse"
                                     }
                                 }
                             }
@@ -4822,7 +4822,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handlers.VersionResponse"
+                            "$ref": "#/definitions/internal_handlers.VersionResponse"
                         }
                     },
                     "400": {
@@ -7482,7 +7482,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/handlers.ItemResponse"
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -9588,6 +9588,31 @@ const docTemplate = `{
             }
         },
         "/team/sessions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "team"
+                ],
+                "summary": "List sessions for the current user",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "sessions": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_team.TeamSession"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
             "post": {
                 "consumes": [
                     "application/json"
@@ -9753,6 +9778,65 @@ const docTemplate = `{
                                     "items": {
                                         "$ref": "#/definitions/internal_team.TeamApprovalRequest"
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/team/sessions/:id/decompose": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "team"
+                ],
+                "summary": "Decompose a prompt into sub-tasks using LLM (Leader)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Prompt to decompose",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_team.DecomposeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "tasks": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_team.TeamTask"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
                                 }
                             }
                         }
@@ -10086,6 +10170,65 @@ const docTemplate = `{
                 }
             }
         },
+        "/team/sessions/:id/orchestrate": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "team"
+                ],
+                "summary": "Orchestrate explore→decompose→schedule pipeline",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Orchestrate request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "fencingToken": {
+                                    "type": "integer"
+                                },
+                                "prompt": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "dryRun": {
+                                    "type": "boolean"
+                                },
+                                "tasks": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_team.TeamTask"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/team/sessions/:id/progress": {
             "get": {
                 "produces": [
@@ -10288,6 +10431,60 @@ const docTemplate = `{
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/team/sessions/:id/tasks/:taskId/terminate": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "team"
+                ],
+                "summary": "Terminate a task (Leader)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Task ID",
+                        "name": "taskId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Termination options",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "fencingToken": {
+                                    "type": "integer"
+                                },
+                                "reason": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_team.TeamTask"
                         }
                     }
                 }
@@ -11766,354 +11963,7 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.ConsistencyCheckResponse": {
-            "type": "object",
-            "properties": {
-                "contentMd5": {
-                    "type": "string"
-                },
-                "matched": {
-                    "type": "boolean"
-                },
-                "matchedCurrent": {
-                    "type": "boolean"
-                },
-                "matchedRevision": {
-                    "type": "integer"
-                },
-                "matchedVersionLabel": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.CreateSyncRegistryInput": {
-            "type": "object",
-            "properties": {
-                "conflictStrategy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "excludePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "externalBranch": {
-                    "type": "string"
-                },
-                "externalUrl": {
-                    "type": "string"
-                },
-                "includePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "name": {
-                    "type": "string"
-                },
-                "syncEnabled": {
-                    "type": "boolean"
-                },
-                "syncInterval": {
-                    "type": "integer"
-                },
-                "webhookSecret": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.ItemResponse": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "contentMd5": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "currentRevision": {
-                    "type": "integer"
-                },
-                "currentVersionLabel": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "favoriteCount": {
-                    "type": "integer"
-                },
-                "favorited": {
-                    "type": "boolean"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "previewCount": {
-                    "type": "integer"
-                },
-                "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoVisibility": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "handlers.MyItem": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "contentMd5": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "currentRevision": {
-                    "type": "integer"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "favoriteCount": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "previewCount": {
-                    "type": "integer"
-                },
-                "registry": {
-                    "$ref": "#/definitions/models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoName": {
-                    "type": "string"
-                },
-                "repoVisibility": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "handlers.VersionResponse": {
-            "type": "object",
-            "properties": {
-                "commitMsg": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "contentMd5": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "itemId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "revision": {
-                    "type": "integer"
-                },
-                "versionLabel": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.userBasicInfoResponse": {
-            "type": "object",
-            "properties": {
-                "avatarUrl": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "llm.SkillAnalysis": {
+        "github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis": {
             "type": "object",
             "properties": {
                 "improvements": {
@@ -12414,6 +12264,13 @@ const docTemplate = `{
                 "status": {
                     "type": "string"
                 },
+                "tags": {
+                    "description": "Tags loaded separately (not persisted by GORM)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
                 "updatedAt": {
                     "type": "string"
                 },
@@ -12500,6 +12357,15 @@ const docTemplate = `{
         "github_com_costrict_costrict-web_server_internal_models.CapabilityVersion": {
             "type": "object",
             "properties": {
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersionAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
                 "commitMsg": {
                     "type": "string"
                 },
@@ -12515,6 +12381,9 @@ const docTemplate = `{
                 "createdBy": {
                     "type": "string"
                 },
+                "description": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -12524,8 +12393,55 @@ const docTemplate = `{
                 "metadata": {
                     "type": "object"
                 },
+                "name": {
+                    "type": "string"
+                },
                 "revision": {
                     "type": "integer"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.CapabilityVersionAsset": {
+            "type": "object",
+            "properties": {
+                "contentSha": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "fileSize": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "mimeType": {
+                    "type": "string"
+                },
+                "relPath": {
+                    "type": "string"
+                },
+                "storageBackend": {
+                    "type": "string"
+                },
+                "storageKey": {
+                    "type": "string"
+                },
+                "textContent": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "versionId": {
+                    "type": "string"
                 }
             }
         },
@@ -12543,6 +12459,42 @@ const docTemplate = `{
                 "ContextDirectAccess",
                 "ContextBrowse"
             ]
+        },
+        "github_com_costrict_costrict-web_server_internal_models.ItemTagDict": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "descriptions": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "names": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tagClass": {
+                    "description": "system | functional | custom",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
         },
         "github_com_costrict_costrict-web_server_internal_models.NotificationLog": {
             "type": "object",
@@ -13353,6 +13305,13 @@ const docTemplate = `{
                 "strategy": {
                     "type": "string"
                 },
+                "tags": {
+                    "description": "Tags loaded separately (not persisted by GORM)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
                 "updatedAt": {
                     "type": "string"
                 },
@@ -13500,6 +13459,13 @@ const docTemplate = `{
                 },
                 "status": {
                     "type": "string"
+                },
+                "tags": {
+                    "description": "Tags loaded separately (not persisted by GORM)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
                 },
                 "updatedAt": {
                     "type": "string"
@@ -13781,6 +13747,26 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.ConsistencyCheckResponse": {
+            "type": "object",
+            "properties": {
+                "contentMd5": {
+                    "type": "string"
+                },
+                "matched": {
+                    "type": "boolean"
+                },
+                "matchedCurrent": {
+                    "type": "boolean"
+                },
+                "matchedRevision": {
+                    "type": "integer"
+                },
+                "matchedVersionLabel": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.CreateSyncRegistryInput": {
             "type": "object",
             "properties": {
@@ -13834,7 +13820,7 @@ const docTemplate = `{
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/internal_handlers.itemAssetPayload"
                     }
                 },
                 "category": {
@@ -13843,10 +13829,19 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
+                    "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
+                },
+                "currentVersionLabel": {
                     "type": "string"
                 },
                 "description": {
@@ -13916,6 +13911,13 @@ const docTemplate = `{
                 "status": {
                     "type": "string"
                 },
+                "tags": {
+                    "description": "Tags loaded separately (not persisted by GORM)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
                 "updatedAt": {
                     "type": "string"
                 },
@@ -13954,11 +13956,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -14027,6 +14035,13 @@ const docTemplate = `{
                 "status": {
                     "type": "string"
                 },
+                "tags": {
+                    "description": "Tags loaded separately (not persisted by GORM)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
                 "updatedAt": {
                     "type": "string"
                 },
@@ -14041,6 +14056,82 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
                     }
+                }
+            }
+        },
+        "internal_handlers.VersionResponse": {
+            "type": "object",
+            "properties": {
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.itemAssetPayload"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "commitMsg": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versionLabel": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.itemAssetPayload": {
+            "type": "object",
+            "properties": {
+                "contentSha": {
+                    "type": "string"
+                },
+                "fileSize": {
+                    "type": "integer"
+                },
+                "mimeType": {
+                    "type": "string"
+                },
+                "relPath": {
+                    "type": "string"
+                },
+                "textContent": {
+                    "type": "string"
                 }
             }
         },
@@ -14229,6 +14320,27 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_team.DecomposeRequest": {
+            "type": "object",
+            "required": [
+                "prompt"
+            ],
+            "properties": {
+                "context": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "dryRun": {
+                    "type": "boolean"
+                },
+                "fencingToken": {
+                    "type": "integer"
+                },
+                "prompt": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_team.SessionProgress": {
             "type": "object",
             "properties": {
@@ -14375,8 +14487,14 @@ const docTemplate = `{
                 "connectedAt": {
                     "type": "string"
                 },
+                "cpuIdlePercent": {
+                    "type": "number"
+                },
                 "createdAt": {
                     "type": "string"
+                },
+                "heartbeatSuccessRate": {
+                    "type": "number"
                 },
                 "id": {
                     "type": "string"
@@ -14390,8 +14508,20 @@ const docTemplate = `{
                 "machineName": {
                     "type": "string"
                 },
+                "memoryFreeMB": {
+                    "type": "number"
+                },
+                "reportedRepoUrls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "role": {
                     "type": "string"
+                },
+                "rttMs": {
+                    "type": "number"
                 },
                 "sessionId": {
                     "type": "string"

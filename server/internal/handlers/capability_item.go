@@ -33,11 +33,12 @@ type ItemHandler struct {
 	parserSvc   *services.ParserService
 	archiveSvc  *services.ArchiveService
 	categorySvc *services.CategoryService
+	tagSvc      *services.TagService
 	hashSvc     *services.ContentHashService
 }
 
 // NewItemHandler creates a new item handler
-func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService) *ItemHandler {
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService, tagSvc *services.TagService) *ItemHandler {
 	var archiveSvc *services.ArchiveService
 	if parserSvc != nil {
 		archiveSvc = &services.ArchiveService{Parser: parserSvc}
@@ -48,6 +49,7 @@ func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc 
 		parserSvc:   parserSvc,
 		archiveSvc:  archiveSvc,
 		categorySvc: categorySvc,
+		tagSvc:      tagSvc,
 		hashSvc:     services.NewContentHashService(),
 	}
 }
@@ -1144,6 +1146,7 @@ func DeleteItem(c *gin.Context) {
 		}{
 			{model: &models.BehaviorLog{}, name: "behavior logs"},
 			{model: &models.ItemFavorite{}, name: "item favorites"},
+				{model: &models.ItemTag{}, name: "item tags"},
 			{model: &models.ScanJob{}, name: "scan jobs"},
 			{model: &models.SecurityScan{}, name: "security scans"},
 			{model: &models.CapabilityVersionAsset{}, name: "capability version assets"},
@@ -1398,6 +1401,10 @@ func ListAllItems(c *gin.Context) {
 	if c.Query("favorited") == "true" && uid != "" {
 		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", uid)
 	}
+	if tags := c.Query("tags"); tags != "" {
+		tagSlugs := strings.Split(tags, ",")
+		query = query.Where("id IN (SELECT item_id FROM item_tags JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id WHERE item_tag_dicts.slug IN ?)", tagSlugs)
+	}
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
@@ -1447,6 +1454,16 @@ func ListAllItems(c *gin.Context) {
 		}
 	}
 
+	// Batch-fetch tags for items
+	var tagsMap map[string][]models.ItemTagDict
+	if TagSvc != nil && len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		tagsMap, _ = TagSvc.GetItemTags(itemIDs)
+	}
+
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
@@ -1459,6 +1476,9 @@ func ListAllItems(c *gin.Context) {
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]
 		}
+		if tagsMap != nil {
+			out[i].Tags = tagsMap[item.ID]
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
@@ -1470,7 +1490,7 @@ func ListAllItems(c *gin.Context) {
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string}  false  "Item data (JSON)"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON)"
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
@@ -1502,6 +1522,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		SourcePath  string             `json:"sourcePath"`
 		Assets      []itemAssetPayload `json:"assets"`
 		CreatedBy   string             `json:"createdBy"`
+		Tags        []string           `json:"tags"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1596,6 +1617,17 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 
 	if h.categorySvc != nil && req.Category != "" {
 		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
+	}
+
+	if h.tagSvc != nil && len(req.Tags) > 0 {
+		tags, err := h.tagSvc.EnsureTags(req.Tags, services.TagClassCustom, req.CreatedBy)
+		if err == nil {
+			var tagIDs []string
+			for _, t := range tags {
+				tagIDs = append(tagIDs, t.ID)
+			}
+			h.tagSvc.SetItemTags(item.ID, tagIDs)
+		}
 	}
 
 	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
@@ -1846,6 +1878,17 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 				log.Printf("Failed to index item %s: %v", item.ID, err)
 			}
 		}()
+	}
+
+	if h.tagSvc != nil && len(result.Parsed.Tags) > 0 {
+		tags, err := h.tagSvc.EnsureTags(result.Parsed.Tags, services.TagClassFunctional, createdBy)
+		if err == nil {
+			var tagIDs []string
+			for _, t := range tags {
+				tagIDs = append(tagIDs, t.ID)
+			}
+			h.tagSvc.SetItemTags(item.ID, tagIDs)
+		}
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")

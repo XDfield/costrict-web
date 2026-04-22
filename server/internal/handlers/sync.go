@@ -22,6 +22,7 @@ var (
 	JobService     *services.JobService
 	ScanJobService *services.ScanJobService
 	CategorySvc    *services.CategoryService
+	TagSvc         *services.TagService
 	SyncScheduler  interface {
 		RegisterRegistry(registry *models.CapabilityRegistry) error
 		UnregisterRegistry(registryID string)

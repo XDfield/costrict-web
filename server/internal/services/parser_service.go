@@ -17,6 +17,7 @@ type ParsedItem struct {
 	Name        string
 	Description string
 	Category    string
+	Tags        []string
 	Version     string
 	Content     string
 	Metadata    map[string]any
@@ -86,6 +87,13 @@ func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*Parsed
 	if v, ok := frontmatter["category"].(string); ok {
 		item.Category = v
 	}
+	if v, ok := frontmatter["tags"].([]any); ok {
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				item.Tags = append(item.Tags, s)
+			}
+		}
+	}
 
 	if v, ok := frontmatter["version"].(string); ok {
 		item.Version = v
@@ -127,6 +135,13 @@ func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*Par
 	}
 	if v, ok := data["category"].(string); ok {
 		item.Category = v
+	}
+	if v, ok := data["tags"].([]any); ok {
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				item.Tags = append(item.Tags, s)
+			}
+		}
 	}
 
 	item.Slug = p.InferSlug(sourcePath)
