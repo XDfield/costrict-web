@@ -869,7 +869,6 @@ func runPreMigrations(db *gorm.DB) error {
 			check: `SELECT 1 FROM information_schema.columns WHERE table_name='capability_versions' AND column_name='version'`,
 			stmts: []string{
 				`ALTER TABLE capability_versions ADD COLUMN IF NOT EXISTS revision bigint`,
-				`UPDATE capability_versions SET revision = version WHERE revision IS NULL`,
 				`ALTER TABLE capability_versions ALTER COLUMN revision SET NOT NULL`,
 				`ALTER TABLE capability_versions ALTER COLUMN revision SET DEFAULT 1`,
 			},
@@ -922,6 +921,11 @@ func runPreMigrations(db *gorm.DB) error {
 		if exists != 1 {
 			continue
 		}
+		if m.check == `SELECT 1 FROM information_schema.columns WHERE table_name='capability_versions' AND column_name='version'` {
+			if err := normalizeLegacyCapabilityVersions(db); err != nil {
+				return fmt.Errorf("normalize legacy capability versions: %w", err)
+			}
+		}
 		for _, stmt := range m.stmts {
 			if err := db.Exec(stmt).Error; err != nil {
 				return fmt.Errorf("pre-migration failed (%s): %w", stmt, err)
@@ -937,6 +941,53 @@ func runPreMigrations(db *gorm.DB) error {
 		return fmt.Errorf("failed to deduplicate slugs before composite unique index: %w", err)
 	}
 	return nil
+}
+
+func normalizeLegacyCapabilityVersions(db *gorm.DB) error {
+	type legacyVersionRow struct {
+		ID     string
+		ItemID string
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		var rows []legacyVersionRow
+		if err := tx.Table("capability_versions").
+			Select("id, item_id").
+			Order("item_id ASC, created_at ASC, id ASC").
+			Find(&rows).Error; err != nil {
+			return fmt.Errorf("load legacy capability versions: %w", err)
+		}
+
+		keepIDs := make([]string, 0, len(rows))
+		deleteIDs := make([]string, 0)
+		seenItems := make(map[string]struct{}, len(rows))
+		for _, row := range rows {
+			if _, ok := seenItems[row.ItemID]; ok {
+				deleteIDs = append(deleteIDs, row.ID)
+				continue
+			}
+			seenItems[row.ItemID] = struct{}{}
+			keepIDs = append(keepIDs, row.ID)
+		}
+
+		if len(deleteIDs) > 0 {
+			if err := tx.Table("capability_versions").Where("id IN ?", deleteIDs).Delete(nil).Error; err != nil {
+				return fmt.Errorf("delete duplicate legacy capability versions: %w", err)
+			}
+		}
+
+		if len(keepIDs) > 0 {
+			if err := tx.Table("capability_versions").Where("id IN ?", keepIDs).Update("revision", 1).Error; err != nil {
+				return fmt.Errorf("initialize legacy capability version revisions: %w", err)
+			}
+		}
+
+		if err := tx.Table("capability_items").Where("current_revision < 1 OR current_revision IS NULL").Update("current_revision", 1).Error; err != nil {
+			return fmt.Errorf("initialize capability item current revisions: %w", err)
+		}
+
+		return nil
+	})
 }
 
 func backfillCapabilityItemRepoIDs(db *gorm.DB) error {

@@ -171,4 +171,97 @@ func TestBackfillCapabilityContentVersioning_ArchiveUsesAssetsManifest(t *testin
 	}
 }
 
+func TestNormalizeLegacyCapabilityVersions_CollapsesToSingleV1PerItem(t *testing.T) {
+	db := newMigrateTestDB(t)
+
+	if err := db.Exec(`ALTER TABLE capability_versions ADD COLUMN version TEXT`).Error; err != nil {
+		t.Fatalf("add version column: %v", err)
+	}
+	if err := db.Exec(`ALTER TABLE capability_versions RENAME TO capability_versions_old`).Error; err != nil {
+		t.Fatalf("rename capability_versions: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE capability_versions (
+		id TEXT PRIMARY KEY,
+		item_id TEXT NOT NULL,
+		revision INTEGER,
+		version TEXT,
+		content TEXT NOT NULL,
+		content_md5 TEXT DEFAULT '',
+		metadata TEXT DEFAULT '{}',
+		commit_msg TEXT,
+		created_by TEXT NOT NULL,
+		created_at DATETIME
+	)`).Error; err != nil {
+		t.Fatalf("create legacy capability_versions: %v", err)
+	}
+	if err := db.Exec(`DROP TABLE capability_versions_old`).Error; err != nil {
+		t.Fatalf("drop old capability_versions: %v", err)
+	}
+
+	if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, current_revision, status, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "item-legacy-1", publicRegistryID, publicRepoID, "legacy-1", "skill", "Legacy 1", "content", 0, "active", "system", "{}").Error; err != nil {
+		t.Fatalf("insert item 1: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, current_revision, status, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "item-legacy-2", publicRegistryID, publicRepoID, "legacy-2", "skill", "Legacy 2", "content", 0, "active", "system", "{}").Error; err != nil {
+		t.Fatalf("insert item 2: %v", err)
+	}
+
+	legacyRows := []struct {
+		id        string
+		itemID    string
+		version   string
+		createdAt string
+	}{
+		{"ver-1-a", "item-legacy-1", "1.0.0", "2024-01-01 00:00:00"},
+		{"ver-1-b", "item-legacy-1", "2.0.0", "2024-01-02 00:00:00"},
+		{"ver-2-a", "item-legacy-2", "v3", "2024-01-03 00:00:00"},
+	}
+	for _, row := range legacyRows {
+		if err := db.Exec(`INSERT INTO capability_versions (id, item_id, revision, version, content, created_by, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, row.id, row.itemID, nil, row.version, "legacy", "system", "{}", row.createdAt).Error; err != nil {
+			t.Fatalf("insert legacy version %s: %v", row.id, err)
+		}
+	}
+
+	if err := normalizeLegacyCapabilityVersions(db); err != nil {
+		t.Fatalf("normalize legacy versions: %v", err)
+	}
+
+	var countItem1 int64
+	if err := db.Table("capability_versions").Where("item_id = ?", "item-legacy-1").Count(&countItem1).Error; err != nil {
+		t.Fatalf("count item 1 versions: %v", err)
+	}
+	if countItem1 != 1 {
+		t.Fatalf("expected item-legacy-1 to keep 1 version, got %d", countItem1)
+	}
+
+	var countItem2 int64
+	if err := db.Table("capability_versions").Where("item_id = ?", "item-legacy-2").Count(&countItem2).Error; err != nil {
+		t.Fatalf("count item 2 versions: %v", err)
+	}
+	if countItem2 != 1 {
+		t.Fatalf("expected item-legacy-2 to keep 1 version, got %d", countItem2)
+	}
+
+	var kept struct {
+		ID       string
+		Revision int
+	}
+	if err := db.Table("capability_versions").Select("id, revision").Where("item_id = ?", "item-legacy-1").First(&kept).Error; err != nil {
+		t.Fatalf("load kept version: %v", err)
+	}
+	if kept.ID != "ver-1-a" {
+		t.Fatalf("expected earliest item-legacy-1 version to be kept, got %s", kept.ID)
+	}
+	if kept.Revision != 1 {
+		t.Fatalf("expected kept revision=1, got %d", kept.Revision)
+	}
+
+	var currentRevision int
+	if err := db.Table("capability_items").Select("current_revision").Where("id = ?", "item-legacy-1").Scan(&currentRevision).Error; err != nil {
+		t.Fatalf("load current_revision: %v", err)
+	}
+	if currentRevision != 1 {
+		t.Fatalf("expected current_revision=1, got %d", currentRevision)
+	}
+}
+
 func strPtr(v string) *string { return &v }
