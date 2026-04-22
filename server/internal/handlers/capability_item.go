@@ -1490,7 +1490,7 @@ func ListAllItems(c *gin.Context) {
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string}  false  "Item data (JSON)"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON)"
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
@@ -1522,6 +1522,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		SourcePath  string             `json:"sourcePath"`
 		Assets      []itemAssetPayload `json:"assets"`
 		CreatedBy   string             `json:"createdBy"`
+		Tags        []string           `json:"tags"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1616,6 +1617,17 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 
 	if h.categorySvc != nil && req.Category != "" {
 		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
+	}
+
+	if h.tagSvc != nil && len(req.Tags) > 0 {
+		tags, err := h.tagSvc.EnsureTags(req.Tags, services.TagClassCustom, req.CreatedBy)
+		if err == nil {
+			var tagIDs []string
+			for _, t := range tags {
+				tagIDs = append(tagIDs, t.ID)
+			}
+			h.tagSvc.SetItemTags(item.ID, tagIDs)
+		}
 	}
 
 	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
@@ -1866,6 +1878,17 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 				log.Printf("Failed to index item %s: %v", item.ID, err)
 			}
 		}()
+	}
+
+	if h.tagSvc != nil && len(result.Parsed.Tags) > 0 {
+		tags, err := h.tagSvc.EnsureTags(result.Parsed.Tags, services.TagClassFunctional, createdBy)
+		if err == nil {
+			var tagIDs []string
+			for _, t := range tags {
+				tagIDs = append(tagIDs, t.ID)
+			}
+			h.tagSvc.SetItemTags(item.ID, tagIDs)
+		}
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
