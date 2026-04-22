@@ -154,8 +154,10 @@ func main() {
 	// Initialize ItemHandler with indexer and parser
 	parserSvc := &services.ParserService{}
 	categorySvc := &services.CategoryService{DB: db}
+	tagSvc := &services.TagService{DB: db}
 	handlers.CategorySvc = categorySvc
-	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc, categorySvc)
+	handlers.TagSvc = tagSvc
+	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc, categorySvc, tagSvc)
 
 	// Initialize AI-powered handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
@@ -244,6 +246,10 @@ func main() {
 		// Category dictionary (public read)
 		api.GET("/categories", handlers.ListCategoriesHandler(categorySvc))
 		api.GET("/categories/:id", handlers.GetCategoryHandler(categorySvc))
+
+		// Tag dictionary (public read)
+		api.GET("/tags", handlers.ListTagsHandler(tagSvc))
+		api.GET("/tags/:id", handlers.GetTagHandler(tagSvc))
 
 		// Marketplace browse (public)
 		marketplace := api.Group("/marketplace")

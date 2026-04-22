@@ -33,10 +33,11 @@ type ItemHandler struct {
 	parserSvc   *services.ParserService
 	archiveSvc  *services.ArchiveService
 	categorySvc *services.CategoryService
+	tagSvc      *services.TagService
 }
 
 // NewItemHandler creates a new item handler
-func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService) *ItemHandler {
+func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService, tagSvc *services.TagService) *ItemHandler {
 	var archiveSvc *services.ArchiveService
 	if parserSvc != nil {
 		archiveSvc = &services.ArchiveService{Parser: parserSvc}
@@ -47,6 +48,7 @@ func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc 
 		parserSvc:   parserSvc,
 		archiveSvc:  archiveSvc,
 		categorySvc: categorySvc,
+		tagSvc:      tagSvc,
 	}
 }
 
@@ -829,6 +831,7 @@ func DeleteItem(c *gin.Context) {
 		}{
 			{model: &models.BehaviorLog{}, name: "behavior logs"},
 			{model: &models.ItemFavorite{}, name: "item favorites"},
+				{model: &models.ItemTag{}, name: "item tags"},
 			{model: &models.ScanJob{}, name: "scan jobs"},
 			{model: &models.SecurityScan{}, name: "security scans"},
 			{model: &models.CapabilityAsset{}, name: "capability assets"},
@@ -1002,6 +1005,10 @@ func ListAllItems(c *gin.Context) {
 	if c.Query("favorited") == "true" && uid != "" {
 		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", uid)
 	}
+	if tags := c.Query("tags"); tags != "" {
+		tagSlugs := strings.Split(tags, ",")
+		query = query.Where("id IN (SELECT item_id FROM item_tags JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id WHERE item_tag_dicts.slug IN ?)", tagSlugs)
+	}
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
@@ -1051,6 +1058,16 @@ func ListAllItems(c *gin.Context) {
 		}
 	}
 
+	// Batch-fetch tags for items
+	var tagsMap map[string][]models.ItemTagDict
+	if TagSvc != nil && len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		tagsMap, _ = TagSvc.GetItemTags(itemIDs)
+	}
+
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
@@ -1062,6 +1079,9 @@ func ListAllItems(c *gin.Context) {
 		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID]}
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]
+		}
+		if tagsMap != nil {
+			out[i].Tags = tagsMap[item.ID]
 		}
 	}
 

@@ -21,6 +21,7 @@ type SyncService struct {
 	Parser         *ParserService
 	ScanJobService *ScanJobService
 	CategorySvc    *CategoryService
+	TagSvc         *TagService
 }
 
 type SyncOptions struct {
@@ -346,6 +347,16 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
 				}
+				if s.TagSvc != nil && len(parsed.Tags) > 0 {
+					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassFunctional, triggerUser)
+					if err == nil {
+						var tagIDs []string
+						for _, t := range tags {
+							tagIDs = append(tagIDs, t.ID)
+						}
+						s.TagSvc.SetItemTags(existing.ID, tagIDs)
+					}
+				}
 				meta := parsed.Metadata
 				if parsed.ItemType == "mcp" {
 					normalized, err := NormalizeMCPMetadata(meta)
@@ -415,6 +426,16 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
+				}
+				if s.TagSvc != nil && len(parsed.Tags) > 0 {
+					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassFunctional, triggerUser)
+					if err == nil {
+						var tagIDs []string
+						for _, t := range tags {
+							tagIDs = append(tagIDs, t.ID)
+						}
+						s.TagSvc.SetItemTags(newItem.ID, tagIDs)
+					}
 				}
 
 				ver := &models.CapabilityVersion{

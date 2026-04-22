@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -395,6 +396,10 @@ func ListMyItems(c *gin.Context) {
 	}
 	if itemType := c.Query("type"); itemType != "" {
 		query = query.Where("item_type = ?", itemType)
+	}
+	if tags := c.Query("tags"); tags != "" {
+		tagSlugs := strings.Split(tags, ",")
+		query = query.Where("id IN (SELECT item_id FROM item_tags JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id WHERE item_tag_dicts.slug IN ?)", tagSlugs)
 	}
 
 	var total int64
