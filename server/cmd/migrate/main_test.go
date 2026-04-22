@@ -264,4 +264,64 @@ func TestNormalizeLegacyCapabilityVersions_CollapsesToSingleV1PerItem(t *testing
 	}
 }
 
+func TestBackfillCapabilityContentVersioning_SkipsMalformedMCPContent(t *testing.T) {
+	db := newMigrateTestDB(t)
+	db.Create(&models.CapabilityRegistry{ID: publicRegistryID, Name: "public", SourceType: "internal", RepoID: publicRepoID, OwnerID: "system"})
+
+	if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, current_revision, status, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "item-bad-mcp", publicRegistryID, publicRepoID, "bad-mcp", "mcp", "Bad MCP", "{", 0, "active", "system", "{}").Error; err != nil {
+		t.Fatalf("insert malformed item: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, current_revision, status, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "item-good-skill", publicRegistryID, publicRepoID, "good-skill", "skill", "Good Skill", "hello", 0, "active", "system", "{}").Error; err != nil {
+		t.Fatalf("insert good item: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_versions (id, item_id, revision, content, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?)`, "ver-bad-mcp", "item-bad-mcp", 1, "{", "system", "{}").Error; err != nil {
+		t.Fatalf("insert malformed version: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_versions (id, item_id, revision, content, created_by, metadata) VALUES (?, ?, ?, ?, ?, ?)`, "ver-good-skill", "item-good-skill", 1, "hello", "system", "{}").Error; err != nil {
+		t.Fatalf("insert good version: %v", err)
+	}
+
+	if err := backfillCapabilityContentVersioning(db); err != nil {
+		t.Fatalf("backfill should skip malformed records, got: %v", err)
+	}
+
+	var badItem models.CapabilityItem
+	if err := db.First(&badItem, "id = ?", "item-bad-mcp").Error; err != nil {
+		t.Fatalf("reload bad item: %v", err)
+	}
+	if badItem.ContentMD5 != "" {
+		t.Fatalf("expected malformed item content_md5 to remain empty, got %q", badItem.ContentMD5)
+	}
+	if badItem.CurrentRevision != 0 {
+		t.Fatalf("expected malformed item current_revision to remain 0, got %d", badItem.CurrentRevision)
+	}
+
+	var badVersion models.CapabilityVersion
+	if err := db.First(&badVersion, "id = ?", "ver-bad-mcp").Error; err != nil {
+		t.Fatalf("reload bad version: %v", err)
+	}
+	if badVersion.ContentMD5 != "" {
+		t.Fatalf("expected malformed version content_md5 to remain empty, got %q", badVersion.ContentMD5)
+	}
+
+	var goodItem models.CapabilityItem
+	if err := db.First(&goodItem, "id = ?", "item-good-skill").Error; err != nil {
+		t.Fatalf("reload good item: %v", err)
+	}
+	if goodItem.ContentMD5 == "" {
+		t.Fatal("expected good item content_md5 to be backfilled")
+	}
+	if goodItem.CurrentRevision != 1 {
+		t.Fatalf("expected good item current_revision=1, got %d", goodItem.CurrentRevision)
+	}
+
+	var goodVersion models.CapabilityVersion
+	if err := db.First(&goodVersion, "id = ?", "ver-good-skill").Error; err != nil {
+		t.Fatalf("reload good version: %v", err)
+	}
+	if goodVersion.ContentMD5 == "" {
+		t.Fatal("expected good version content_md5 to be backfilled")
+	}
+}
+
 func strPtr(v string) *string { return &v }

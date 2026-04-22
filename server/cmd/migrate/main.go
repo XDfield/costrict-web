@@ -190,7 +190,8 @@ func backfillCapabilityContentVersioning(db *gorm.DB) error {
 				var err error
 				contentMD5, err = hashCurrentItemContent(hashSvc, item)
 				if err != nil {
-					return fmt.Errorf("hash item %s: %w", item.ID, err)
+					log.Printf("Skipping capability item %s during content versioning backfill: %v", item.ID, err)
+					continue
 				}
 			}
 
@@ -228,7 +229,8 @@ func backfillCapabilityContentVersioning(db *gorm.DB) error {
 
 			contentMD5, err := hashSvc.HashTextContent(item.ItemType, version.Content)
 			if err != nil {
-				return fmt.Errorf("hash version %s: %w", version.ID, err)
+				log.Printf("Skipping capability version %s during content versioning backfill: %v", version.ID, err)
+				continue
 			}
 			if err := tx.Model(&models.CapabilityVersion{}).Where("id = ?", version.ID).Update("content_md5", contentMD5).Error; err != nil {
 				return fmt.Errorf("update version %s: %w", version.ID, err)
