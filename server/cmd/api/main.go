@@ -315,6 +315,7 @@ func main() {
 			authed.GET("/items/my", handlers.ListMyItems)
 			authed.POST("/items", itemHandler.CreateItemDirect)
 			authed.PUT("/items/:id", itemHandler.UpdateItem)
+			authed.POST("/items/:id/check-consistency", itemHandler.CheckItemConsistency)
 			authed.DELETE("/items/:id", handlers.DeleteItem)
 			authed.PUT("/items/:id/move", handlers.MoveItem)
 			authed.PUT("/items/:id/transfer", handlers.TransferItemToRepo)

@@ -19,7 +19,237 @@ definitions:
       universal_id:
         type: string
     type: object
-  github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis:
+  handlers.ConsistencyCheckResponse:
+    properties:
+      contentMd5:
+        type: string
+      matched:
+        type: boolean
+      matchedCurrent:
+        type: boolean
+      matchedRevision:
+        type: integer
+      matchedVersionLabel:
+        type: string
+    type: object
+  handlers.CreateSyncRegistryInput:
+    properties:
+      conflictStrategy:
+        type: string
+      description:
+        type: string
+      excludePatterns:
+        items:
+          type: string
+        type: array
+      externalBranch:
+        type: string
+      externalUrl:
+        type: string
+      includePatterns:
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      syncEnabled:
+        type: boolean
+      syncInterval:
+        type: integer
+      webhookSecret:
+        type: string
+    type: object
+  handlers.ItemResponse:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      contentMd5:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      currentRevision:
+        type: integer
+      currentVersionLabel:
+        type: string
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      favoriteCount:
+        type: integer
+      favorited:
+        type: boolean
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      previewCount:
+        type: integer
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      repoVisibility:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+    type: object
+  handlers.MyItem:
+    properties:
+      artifacts:
+        items:
+          $ref: '#/definitions/models.CapabilityArtifact'
+        type: array
+      assets:
+        items:
+          $ref: '#/definitions/models.CapabilityAsset'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      contentMd5:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      currentRevision:
+        type: integer
+      description:
+        type: string
+      embeddingUpdatedAt:
+        type: string
+      experienceScore:
+        type: number
+      favoriteCount:
+        type: integer
+      id:
+        type: string
+      installCount:
+        type: integer
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata:
+        type: object
+      name:
+        type: string
+      previewCount:
+        type: integer
+      registry:
+        $ref: '#/definitions/models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      repoName:
+        type: string
+      repoVisibility:
+        type: string
+      securityStatus:
+        type: string
+      slug:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      sourceType:
+        description: direct | archive
+        type: string
+      status:
+        type: string
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/models.CapabilityVersion'
+        type: array
+    type: object
+  handlers.VersionResponse:
+    properties:
+      commitMsg:
+        type: string
+      content:
+        type: string
+      contentMd5:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      id:
+        type: string
+      itemId:
+        type: string
+      metadata:
+        type: object
+      revision:
+        type: integer
+      versionLabel:
+        type: string
+    type: object
+  handlers.userBasicInfoResponse:
+    properties:
+      avatarUrl:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+    type: object
+  llm.SkillAnalysis:
     properties:
       improvements:
         items:
@@ -173,10 +403,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -278,6 +512,8 @@ definitions:
       commitMsg:
         type: string
       content:
+        type: string
+      contentMd5:
         type: string
       createdAt:
         type: string
@@ -793,10 +1029,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -891,10 +1131,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -3787,7 +4031,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:
@@ -3911,7 +4155,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:
@@ -4058,6 +4302,53 @@ paths:
       summary: Log user behavior
       tags:
       - behavior
+  /items/{id}/check-consistency:
+    post:
+      consumes:
+      - application/json
+      description: Check whether provided content or md5 matches the current item
+        version or a historical revision.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Consistency check payload
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            content:
+              type: string
+            md5:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.ConsistencyCheckResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Check item consistency
+      tags:
+      - items
   /items/{id}/download:
     get:
       description: Download the Markdown content of a capability item (skill/subagent/command)
@@ -4614,7 +4905,7 @@ paths:
             properties:
               versions:
                 items:
-                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
+                  $ref: '#/definitions/handlers.VersionResponse'
                 type: array
             type: object
         "500":
@@ -4647,7 +4938,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion'
+            $ref: '#/definitions/handlers.VersionResponse'
         "400":
           description: Bad Request
           schema:
@@ -6353,7 +6644,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:

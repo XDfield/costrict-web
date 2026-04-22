@@ -36,6 +36,8 @@ func TestScanItemUpdatesCategoryFromScanResult(t *testing.T) {
 			category TEXT,
 			version TEXT DEFAULT '1.0.0',
 			content TEXT,
+			content_md5 TEXT DEFAULT '',
+			current_revision INTEGER NOT NULL DEFAULT 1,
 			metadata TEXT DEFAULT '{}',
 			source_path TEXT,
 			source_sha TEXT,

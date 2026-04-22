@@ -3371,7 +3371,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3586,7 +3586,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3844,6 +3844,77 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/check-consistency": {
+            "post": {
+                "description": "Check whether provided content or md5 matches the current item version or a historical revision.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Check item consistency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Consistency check payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string"
+                                },
+                                "md5": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ConsistencyCheckResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -4701,7 +4772,7 @@ const docTemplate = `{
                                 "versions": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                                        "$ref": "#/definitions/handlers.VersionResponse"
                                     }
                                 }
                             }
@@ -4751,7 +4822,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                            "$ref": "#/definitions/handlers.VersionResponse"
                         }
                     },
                     "400": {
@@ -7411,7 +7482,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -11695,7 +11766,354 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis": {
+        "handlers.ConsistencyCheckResponse": {
+            "type": "object",
+            "properties": {
+                "contentMd5": {
+                    "type": "string"
+                },
+                "matched": {
+                    "type": "boolean"
+                },
+                "matchedCurrent": {
+                    "type": "boolean"
+                },
+                "matchedRevision": {
+                    "type": "integer"
+                },
+                "matchedVersionLabel": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.CreateSyncRegistryInput": {
+            "type": "object",
+            "properties": {
+                "conflictStrategy": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "excludePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "externalBranch": {
+                    "type": "string"
+                },
+                "externalUrl": {
+                    "type": "string"
+                },
+                "includePatterns": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "syncEnabled": {
+                    "type": "boolean"
+                },
+                "syncInterval": {
+                    "type": "integer"
+                },
+                "webhookSecret": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ItemResponse": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
+                },
+                "currentVersionLabel": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "favoriteCount": {
+                    "type": "integer"
+                },
+                "favorited": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "previewCount": {
+                    "type": "integer"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoVisibility": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "handlers.MyItem": {
+            "type": "object",
+            "properties": {
+                "artifacts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityArtifact"
+                    }
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityAsset"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "embeddingUpdatedAt": {
+                    "type": "string"
+                },
+                "experienceScore": {
+                    "type": "number"
+                },
+                "favoriteCount": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "previewCount": {
+                    "type": "integer"
+                },
+                "registry": {
+                    "$ref": "#/definitions/models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "repoName": {
+                    "type": "string"
+                },
+                "repoVisibility": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "description": "direct | archive",
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CapabilityVersion"
+                    }
+                }
+            }
+        },
+        "handlers.VersionResponse": {
+            "type": "object",
+            "properties": {
+                "commitMsg": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "versionLabel": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.userBasicInfoResponse": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "llm.SkillAnalysis": {
             "type": "object",
             "properties": {
                 "improvements": {
@@ -11923,11 +12341,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -12080,6 +12504,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
                     "type": "string"
                 },
                 "createdAt": {
@@ -12844,11 +13271,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -12992,11 +13425,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
