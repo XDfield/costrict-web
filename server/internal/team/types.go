@@ -46,17 +46,19 @@ const (
 
 // Event types: Cloud → Client
 const (
-	EventTaskAssigned      = "task.assigned"
-	EventTaskTerminate     = "task.terminate"
-	EventTaskInterrupted   = "task.interrupted"
-	EventApprovalPush      = "approval.push"
-	EventApprovalResponse  = "approval.response"
-	EventMessageReceive    = "message.receive"
-	EventSessionUpdated    = "session.updated"
-	EventTeammateStatus    = "teammate.status"
-	EventLeaderElected     = "leader.elected"
-	EventLeaderExpired     = "leader.expired"
-	EventError             = "error"
+	EventTaskAssigned       = "task.assigned"
+	EventTaskTerminate      = "task.terminate"
+	EventTaskInterrupted    = "task.interrupted"
+	EventApprovalPush       = "approval.push"
+	EventApprovalResponse   = "approval.response"
+	EventMessageReceive     = "message.receive"
+	EventSessionUpdated     = "session.updated"
+	EventTeammateStatus     = "teammate.status"
+	EventLeaderElected      = "leader.elected"
+	EventLeaderExpired      = "leader.expired"
+	EventLeaderSnapshot     = "leader.snapshot"
+	EventOrchestrateProgress = "orchestrate.progress"
+	EventError              = "error"
 )
 
 // Session statuses

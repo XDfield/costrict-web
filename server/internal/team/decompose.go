@@ -12,6 +12,7 @@ type DecomposeRequest struct {
 	Prompt       string         `json:"prompt" binding:"required"`
 	Context      map[string]any `json:"context,omitempty"`
 	FencingToken int64          `json:"fencingToken,omitempty"`
+	DryRun       bool           `json:"dryRun,omitempty"`
 }
 
 // DecomposeResultItem is a single task returned by the teammate's LLM.

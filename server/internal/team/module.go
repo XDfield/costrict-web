@@ -48,6 +48,7 @@ func (m *Module) RegisterRoutes(apiGroup, wsGroup *gin.RouterGroup) {
 			sessions.GET("/:id/tasks", m.Handler.ListTasks)
 			sessions.POST("/:id/tasks/:taskId/terminate", m.Handler.TerminateTask)
 			sessions.POST("/:id/decompose", m.Handler.DecomposeTask)
+			sessions.POST("/:id/orchestrate", m.Handler.OrchestrateTask)
 
 			sessions.GET("/:id/approvals", m.Handler.ListApprovals)
 

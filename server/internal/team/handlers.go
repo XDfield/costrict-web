@@ -497,6 +497,9 @@ func (h *Handler) DecomposeTask(c *gin.Context) {
 		if schedErr == nil {
 			tasks = ScheduleTasks(*schedCtx, tasks)
 		}
+		if req.DryRun {
+			return tasks, nil
+		}
 		if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
 			return nil, storeErr
 		}
@@ -587,6 +590,11 @@ func (h *Handler) DecomposeTask(c *gin.Context) {
 		schedCtx, schedErr := h.buildSchedulingContext(sessionID)
 		if schedErr == nil {
 			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+
+		if req.DryRun {
+			c.JSON(http.StatusCreated, gin.H{"tasks": tasks, "dryRun": true})
+			return
 		}
 
 		if storeErr := h.store.CreateTasks(tasks); storeErr != nil {
@@ -1046,6 +1054,13 @@ func (h *Handler) ElectLeader(c *gin.Context) {
 			"score":        score,
 		}
 		h.hub.Broadcast(sessionID, newEvent(EventLeaderElected, sessionID, broadcastPayload))
+
+			// Reconcile orphaned tasks from previous leader crash
+			go h.reconcileTasksOnLeaderChange(sessionID)
+
+			// Send session snapshot to new leader
+			snapshot := h.buildSessionSnapshot(sessionID)
+			h.hub.SendToMachine(sessionID, req.MachineID, newEvent("leader.snapshot", sessionID, snapshot))
 	}
 
 	resp := gin.H{
@@ -1750,7 +1765,7 @@ func (h *Handler) interruptTasksForMember(sessionID, machineID string) {
 		if t.AssignedMemberID == nil || *t.AssignedMemberID != member.ID {
 			continue
 		}
-		if t.Status != TaskStatusRunning && t.Status != TaskStatusClaimed {
+		if t.Status != TaskStatusRunning && t.Status != TaskStatusClaimed && t.Status != TaskStatusAssigned {
 			continue
 		}
 		h.store.UpdateTask(t.ID, map[string]any{ //nolint:errcheck
@@ -1760,6 +1775,222 @@ func (h *Handler) interruptTasksForMember(sessionID, machineID string) {
 			"taskId":    t.ID,
 			"machineId": machineID,
 		}))
+	}
+}
+
+// ─── Auto-Explore for Context ──────────────────────────────────────────────
+
+// autoExploreForContext runs lightweight file_tree explore queries against
+// online teammates that hold repos referenced in this session. Results are
+// aggregated and returned as context for task decomposition.
+func (h *Handler) autoExploreForContext(sessionID, _ string) map[string]any {
+	affinities, err := h.store.ListAllRepoAffinities(sessionID)
+	if err != nil || len(affinities) == 0 {
+		return nil
+	}
+
+	members, err := h.store.ListMembers(sessionID)
+	if err != nil || len(members) == 0 {
+		return nil
+	}
+
+	// Build repoURL → first online teammate machineID mapping
+	repoToMachine := make(map[string]string)
+	for _, a := range affinities {
+		if _, exists := repoToMachine[a.RepoRemoteURL]; exists {
+			continue
+		}
+		for _, m := range members {
+			if m.MachineID != "" && h.hub.IsMachineOnline(sessionID, m.MachineID) {
+				repoToMachine[a.RepoRemoteURL] = m.MachineID
+				break
+			}
+		}
+	}
+
+	if len(repoToMachine) == 0 {
+		return nil
+	}
+
+	type exploreResult struct {
+		repoURL string
+		data    map[string]any
+	}
+	resultCh := make(chan exploreResult, len(repoToMachine))
+
+	for repoURL, machineID := range repoToMachine {
+		go func(rURL, mID string) {
+			requestID := uuid.New().String()
+			ch := h.hub.RegisterExplore(requestID)
+			defer h.hub.CancelExplore(requestID)
+
+			evt := newEvent(EventExploreRequest, sessionID, map[string]any{
+				"requestId":       requestID,
+				"targetMachineId": mID,
+				"fromMachineId":   h.hub.GetLeaderMachineID(sessionID),
+				"queries": []map[string]any{
+					{"type": "file_tree", "params": map[string]any{}},
+				},
+			})
+			h.hub.SendToMachine(sessionID, mID, evt)
+
+			select {
+			case result := <-ch:
+				resultCh <- exploreResult{repoURL: rURL, data: result.Payload}
+			case <-time.After(10 * time.Second):
+				resultCh <- exploreResult{repoURL: rURL, data: nil}
+			}
+		}(repoURL, machineID)
+	}
+
+	results := make([]map[string]any, 0, len(repoToMachine))
+	for i := 0; i < len(repoToMachine); i++ {
+		r := <-resultCh
+		if r.data != nil {
+			results = append(results, map[string]any{
+				"repoRemoteUrl": r.repoURL,
+				"result":        r.data,
+			})
+		}
+	}
+
+	if len(results) == 0 {
+		return nil
+	}
+	return map[string]any{"exploreResults": results}
+}
+
+// ─── Orchestrate ───────────────────────────────────────────────────────────
+
+// OrchestrateTask godoc
+// @Summary      Orchestrate explore→decompose→schedule pipeline
+// @Tags         team
+// @Accept       json
+// @Produce      json
+// @Param        id    path  string  true  "Session ID"
+// @Param        body  body  object{prompt=string,fencingToken=integer}  true  "Orchestrate request"
+// @Success      201   {object}  object{tasks=[]TeamTask,dryRun=bool}
+// @Router       /team/sessions/:id/orchestrate [post]
+func (h *Handler) OrchestrateTask(c *gin.Context) {
+	sessionID := c.Param("id")
+	sess, err := h.store.GetSession(sessionID)
+	if err != nil || sess == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	var req struct {
+		Prompt       string `json:"prompt" binding:"required"`
+		FencingToken int64  `json:"fencingToken"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
+		return
+	}
+
+	if req.FencingToken != 0 {
+		if !h.hub.ValidateFencingToken(sessionID, req.FencingToken) {
+			c.JSON(http.StatusConflict, gin.H{"error": "stale leader: fencing token rejected"})
+			return
+		}
+	}
+
+	// Phase 1: Auto-explore
+	h.hub.Broadcast(sessionID, newEvent(EventOrchestrateProgress, sessionID, map[string]any{
+		"phase": "exploring", "message": "Exploring codebases...",
+	}))
+	exploreCtx := h.autoExploreForContext(sessionID, req.Prompt)
+
+	// Phase 2: Decompose
+	h.hub.Broadcast(sessionID, newEvent(EventOrchestrateProgress, sessionID, map[string]any{
+		"phase": "decomposing", "message": "Decomposing into tasks...",
+	}))
+
+
+	// Try to delegate decomposition to an online teammate
+	_, targetMachineID, pickErr := pickDecomposeTarget(h.hub, h.store, sessionID)
+	leaderMachineID := h.hub.GetLeaderMachineID(sessionID)
+	if leaderMachineID == "" {
+		leaderMachineID = sess.LeaderMachineID
+	}
+
+	// If no teammate or only leader available, use fallback
+	if pickErr != nil || (leaderMachineID != "" && targetMachineID == leaderMachineID) {
+		tasks := buildFallbackTasks(req.Prompt, sessionID)
+		schedCtx, schedErr := h.buildSchedulingContext(sessionID)
+		if schedErr == nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+		c.JSON(http.StatusCreated, gin.H{
+			"tasks":  tasks,
+			"dryRun": true,
+			"context": exploreCtx,
+		})
+		return
+	}
+
+	// Send decompose.request to teammate
+	requestID := uuid.New().String()
+	resultCh := h.hub.RegisterDecompose(requestID)
+	defer h.hub.CancelDecompose(requestID)
+
+	evt := newEvent(EventDecomposeRequest, sessionID, map[string]any{
+		"requestId": requestID,
+		"prompt":    req.Prompt,
+		"context":   exploreCtx,
+	})
+	h.hub.SendToMachine(sessionID, targetMachineID, evt)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	select {
+	case result := <-resultCh:
+		itemsRaw, ok := result.Payload["tasks"].([]any)
+		if !ok || len(itemsRaw) == 0 {
+			tasks := buildFallbackTasks(req.Prompt, sessionID)
+			schedCtx, _ := h.buildSchedulingContext(sessionID)
+			if schedCtx != nil {
+				tasks = ScheduleTasks(*schedCtx, tasks)
+			}
+			c.JSON(http.StatusCreated, gin.H{"tasks": tasks, "dryRun": true, "context": exploreCtx})
+			return
+		}
+
+		var tasks []TeamTask
+		for _, raw := range itemsRaw {
+			data, _ := json.Marshal(raw)
+			var item DecomposeResultItem
+			if json.Unmarshal(data, &item) != nil || item.Description == "" {
+				continue
+			}
+			tasks = append(tasks, item.toTeamTask(sessionID))
+		}
+		if len(tasks) == 0 {
+			tasks = buildFallbackTasks(req.Prompt, sessionID)
+		}
+
+		schedCtx, _ := h.buildSchedulingContext(sessionID)
+		if schedCtx != nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"tasks": tasks, "dryRun": true, "context": exploreCtx})
+
+	case <-ctx.Done():
+		tasks := buildFallbackTasks(req.Prompt, sessionID)
+		schedCtx, _ := h.buildSchedulingContext(sessionID)
+		if schedCtx != nil {
+			tasks = ScheduleTasks(*schedCtx, tasks)
+		}
+		c.JSON(http.StatusCreated, gin.H{
+			"tasks":     tasks,
+			"dryRun":    true,
+			"context":   exploreCtx,
+			"degraded":  true,
+			"reason":    "decompose_timeout",
+			"message":   "decompose request timed out; used fallback single-task decomposition",
+		})
 	}
 }
 
@@ -1851,4 +2082,88 @@ func (h *Handler) dispatchAssignedTaskToMachine(sessionID string, member *TeamSe
 			logger.Warn("[team] push assigned task failed session=%s task=%s machine=%s: %v", sessionID, pushedTask.ID, targetMachineID, err)
 		}
 	}(task, machineID, member.UserID)
+}
+
+// ─── Leader Crash Recovery ────────────────────────────────────────────────
+
+// reconcileTasksOnLeaderChange checks all in-flight tasks after a new leader
+// is elected, resets tasks whose assigned machines are offline, and
+// re-dispatches them.
+func (h *Handler) reconcileTasksOnLeaderChange(sessionID string) {
+	tasks, err := h.store.ListTasks(sessionID)
+	if err != nil || len(tasks) == 0 {
+		return
+	}
+
+	reset := false
+	for _, t := range tasks {
+		if t.Status != TaskStatusRunning && t.Status != TaskStatusClaimed && t.Status != TaskStatusAssigned {
+			continue
+		}
+		if t.AssignedMemberID == nil {
+			// No assignee — just reset to pending
+			h.store.UpdateTask(t.ID, map[string]any{ //nolint:errcheck
+				"status":             TaskStatusPending,
+				"assigned_member_id": nil,
+			})
+			h.hub.Broadcast(sessionID, newEvent(EventTaskInterrupted, sessionID, map[string]any{
+				"taskId": t.ID,
+				"reason": "leader_change",
+			}))
+			reset = true
+			continue
+		}
+
+		// Look up the assigned member's machine
+		member, _ := h.store.GetMember(*t.AssignedMemberID)
+		if member == nil || member.MachineID == "" {
+			continue
+		}
+
+		if !h.hub.IsMachineOnline(sessionID, member.MachineID) {
+			h.store.UpdateTask(t.ID, map[string]any{ //nolint:errcheck
+				"status":             TaskStatusPending,
+				"assigned_member_id": nil,
+			})
+			h.hub.Broadcast(sessionID, newEvent(EventTaskInterrupted, sessionID, map[string]any{
+				"taskId":    t.ID,
+				"machineId": member.MachineID,
+				"reason":    "leader_change_machine_offline",
+			}))
+			reset = true
+		}
+	}
+
+	if reset {
+		h.assignPendingTasksIfPossible(sessionID)
+	}
+}
+
+// buildSessionSnapshot assembles a full session state snapshot for a newly
+// elected leader, including tasks, approvals, teammates, and repos.
+func (h *Handler) buildSessionSnapshot(sessionID string) map[string]any {
+	snapshot := map[string]any{}
+
+	tasks, _ := h.store.ListTasks(sessionID)
+	if tasks != nil {
+		snapshot["tasks"] = tasks
+	}
+
+	approvals, _ := h.store.ListPendingApprovals(sessionID)
+	if approvals != nil {
+		snapshot["approvals"] = approvals
+	}
+
+	members, _ := h.store.ListMembers(sessionID)
+	if members != nil {
+		snapshot["teammates"] = members
+	}
+
+	repos, _ := h.store.ListAllRepoAffinities(sessionID)
+	if repos != nil {
+		snapshot["repos"] = repos
+	}
+
+	snapshot["timestamp"] = time.Now().UnixMilli()
+	return snapshot
 }
