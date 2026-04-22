@@ -60,8 +60,8 @@ type BehaviorPattern struct {
 	SuggestedAction string `json:"suggestedAction"`
 }
 
-// extractJSON extracts JSON from LLM response that may contain markdown code blocks
-func extractJSON(response string) string {
+// ExtractJSON extracts JSON from LLM response that may contain markdown code blocks
+func ExtractJSON(response string) string {
 	response = strings.TrimSpace(response)
 
 	// Try to extract JSON from markdown code blocks
@@ -85,7 +85,7 @@ func extractJSON(response string) string {
 
 // ParseGeneratedSkill parses LLM response into GeneratedSkill
 func ParseGeneratedSkill(response string) (*GeneratedSkill, error) {
-	jsonStr := extractJSON(response)
+	jsonStr := ExtractJSON(response)
 	var skill GeneratedSkill
 	if err := json.Unmarshal([]byte(jsonStr), &skill); err != nil {
 		return nil, fmt.Errorf("failed to parse generated skill: %w", err)
@@ -95,7 +95,7 @@ func ParseGeneratedSkill(response string) (*GeneratedSkill, error) {
 
 // ParseSkillAnalysis parses LLM response into SkillAnalysis
 func ParseSkillAnalysis(response string) (*SkillAnalysis, error) {
-	jsonStr := extractJSON(response)
+	jsonStr := ExtractJSON(response)
 	var analysis SkillAnalysis
 	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
 		return nil, fmt.Errorf("failed to parse skill analysis: %w", err)
@@ -105,7 +105,7 @@ func ParseSkillAnalysis(response string) (*SkillAnalysis, error) {
 
 // ParseQueryExpansion parses LLM response into QueryExpansion
 func ParseQueryExpansion(response string) (*QueryExpansion, error) {
-	jsonStr := extractJSON(response)
+	jsonStr := ExtractJSON(response)
 	var expansion QueryExpansion
 	if err := json.Unmarshal([]byte(jsonStr), &expansion); err != nil {
 		return nil, fmt.Errorf("failed to parse query expansion: %w", err)

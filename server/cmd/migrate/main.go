@@ -15,6 +15,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/team"
 	"github.com/costrict/costrict-web/server/internal/services"
 	migrations "github.com/costrict/costrict-web/server/migrations"
 	"github.com/google/uuid"
@@ -111,6 +112,15 @@ func main() {
 	}
 
 	err = db.AutoMigrate(
+		&team.TeamSession{},
+		&team.TeamSessionMember{},
+		&team.TeamTask{},
+		&team.TeamApprovalRequest{},
+		&team.TeamRepoAffinity{},
+		&models.UserSystemRole{},
+		&models.Repository{},
+			&models.RepoMember{},
+			&models.RepoInvitation{},
 		&models.UserSystemRole{},
 		&models.Repository{},
 		&models.RepoMember{},

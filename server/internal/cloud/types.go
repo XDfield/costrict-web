@@ -3,12 +3,12 @@ package cloud
 import "errors"
 
 type SSEConnection struct {
-	ID          string
-	Type        ConnType
-	UserID      string
-	WorkspaceID string
-	Send        chan Event
-	Done        chan struct{}
+	ID           string
+	Type         ConnType
+	UserID       string
+	WorkspaceID  string
+	Send         chan Event
+	Done         chan struct{}
 	LastActivity int64
 }
 
@@ -31,19 +31,20 @@ type ManagerStats struct {
 }
 
 const (
-	EventCloudConnected        = "cloud.connected"
-	EventDeviceConnected       = "device.connected"
-	EventHeartbeat             = "heartbeat"
-	EventSessionStatus         = "session.status"
-	EventSessionCreated        = "session.created"
-	EventSessionUpdated        = "session.updated"
-	EventMessagePartUpdated    = "message.part.updated"
-	EventMessagePartDelta      = "message.part.delta"
-	EventDeviceStatus          = "device.status"
-	EventSessionAbort          = "session.abort"
-	EventSessionMessage        = "session.message"
-	EventBatch                 = "batch"
-	EventInterventionRequired  = "intervention.required"
+	EventCloudConnected       = "cloud.connected"
+	EventDeviceConnected      = "device.connected"
+	EventHeartbeat            = "heartbeat"
+	EventSessionStatus        = "session.status"
+	EventSessionCreated       = "session.created"
+	EventSessionUpdated       = "session.updated"
+	EventMessagePartUpdated   = "message.part.updated"
+	EventMessagePartDelta     = "message.part.delta"
+	EventDeviceStatus         = "device.status"
+	EventSessionAbort         = "session.abort"
+	EventSessionMessage       = "session.message"
+	EventTeamTaskDispatch     = "team.task.dispatch"
+	EventBatch                = "batch"
+	EventInterventionRequired = "intervention.required"
 )
 
 const (

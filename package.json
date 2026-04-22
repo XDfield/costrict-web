@@ -6,7 +6,7 @@
   "scripts": {
     "dev:api": "cd server && go run ./cmd/api",
     "dev:worker": "cd server && go run ./cmd/worker",
-    "dev:gateway": "cd gateway && go run ./cmd",
+    "dev:gateway": "cd gateway && go work use . && go run ./cmd",
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:gateway\"",
     "dev:all": "concurrently \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:gateway\"",
     "build:api": "cd server && go build -o bin/server ./cmd/api",

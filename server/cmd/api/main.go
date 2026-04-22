@@ -23,14 +23,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
 	"github.com/costrict/costrict-web/server/internal/channel"
-	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
+	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -45,6 +46,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -388,13 +390,15 @@ func main() {
 		}
 	}
 
+	var redisClient *redis.Client
 	var store gateway.Store
 	if cfg.RedisURL != "" {
 		opt, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
 			log.Fatalf("Invalid REDIS_URL: %v", err)
 		}
-		store = gateway.NewRedisStore(redis.NewClient(opt))
+		redisClient = redis.NewClient(opt)
+		store = gateway.NewRedisStore(redisClient)
 		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
 	} else {
 		store = gateway.NewMemoryStore()
@@ -423,8 +427,80 @@ func main() {
 	// Device proxy: require user auth + device ownership check
 	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
 
+	// Cloud Team module
+	teamModule := teampkg.New(db, redisClient)
+	teamModule.Handler.SetAssignedTaskPusher(func(ctx context.Context, sessionID string, machineID string, userID string, task teampkg.TeamTask) error {
+		_ = ctx
+		dispatchEvent := cloud.Event{
+			Type: cloud.EventTeamTaskDispatch,
+			Properties: map[string]any{
+				"sessionID": sessionID,
+				"task":      task,
+			},
+		}
+		err := cloudModule.Router.RouteUserCommand(machineID, dispatchEvent)
+		if err == nil || strings.TrimSpace(userID) == "" {
+			return err
+		}
+
+		// Fallback: some team members are browser-only machine IDs and cannot be
+		// routed by gateway (gateway routes by cloud deviceID). In that case, try
+		// the user's currently connected cloud devices.
+		devices, listErr := deviceSvc.ListDevices(userID)
+		if listErr != nil {
+			return err
+		}
+		for _, dev := range devices {
+			if dev.DeviceID == "" || dev.DeviceID == machineID {
+				continue
+			}
+			if _, gwErr := gatewayRegistry.GetDeviceGateway(dev.DeviceID); gwErr != nil {
+				continue
+			}
+			if routeErr := cloudModule.Router.RouteUserCommand(dev.DeviceID, dispatchEvent); routeErr == nil {
+				logger.Warn("[team] fallback routed task=%s session=%s from machine=%s to device=%s", task.ID, sessionID, machineID, dev.DeviceID)
+				return nil
+			}
+		}
+		return err
+	})
+	teamAPIGroup := r.Group("/api")
+	teamAPIGroup.Use(requireUserOrDeviceAuth(deviceSvc))
+	teamWSGroup := r.Group("/ws")
+	teamWSGroup.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
+	teamModule.RegisterRoutes(teamAPIGroup, teamWSGroup)
+
 	log.Printf("Server starting on port %s", cfg.Port)
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetString(middleware.UserIDKey) != "" {
+			c.Next()
+			return
+		}
+
+		token := middleware.ExtractToken(c)
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		dev, err := deviceSvc.VerifyDeviceToken(token)
+		if err != nil || dev == nil || strings.TrimSpace(dev.UserID) == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
+		}
+
+		c.Set(middleware.UserIDKey, dev.UserID)
+		if c.GetString(middleware.UserNameKey) == "" {
+			c.Set(middleware.UserNameKey, dev.DisplayName)
+		}
+		c.Set("deviceId", dev.DeviceID)
+		c.Set("authSource", "device-token")
+		c.Next()
 	}
 }
