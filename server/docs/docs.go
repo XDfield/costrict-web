@@ -1123,6 +1123,311 @@ const docTemplate = `{
                 }
             }
         },
+        "/categories": {
+            "get": {
+                "description": "Get all item categories with i18n names",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categories"
+                ],
+                "summary": "List all categories",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "categories": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new item category with i18n names",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categories"
+                ],
+                "summary": "Create category",
+                "parameters": [
+                    {
+                        "description": "Category data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "descriptions": {
+                                    "type": "object"
+                                },
+                                "icon": {
+                                    "type": "string"
+                                },
+                                "names": {
+                                    "type": "object"
+                                },
+                                "slug": {
+                                    "type": "string"
+                                },
+                                "sortOrder": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/categories/{id}": {
+            "get": {
+                "description": "Get a category by ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categories"
+                ],
+                "summary": "Get category",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Category ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update an existing item category",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "categories"
+                ],
+                "summary": "Update category",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Category ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Category update data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "descriptions": {
+                                    "type": "object"
+                                },
+                                "icon": {
+                                    "type": "string"
+                                },
+                                "names": {
+                                    "type": "object"
+                                },
+                                "sortOrder": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete an item category by ID",
+                "tags": [
+                    "categories"
+                ],
+                "summary": "Delete category",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Category ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/cloud/device/gateway-assign": {
             "post": {
                 "description": "Allocate an available gateway for a device. Requires a valid device Bearer token. Verifies that the token matches the claimed deviceID. If a version is provided and differs from the stored value, the device version is updated.",
@@ -2919,6 +3224,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Filter to only favorited items (requires auth)",
+                        "name": "favorited",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Page number (default: 1)",
                         "name": "page",
@@ -3060,7 +3371,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3275,7 +3586,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -3533,6 +3844,77 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/check-consistency": {
+            "post": {
+                "description": "Check whether provided content or md5 matches the current item version or a historical revision.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Check item consistency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Consistency check payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string"
+                                },
+                                "md5": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ConsistencyCheckResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -4390,7 +4772,7 @@ const docTemplate = `{
                                 "versions": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/models.CapabilityVersion"
+                                        "$ref": "#/definitions/handlers.VersionResponse"
                                     }
                                 }
                             }
@@ -4440,7 +4822,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityVersion"
+                            "$ref": "#/definitions/handlers.VersionResponse"
                         }
                     },
                     "400": {
@@ -7100,7 +7482,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.CapabilityItem"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "400": {
@@ -10553,6 +10935,26 @@ const docTemplate = `{
                 }
             }
         },
+        "handlers.ConsistencyCheckResponse": {
+            "type": "object",
+            "properties": {
+                "contentMd5": {
+                    "type": "string"
+                },
+                "matched": {
+                    "type": "boolean"
+                },
+                "matchedCurrent": {
+                    "type": "boolean"
+                },
+                "matchedRevision": {
+                    "type": "integer"
+                },
+                "matchedVersionLabel": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.CreateSyncRegistryInput": {
             "type": "object",
             "properties": {
@@ -10615,10 +11017,19 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
+                    "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
+                },
+                "currentVersionLabel": {
                     "type": "string"
                 },
                 "description": {
@@ -10726,11 +11137,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -10813,6 +11230,41 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/models.CapabilityVersion"
                     }
+                }
+            }
+        },
+        "handlers.VersionResponse": {
+            "type": "object",
+            "properties": {
+                "commitMsg": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "versionLabel": {
+                    "type": "string"
                 }
             }
         },
@@ -11058,11 +11510,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -11215,6 +11673,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
                     "type": "string"
                 },
                 "createdAt": {
@@ -11505,6 +11966,9 @@ const docTemplate = `{
         "models.SecurityScan": {
             "type": "object",
             "properties": {
+                "category": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
@@ -12147,11 +12611,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -12295,11 +12765,17 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentMd5": {
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "createdBy": {
                     "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
                 },
                 "description": {
                     "type": "string"
@@ -12516,6 +12992,9 @@ const docTemplate = `{
                 "request_id": {
                     "type": "string"
                 },
+                "request_time": {
+                    "type": "string"
+                },
                 "rounds": {
                     "type": "integer"
                 },
@@ -12533,6 +13012,9 @@ const docTemplate = `{
                 "reports"
             ],
             "properties": {
+                "client_version": {
+                    "type": "string"
+                },
                 "device_id": {
                     "type": "string"
                 },

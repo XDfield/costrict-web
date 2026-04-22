@@ -327,34 +327,36 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID             string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID     string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
-	RepoID         string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
-	Slug           string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
-	ItemType       string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
-	Name           string               `gorm:"not null" json:"name"`
-	Description    string               `json:"description"`
-	Category       string               `json:"category"`
-	Version        string               `gorm:"default:'1.0.0'" json:"version"`
-	Content        string               `gorm:"type:text" json:"content"`
-	Metadata       datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	SourcePath     string               `json:"sourcePath"`
-	SourceSHA      string               `json:"sourceSha"`
-	SourceType     string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
-	PreviewCount   int                  `gorm:"default:0" json:"previewCount"`
-	InstallCount   int                  `gorm:"default:0" json:"installCount"`
-	FavoriteCount  int                  `gorm:"default:0" json:"favoriteCount"`
-	Status         string               `gorm:"default:'active'" json:"status"`
-	SecurityStatus string               `gorm:"default:'unscanned'" json:"securityStatus"`
-	LastScanID     *string              `json:"lastScanId,omitempty"`
-	CreatedBy      string               `gorm:"not null" json:"createdBy"`
-	UpdatedBy      string               `json:"updatedBy"`
-	Registry       *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions       []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
-	Assets         []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
-	Artifacts      []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
-	CreatedAt      time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
-	UpdatedAt      time.Time            `json:"updatedAt"`
+	ID              string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID      string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
+	RepoID          string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
+	Slug            string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
+	ItemType        string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
+	Name            string               `gorm:"not null" json:"name"`
+	Description     string               `json:"description"`
+	Category        string               `json:"category"`
+	Version         string               `gorm:"default:'1.0.0'" json:"version"`
+	Content         string               `gorm:"type:text" json:"content"`
+	ContentMD5      string               `gorm:"size:32;default:''" json:"contentMd5"`
+	CurrentRevision int                  `gorm:"not null;default:1" json:"currentRevision"`
+	Metadata        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	SourcePath      string               `json:"sourcePath"`
+	SourceSHA       string               `json:"sourceSha"`
+	SourceType      string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
+	PreviewCount    int                  `gorm:"default:0" json:"previewCount"`
+	InstallCount    int                  `gorm:"default:0" json:"installCount"`
+	FavoriteCount   int                  `gorm:"default:0" json:"favoriteCount"`
+	Status          string               `gorm:"default:'active'" json:"status"`
+	SecurityStatus  string               `gorm:"default:'unscanned'" json:"securityStatus"`
+	LastScanID      *string              `json:"lastScanId,omitempty"`
+	CreatedBy       string               `gorm:"not null" json:"createdBy"`
+	UpdatedBy       string               `json:"updatedBy"`
+	Registry        *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions        []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	Assets          []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
+	Artifacts       []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	CreatedAt       time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
+	UpdatedAt       time.Time            `json:"updatedAt"`
 
 	// Vector embedding for semantic search
 	Embedding          *string    `gorm:"type:vector(1024)" json:"-"`
@@ -383,14 +385,31 @@ type ItemFavorite struct {
 }
 
 type CapabilityVersion struct {
-	ID        string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID    string         `gorm:"not null;index" json:"itemId"`
-	Revision  int            `gorm:"not null;column:revision" json:"revision"`
-	Content   string         `gorm:"type:text;not null" json:"content"`
-	Metadata  datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	CommitMsg string         `json:"commitMsg"`
-	CreatedBy string         `gorm:"not null" json:"createdBy"`
-	CreatedAt time.Time      `json:"createdAt"`
+	ID         string                   `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID     string                   `gorm:"not null;index" json:"itemId"`
+	Revision   int                      `gorm:"not null;column:revision" json:"revision"`
+	Content    string                   `gorm:"type:text;not null" json:"content"`
+	ContentMD5 string                   `gorm:"size:32;default:''" json:"contentMd5"`
+	Metadata   datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	CommitMsg  string                   `json:"commitMsg"`
+	CreatedBy  string                   `gorm:"not null" json:"createdBy"`
+	SourcePath string                   `json:"sourcePath"`
+	Assets     []CapabilityVersionAsset `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"assets,omitempty"`
+	CreatedAt  time.Time                `json:"createdAt"`
+}
+
+type CapabilityVersionAsset struct {
+	ID             string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	VersionID      string    `gorm:"not null;index" json:"versionId"`
+	RelPath        string    `gorm:"not null" json:"relPath"`
+	TextContent    *string   `gorm:"type:text" json:"textContent,omitempty"`
+	StorageBackend string    `gorm:"default:'local'" json:"storageBackend"`
+	StorageKey     string    `json:"storageKey,omitempty"`
+	MimeType       string    `json:"mimeType"`
+	FileSize       int64     `gorm:"default:0" json:"fileSize"`
+	ContentSHA     string    `json:"contentSha"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type CapabilityAsset struct {
@@ -497,10 +516,10 @@ type WorkspaceDirectory struct {
 type User struct {
 	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`                                  // Local database primary key, internal only
 	SubjectID   string  `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"` // Stable application-level user identifier used across business tables and request context
-	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`      // Casdoor name
-	DisplayName *string `gorm:"size:191" json:"display_name"`                                         // Casdoor preferred_username
-	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                           // Email
-	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                          // Avatar URL
+	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`     // Casdoor name
+	DisplayName *string `gorm:"size:191" json:"display_name"`                                        // Casdoor preferred_username
+	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                          // Email
+	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                         // Avatar URL
 
 	// Casdoor 相关字段
 	CasdoorID          *string `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                     // Casdoor id claim, used only for compatibility lookup

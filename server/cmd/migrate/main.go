@@ -93,6 +93,12 @@ func main() {
 				log.Println("Everything-AI-Coding import completed successfully")
 			}
 			return
+		case "backfill-capability-content-versioning":
+			if err := backfillCapabilityContentVersioning(db); err != nil {
+				log.Fatalf("Failed to backfill capability content versioning: %v", err)
+			}
+			log.Println("Capability content versioning backfill completed successfully")
+			return
 		default:
 			log.Printf("Unknown command: %s", os.Args[1])
 			printMigrateHelp()
@@ -142,12 +148,18 @@ func main() {
 		log.Fatalf("Failed to run goose migrations: %v", err)
 	}
 
+	if err := backfillCapabilityContentVersioning(db); err != nil {
+		log.Fatalf("Failed to backfill capability content versioning: %v", err)
+	}
+
 	log.Println("All migrations completed successfully")
 }
 
 func printMigrateHelp() {
 	fmt.Println("Usage:")
 	fmt.Println("  go run ./cmd/migrate                          Run schema migrations")
+	fmt.Println("  go run ./cmd/migrate backfill-capability-content-versioning")
+	fmt.Println("                                                Backfill content_md5 and current_revision for capability items")
 	fmt.Println("  go run ./cmd/migrate user-subject-ids [--dry-run]")
 	fmt.Println("                                                Backfill legacy user IDs to subject_id")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding <source-path> [--dry-run]")
@@ -156,9 +168,114 @@ func printMigrateHelp() {
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
+	fmt.Println("  go run ./cmd/migrate backfill-capability-content-versioning")
 	fmt.Println("  go run ./cmd/migrate user-subject-ids --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding /Users/linkai/code/.../everything-ai-coding --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=/Users/linkai/code/.../everything-ai-coding")
+}
+
+func backfillCapabilityContentVersioning(db *gorm.DB) error {
+	hashSvc := services.NewContentHashService()
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		var items []models.CapabilityItem
+		if err := tx.Preload("Assets").Find(&items).Error; err != nil {
+			return fmt.Errorf("load capability items: %w", err)
+		}
+
+		for _, item := range items {
+			contentMD5 := strings.TrimSpace(item.ContentMD5)
+			if contentMD5 == "" {
+				var err error
+				contentMD5, err = hashCurrentItemContent(hashSvc, item)
+				if err != nil {
+					return fmt.Errorf("hash item %s: %w", item.ID, err)
+				}
+			}
+
+			currentRevision := item.CurrentRevision
+			if currentRevision < 1 {
+				if err := tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", item.ID).Select("COALESCE(MAX(revision), 1)").Scan(&currentRevision).Error; err != nil {
+					return fmt.Errorf("query current revision for item %s: %w", item.ID, err)
+				}
+				if currentRevision < 1 {
+					currentRevision = 1
+				}
+			}
+
+			if err := tx.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(map[string]any{
+				"content_md5":      contentMD5,
+				"current_revision": currentRevision,
+			}).Error; err != nil {
+				return fmt.Errorf("update item %s: %w", item.ID, err)
+			}
+		}
+
+		var versions []models.CapabilityVersion
+		if err := tx.Find(&versions).Error; err != nil {
+			return fmt.Errorf("load capability versions: %w", err)
+		}
+		for _, version := range versions {
+			if strings.TrimSpace(version.ContentMD5) != "" {
+				continue
+			}
+
+			var item models.CapabilityItem
+			if err := tx.Unscoped().Select("id", "item_type").First(&item, "id = ?", version.ItemID).Error; err != nil {
+				return fmt.Errorf("load item %s for version %s: %w", version.ItemID, version.ID, err)
+			}
+
+			contentMD5, err := hashSvc.HashTextContent(item.ItemType, version.Content)
+			if err != nil {
+				return fmt.Errorf("hash version %s: %w", version.ID, err)
+			}
+			if err := tx.Model(&models.CapabilityVersion{}).Where("id = ?", version.ID).Update("content_md5", contentMD5).Error; err != nil {
+				return fmt.Errorf("update version %s: %w", version.ID, err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func hashCurrentItemContent(hashSvc *services.ContentHashService, item models.CapabilityItem) (string, error) {
+	if item.SourceType == "archive" {
+		entries := make([]services.ArchiveManifestEntry, 0, len(item.Assets)+1)
+		mainHash, err := hashSvc.HashTextContent(item.ItemType, item.Content)
+		if err != nil {
+			return "", err
+		}
+		mainPath := item.SourcePath
+		if strings.TrimSpace(mainPath) == "" {
+			switch item.ItemType {
+			case "mcp":
+				mainPath = ".mcp.json"
+			default:
+				mainPath = "SKILL.md"
+			}
+		}
+		entries = append(entries, services.ArchiveManifestEntry{Path: mainPath, ContentHash: mainHash})
+
+		for _, asset := range item.Assets {
+			assetHash := strings.TrimSpace(asset.ContentSHA)
+			if assetHash == "" {
+				if asset.TextContent != nil {
+					var err error
+					assetHash, err = hashSvc.HashTextContent("text", *asset.TextContent)
+					if err != nil {
+						return "", err
+					}
+				} else {
+					continue
+				}
+			}
+			entries = append(entries, services.ArchiveManifestEntry{Path: asset.RelPath, ContentHash: assetHash})
+		}
+
+		return hashSvc.HashArchiveManifest(entries), nil
+	}
+
+	return hashSvc.HashTextContent(item.ItemType, item.Content)
 }
 
 type externalCatalogEntry struct {
@@ -514,8 +631,14 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		return fmt.Errorf("missing slug")
 	}
 
+	hashSvc := services.NewContentHashService()
+	contentMD5, err := hashSvc.HashTextContent(payload.ItemType, payload.Content)
+	if err != nil {
+		return fmt.Errorf("hash imported content: %w", err)
+	}
+
 	var existing models.CapabilityItem
-	err := db.Where("repo_id = ? AND item_type = ? AND slug = ?", publicRepoID, payload.ItemType, payload.Slug).First(&existing).Error
+	err = db.Where("repo_id = ? AND item_type = ? AND slug = ?", publicRepoID, payload.ItemType, payload.Slug).First(&existing).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("query existing item: %w", err)
 	}
@@ -536,6 +659,8 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			Category:    payload.Category,
 			Version:     payload.Version,
 			Content:     payload.Content,
+			ContentMD5:  contentMD5,
+			CurrentRevision: 1,
 			Metadata:    payload.Metadata,
 			SourcePath:  payload.SourcePath,
 			SourceSHA:   sourceSHA(payload.Content),
@@ -552,6 +677,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			ItemID:    item.ID,
 			Revision:  1,
 			Content:   item.Content,
+			ContentMD5: contentMD5,
 			Metadata:  item.Metadata,
 			CommitMsg: "Import from everything-ai-coding",
 			CreatedBy: importCreatedBy,
@@ -578,24 +704,30 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		"category":    payload.Category,
 		"version":     payload.Version,
 		"content":     payload.Content,
+		"content_md5": contentMD5,
 		"metadata":    payload.Metadata,
 		"source_path": payload.SourcePath,
 		"source_sha":  sourceSHA(payload.Content),
 		"updated_by":  importCreatedBy,
 	}
+	if contentMD5 != existing.ContentMD5 {
+		updates["current_revision"] = existing.CurrentRevision + 1
+	}
 	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update capability item: %w", err)
 	}
 
-	var nextRevision int
-	if err := db.Raw(`SELECT COALESCE(MAX(revision), 0) + 1 FROM capability_versions WHERE item_id = ?`, existing.ID).Scan(&nextRevision).Error; err != nil {
-		return fmt.Errorf("query next revision: %w", err)
+	if contentMD5 == existing.ContentMD5 {
+		return nil
 	}
+
+	nextRevision := existing.CurrentRevision + 1
 	version := models.CapabilityVersion{
 		ID:        uuid.New().String(),
 		ItemID:    existing.ID,
 		Revision:  nextRevision,
 		Content:   payload.Content,
+		ContentMD5: contentMD5,
 		Metadata:  payload.Metadata,
 		CommitMsg: "Sync from everything-ai-coding",
 		CreatedBy: importCreatedBy,
