@@ -96,6 +96,8 @@ func eventTypeToPath(eventType string, props map[string]any) string {
 		if sessionID != "" {
 			return "/api/session/" + sessionID + "/message"
 		}
+	case EventTeamTaskDispatch:
+		return "/api/v1/teamworker/tasks/dispatch"
 	}
 	return ""
 }
@@ -105,8 +107,8 @@ type discardResponseWriter struct {
 	statusCode int
 }
 
-func (w *discardResponseWriter) Header() http.Header        { return w.header }
-func (w *discardResponseWriter) WriteHeader(statusCode int) { w.statusCode = statusCode }
+func (w *discardResponseWriter) Header() http.Header         { return w.header }
+func (w *discardResponseWriter) WriteHeader(statusCode int)  { w.statusCode = statusCode }
 func (w *discardResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 
 func (r *EventRouter) startBatchFlush() {

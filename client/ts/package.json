@@ -1,0 +1,43 @@
+{
+  "name": "@costrict/team-client",
+  "version": "0.1.0",
+  "description": "Cloud Team Agent client SDK — plugin-based Go/TS client for cross-machine multi-agent collaboration",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "test:e2e": "node --test dist/e2e/*.test.js",
+    "test:e2e:ts": "tsx e2e/team-e2e.test.ts"
+  },
+  "files": ["dist"],
+  "dependencies": {
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0",
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "ws": "^8"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
