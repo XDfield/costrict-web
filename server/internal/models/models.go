@@ -385,17 +385,21 @@ type ItemFavorite struct {
 }
 
 type CapabilityVersion struct {
-	ID         string                   `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID     string                   `gorm:"not null;index" json:"itemId"`
-	Revision   int                      `gorm:"not null;column:revision" json:"revision"`
-	Content    string                   `gorm:"type:text;not null" json:"content"`
-	ContentMD5 string                   `gorm:"size:32;default:''" json:"contentMd5"`
-	Metadata   datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	CommitMsg  string                   `json:"commitMsg"`
-	CreatedBy  string                   `gorm:"not null" json:"createdBy"`
-	SourcePath string                   `json:"sourcePath"`
-	Assets     []CapabilityVersionAsset `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"assets,omitempty"`
-	CreatedAt  time.Time                `json:"createdAt"`
+	ID          string                   `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID      string                   `gorm:"not null;index" json:"itemId"`
+	Revision    int                      `gorm:"not null;column:revision" json:"revision"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description"`
+	Category    string                   `json:"category"`
+	Version     string                   `json:"version"`
+	Content     string                   `gorm:"type:text;not null" json:"content"`
+	ContentMD5  string                   `gorm:"size:32;default:''" json:"contentMd5"`
+	Metadata    datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	CommitMsg   string                   `json:"commitMsg"`
+	CreatedBy   string                   `gorm:"not null" json:"createdBy"`
+	SourcePath  string                   `json:"sourcePath"`
+	Assets      []CapabilityVersionAsset `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"assets,omitempty"`
+	CreatedAt   time.Time                `json:"createdAt"`
 }
 
 type CapabilityVersionAsset struct {

@@ -124,6 +124,7 @@ func main() {
 		&models.CapabilityRegistry{},
 		&models.CapabilityItem{},
 		&models.CapabilityVersion{},
+		&models.CapabilityVersionAsset{},
 		&models.CapabilityAsset{},
 		&models.CapabilityArtifact{},
 		&models.BehaviorLog{},
@@ -649,38 +650,38 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			return nil
 		}
 		item := models.CapabilityItem{
-			ID:          uuid.New().String(),
-			RegistryID:  publicRegistryID,
-			RepoID:      publicRepoID,
-			Slug:        payload.Slug,
-			ItemType:    payload.ItemType,
-			Name:        payload.Name,
-			Description: payload.Description,
-			Category:    payload.Category,
-			Version:     payload.Version,
-			Content:     payload.Content,
-			ContentMD5:  contentMD5,
+			ID:              uuid.New().String(),
+			RegistryID:      publicRegistryID,
+			RepoID:          publicRepoID,
+			Slug:            payload.Slug,
+			ItemType:        payload.ItemType,
+			Name:            payload.Name,
+			Description:     payload.Description,
+			Category:        payload.Category,
+			Version:         payload.Version,
+			Content:         payload.Content,
+			ContentMD5:      contentMD5,
 			CurrentRevision: 1,
-			Metadata:    payload.Metadata,
-			SourcePath:  payload.SourcePath,
-			SourceSHA:   sourceSHA(payload.Content),
-			SourceType:  "direct",
-			Status:      "active",
-			CreatedBy:   importCreatedBy,
-			UpdatedBy:   importCreatedBy,
+			Metadata:        payload.Metadata,
+			SourcePath:      payload.SourcePath,
+			SourceSHA:       sourceSHA(payload.Content),
+			SourceType:      "direct",
+			Status:          "active",
+			CreatedBy:       importCreatedBy,
+			UpdatedBy:       importCreatedBy,
 		}
 		if err := db.Omit("Embedding").Create(&item).Error; err != nil {
 			return fmt.Errorf("create capability item: %w", err)
 		}
 		version := models.CapabilityVersion{
-			ID:        uuid.New().String(),
-			ItemID:    item.ID,
-			Revision:  1,
-			Content:   item.Content,
+			ID:         uuid.New().String(),
+			ItemID:     item.ID,
+			Revision:   1,
+			Content:    item.Content,
 			ContentMD5: contentMD5,
-			Metadata:  item.Metadata,
-			CommitMsg: "Import from everything-ai-coding",
-			CreatedBy: importCreatedBy,
+			Metadata:   item.Metadata,
+			CommitMsg:  "Import from everything-ai-coding",
+			CreatedBy:  importCreatedBy,
 		}
 		if err := db.Create(&version).Error; err != nil {
 			return fmt.Errorf("create capability version: %w", err)
@@ -723,14 +724,14 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 
 	nextRevision := existing.CurrentRevision + 1
 	version := models.CapabilityVersion{
-		ID:        uuid.New().String(),
-		ItemID:    existing.ID,
-		Revision:  nextRevision,
-		Content:   payload.Content,
+		ID:         uuid.New().String(),
+		ItemID:     existing.ID,
+		Revision:   nextRevision,
+		Content:    payload.Content,
 		ContentMD5: contentMD5,
-		Metadata:  payload.Metadata,
-		CommitMsg: "Sync from everything-ai-coding",
-		CreatedBy: importCreatedBy,
+		Metadata:   payload.Metadata,
+		CommitMsg:  "Sync from everything-ai-coding",
+		CreatedBy:  importCreatedBy,
 	}
 	if err := db.Create(&version).Error; err != nil {
 		return fmt.Errorf("create capability version: %w", err)

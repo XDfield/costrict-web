@@ -271,15 +271,19 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		}
 
 		version := models.CapabilityVersion{
-			ID:         uuid.New().String(),
-			ItemID:     item.ID,
-			Revision:   1,
-			Content:    item.Content,
-			ContentMD5: item.ContentMD5,
-			Metadata:   item.Metadata,
-			SourcePath: item.SourcePath,
-			CommitMsg:  "Initial version",
-			CreatedBy:  item.CreatedBy,
+			ID:          uuid.New().String(),
+			ItemID:      item.ID,
+			Revision:    1,
+			Name:        item.Name,
+			Description: item.Description,
+			Category:    item.Category,
+			Version:     item.Version,
+			Content:     item.Content,
+			ContentMD5:  item.ContentMD5,
+			Metadata:    item.Metadata,
+			SourcePath:  item.SourcePath,
+			CommitMsg:   "Initial version",
+			CreatedBy:   item.CreatedBy,
 		}
 		if err := tx.Create(&version).Error; err != nil {
 			return err
@@ -773,15 +777,19 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 				versionAssetSnapshots = cloneItemAssetsToVersionAssets("", currentAssets)
 			}
 			sv := models.CapabilityVersion{
-				ID:         uuid.New().String(),
-				ItemID:     itemID,
-				Revision:   newRevision,
-				Content:    itemContent,
-				ContentMD5: item.ContentMD5,
-				Metadata:   item.Metadata,
-				SourcePath: item.SourcePath,
-				CommitMsg:  commitMsg,
-				CreatedBy:  createdBy,
+				ID:          uuid.New().String(),
+				ItemID:      itemID,
+				Revision:    newRevision,
+				Name:        item.Name,
+				Description: item.Description,
+				Category:    item.Category,
+				Version:     item.Version,
+				Content:     itemContent,
+				ContentMD5:  item.ContentMD5,
+				Metadata:    item.Metadata,
+				SourcePath:  item.SourcePath,
+				CommitMsg:   commitMsg,
+				CreatedBy:   createdBy,
 			}
 			if err := tx.Create(&sv).Error; err != nil {
 				return err
@@ -1066,15 +1074,19 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 
 		// Create new version.
 		sv := models.CapabilityVersion{
-			ID:         uuid.New().String(),
-			ItemID:     itemID,
-			Revision:   newRevision,
-			Content:    item.Content,
-			ContentMD5: item.ContentMD5,
-			Metadata:   item.Metadata,
-			SourcePath: item.SourcePath,
-			CommitMsg:  commitMsg,
-			CreatedBy:  updatedBy,
+			ID:          uuid.New().String(),
+			ItemID:      itemID,
+			Revision:    newRevision,
+			Name:        item.Name,
+			Description: item.Description,
+			Category:    item.Category,
+			Version:     item.Version,
+			Content:     item.Content,
+			ContentMD5:  item.ContentMD5,
+			Metadata:    item.Metadata,
+			SourcePath:  item.SourcePath,
+			CommitMsg:   commitMsg,
+			CreatedBy:   updatedBy,
 		}
 		if err := tx.Create(&sv).Error; err != nil {
 			return err
@@ -1211,7 +1223,11 @@ func GetItemVersion(c *gin.Context) {
 	}
 	db := database.GetDB()
 	var version models.CapabilityVersion
-	result := db.Preload("Assets").Where("item_id = ? AND revision = ?", id, versionNum).First(&version)
+	query := db
+	if db.Migrator().HasTable(&models.CapabilityVersionAsset{}) {
+		query = query.Preload("Assets")
+	}
+	result := query.Where("item_id = ? AND revision = ?", id, versionNum).First(&version)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return

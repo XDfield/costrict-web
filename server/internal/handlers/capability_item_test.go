@@ -1031,7 +1031,7 @@ func TestGetItemVersion_Found(t *testing.T) {
 		Name: "GV Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-gv1", ItemID: "item-gv1", Revision: 1, Content: "v1 content", CreatedBy: "u1",
+		ID: "ver-gv1", ItemID: "item-gv1", Revision: 1, Name: "GV Item v1", Description: "desc v1", Category: "utilities", Version: "1.0.0", Content: "v1 content", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -1046,6 +1046,9 @@ func TestGetItemVersion_Found(t *testing.T) {
 	}
 	if ver["versionLabel"] != "v1" {
 		t.Fatalf("expected versionLabel=v1, got %v", ver["versionLabel"])
+	}
+	if ver["name"] != "GV Item v1" || ver["description"] != "desc v1" || ver["category"] != "utilities" {
+		t.Fatalf("expected metadata snapshot in version response, got %#v", ver)
 	}
 }
 
