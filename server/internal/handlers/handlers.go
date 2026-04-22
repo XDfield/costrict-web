@@ -21,8 +21,8 @@ import (
 )
 
 var CasdoorClient *casdoor.CasdoorClient
-var cookieSecure bool     // whether to set Secure flag on auth cookies
-var defaultFrontendURL string   // first entry from FRONTEND_URLS, used as fallback
+var cookieSecure bool              // whether to set Secure flag on auth cookies
+var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fallback
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 
@@ -382,14 +382,14 @@ type CreateSyncRegistryInput struct {
 // @Router       /repositories [post]
 func CreateRepository(c *gin.Context) {
 	var req struct {
-		Name             string                    `json:"name" binding:"required"`
-		DisplayName      string                    `json:"displayName"`
-		Description      string                    `json:"description"`
-		Visibility       string                    `json:"visibility"`
-		OwnerID          string                    `json:"ownerId"`
-		RepoType         string                    `json:"repoType"`
-		SyncRegistry     *CreateSyncRegistryInput  `json:"syncRegistry"`
-		SyncRegistries   []CreateSyncRegistryInput `json:"syncRegistries"`
+		Name           string                    `json:"name" binding:"required"`
+		DisplayName    string                    `json:"displayName"`
+		Description    string                    `json:"description"`
+		Visibility     string                    `json:"visibility"`
+		OwnerID        string                    `json:"ownerId"`
+		RepoType       string                    `json:"repoType"`
+		SyncRegistry   *CreateSyncRegistryInput  `json:"syncRegistry"`
+		SyncRegistries []CreateSyncRegistryInput `json:"syncRegistries"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -631,6 +631,11 @@ func DeleteRepository(c *gin.Context) {
 				return fmt.Errorf("failed to delete capability assets: %w", err)
 			}
 
+			// 删除版本资源快照 (CapabilityVersionAsset)
+			if err := tx.Where("version_id IN (SELECT id FROM capability_versions WHERE item_id IN ?)", itemIDs).Delete(&models.CapabilityVersionAsset{}).Error; err != nil {
+				return fmt.Errorf("failed to delete capability version assets: %w", err)
+			}
+
 			// 删除构建产物 (CapabilityArtifact)
 			if err := tx.Where("item_id IN ?", itemIDs).Delete(&models.CapabilityArtifact{}).Error; err != nil {
 				return fmt.Errorf("failed to delete capability artifacts: %w", err)
@@ -759,11 +764,11 @@ func AddRepositoryMember(c *gin.Context) {
 	}
 
 	member := models.RepoMember{
-		ID:     uuid.New().String(),
-		RepoID: repoID,
-		UserID: req.UserID,
+		ID:       uuid.New().String(),
+		RepoID:   repoID,
+		UserID:   req.UserID,
 		Username: req.Username,
-		Role:   role,
+		Role:     role,
 	}
 
 	if result := db.Create(&member); result.Error != nil {

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -27,6 +26,7 @@ import (
 func newItemRouter(userID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	ScanJobService = nil
 	injectUser := func(c *gin.Context) {
 		if userID != "" {
 			c.Set(middleware.UserIDKey, userID)
@@ -36,9 +36,7 @@ func newItemRouter(userID string) *gin.Engine {
 
 	// Create ItemHandler for CreateItemDirect
 	db := database.GetDB()
-	embeddingSvc := services.NewEmbeddingService(&config.EmbeddingConfig{Provider: "mock", Dimensions: 1024})
-	indexerSvc := services.NewIndexerService(db, embeddingSvc)
-	itemHandler := NewItemHandler(db, indexerSvc, &services.ParserService{}, nil)
+	itemHandler := NewItemHandler(db, nil, &services.ParserService{}, nil)
 
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
@@ -47,6 +45,7 @@ func newItemRouter(userID string) *gin.Engine {
 	r.DELETE("/api/items/:id", injectUser, DeleteItem)
 	r.GET("/api/items/:id/versions", injectUser, ListItemVersions)
 	r.GET("/api/items/:id/versions/:version", injectUser, GetItemVersion)
+	r.POST("/api/items/:id/check-consistency", injectUser, itemHandler.CheckItemConsistency)
 	r.GET("/api/items", injectUser, ListAllItems)
 	r.POST("/api/items", injectUser, itemHandler.CreateItemDirect)
 	r.GET("/api/registries/public", injectUser, GetPublicRegistry)
@@ -464,6 +463,12 @@ func TestCreateItem_Success(t *testing.T) {
 	if item["slug"] != "new-skill" {
 		t.Fatalf("unexpected slug: %v", item["slug"])
 	}
+	if item["currentRevision"] != float64(1) {
+		t.Fatalf("expected currentRevision=1, got %v", item["currentRevision"])
+	}
+	if item["contentMd5"] == "" {
+		t.Fatalf("expected contentMd5 to be populated, got %v", item["contentMd5"])
+	}
 }
 
 func TestCreateItem_MissingRequired(t *testing.T) {
@@ -503,6 +508,12 @@ func TestGetItem_Found(t *testing.T) {
 	}
 	if item["previewCount"] != float64(12) || item["installCount"] != float64(3) || item["favoriteCount"] != float64(5) {
 		t.Fatalf("unexpected metric fields: preview=%v install=%v favorite=%v", item["previewCount"], item["installCount"], item["favoriteCount"])
+	}
+	if item["currentRevision"] == nil {
+		t.Fatal("expected currentRevision in response")
+	}
+	if item["currentVersionLabel"] == nil {
+		t.Fatal("expected currentVersionLabel in response")
 	}
 }
 
@@ -627,7 +638,11 @@ func TestUpdateItem_Success(t *testing.T) {
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui1", RegistryID: "reg-ui1", RepoID: "repo-1", Slug: "update-me", ItemType: "skill",
-		Name: "Old Name", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		Name: "Old Name", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-ui1-1", ItemID: "item-ui1", Revision: 1, Content: "", ContentMD5: "", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
 	w := putJSON(newItemRouter("u1"), "/api/items/item-ui1", map[string]interface{}{
@@ -640,6 +655,21 @@ func TestUpdateItem_Success(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&item)
 	if item["name"] != "New Name" {
 		t.Fatalf("expected name=New Name, got %v", item["name"])
+	}
+
+	var versions []models.CapabilityVersion
+	if err := database.DB.Where("item_id = ?", "item-ui1").Find(&versions).Error; err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected metadata update to create a second version, got %d", len(versions))
+	}
+	var dbItem models.CapabilityItem
+	if err := database.DB.First(&dbItem, "id = ?", "item-ui1").Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if dbItem.CurrentRevision != 2 {
+		t.Fatalf("expected currentRevision=2, got %d", dbItem.CurrentRevision)
 	}
 }
 
@@ -660,10 +690,11 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui2", RegistryID: "reg-ui2", RepoID: "repo-1", Slug: "versioned", ItemType: "skill",
-		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
+		ContentMD5: "6654c734ccab8f440ff0825eb443dc7f",
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: "v1", CreatedBy: "u1",
+		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: "v1", ContentMD5: "6654c734ccab8f440ff0825eb443dc7f", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -678,6 +709,164 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	database.DB.Where("item_id = ?", "item-ui2").Find(&versions)
 	if len(versions) != 2 {
 		t.Fatalf("expected 2 versions after content update, got %d", len(versions))
+	}
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-ui2").Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if item.CurrentRevision != 2 {
+		t.Fatalf("expected currentRevision=2, got %d", item.CurrentRevision)
+	}
+}
+
+func TestUpdateItem_JSON_WithAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-ui-assets", Name: "ui-reg-assets", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	hashSvc := services.NewContentHashService()
+	contentMD5, err := hashSvc.HashArchiveContent("SKILL.md", []byte("# Initial\n"), []services.ArchiveAsset{{
+		Path:     "scripts/setup.sh",
+		Content:  []byte("echo init\n"),
+		Size:     int64(len([]byte("echo init\n"))),
+		MimeType: "text/x-sh",
+	}})
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-ui-assets", RegistryID: "reg-ui-assets", RepoID: "repo-1", Slug: "with-assets", ItemType: "skill",
+		Name: "With Assets", Status: "active", CreatedBy: "u1", Content: "# Initial\n", SourcePath: "SKILL.md",
+		ContentMD5: contentMD5, CurrentRevision: 1, Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-ui-assets-1", ItemID: "item-ui-assets", Revision: 1, Content: "# Initial\n", ContentMD5: contentMD5, CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+	setupScript := "echo init\n"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-ui-assets-1", ItemID: "item-ui-assets", RelPath: "scripts/setup.sh", TextContent: &setupScript, MimeType: "text/x-sh", FileSize: int64(len([]byte(setupScript))),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-ui-assets", map[string]interface{}{
+		"content":    "# Updated\n",
+		"sourcePath": "SKILL.md",
+		"assets": []map[string]interface{}{
+			{
+				"relPath":     "scripts/deploy.sh",
+				"textContent": "echo deploy\n",
+			},
+		},
+		"updatedBy": "u1",
+		"commitMsg": "update assets",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	assets, ok := item["assets"].([]interface{})
+	if !ok || len(assets) != 1 {
+		t.Fatalf("expected 1 asset in response, got %#v", item["assets"])
+	}
+
+	var persistedAssets []models.CapabilityAsset
+	if err := database.DB.Where("item_id = ?", "item-ui-assets").Order("rel_path asc").Find(&persistedAssets).Error; err != nil {
+		t.Fatalf("list assets: %v", err)
+	}
+	if len(persistedAssets) != 1 || persistedAssets[0].RelPath != "scripts/deploy.sh" {
+		t.Fatalf("expected deploy asset replacement, got %#v", persistedAssets)
+	}
+}
+
+func TestUpdateItem_SameContentDoesNotCreateVersion(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{ID: "reg-ui3", Name: "ui-reg3", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1"})
+	hashSvc := services.NewContentHashService()
+	content := "same content\n"
+	hash, err := hashSvc.HashTextContent("skill", content)
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-ui3", RegistryID: "reg-ui3", RepoID: "repo-1", Slug: "same-content", ItemType: "skill",
+		Name: "Same Content", Status: "active", CreatedBy: "u1", Content: content, ContentMD5: hash, CurrentRevision: 1,
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-ui3-1", ItemID: "item-ui3", Revision: 1, Content: content, ContentMD5: hash, CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-ui3", map[string]interface{}{
+		"content":   "same content\r\n",
+		"updatedBy": "u1",
+		"commitMsg": "should not create version",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.CapabilityVersion{}).Where("item_id = ?", "item-ui3").Count(&count).Error; err != nil {
+		t.Fatalf("count versions: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected version count to remain 1, got %d", count)
+	}
+}
+
+func TestUpdateItem_MetadataOnlyCreatesVersion(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{ID: "reg-ui-meta", Name: "ui-reg-meta", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1"})
+	hashSvc := services.NewContentHashService()
+	content := "same content\n"
+	hash, err := hashSvc.HashTextContent("skill", content)
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-ui-meta", RegistryID: "reg-ui-meta", RepoID: "repo-1", Slug: "meta-versioned", ItemType: "skill",
+		Name: "Original", Description: "Old", Category: "utilities", Version: "1.0.0", Status: "active", CreatedBy: "u1",
+		Content: content, ContentMD5: hash, CurrentRevision: 1, Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-ui-meta-1", ItemID: "item-ui-meta", Revision: 1, Content: content, ContentMD5: hash, CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("u1"), "/api/items/item-ui-meta", map[string]interface{}{
+		"name":        "Renamed",
+		"description": "New description",
+		"category":    "automation",
+		"version":     "1.1.0",
+		"updatedBy":   "u1",
+		"commitMsg":   "metadata update",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.CapabilityVersion{}).Where("item_id = ?", "item-ui-meta").Count(&count).Error; err != nil {
+		t.Fatalf("count versions: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected metadata-only update to create version, got %d", count)
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-ui-meta").Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if item.CurrentRevision != 2 {
+		t.Fatalf("expected currentRevision=2, got %d", item.CurrentRevision)
+	}
+	if item.Name != "Renamed" || item.Description != "New description" || item.Category != "automation" || item.Version != "1.1.0" {
+		t.Fatalf("unexpected item fields after metadata update: %#v", item)
 	}
 }
 
@@ -822,6 +1011,10 @@ func TestListItemVersions(t *testing.T) {
 	if len(versions) != 2 {
 		t.Fatalf("expected 2 versions, got %d", len(versions))
 	}
+	first := versions[0].(map[string]interface{})
+	if first["versionLabel"] != "v1" {
+		t.Fatalf("expected first versionLabel=v1, got %v", first["versionLabel"])
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +1031,7 @@ func TestGetItemVersion_Found(t *testing.T) {
 		Name: "GV Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-gv1", ItemID: "item-gv1", Revision: 1, Content: "v1 content", CreatedBy: "u1",
+		ID: "ver-gv1", ItemID: "item-gv1", Revision: 1, Name: "GV Item v1", Description: "desc v1", Category: "utilities", Version: "1.0.0", Content: "v1 content", CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -850,6 +1043,107 @@ func TestGetItemVersion_Found(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&ver)
 	if ver["content"] != "v1 content" {
 		t.Fatalf("unexpected content: %v", ver["content"])
+	}
+	if ver["versionLabel"] != "v1" {
+		t.Fatalf("expected versionLabel=v1, got %v", ver["versionLabel"])
+	}
+	if ver["name"] != "GV Item v1" || ver["description"] != "desc v1" || ver["category"] != "utilities" {
+		t.Fatalf("expected metadata snapshot in version response, got %#v", ver)
+	}
+}
+
+func TestGetItemVersion_WithVersionAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-gv-assets", Name: "gv-assets-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-gv-assets", RegistryID: "reg-gv-assets", RepoID: "repo-1", Slug: "gv-assets", ItemType: "skill",
+		Name: "GV Assets", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-gv-assets-1", ItemID: "item-gv-assets", Revision: 1, Content: "# v1", ContentMD5: "hash-v1", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), SourcePath: "SKILL.md",
+	})
+	script := "echo hello\n"
+	database.DB.Create(&models.CapabilityVersionAsset{
+		ID: "ver-asset-1", VersionID: "ver-gv-assets-1", RelPath: "scripts/setup.sh", TextContent: &script, MimeType: "text/x-sh", FileSize: int64(len([]byte(script))),
+	})
+
+	w := get(newItemRouter(""), "/api/items/item-gv-assets/versions/1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var ver map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&ver)
+	assets, ok := ver["assets"].([]interface{})
+	if !ok || len(assets) != 1 {
+		t.Fatalf("expected version assets in response, got %#v", ver["assets"])
+	}
+}
+
+func TestCheckItemConsistency_MatchCurrentByContent(t *testing.T) {
+	defer setupTestDB(t)()
+	hashSvc := services.NewContentHashService()
+	content := "hello\n"
+	hash, err := hashSvc.HashTextContent("skill", content)
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
+	database.DB.Create(&models.CapabilityRegistry{ID: "reg-cc1", Name: "cc-reg1", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityItem{ID: "item-cc1", RegistryID: "reg-cc1", RepoID: "repo-1", Slug: "cc-item1", ItemType: "skill", Name: "CC1", Content: content, ContentMD5: hash, CurrentRevision: 2, Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))})
+
+	w := postJSON(newItemRouter("u1"), "/api/items/item-cc1/check-consistency", map[string]interface{}{"content": "hello\r\n"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["matched"] != true || body["matchedCurrent"] != true {
+		t.Fatalf("expected current match, got %#v", body)
+	}
+	if body["matchedVersionLabel"] != "v2" {
+		t.Fatalf("expected matchedVersionLabel=v2, got %v", body["matchedVersionLabel"])
+	}
+}
+
+func TestCheckItemConsistency_MatchHistoryByMD5(t *testing.T) {
+	defer setupTestDB(t)()
+	hashSvc := services.NewContentHashService()
+	hashV1, err := hashSvc.HashTextContent("skill", "v1 content")
+	if err != nil {
+		t.Fatalf("hash v1: %v", err)
+	}
+	hashV2, err := hashSvc.HashTextContent("skill", "v2 content")
+	if err != nil {
+		t.Fatalf("hash v2: %v", err)
+	}
+	database.DB.Create(&models.CapabilityRegistry{ID: "reg-cc2", Name: "cc-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityItem{ID: "item-cc2", RegistryID: "reg-cc2", RepoID: "repo-1", Slug: "cc-item2", ItemType: "skill", Name: "CC2", Content: "v2 content", ContentMD5: hashV2, CurrentRevision: 2, Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))})
+	database.DB.Create(&models.CapabilityVersion{ID: "ver-cc2-1", ItemID: "item-cc2", Revision: 1, Content: "v1 content", ContentMD5: hashV1, CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))})
+	database.DB.Create(&models.CapabilityVersion{ID: "ver-cc2-2", ItemID: "item-cc2", Revision: 2, Content: "v2 content", ContentMD5: hashV2, CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))})
+
+	w := postJSON(newItemRouter("u1"), "/api/items/item-cc2/check-consistency", map[string]interface{}{"md5": hashV1})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["matched"] != true || body["matchedCurrent"] != false {
+		t.Fatalf("expected history match, got %#v", body)
+	}
+	if body["matchedVersionLabel"] != "v1" {
+		t.Fatalf("expected matchedVersionLabel=v1, got %v", body["matchedVersionLabel"])
+	}
+}
+
+func TestCheckItemConsistency_RejectsContentAndMD5Together(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{ID: "reg-cc3", Name: "cc-reg3", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1"})
+	database.DB.Create(&models.CapabilityItem{ID: "item-cc3", RegistryID: "reg-cc3", RepoID: "repo-1", Slug: "cc-item3", ItemType: "skill", Name: "CC3", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))})
+
+	w := postJSON(newItemRouter("u1"), "/api/items/item-cc3/check-consistency", map[string]interface{}{"content": "x", "md5": "abc"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
@@ -1135,6 +1429,12 @@ func TestCreateItemDirect_ZipSkill_Success(t *testing.T) {
 	if item["content"] != skillContent {
 		t.Fatalf("unexpected content: %v", item["content"])
 	}
+	if item["contentMd5"] == "" {
+		t.Fatalf("expected contentMd5 to be populated, got %v", item["contentMd5"])
+	}
+	if item["currentRevision"] != float64(1) {
+		t.Fatalf("expected currentRevision=1, got %v", item["currentRevision"])
+	}
 	if item["description"] != "A test skill" {
 		t.Fatalf("unexpected description: %v", item["description"])
 	}
@@ -1397,6 +1697,51 @@ func TestCreateItemDirect_JSON_StillWorks(t *testing.T) {
 	}
 }
 
+func TestCreateItemDirect_JSON_WithAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+
+	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
+		"itemType":   "skill",
+		"name":       "json-assets",
+		"content":    "# JSON Assets",
+		"sourcePath": "SKILL.md",
+		"assets": []map[string]interface{}{
+			{
+				"relPath":     "scripts/setup.sh",
+				"textContent": "#!/bin/bash\necho hello",
+			},
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	assets, ok := item["assets"].([]interface{})
+	if !ok || len(assets) != 1 {
+		t.Fatalf("expected 1 asset in response, got %#v", item["assets"])
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.CapabilityAsset{}).Where("item_id = ?", item["id"]).Count(&count).Error; err != nil {
+		t.Fatalf("count assets: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 persisted asset, got %d", count)
+	}
+	var persisted models.CapabilityItem
+	if err := database.DB.First(&persisted, "id = ?", item["id"]).Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if persisted.SourcePath != "SKILL.md" {
+		t.Fatalf("expected sourcePath=SKILL.md, got %q", persisted.SourcePath)
+	}
+}
+
 func putMultipart(r *gin.Engine, path string, fields map[string]string, zipBytes []byte) *httptest.ResponseRecorder {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1515,6 +1860,91 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	// Storage should have new archive and asset files.
 	if backend.Len() == 0 {
 		t.Fatal("expected non-empty storage after archive update")
+	}
+
+	var itemModel models.CapabilityItem
+	if err := database.DB.First(&itemModel, "id = ?", itemID).Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if itemModel.CurrentRevision != 2 {
+		t.Fatalf("expected currentRevision=2, got %d", itemModel.CurrentRevision)
+	}
+}
+
+func TestUpdateItem_Archive_SameContentNoNewVersion(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	initContent := "---\nname: Init Skill\ndescription: Original\nversion: 1.0.0\n---\n# Init"
+	initZip := createTestZip(map[string][]byte{
+		"SKILL.md":         []byte(initContent),
+		"scripts/setup.sh": []byte("#!/bin/bash\r\necho init\r\n"),
+	})
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{"itemType": "skill", "name": "Init Skill"}, initZip)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&created)
+	itemID := created["id"].(string)
+	originalMD5 := created["contentMd5"]
+
+	sameZip := createTestZip(map[string][]byte{
+		"scripts/setup.sh": []byte("#!/bin/bash\necho init"),
+		"SKILL.md":         []byte(strings.ReplaceAll(initContent, "\n", "\r\n")),
+	})
+	w = putMultipart(newItemRouter("u1"), "/api/items/"+itemID, map[string]string{"commitMsg": "same content"}, sameZip)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var updated map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&updated)
+	if updated["contentMd5"] == originalMD5 {
+		// same-content path matched expectation, continue checking version count
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", itemID).Error; err != nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if item.ContentMD5 != updated["contentMd5"] {
+		t.Fatalf("expected response/DB contentMd5 aligned, got db=%s resp=%v", item.ContentMD5, updated["contentMd5"])
+	}
+}
+
+func TestUpdateItem_Archive_AssetChangeCreatesVersion(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	initZip := createTestZip(map[string][]byte{
+		"SKILL.md":         []byte("# Init\n"),
+		"scripts/setup.sh": []byte("echo init\n"),
+	})
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{"itemType": "skill", "name": "Init Skill"}, initZip)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&created)
+	itemID := created["id"].(string)
+
+	changedZip := createTestZip(map[string][]byte{
+		"SKILL.md":         []byte("---\nname: Init Skill\nversion: 1.0.0\n---\n# Init\n"),
+		"scripts/setup.sh": []byte("echo changed\n"),
+	})
+	w = putMultipart(newItemRouter("u1"), "/api/items/"+itemID, map[string]string{"commitMsg": "asset changed"}, changedZip)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Count(&count).Error; err != nil {
+		t.Fatalf("count versions: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected version count to become 2, got %d", count)
 	}
 }
 

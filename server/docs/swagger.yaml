@@ -19,6 +19,19 @@ definitions:
       universal_id:
         type: string
     type: object
+  handlers.ConsistencyCheckResponse:
+    properties:
+      contentMd5:
+        type: string
+      matched:
+        type: boolean
+      matchedCurrent:
+        type: boolean
+      matchedRevision:
+        type: integer
+      matchedVersionLabel:
+        type: string
+    type: object
   handlers.CreateSyncRegistryInput:
     properties:
       conflictStrategy:
@@ -60,9 +73,15 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
+        type: string
+      currentRevision:
+        type: integer
+      currentVersionLabel:
         type: string
       description:
         type: string
@@ -134,10 +153,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -193,6 +216,29 @@ definitions:
         items:
           $ref: '#/definitions/models.CapabilityVersion'
         type: array
+    type: object
+  handlers.VersionResponse:
+    properties:
+      commitMsg:
+        type: string
+      content:
+        type: string
+      contentMd5:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      id:
+        type: string
+      itemId:
+        type: string
+      metadata:
+        type: object
+      revision:
+        type: integer
+      versionLabel:
+        type: string
     type: object
   handlers.userBasicInfoResponse:
     properties:
@@ -357,10 +403,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -462,6 +512,8 @@ definitions:
       commitMsg:
         type: string
       content:
+        type: string
+      contentMd5:
         type: string
       createdAt:
         type: string
@@ -656,6 +708,8 @@ definitions:
     type: object
   models.SecurityScan:
     properties:
+      category:
+        type: string
       createdAt:
         type: string
       durationMs:
@@ -1084,10 +1138,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -1182,10 +1240,14 @@ definitions:
         type: string
       content:
         type: string
+      contentMd5:
+        type: string
       createdAt:
         type: string
       createdBy:
         type: string
+      currentRevision:
+        type: integer
       description:
         type: string
       embeddingUpdatedAt:
@@ -1325,6 +1387,8 @@ definitions:
         type: integer
       request_id:
         type: string
+      request_time:
+        type: string
       rounds:
         type: integer
       session_id:
@@ -1341,6 +1405,8 @@ definitions:
     type: object
   services.UsageReportRequest:
     properties:
+      client_version:
+        type: string
       device_id:
         type: string
       reported_at:
@@ -2138,6 +2204,203 @@ paths:
       summary: Get current user system roles
       tags:
       - auth
+  /categories:
+    get:
+      description: Get all item categories with i18n names
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              categories:
+                items:
+                  type: object
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List all categories
+      tags:
+      - categories
+    post:
+      consumes:
+      - application/json
+      description: Create a new item category with i18n names
+      parameters:
+      - description: Category data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            descriptions:
+              type: object
+            icon:
+              type: string
+            names:
+              type: object
+            slug:
+              type: string
+            sortOrder:
+              type: integer
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              category:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create category
+      tags:
+      - categories
+  /categories/{id}:
+    delete:
+      description: Delete an item category by ID
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete category
+      tags:
+      - categories
+    get:
+      description: Get a category by ID
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              category:
+                type: object
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get category
+      tags:
+      - categories
+    put:
+      consumes:
+      - application/json
+      description: Update an existing item category
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Category update data
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            descriptions:
+              type: object
+            icon:
+              type: string
+            names:
+              type: object
+            sortOrder:
+              type: integer
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              category:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update category
+      tags:
+      - categories
   /cloud/device/{deviceID}/proxy/{path}:
     delete:
       description: Forward an HTTP request to a device via its connected gateway.
@@ -3305,6 +3568,10 @@ paths:
         in: query
         name: registryId
         type: string
+      - description: Filter to only favorited items (requires auth)
+        in: query
+        name: favorited
+        type: string
       - description: 'Page number (default: 1)'
         in: query
         name: page
@@ -3403,7 +3670,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:
@@ -3527,7 +3794,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:
@@ -3674,6 +3941,53 @@ paths:
       summary: Log user behavior
       tags:
       - behavior
+  /items/{id}/check-consistency:
+    post:
+      consumes:
+      - application/json
+      description: Check whether provided content or md5 matches the current item
+        version or a historical revision.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Consistency check payload
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            content:
+              type: string
+            md5:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.ConsistencyCheckResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Check item consistency
+      tags:
+      - items
   /items/{id}/download:
     get:
       description: Download the Markdown content of a capability item (skill/subagent/command)
@@ -4230,7 +4544,7 @@ paths:
             properties:
               versions:
                 items:
-                  $ref: '#/definitions/models.CapabilityVersion'
+                  $ref: '#/definitions/handlers.VersionResponse'
                 type: array
             type: object
         "500":
@@ -4263,7 +4577,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/models.CapabilityVersion'
+            $ref: '#/definitions/handlers.VersionResponse'
         "400":
           description: Bad Request
           schema:
@@ -5969,7 +6283,7 @@ paths:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/models.CapabilityItem'
+            $ref: '#/definitions/handlers.ItemResponse'
         "400":
           description: Bad Request
           schema:

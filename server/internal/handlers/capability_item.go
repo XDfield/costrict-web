@@ -34,6 +34,7 @@ type ItemHandler struct {
 	archiveSvc  *services.ArchiveService
 	categorySvc *services.CategoryService
 	tagSvc      *services.TagService
+	hashSvc     *services.ContentHashService
 }
 
 // NewItemHandler creates a new item handler
@@ -49,6 +50,7 @@ func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc 
 		archiveSvc:  archiveSvc,
 		categorySvc: categorySvc,
 		tagSvc:      tagSvc,
+		hashSvc:     services.NewContentHashService(),
 	}
 }
 
@@ -83,6 +85,7 @@ type createItemRequest struct {
 	Category    string
 	Version     string
 	Content     string
+	ContentMD5  string
 	Metadata    datatypes.JSON
 	SourcePath  string
 	SourceSHA   string
@@ -94,6 +97,101 @@ type createItemRequest struct {
 type createItemAssets struct {
 	Records  []models.CapabilityAsset
 	Artifact *models.CapabilityArtifact
+}
+
+type itemAssetPayload struct {
+	RelPath     string  `json:"relPath"`
+	TextContent *string `json:"textContent"`
+	MimeType    string  `json:"mimeType"`
+	FileSize    int64   `json:"fileSize"`
+	ContentSHA  string  `json:"contentSha"`
+}
+
+func defaultSourcePathForItemType(itemType string) string {
+	switch itemType {
+	case "skill":
+		return "SKILL.md"
+	case "mcp":
+		return ".mcp.json"
+	default:
+		return ""
+	}
+}
+
+func buildTextAssetRecords(payloads []itemAssetPayload, mainPath string) ([]models.CapabilityAsset, []services.ArchiveAsset, error) {
+	records := make([]models.CapabilityAsset, 0, len(payloads))
+	archiveAssets := make([]services.ArchiveAsset, 0, len(payloads))
+	seen := make(map[string]struct{}, len(payloads))
+
+	for _, asset := range payloads {
+		relPath := strings.TrimSpace(asset.RelPath)
+		if relPath == "" {
+			return nil, nil, fmt.Errorf("asset relPath is required")
+		}
+		if relPath == mainPath {
+			return nil, nil, fmt.Errorf("asset relPath %q conflicts with sourcePath", relPath)
+		}
+		if _, ok := seen[relPath]; ok {
+			return nil, nil, fmt.Errorf("duplicate asset relPath %q", relPath)
+		}
+		seen[relPath] = struct{}{}
+		if asset.TextContent == nil {
+			return nil, nil, fmt.Errorf("asset %q requires textContent for JSON requests", relPath)
+		}
+
+		text := *asset.TextContent
+		mimeType := asset.MimeType
+		if strings.TrimSpace(mimeType) == "" {
+			mimeType = services.InferMimeType(relPath)
+		}
+		fileSize := asset.FileSize
+		if fileSize <= 0 {
+			fileSize = int64(len([]byte(text)))
+		}
+
+		records = append(records, models.CapabilityAsset{
+			RelPath:     relPath,
+			TextContent: &text,
+			MimeType:    mimeType,
+			FileSize:    fileSize,
+			ContentSHA:  asset.ContentSHA,
+		})
+		archiveAssets = append(archiveAssets, services.ArchiveAsset{
+			Path:     relPath,
+			Content:  []byte(text),
+			Size:     fileSize,
+			MimeType: mimeType,
+			Binary:   false,
+		})
+	}
+
+	return records, archiveAssets, nil
+}
+
+func loadExistingTextAssets(db *gorm.DB, itemID string, mainPath string) ([]services.ArchiveAsset, error) {
+	var assets []models.CapabilityAsset
+	if err := db.Where("item_id = ?", itemID).Find(&assets).Error; err != nil {
+		return nil, err
+	}
+
+	archiveAssets := make([]services.ArchiveAsset, 0, len(assets))
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.RelPath) == "" || asset.RelPath == mainPath {
+			continue
+		}
+		if asset.TextContent == nil {
+			return nil, fmt.Errorf("item contains binary asset %q; update via archive upload is required", asset.RelPath)
+		}
+		archiveAssets = append(archiveAssets, services.ArchiveAsset{
+			Path:     asset.RelPath,
+			Content:  []byte(*asset.TextContent),
+			Size:     asset.FileSize,
+			MimeType: asset.MimeType,
+			Binary:   false,
+		})
+	}
+
+	return archiveAssets, nil
 }
 
 // resolveMetadata returns the JSON-encoded metadata for an item.
@@ -145,22 +243,24 @@ func registryRepoID(db *gorm.DB, registryID string) string {
 // in a single DB transaction. No storage I/O or async work happens here.
 func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
 	item := models.CapabilityItem{
-		ID:          req.ID,
-		RegistryID:  req.RegistryID,
-		RepoID:      req.RepoID,
-		Slug:        req.Slug,
-		ItemType:    req.ItemType,
-		Name:        req.Name,
-		Description: req.Description,
-		Category:    req.Category,
-		Version:     req.Version,
-		Content:     req.Content,
-		Metadata:    req.Metadata,
-		SourcePath:  req.SourcePath,
-		SourceSHA:   req.SourceSHA,
-		SourceType:  req.SourceType,
-		Status:      "active",
-		CreatedBy:   req.CreatedBy,
+		ID:              req.ID,
+		RegistryID:      req.RegistryID,
+		RepoID:          req.RepoID,
+		Slug:            req.Slug,
+		ItemType:        req.ItemType,
+		Name:            req.Name,
+		Description:     req.Description,
+		Category:        req.Category,
+		Version:         req.Version,
+		Content:         req.Content,
+		ContentMD5:      req.ContentMD5,
+		CurrentRevision: 1,
+		Metadata:        req.Metadata,
+		SourcePath:      req.SourcePath,
+		SourceSHA:       req.SourceSHA,
+		SourceType:      req.SourceType,
+		Status:          "active",
+		CreatedBy:       req.CreatedBy,
 	}
 
 	if item.Metadata == nil || len(item.Metadata) == 0 {
@@ -173,13 +273,19 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		}
 
 		version := models.CapabilityVersion{
-			ID:        uuid.New().String(),
-			ItemID:    item.ID,
-			Revision:  1,
-			Content:   item.Content,
-			Metadata:  item.Metadata,
-			CommitMsg: "Initial version",
-			CreatedBy: item.CreatedBy,
+			ID:          uuid.New().String(),
+			ItemID:      item.ID,
+			Revision:    1,
+			Name:        item.Name,
+			Description: item.Description,
+			Category:    item.Category,
+			Version:     item.Version,
+			Content:     item.Content,
+			ContentMD5:  item.ContentMD5,
+			Metadata:    item.Metadata,
+			SourcePath:  item.SourcePath,
+			CommitMsg:   "Initial version",
+			CreatedBy:   item.CreatedBy,
 		}
 		if err := tx.Create(&version).Error; err != nil {
 			return err
@@ -191,6 +297,13 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 			}
 			assets.Records[i].ItemID = item.ID
 			if err := tx.Create(&assets.Records[i]).Error; err != nil {
+				return err
+			}
+		}
+
+		for _, snapshotAsset := range cloneItemAssetsToVersionAssets(version.ID, assets.Records) {
+			asset := snapshotAsset
+			if err := tx.Create(&asset).Error; err != nil {
 				return err
 			}
 		}
@@ -216,6 +329,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		}
 		return nil, err
 	}
+	item.Assets = assets.Records
 	return &item, nil
 }
 
@@ -223,8 +337,92 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 // keeping a flat JSON structure compatible with the previous ItemWithAuthor.
 type ItemResponse struct {
 	models.CapabilityItem
-	RepoVisibility string `json:"repoVisibility,omitempty"`
-	Favorited      bool   `json:"favorited"`
+	Assets              []itemAssetPayload `json:"assets,omitempty"`
+	RepoVisibility      string             `json:"repoVisibility,omitempty"`
+	Favorited           bool               `json:"favorited"`
+	CurrentVersionLabel string             `json:"currentVersionLabel"`
+}
+
+type VersionResponse struct {
+	models.CapabilityVersion
+	Assets       []itemAssetPayload `json:"assets,omitempty"`
+	VersionLabel string             `json:"versionLabel"`
+}
+
+func cloneItemAssetsToVersionAssets(versionID string, assets []models.CapabilityAsset) []models.CapabilityVersionAsset {
+	cloned := make([]models.CapabilityVersionAsset, 0, len(assets))
+	for _, asset := range assets {
+		cloned = append(cloned, models.CapabilityVersionAsset{
+			ID:             uuid.New().String(),
+			VersionID:      versionID,
+			RelPath:        asset.RelPath,
+			TextContent:    asset.TextContent,
+			StorageBackend: asset.StorageBackend,
+			StorageKey:     asset.StorageKey,
+			MimeType:       asset.MimeType,
+			FileSize:       asset.FileSize,
+			ContentSHA:     asset.ContentSHA,
+		})
+	}
+	return cloned
+}
+
+type ConsistencyCheckResponse struct {
+	Matched             bool   `json:"matched"`
+	ContentMD5          string `json:"contentMd5"`
+	MatchedCurrent      bool   `json:"matchedCurrent"`
+	MatchedRevision     int    `json:"matchedRevision,omitempty"`
+	MatchedVersionLabel string `json:"matchedVersionLabel,omitempty"`
+}
+
+func newVersionResponse(version models.CapabilityVersion) VersionResponse {
+	hashSvc := services.NewContentHashService()
+	resp := VersionResponse{
+		CapabilityVersion: version,
+		VersionLabel:      hashSvc.BuildVersionLabel(version.Revision),
+	}
+	if len(version.Assets) > 0 {
+		resp.Assets = make([]itemAssetPayload, 0, len(version.Assets))
+		for _, asset := range version.Assets {
+			resp.Assets = append(resp.Assets, itemAssetPayload{
+				RelPath:     asset.RelPath,
+				TextContent: asset.TextContent,
+				MimeType:    asset.MimeType,
+				FileSize:    asset.FileSize,
+				ContentSHA:  asset.ContentSHA,
+			})
+		}
+	}
+	return resp
+}
+
+func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
+	resp := ItemResponse{CapabilityItem: item}
+	resp.CurrentVersionLabel = services.NewContentHashService().BuildVersionLabel(item.CurrentRevision)
+	if len(item.Assets) > 0 {
+		resp.Assets = make([]itemAssetPayload, 0, len(item.Assets))
+		for _, asset := range item.Assets {
+			resp.Assets = append(resp.Assets, itemAssetPayload{
+				RelPath:     asset.RelPath,
+				TextContent: asset.TextContent,
+				MimeType:    asset.MimeType,
+				FileSize:    asset.FileSize,
+				ContentSHA:  asset.ContentSHA,
+			})
+		}
+	}
+	if item.Registry != nil {
+		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
+	}
+	if userID != "" {
+		var count int64
+		if err := db.Model(&models.ItemFavorite{}).
+			Where("item_id = ? AND user_id = ?", item.ID, userID).
+			Count(&count).Error; err == nil {
+			resp.Favorited = count > 0
+		}
+	}
+	return resp
 }
 
 func itemListSortOrder(sortBy, sortOrder string) string {
@@ -307,7 +505,7 @@ func ListItems(c *gin.Context) {
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
 // @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data"
-// @Success      201   {object}  models.CapabilityItem
+// @Success      201   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -343,6 +541,12 @@ func CreateItem(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	hashSvc := services.NewContentHashService()
+	contentMD5, err := hashSvc.HashTextContent(req.ItemType, req.Content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	item, err := persistNewItem(db, createItemRequest{
 		ID:          uuid.New().String(),
 		RegistryID:  registryId,
@@ -354,6 +558,7 @@ func CreateItem(c *gin.Context) {
 		Category:    req.Category,
 		Version:     version,
 		Content:     req.Content,
+		ContentMD5:  contentMD5,
 		Metadata:    metadata,
 		SourcePath:  req.SourcePath,
 		CreatedBy:   req.CreatedBy,
@@ -374,7 +579,7 @@ func CreateItem(c *gin.Context) {
 		CategorySvc.EnsureCategory(req.Category, req.CreatedBy)
 	}
 
-	c.JSON(http.StatusCreated, *item)
+	c.JSON(http.StatusCreated, buildItemResponse(db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // GetItem godoc
@@ -390,26 +595,12 @@ func GetItem(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 	var item models.CapabilityItem
-	result := db.Preload("Registry").Preload("Versions").Preload("Artifacts").First(&item, "id = ?", id)
+	result := db.Preload("Registry").Preload("Versions").Preload("Artifacts").Preload("Assets").First(&item, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	resp := ItemResponse{CapabilityItem: item}
-	// Populate repo visibility from the parent repository
-	if item.Registry != nil {
-		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
-	}
-	if userID := c.GetString(middleware.UserIDKey); userID != "" {
-		var count int64
-		if err := db.Model(&models.ItemFavorite{}).
-			Where("item_id = ? AND user_id = ?", item.ID, userID).
-			Count(&count).Error; err == nil {
-			resp.Favorited = count > 0
-		}
-	}
-
-	c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // UpdateItem godoc
@@ -421,7 +612,7 @@ func GetItem(c *gin.Context) {
 // @Param        id    path      string  true  "Item ID"
 // @Param        body  body      object{name=string,description=string,category=string,version=string,content=string,status=string,updatedBy=string,commitMsg=string}  false  "Item data (JSON)"
 // @Param        file  formData  file    false "Archive file (multipart)"
-// @Success      200   {object}  models.CapabilityItem
+// @Success      200   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -438,14 +629,16 @@ func (h *ItemHandler) UpdateItem(c *gin.Context) {
 func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Category    string `json:"category"`
-		Version     string `json:"version"`
-		Content     string `json:"content"`
-		Status      string `json:"status"`
-		UpdatedBy   string `json:"updatedBy"`
-		CommitMsg   string `json:"commitMsg"`
+		Name        string             `json:"name"`
+		Description string             `json:"description"`
+		Category    string             `json:"category"`
+		Version     string             `json:"version"`
+		Content     *string            `json:"content"`
+		SourcePath  string             `json:"sourcePath"`
+		Assets      []itemAssetPayload `json:"assets"`
+		Status      string             `json:"status"`
+		UpdatedBy   string             `json:"updatedBy"`
+		CommitMsg   string             `json:"commitMsg"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -467,6 +660,11 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		return
 	}
 
+	originalName := item.Name
+	originalDescription := item.Description
+	originalCategory := item.Category
+	originalVersion := item.Version
+
 	if req.Name != "" {
 		item.Name = req.Name
 	}
@@ -482,10 +680,62 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	if req.Version != "" {
 		item.Version = req.Version
 	}
-	if req.Content != "" {
-		item.Content = req.Content
+	contentChanged := false
+	newRevision := item.CurrentRevision
+	if req.Content != nil {
+		mainPath := req.SourcePath
+		if mainPath == "" {
+			mainPath = item.SourcePath
+		}
+		if mainPath == "" {
+			mainPath = defaultSourcePathForItemType(item.ItemType)
+		}
+
+		var newContentMD5 string
+		var err error
+		if req.Assets != nil {
+			assetRecords, archiveAssets, err := buildTextAssetRecords(req.Assets, mainPath)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			newContentMD5, err = h.hashSvc.HashArchiveContent(mainPath, []byte(*req.Content), archiveAssets)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			item.SourcePath = mainPath
+			_ = db.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
+			for i := range assetRecords {
+				assetRecords[i].ID = uuid.New().String()
+				assetRecords[i].ItemID = item.ID
+				if err := db.Create(&assetRecords[i]).Error; err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item assets"})
+					return
+				}
+			}
+			item.Assets = assetRecords
+		} else {
+			existingAssets, err := loadExistingTextAssets(db, item.ID, mainPath)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			if len(existingAssets) > 0 {
+				newContentMD5, err = h.hashSvc.HashArchiveContent(mainPath, []byte(*req.Content), existingAssets)
+			} else {
+				newContentMD5, err = h.hashSvc.HashTextContent(item.ItemType, *req.Content)
+			}
+		}
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		contentChanged = newContentMD5 != item.ContentMD5
+		item.Content = *req.Content
+		item.ContentMD5 = newContentMD5
 		if item.ItemType == "mcp" {
-			meta, err := resolveMetadata("mcp", nil, req.Content)
+			meta, err := resolveMetadata("mcp", nil, *req.Content)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
@@ -499,13 +749,19 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	if req.UpdatedBy != "" {
 		item.UpdatedBy = req.UpdatedBy
 	}
+	metadataChanged := item.Name != originalName || item.Description != originalDescription || item.Category != originalCategory || item.Version != originalVersion
+	versionedChanged := contentChanged || metadataChanged
+	if versionedChanged {
+		item.CurrentRevision = item.CurrentRevision + 1
+		newRevision = item.CurrentRevision
+	}
 
 	if result := db.Save(&item); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 		return
 	}
 
-	if req.Content != "" {
+	if versionedChanged {
 		createdBy := item.UpdatedBy
 		if createdBy == "" {
 			createdBy = item.CreatedBy
@@ -513,26 +769,49 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		commitMsg := req.CommitMsg
 		itemID := item.ID
 		itemContent := item.Content
-		newRevision := 1
 		_ = db.Transaction(func(tx *gorm.DB) error {
-			var maxRevision int
-			tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
-			newRevision = maxRevision + 1
-			sv := models.CapabilityVersion{
-				ID:        uuid.New().String(),
-				ItemID:    itemID,
-				Revision:  newRevision,
-				Content:   itemContent,
-				Metadata:  datatypes.JSON([]byte("{}")),
-				CommitMsg: commitMsg,
-				CreatedBy: createdBy,
+			var versionAssetSnapshots []models.CapabilityVersionAsset
+			if tx.Migrator().HasTable(&models.CapabilityVersionAsset{}) {
+				var currentAssets []models.CapabilityAsset
+				if err := tx.Where("item_id = ?", itemID).Find(&currentAssets).Error; err != nil {
+					return err
+				}
+				versionAssetSnapshots = cloneItemAssetsToVersionAssets("", currentAssets)
 			}
-			return tx.Create(&sv).Error
+			sv := models.CapabilityVersion{
+				ID:          uuid.New().String(),
+				ItemID:      itemID,
+				Revision:    newRevision,
+				Name:        item.Name,
+				Description: item.Description,
+				Category:    item.Category,
+				Version:     item.Version,
+				Content:     itemContent,
+				ContentMD5:  item.ContentMD5,
+				Metadata:    item.Metadata,
+				SourcePath:  item.SourcePath,
+				CommitMsg:   commitMsg,
+				CreatedBy:   createdBy,
+			}
+			if err := tx.Create(&sv).Error; err != nil {
+				return err
+			}
+			for _, snapshotAsset := range versionAssetSnapshots {
+				asset := snapshotAsset
+				asset.ID = uuid.New().String()
+				asset.VersionID = sv.ID
+				if err := tx.Create(&asset).Error; err != nil {
+					return err
+				}
+			}
+			return nil
 		})
-		enqueueScanAsync(itemID, newRevision, "update")
+		if contentChanged {
+			enqueueScanAsync(itemID, newRevision, "update")
+		}
 	}
 
-	c.JSON(http.StatusOK, item)
+	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // updateItemFromArchive handles multipart/form-data archive upload item update.
@@ -588,7 +867,11 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive parser returned no item"})
 		return
 	}
-
+	contentMD5, err := h.hashSvc.HashArchiveContent(result.MainPath, []byte(result.MainContent), result.Assets)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	// Read optional form fields for overrides.
 	userIDVal, _ := c.Get(middleware.UserIDKey)
 	updatedBy, _ := userIDVal.(string)
@@ -639,6 +922,27 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	}
 	if newVersion == "" {
 		newVersion = item.Version
+	}
+	contentChanged := contentMD5 != item.ContentMD5
+	newRevision := item.CurrentRevision
+	if contentChanged {
+		newRevision = item.CurrentRevision + 1
+	}
+
+	if !contentChanged {
+		item.Content = result.MainContent
+		item.Metadata = datatypes.JSON(metadataJSON)
+		item.SourcePath = result.MainPath
+		item.SourceSHA = result.MainSHA
+		item.SourceType = "archive"
+		item.Version = newVersion
+		item.UpdatedBy = updatedBy
+		if err := db.Save(&item).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
+			return
+		}
+		c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+		return
 	}
 
 	ctx := c.Request.Context()
@@ -729,6 +1033,8 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	item.SourceType = "archive"
 	item.Version = newVersion
 	item.UpdatedBy = updatedBy
+	item.ContentMD5 = contentMD5
+	item.CurrentRevision = newRevision
 
 	txErr := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&item).Error; err != nil {
@@ -769,20 +1075,29 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		}
 
 		// Create new version.
-		var maxRevision int
-		tx.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Select("COALESCE(MAX(revision), 0)").Scan(&maxRevision)
-		newRevision := maxRevision + 1
 		sv := models.CapabilityVersion{
-			ID:        uuid.New().String(),
-			ItemID:    itemID,
-			Revision:  newRevision,
-			Content:   item.Content,
-			Metadata:  item.Metadata,
-			CommitMsg: commitMsg,
-			CreatedBy: updatedBy,
+			ID:          uuid.New().String(),
+			ItemID:      itemID,
+			Revision:    newRevision,
+			Name:        item.Name,
+			Description: item.Description,
+			Category:    item.Category,
+			Version:     item.Version,
+			Content:     item.Content,
+			ContentMD5:  item.ContentMD5,
+			Metadata:    item.Metadata,
+			SourcePath:  item.SourcePath,
+			CommitMsg:   commitMsg,
+			CreatedBy:   updatedBy,
 		}
 		if err := tx.Create(&sv).Error; err != nil {
 			return err
+		}
+		for _, snapshotAsset := range cloneItemAssetsToVersionAssets(sv.ID, assetRecords) {
+			asset := snapshotAsset
+			if err := tx.Create(&asset).Error; err != nil {
+				return err
+			}
 		}
 
 		enqueueScanAsync(itemID, newRevision, "update")
@@ -806,7 +1121,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		}()
 	}
 
-	c.JSON(http.StatusOK, item)
+	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // DeleteItem godoc
@@ -834,6 +1149,7 @@ func DeleteItem(c *gin.Context) {
 				{model: &models.ItemTag{}, name: "item tags"},
 			{model: &models.ScanJob{}, name: "scan jobs"},
 			{model: &models.SecurityScan{}, name: "security scans"},
+			{model: &models.CapabilityVersionAsset{}, name: "capability version assets"},
 			{model: &models.CapabilityAsset{}, name: "capability assets"},
 			{model: &models.CapabilityArtifact{}, name: "capability artifacts"},
 			{model: &models.CapabilityVersion{}, name: "capability versions"},
@@ -843,7 +1159,11 @@ func DeleteItem(c *gin.Context) {
 			if !tx.Migrator().HasTable(d.model) {
 				continue
 			}
-			if err := tx.Where("item_id = ?", id).Delete(d.model).Error; err != nil {
+			query := tx.Where("item_id = ?", id)
+			if _, ok := d.model.(*models.CapabilityVersionAsset); ok {
+				query = tx.Where("version_id IN (?)", tx.Model(&models.CapabilityVersion{}).Select("id").Where("item_id = ?", id))
+			}
+			if err := query.Delete(d.model).Error; err != nil {
 				return fmt.Errorf("failed to delete %s: %w", d.name, err)
 			}
 		}
@@ -866,19 +1186,23 @@ func DeleteItem(c *gin.Context) {
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  object{versions=[]models.CapabilityVersion}
+// @Success      200  {object}  object{versions=[]VersionResponse}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/versions [get]
 func ListItemVersions(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 	var versions []models.CapabilityVersion
-	result := db.Where("item_id = ?", id).Find(&versions)
+	result := db.Where("item_id = ?", id).Order("revision asc").Find(&versions)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch versions"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"versions": versions})
+	resp := make([]VersionResponse, 0, len(versions))
+	for _, version := range versions {
+		resp = append(resp, newVersionResponse(version))
+	}
+	c.JSON(http.StatusOK, gin.H{"versions": resp})
 }
 
 // GetItemVersion godoc
@@ -888,7 +1212,7 @@ func ListItemVersions(c *gin.Context) {
 // @Produce      json
 // @Param        id       path      string  true  "Item ID"
 // @Param        version  path      integer true  "Version number"
-// @Success      200      {object}  models.CapabilityVersion
+// @Success      200      {object}  VersionResponse
 // @Failure      400      {object}  object{error=string}
 // @Failure      404      {object}  object{error=string}
 // @Router       /items/{id}/versions/{version} [get]
@@ -902,12 +1226,84 @@ func GetItemVersion(c *gin.Context) {
 	}
 	db := database.GetDB()
 	var version models.CapabilityVersion
-	result := db.Where("item_id = ? AND revision = ?", id, versionNum).First(&version)
+	query := db
+	if db.Migrator().HasTable(&models.CapabilityVersionAsset{}) {
+		query = query.Preload("Assets")
+	}
+	result := query.Where("item_id = ? AND revision = ?", id, versionNum).First(&version)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
 	}
-	c.JSON(http.StatusOK, version)
+	c.JSON(http.StatusOK, newVersionResponse(version))
+}
+
+// CheckItemConsistency godoc
+// @Summary      Check item consistency
+// @Description  Check whether provided content or md5 matches the current item version or a historical revision.
+// @Tags         items
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string  true  "Item ID"
+// @Param        body  body      object{content=string,md5=string}  true  "Consistency check payload"
+// @Success      200   {object}  ConsistencyCheckResponse
+// @Failure      400   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Router       /items/{id}/check-consistency [post]
+func (h *ItemHandler) CheckItemConsistency(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Content *string `json:"content"`
+		MD5     string  `json:"md5"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.Content != nil && strings.TrimSpace(req.MD5) != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Provide either content or md5, not both"})
+		return
+	}
+	if req.Content == nil && strings.TrimSpace(req.MD5) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content or md5 is required"})
+		return
+	}
+
+	var item models.CapabilityItem
+	if err := h.db.First(&item, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	checkMD5 := strings.TrimSpace(req.MD5)
+	if req.Content != nil {
+		var err error
+		checkMD5, err = h.hashSvc.HashTextContent(item.ItemType, *req.Content)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	resp := ConsistencyCheckResponse{Matched: false, ContentMD5: checkMD5, MatchedCurrent: false}
+	if checkMD5 == item.ContentMD5 {
+		resp.Matched = true
+		resp.MatchedCurrent = true
+		resp.MatchedRevision = item.CurrentRevision
+		resp.MatchedVersionLabel = h.hashSvc.BuildVersionLabel(item.CurrentRevision)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	var version models.CapabilityVersion
+	if err := h.db.Where("item_id = ? AND content_md5 = ?", item.ID, checkMD5).Order("revision desc").First(&version).Error; err == nil {
+		resp.Matched = true
+		resp.MatchedRevision = version.Revision
+		resp.MatchedVersionLabel = h.hashSvc.BuildVersionLabel(version.Revision)
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
@@ -1098,7 +1494,7 @@ func ListAllItems(c *gin.Context) {
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
-// @Success      201   {object}  models.CapabilityItem
+// @Success      201   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
@@ -1114,16 +1510,18 @@ func (h *ItemHandler) CreateItemDirect(c *gin.Context) {
 // createItemFromJSON handles the original JSON-body item creation path.
 func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	var req struct {
-		RegistryID  string          `json:"registryId"`
-		Slug        string          `json:"slug"`
-		ItemType    string          `json:"itemType" binding:"required"`
-		Name        string          `json:"name" binding:"required"`
-		Description string          `json:"description"`
-		Category    string          `json:"category"`
-		Version     string          `json:"version"`
-		Content     string          `json:"content"`
-		Metadata    json.RawMessage `json:"metadata"`
-		CreatedBy   string          `json:"createdBy"`
+		RegistryID  string             `json:"registryId"`
+		Slug        string             `json:"slug"`
+		ItemType    string             `json:"itemType" binding:"required"`
+		Name        string             `json:"name" binding:"required"`
+		Description string             `json:"description"`
+		Category    string             `json:"category"`
+		Version     string             `json:"version"`
+		Content     string             `json:"content"`
+		Metadata    json.RawMessage    `json:"metadata"`
+		SourcePath  string             `json:"sourcePath"`
+		Assets      []itemAssetPayload `json:"assets"`
+		CreatedBy   string             `json:"createdBy"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1149,12 +1547,31 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		req.Slug = slugify(req.Name)
 	}
 
+	if req.SourcePath == "" {
+		req.SourcePath = defaultSourcePathForItemType(req.ItemType)
+	}
+	assetRecords, archiveAssets, err := buildTextAssetRecords(req.Assets, req.SourcePath)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	version := req.Version
 	if version == "" {
 		version = "1.0.0"
 	}
 
 	metadata, err := resolveMetadata(req.ItemType, req.Metadata, req.Content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var contentMD5 string
+	if len(archiveAssets) > 0 {
+		contentMD5, err = h.hashSvc.HashArchiveContent(req.SourcePath, []byte(req.Content), archiveAssets)
+	} else {
+		contentMD5, err = h.hashSvc.HashTextContent(req.ItemType, req.Content)
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1170,10 +1587,12 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Category:    req.Category,
 		Version:     version,
 		Content:     req.Content,
+		ContentMD5:  contentMD5,
 		Metadata:    metadata,
 		CreatedBy:   req.CreatedBy,
+		SourcePath:  req.SourcePath,
 		SourceType:  "direct",
-	}, createItemAssets{})
+	}, createItemAssets{Records: assetRecords})
 	if err != nil {
 		if errors.Is(err, ErrSlugConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": req.Slug})
@@ -1199,7 +1618,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
 	}
 
-	c.JSON(http.StatusCreated, *item)
+	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // cleanupStorageKeys deletes uploaded objects after a later step fails.
@@ -1294,6 +1713,11 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 	if result == nil || result.Parsed == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive parser returned no item"})
+		return
+	}
+	contentMD5, err := h.hashSvc.HashArchiveContent(result.MainPath, []byte(result.MainContent), result.Assets)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1403,6 +1827,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		Category:    category,
 		Version:     version,
 		Content:     result.MainContent,
+		ContentMD5:  contentMD5,
 		Metadata:    datatypes.JSON(metadataJSON),
 		SourcePath:  result.MainPath,
 		SourceSHA:   result.MainSHA,
@@ -1444,7 +1869,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
-	c.JSON(http.StatusCreated, *item)
+	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // MoveItem godoc
