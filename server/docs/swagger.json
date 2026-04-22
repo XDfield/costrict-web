@@ -36,7 +36,7 @@
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                        "$ref": "#/definitions/models.SystemNotificationChannel"
                                     }
                                 }
                             }
@@ -110,7 +110,7 @@
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -200,7 +200,7 @@
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel"
+                                    "$ref": "#/definitions/models.SystemNotificationChannel"
                                 }
                             }
                         }
@@ -728,7 +728,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                            "$ref": "#/definitions/models.CapabilityArtifact"
                         }
                     },
                     "400": {
@@ -2804,7 +2804,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.InvitationsResponse"
+                            "$ref": "#/definitions/project.InvitationsResponse"
                         }
                     },
                     "401": {
@@ -2851,7 +2851,7 @@
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                                        "$ref": "#/definitions/models.RepoInvitation"
                                     }
                                 }
                             }
@@ -2969,7 +2969,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -3118,7 +3118,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.RespondInvitationRequest"
+                            "$ref": "#/definitions/project.RespondInvitationRequest"
                         }
                     }
                 ],
@@ -3126,7 +3126,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.InvitationResponse"
+                            "$ref": "#/definitions/project.InvitationResponse"
                         }
                     },
                     "400": {
@@ -3365,11 +3365,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-<<<<<<< HEAD
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
-=======
                             "$ref": "#/definitions/handlers.ItemResponse"
->>>>>>> origin/main
                         }
                     },
                     "400": {
@@ -3450,7 +3446,7 @@
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/internal_handlers.MyItem"
+                                        "$ref": "#/definitions/handlers.MyItem"
                                     }
                                 },
                                 "page": {
@@ -3502,7 +3498,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.ItemResponse"
+                            "$ref": "#/definitions/handlers.ItemResponse"
                         }
                     },
                     "404": {
@@ -3584,11 +3580,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-<<<<<<< HEAD
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
-=======
                             "$ref": "#/definitions/handlers.ItemResponse"
->>>>>>> origin/main
                         }
                     },
                     "400": {
@@ -3693,7 +3685,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis"
+                            "$ref": "#/definitions/llm.SkillAnalysis"
                         }
                     },
                     "404": {
@@ -3749,7 +3741,7 @@
                                 "artifacts": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                                        "$ref": "#/definitions/models.CapabilityArtifact"
                                     }
                                 }
                             }
@@ -3830,7 +3822,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.BehaviorLog"
+                            "$ref": "#/definitions/models.BehaviorLog"
                         }
                     },
                     "400": {
@@ -4178,7 +4170,7 @@
                                 "improvements": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
+                                        "$ref": "#/definitions/llm.SkillImprovement"
                                     }
                                 }
                             }
@@ -4189,7 +4181,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -4257,7 +4249,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -4448,7 +4440,7 @@
                                 "results": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
+                                        "$ref": "#/definitions/models.SecurityScan"
                                     }
                                 },
                                 "total": {
@@ -4565,7 +4557,7 @@
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
+                                        "$ref": "#/definitions/services.SearchResultItem"
                                     }
                                 },
                                 "page": {
@@ -4628,7 +4620,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats"
+                            "$ref": "#/definitions/services.ItemBehaviorStats"
                         }
                     },
                     "500": {
@@ -4685,7 +4677,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     },
                     "400": {
@@ -4774,11 +4766,7 @@
                                 "versions": {
                                     "type": "array",
                                     "items": {
-<<<<<<< HEAD
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-=======
                                         "$ref": "#/definitions/handlers.VersionResponse"
->>>>>>> origin/main
                                     }
                                 }
                             }
@@ -4828,11 +4816,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-<<<<<<< HEAD
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-=======
                             "$ref": "#/definitions/handlers.VersionResponse"
->>>>>>> origin/main
                         }
                     },
                     "400": {
@@ -4917,7 +4901,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
+                            "$ref": "#/definitions/services.SearchResult"
                         }
                     },
                     "400": {
@@ -4981,7 +4965,7 @@
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -5067,7 +5051,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendResponse"
+                            "$ref": "#/definitions/services.RecommendResponse"
                         }
                     },
                     "400": {
@@ -5155,7 +5139,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResult"
+                            "$ref": "#/definitions/services.SearchResult"
                         }
                     },
                     "400": {
@@ -5229,7 +5213,7 @@
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -5277,7 +5261,7 @@
                                 "channels": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                        "$ref": "#/definitions/models.UserNotificationChannel"
                                     }
                                 }
                             }
@@ -5357,7 +5341,7 @@
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -5463,7 +5447,7 @@
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -5546,7 +5530,7 @@
                             "type": "object",
                             "properties": {
                                 "channel": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel"
+                                    "$ref": "#/definitions/models.UserNotificationChannel"
                                 }
                             }
                         }
@@ -5697,7 +5681,7 @@
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.NotificationLog"
+                                        "$ref": "#/definitions/models.NotificationLog"
                                     }
                                 }
                             }
@@ -5831,7 +5815,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectsResponse"
+                            "$ref": "#/definitions/project.ProjectsResponse"
                         }
                     },
                     "401": {
@@ -5882,7 +5866,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.CreateProjectRequest"
+                            "$ref": "#/definitions/project.CreateProjectRequest"
                         }
                     }
                 ],
@@ -5890,7 +5874,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "400": {
@@ -5957,7 +5941,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "401": {
@@ -6026,7 +6010,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.UpdateProjectRequest"
+                            "$ref": "#/definitions/project.UpdateProjectRequest"
                         }
                     }
                 ],
@@ -6034,7 +6018,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "400": {
@@ -6174,7 +6158,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "400": {
@@ -6256,7 +6240,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.UpdateProjectArchiveTimeRequest"
+                            "$ref": "#/definitions/project.UpdateProjectArchiveTimeRequest"
                         }
                     }
                 ],
@@ -6264,7 +6248,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectBasicInfoResponse"
+                            "$ref": "#/definitions/project.ProjectBasicInfoResponse"
                         }
                     },
                     "400": {
@@ -6342,7 +6326,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectBasicInfoResponse"
+                            "$ref": "#/definitions/project.ProjectBasicInfoResponse"
                         }
                     },
                     "401": {
@@ -6409,7 +6393,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.InvitationsResponse"
+                            "$ref": "#/definitions/project.InvitationsResponse"
                         }
                     },
                     "401": {
@@ -6478,7 +6462,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.CreateInvitationRequest"
+                            "$ref": "#/definitions/project.CreateInvitationRequest"
                         }
                     }
                 ],
@@ -6486,7 +6470,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.InvitationResponse"
+                            "$ref": "#/definitions/project.InvitationResponse"
                         }
                     },
                     "400": {
@@ -6564,7 +6548,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.MembersResponse"
+                            "$ref": "#/definitions/project.MembersResponse"
                         }
                     },
                     "401": {
@@ -6724,7 +6708,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.UpdateMemberRoleRequest"
+                            "$ref": "#/definitions/project.UpdateMemberRoleRequest"
                         }
                     }
                 ],
@@ -6732,7 +6716,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.MemberResponse"
+                            "$ref": "#/definitions/project.MemberResponse"
                         }
                     },
                     "400": {
@@ -6814,7 +6798,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_project.SetProjectPinRequest"
+                            "$ref": "#/definitions/project.SetProjectPinRequest"
                         }
                     }
                 ],
@@ -6822,7 +6806,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "400": {
@@ -6900,7 +6884,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/internal_project.ProjectResponse"
+                            "$ref": "#/definitions/project.ProjectResponse"
                         }
                     },
                     "400": {
@@ -6977,7 +6961,7 @@
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -7041,7 +7025,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -7097,7 +7081,7 @@
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -7131,7 +7115,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -7171,7 +7155,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -7243,7 +7227,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -7398,7 +7382,7 @@
                                 "items": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                                        "$ref": "#/definitions/models.CapabilityItem"
                                     }
                                 },
                                 "page": {
@@ -7492,11 +7476,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-<<<<<<< HEAD
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
-=======
                             "$ref": "#/definitions/handlers.ItemResponse"
->>>>>>> origin/main
                         }
                     },
                     "400": {
@@ -7615,7 +7595,7 @@
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                                        "$ref": "#/definitions/models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -7654,7 +7634,7 @@
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                                        "$ref": "#/definitions/models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -7767,7 +7747,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -8016,7 +7996,7 @@
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                                        "$ref": "#/definitions/models.Repository"
                                     }
                                 }
                             }
@@ -8091,7 +8071,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "400": {
@@ -8138,7 +8118,7 @@
                                 "repositories": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                                        "$ref": "#/definitions/models.Repository"
                                     }
                                 }
                             }
@@ -8181,7 +8161,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "404": {
@@ -8244,7 +8224,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                            "$ref": "#/definitions/models.Repository"
                         }
                     },
                     "400": {
@@ -8360,7 +8340,7 @@
                                 "invitations": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                                        "$ref": "#/definitions/models.RepoInvitation"
                                     }
                                 }
                             }
@@ -8424,7 +8404,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoInvitation"
+                            "$ref": "#/definitions/models.RepoInvitation"
                         }
                     },
                     "400": {
@@ -8576,7 +8556,7 @@
                                 "members": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                                        "$ref": "#/definitions/models.RepoMember"
                                     }
                                 }
                             }
@@ -8640,7 +8620,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -8737,7 +8717,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                            "$ref": "#/definitions/models.RepoMember"
                         }
                     },
                     "400": {
@@ -8876,7 +8856,7 @@
                                 "registries": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                                        "$ref": "#/definitions/models.CapabilityRegistry"
                                     }
                                 }
                             }
@@ -8910,7 +8890,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CreateSyncRegistryInput"
+                            "$ref": "#/definitions/handlers.CreateSyncRegistryInput"
                         }
                     }
                 ],
@@ -8918,7 +8898,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "400": {
@@ -9014,7 +8994,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -9104,7 +9084,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                            "$ref": "#/definitions/models.CapabilityRegistry"
                         }
                     },
                     "404": {
@@ -9237,7 +9217,7 @@
                                 "jobs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                                        "$ref": "#/definitions/models.SyncJob"
                                     }
                                 },
                                 "total": {
@@ -9294,7 +9274,7 @@
                                 "logs": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                                        "$ref": "#/definitions/models.SyncLog"
                                     }
                                 },
                                 "total": {
@@ -9458,7 +9438,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SecurityScan"
+                            "$ref": "#/definitions/models.SecurityScan"
                         }
                     },
                     "404": {
@@ -9497,7 +9477,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
+                            "$ref": "#/definitions/models.SyncJob"
                         }
                     },
                     "404": {
@@ -9536,7 +9516,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                            "$ref": "#/definitions/models.SyncLog"
                         }
                     },
                     "404": {
@@ -9548,837 +9528,6 @@
                                     "type": "string"
                                 }
                             }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/approvals/:approvalId": {
-            "patch": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Respond to approval request (Leader)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Approval ID",
-                        "name": "approvalId",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Response",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "feedback": {
-                                    "type": "string"
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamApprovalRequest"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Create team session",
-                "parameters": [
-                    {
-                        "description": "Session data",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamSession"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Get team session",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamSession"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "tags": [
-                    "team"
-                ],
-                "summary": "Close / delete team session",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Update team session status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Status",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamSession"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/approvals": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "List pending approvals",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "approvals": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamApprovalRequest"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/explore": {
-            "post": {
-                "description": "Leader sends explore queries targeting a specific Teammate machine.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Synchronous remote code explore (Leader → Teammate)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Explore request",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "queries": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                },
-                                "targetMachineId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "result": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    },
-                    "504": {
-                        "description": "Gateway Timeout",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/leader": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Get current leader info",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "leaderId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/leader/elect": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Attempt leader election",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Candidate",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "machineId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "elected": {
-                                    "type": "boolean"
-                                },
-                                "fencingToken": {
-                                    "type": "integer"
-                                },
-                                "leaderId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/leader/heartbeat": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Leader lock renewal heartbeat",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Leader identity",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "machineId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "renewed": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/members": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "List session members",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "members": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamSessionMember"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Join team session",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Machine info",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "machineId": {
-                                    "type": "string"
-                                },
-                                "machineName": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamSessionMember"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/members/:mid": {
-            "delete": {
-                "tags": [
-                    "team"
-                ],
-                "summary": "Leave team session",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Member ID",
-                        "name": "mid",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/progress": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Get session progress snapshot",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.SessionProgress"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/repos": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Query repo affinity registry",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by repo remote URL",
-                        "name": "remoteUrl",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by member ID",
-                        "name": "memberId",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "repos": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamRepoAffinity"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Register / update local repository info (Teammate)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Repo info",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamRepoAffinity"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamRepoAffinity"
-                        }
-                    }
-                }
-            }
-        },
-        "/team/sessions/:id/tasks": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "List session tasks",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "tasks": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamTask"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Submit task plan (Leader)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Session ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Task plan",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "fencingToken": {
-                                    "type": "integer"
-                                },
-                                "tasks": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamTask"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "tasks": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_team.TeamTask"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/team/tasks/:taskId": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Get task",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Task ID",
-                        "name": "taskId",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamTask"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "team"
-                ],
-                "summary": "Update task status/result (Teammate)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Task ID",
-                        "name": "taskId",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Task update",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "errorMessage": {
-                                    "type": "string"
-                                },
-                                "result": {
-                                    "type": "object"
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_team.TeamTask"
                         }
                     }
                 }
@@ -10418,7 +9567,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse"
+                            "$ref": "#/definitions/services.UsageActivityResponse"
                         }
                     },
                     "400": {
@@ -10482,7 +9631,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportRequest"
+                            "$ref": "#/definitions/services.UsageReportRequest"
                         }
                     }
                 ],
@@ -10490,7 +9639,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportResponse"
+                            "$ref": "#/definitions/services.UsageReportResponse"
                         }
                     },
                     "400": {
@@ -10555,7 +9704,7 @@
                             "type": "object",
                             "properties": {
                                 "user": {
-                                    "$ref": "#/definitions/internal_handlers.userBasicInfoResponse"
+                                    "$ref": "#/definitions/handlers.userBasicInfoResponse"
                                 }
                             }
                         }
@@ -10610,7 +9759,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary"
+                            "$ref": "#/definitions/models.UserBehaviorSummary"
                         }
                     },
                     "500": {
@@ -10703,7 +9852,7 @@
                                 "users": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser"
+                                        "$ref": "#/definitions/casdoor.CasdoorUser"
                                     }
                                 }
                             }
@@ -10852,7 +10001,7 @@
                                 "workspaces": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                        "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                     }
                                 }
                             }
@@ -10901,7 +10050,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest"
+                            "$ref": "#/definitions/services.CreateWorkspaceRequest"
                         }
                     }
                 ],
@@ -10912,7 +10061,7 @@
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -10981,7 +10130,7 @@
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -11048,7 +10197,7 @@
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -11114,7 +10263,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest"
+                            "$ref": "#/definitions/services.UpdateWorkspaceRequest"
                         }
                     }
                 ],
@@ -11125,7 +10274,7 @@
                             "type": "object",
                             "properties": {
                                 "workspace": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus"
+                                    "$ref": "#/definitions/services.WorkspaceWithDeviceStatus"
                                 }
                             }
                         }
@@ -11363,7 +10512,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
+                            "$ref": "#/definitions/services.CreateDirectoryRequest"
                         }
                     }
                 ],
@@ -11453,7 +10602,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest"
+                            "$ref": "#/definitions/services.ReorderDirectoriesRequest"
                         }
                     }
                 ],
@@ -11550,7 +10699,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest"
+                            "$ref": "#/definitions/services.UpdateDirectoryRequest"
                         }
                     }
                 ],
@@ -11751,7 +10900,7 @@
         }
     },
     "definitions": {
-        "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
+        "casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
                 "email": {
@@ -11780,9 +10929,6 @@
                 }
             }
         },
-<<<<<<< HEAD
-        "github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis": {
-=======
         "handlers.ConsistencyCheckResponse": {
             "type": "object",
             "properties": {
@@ -12131,13 +11277,12 @@
             }
         },
         "llm.SkillAnalysis": {
->>>>>>> origin/main
             "type": "object",
             "properties": {
                 "improvements": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_llm.SkillImprovement"
+                        "$ref": "#/definitions/llm.SkillImprovement"
                     }
                 },
                 "overallScore": {
@@ -12157,7 +11302,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_llm.SkillImprovement": {
+        "llm.SkillImprovement": {
             "type": "object",
             "properties": {
                 "current": {
@@ -12174,7 +11319,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ActionType": {
+        "models.ActionType": {
             "type": "string",
             "enum": [
                 "view",
@@ -12197,14 +11342,14 @@
                 "ActionIgnore"
             ]
         },
-        "github_com_costrict_costrict-web_server_internal_models.BehaviorLog": {
+        "models.BehaviorLog": {
             "type": "object",
             "properties": {
                 "actionType": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ActionType"
+                    "$ref": "#/definitions/models.ActionType"
                 },
                 "context": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ContextType"
+                    "$ref": "#/definitions/models.ContextType"
                 },
                 "createdAt": {
                     "type": "string"
@@ -12222,7 +11367,7 @@
                     "description": "Relations",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                            "$ref": "#/definitions/models.CapabilityItem"
                         }
                     ]
                 },
@@ -12237,7 +11382,7 @@
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -12253,7 +11398,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact": {
+        "models.CapabilityArtifact": {
             "type": "object",
             "properties": {
                 "artifactVersion": {
@@ -12300,7 +11445,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityAsset": {
+        "models.CapabilityAsset": {
             "type": "object",
             "properties": {
                 "contentSha": {
@@ -12338,19 +11483,19 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityItem": {
+        "models.CapabilityItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -12405,7 +11550,7 @@
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -12444,12 +11589,12 @@
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry": {
+        "models.CapabilityRegistry": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12470,11 +11615,11 @@
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                        "$ref": "#/definitions/models.CapabilityItem"
                     }
                 },
                 "lastSyncLog": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                    "$ref": "#/definitions/models.SyncLog"
                 },
                 "lastSyncLogId": {
                     "type": "string"
@@ -12515,7 +11660,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.CapabilityVersion": {
+        "models.CapabilityVersion": {
             "type": "object",
             "properties": {
                 "commitMsg": {
@@ -12547,7 +11692,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ContextType": {
+        "models.ContextType": {
             "type": "string",
             "enum": [
                 "search_query",
@@ -12562,7 +11707,7 @@
                 "ContextBrowse"
             ]
         },
-        "github_com_costrict_costrict-web_server_internal_models.NotificationLog": {
+        "models.NotificationLog": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -12600,7 +11745,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.Project": {
+        "models.Project": {
             "type": "object",
             "properties": {
                 "archivedAt": {
@@ -12635,7 +11780,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ProjectInvitation": {
+        "models.ProjectInvitation": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12676,7 +11821,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ProjectMember": {
+        "models.ProjectMember": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12705,7 +11850,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.RepoInvitation": {
+        "models.RepoInvitation": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12733,7 +11878,7 @@
                     "type": "string"
                 },
                 "repository": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Repository"
+                    "$ref": "#/definitions/models.Repository"
                 },
                 "role": {
                     "description": "admin | member",
@@ -12748,7 +11893,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.RepoMember": {
+        "models.RepoMember": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12772,7 +11917,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.Repository": {
+        "models.Repository": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12790,7 +11935,7 @@
                 "members": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.RepoMember"
+                        "$ref": "#/definitions/models.RepoMember"
                     }
                 },
                 "name": {
@@ -12812,7 +11957,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SecurityScan": {
+        "models.SecurityScan": {
             "type": "object",
             "properties": {
                 "category": {
@@ -12871,7 +12016,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SyncJob": {
+        "models.SyncJob": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12896,7 +12041,7 @@
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -12926,7 +12071,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SyncLog": {
+        "models.SyncLog": {
             "type": "object",
             "properties": {
                 "addedItems": {
@@ -12960,7 +12105,7 @@
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -12990,7 +12135,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.SystemNotificationChannel": {
+        "models.SystemNotificationChannel": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -13026,7 +12171,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.UserBehaviorSummary": {
+        "models.UserBehaviorSummary": {
             "type": "object",
             "properties": {
                 "favoriteCategories": {
@@ -13058,7 +12203,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.UserNotificationChannel": {
+        "models.UserNotificationChannel": {
             "type": "object",
             "properties": {
                 "channelType": {
@@ -13105,7 +12250,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory": {
+        "models.WorkspaceDirectory": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -13140,7 +12285,178 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest": {
+        "project.CreateInvitationRequest": {
+            "type": "object",
+            "required": [
+                "inviteeId"
+            ],
+            "properties": {
+                "inviteeId": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.CreateProjectRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.InvitationResponse": {
+            "type": "object",
+            "properties": {
+                "invitation": {
+                    "$ref": "#/definitions/models.ProjectInvitation"
+                }
+            }
+        },
+        "project.InvitationsResponse": {
+            "type": "object",
+            "properties": {
+                "invitations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectInvitation"
+                    }
+                }
+            }
+        },
+        "project.MemberResponse": {
+            "type": "object",
+            "properties": {
+                "member": {
+                    "$ref": "#/definitions/models.ProjectMember"
+                }
+            }
+        },
+        "project.MembersResponse": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProjectMember"
+                    }
+                }
+            }
+        },
+        "project.ProjectBasicInfo": {
+            "type": "object",
+            "properties": {
+                "archivedAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.ProjectBasicInfoResponse": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "$ref": "#/definitions/project.ProjectBasicInfo"
+                }
+            }
+        },
+        "project.ProjectResponse": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "$ref": "#/definitions/models.Project"
+                }
+            }
+        },
+        "project.ProjectsResponse": {
+            "type": "object",
+            "properties": {
+                "projects": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Project"
+                    }
+                }
+            }
+        },
+        "project.RespondInvitationRequest": {
+            "type": "object",
+            "properties": {
+                "accept": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "project.SetProjectPinRequest": {
+            "type": "object",
+            "properties": {
+                "pinned": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "project.UpdateMemberRoleRequest": {
+            "type": "object",
+            "required": [
+                "role"
+            ],
+            "properties": {
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.UpdateProjectArchiveTimeRequest": {
+            "type": "object",
+            "required": [
+                "archivedAt"
+            ],
+            "properties": {
+                "archivedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "project.UpdateProjectRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabledAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.CreateDirectoryRequest": {
             "type": "object",
             "required": [
                 "name",
@@ -13164,7 +12480,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest": {
+        "services.CreateWorkspaceRequest": {
             "type": "object",
             "required": [
                 "directories",
@@ -13182,7 +12498,7 @@
                     "type": "array",
                     "minItems": 1,
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateDirectoryRequest"
+                        "$ref": "#/definitions/services.CreateDirectoryRequest"
                     }
                 },
                 "name": {
@@ -13195,7 +12511,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats": {
+        "services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
                 "averageRating": {
@@ -13236,7 +12552,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.RecommendResponse": {
+        "services.RecommendResponse": {
             "type": "object",
             "properties": {
                 "generatedAt": {
@@ -13248,7 +12564,7 @@
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.RecommendedItem"
+                        "$ref": "#/definitions/services.RecommendedItem"
                     }
                 },
                 "page": {
@@ -13268,19 +12584,19 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.RecommendedItem": {
+        "services.RecommendedItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -13338,7 +12654,7 @@
                     "type": "string"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -13383,12 +12699,12 @@
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.ReorderDirectoriesRequest": {
+        "services.ReorderDirectoriesRequest": {
             "type": "object",
             "required": [
                 "directoryIds"
@@ -13402,7 +12718,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.SearchResult": {
+        "services.SearchResult": {
             "type": "object",
             "properties": {
                 "durationMs": {
@@ -13411,7 +12727,7 @@
                 "items": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.SearchResultItem"
+                        "$ref": "#/definitions/services.SearchResultItem"
                     }
                 },
                 "query": {
@@ -13422,19 +12738,19 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.SearchResultItem": {
+        "services.SearchResultItem": {
             "type": "object",
             "properties": {
                 "artifacts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
+                        "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
                 "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
+                        "$ref": "#/definitions/models.CapabilityAsset"
                     }
                 },
                 "category": {
@@ -13489,7 +12805,7 @@
                     "type": "integer"
                 },
                 "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                    "$ref": "#/definitions/models.CapabilityRegistry"
                 },
                 "registryId": {
                     "type": "string"
@@ -13531,12 +12847,12 @@
                 "versions": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
+                        "$ref": "#/definitions/models.CapabilityVersion"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UpdateDirectoryRequest": {
+        "services.UpdateDirectoryRequest": {
             "type": "object",
             "properties": {
                 "isDefault": {
@@ -13556,7 +12872,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest": {
+        "services.UpdateWorkspaceRequest": {
             "type": "object",
             "properties": {
                 "description": {
@@ -13584,7 +12900,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse": {
+        "services.UsageActivityResponse": {
             "type": "object",
             "properties": {
                 "git_repo_url": {
@@ -13604,12 +12920,12 @@
                 "users": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageUserActivity"
+                        "$ref": "#/definitions/services.UsageUserActivity"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageDaily": {
+        "services.UsageDaily": {
             "type": "object",
             "properties": {
                 "date": {
@@ -13620,7 +12936,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportItem": {
+        "services.UsageReportItem": {
             "type": "object",
             "required": [
                 "date",
@@ -13684,7 +13000,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportRequest": {
+        "services.UsageReportRequest": {
             "type": "object",
             "required": [
                 "reports"
@@ -13704,12 +13020,12 @@
                     "maxItems": 500,
                     "minItems": 1,
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportItem"
+                        "$ref": "#/definitions/services.UsageReportItem"
                     }
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportResponse": {
+        "services.UsageReportResponse": {
             "type": "object",
             "properties": {
                 "accepted": {
@@ -13726,13 +13042,13 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageUserActivity": {
+        "services.UsageUserActivity": {
             "type": "object",
             "properties": {
                 "daily": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageDaily"
+                        "$ref": "#/definitions/services.UsageDaily"
                     }
                 },
                 "total_requests": {
@@ -13746,7 +13062,7 @@
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus": {
+        "services.WorkspaceWithDeviceStatus": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -13770,7 +13086,7 @@
                 "directories": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.WorkspaceDirectory"
+                        "$ref": "#/definitions/models.WorkspaceDirectory"
                     }
                 },
                 "id": {
@@ -13796,723 +13112,6 @@
                 },
                 "userId": {
                     "type": "string"
-                }
-            }
-        },
-        "internal_handlers.CreateSyncRegistryInput": {
-            "type": "object",
-            "properties": {
-                "conflictStrategy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "excludePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "externalBranch": {
-                    "type": "string"
-                },
-                "externalUrl": {
-                    "type": "string"
-                },
-                "includePatterns": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "name": {
-                    "type": "string"
-                },
-                "syncEnabled": {
-                    "type": "boolean"
-                },
-                "syncInterval": {
-                    "type": "integer"
-                },
-                "webhookSecret": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.ItemResponse": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "favoriteCount": {
-                    "type": "integer"
-                },
-                "favorited": {
-                    "type": "boolean"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "previewCount": {
-                    "type": "integer"
-                },
-                "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoVisibility": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "internal_handlers.MyItem": {
-            "type": "object",
-            "properties": {
-                "artifacts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityArtifact"
-                    }
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityAsset"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "embeddingUpdatedAt": {
-                    "type": "string"
-                },
-                "experienceScore": {
-                    "type": "number"
-                },
-                "favoriteCount": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "previewCount": {
-                    "type": "integer"
-                },
-                "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "repoName": {
-                    "type": "string"
-                },
-                "repoVisibility": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "description": "direct | archive",
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "string"
-                },
-                "versions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityVersion"
-                    }
-                }
-            }
-        },
-        "internal_handlers.userBasicInfoResponse": {
-            "type": "object",
-            "properties": {
-                "avatarUrl": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.CreateInvitationRequest": {
-            "type": "object",
-            "required": [
-                "inviteeId"
-            ],
-            "properties": {
-                "inviteeId": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "role": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.CreateProjectRequest": {
-            "type": "object",
-            "required": [
-                "name"
-            ],
-            "properties": {
-                "description": {
-                    "type": "string"
-                },
-                "enabledAt": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.InvitationResponse": {
-            "type": "object",
-            "properties": {
-                "invitation": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectInvitation"
-                }
-            }
-        },
-        "internal_project.InvitationsResponse": {
-            "type": "object",
-            "properties": {
-                "invitations": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectInvitation"
-                    }
-                }
-            }
-        },
-        "internal_project.MemberResponse": {
-            "type": "object",
-            "properties": {
-                "member": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectMember"
-                }
-            }
-        },
-        "internal_project.MembersResponse": {
-            "type": "object",
-            "properties": {
-                "members": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ProjectMember"
-                    }
-                }
-            }
-        },
-        "internal_project.ProjectBasicInfo": {
-            "type": "object",
-            "properties": {
-                "archivedAt": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "enabledAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.ProjectBasicInfoResponse": {
-            "type": "object",
-            "properties": {
-                "project": {
-                    "$ref": "#/definitions/internal_project.ProjectBasicInfo"
-                }
-            }
-        },
-        "internal_project.ProjectResponse": {
-            "type": "object",
-            "properties": {
-                "project": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Project"
-                }
-            }
-        },
-        "internal_project.ProjectsResponse": {
-            "type": "object",
-            "properties": {
-                "projects": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.Project"
-                    }
-                }
-            }
-        },
-        "internal_project.RespondInvitationRequest": {
-            "type": "object",
-            "properties": {
-                "accept": {
-                    "type": "boolean"
-                }
-            }
-        },
-        "internal_project.SetProjectPinRequest": {
-            "type": "object",
-            "properties": {
-                "pinned": {
-                    "type": "boolean"
-                }
-            }
-        },
-        "internal_project.UpdateMemberRoleRequest": {
-            "type": "object",
-            "required": [
-                "role"
-            ],
-            "properties": {
-                "role": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.UpdateProjectArchiveTimeRequest": {
-            "type": "object",
-            "required": [
-                "archivedAt"
-            ],
-            "properties": {
-                "archivedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_project.UpdateProjectRequest": {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string"
-                },
-                "enabledAt": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.SessionProgress": {
-            "type": "object",
-            "properties": {
-                "completedTasks": {
-                    "type": "integer"
-                },
-                "failedTasks": {
-                    "type": "integer"
-                },
-                "pendingTasks": {
-                    "type": "integer"
-                },
-                "runningTasks": {
-                    "type": "integer"
-                },
-                "teammates": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_team.TeammateProgress"
-                    }
-                },
-                "totalTasks": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_team.TeamApprovalRequest": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "feedback": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "permissionUpdates": {
-                    "type": "object"
-                },
-                "requesterId": {
-                    "type": "string"
-                },
-                "requesterName": {
-                    "type": "string"
-                },
-                "resolvedAt": {
-                    "type": "string"
-                },
-                "riskLevel": {
-                    "type": "string"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "toolInput": {
-                    "type": "object"
-                },
-                "toolName": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.TeamRepoAffinity": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "currentBranch": {
-                    "type": "string"
-                },
-                "hasUncommittedChanges": {
-                    "type": "boolean"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "lastSyncedAt": {
-                    "type": "string"
-                },
-                "memberId": {
-                    "type": "string"
-                },
-                "repoLocalPath": {
-                    "type": "string"
-                },
-                "repoRemoteUrl": {
-                    "type": "string"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.TeamSession": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "creatorId": {
-                    "type": "string"
-                },
-                "fencingToken": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "leaderMachineId": {
-                    "type": "string"
-                },
-                "leaderUserId": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.TeamSessionMember": {
-            "type": "object",
-            "properties": {
-                "connectedAt": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "lastHeartbeat": {
-                    "type": "string"
-                },
-                "machineId": {
-                    "type": "string"
-                },
-                "machineName": {
-                    "type": "string"
-                },
-                "role": {
-                    "type": "string"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "userId": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.TeamTask": {
-            "type": "object",
-            "properties": {
-                "assignedMemberId": {
-                    "type": "string"
-                },
-                "claimedAt": {
-                    "type": "string"
-                },
-                "completedAt": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "dependencies": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "description": {
-                    "type": "string"
-                },
-                "errorMessage": {
-                    "type": "string"
-                },
-                "fileHints": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "id": {
-                    "type": "string"
-                },
-                "maxRetries": {
-                    "type": "integer"
-                },
-                "priority": {
-                    "type": "integer"
-                },
-                "repoAffinity": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "result": {
-                    "type": "object"
-                },
-                "retryCount": {
-                    "type": "integer"
-                },
-                "sessionId": {
-                    "type": "string"
-                },
-                "startedAt": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_team.TeammateProgress": {
-            "type": "object",
-            "properties": {
-                "completed": {
-                    "type": "integer"
-                },
-                "currentTaskId": {
-                    "type": "string"
-                },
-                "failed": {
-                    "type": "integer"
-                },
-                "machineName": {
-                    "type": "string"
-                },
-                "memberId": {
-                    "type": "string"
-                },
-                "running": {
-                    "type": "integer"
                 }
             }
         }
