@@ -90,6 +90,7 @@ func setupTestDB(t *testing.T) func() {
 			source_path          TEXT,
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
+			source               TEXT NOT NULL DEFAULT '',
 			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
 			favorite_count       INTEGER DEFAULT 0,

@@ -315,6 +315,7 @@ type importPayload struct {
 	Version     string
 	Content     string
 	Metadata    datatypes.JSON
+	Source      string
 }
 
 type importStats struct {
@@ -539,6 +540,7 @@ func buildCatalogPayload(entry externalCatalogEntry, fallbackType string) import
 		Version:     version,
 		Content:     string(contentBytes),
 		Metadata:    metadataJSON,
+		Source:      entry.Source,
 	}
 }
 
@@ -599,6 +601,7 @@ func buildMarkdownPayloads(sourceRoot, pattern, forceItemType string) ([]importP
 			Version:     version,
 			Content:     string(b),
 			Metadata:    mustJSON(metadata),
+			Source:      inferSourceFromPath(relPath),
 		})
 	}
 	return payloads, nil
@@ -678,6 +681,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			SourcePath:      payload.SourcePath,
 			SourceSHA:       sourceSHA(payload.Content),
 			SourceType:      "direct",
+			Source:          payload.Source,
 			Status:          "active",
 			CreatedBy:       importCreatedBy,
 			UpdatedBy:       importCreatedBy,
@@ -721,6 +725,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		"metadata":    payload.Metadata,
 		"source_path": payload.SourcePath,
 		"source_sha":  sourceSHA(payload.Content),
+		"source":      payload.Source,
 		"updated_by":  importCreatedBy,
 	}
 	if contentMD5 != existing.ContentMD5 {
@@ -786,6 +791,17 @@ func inferName(path string) string {
 		return "Imported Item"
 	}
 	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+// inferSourceFromPath extracts the platform/org name from paths like:
+// platforms/claude-code/skills/.../SKILL.md -> claude-code
+// platforms/superpower/commands/.../xxx.md -> superpower
+func inferSourceFromPath(relPath string) string {
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	if len(parts) >= 2 && parts[0] == "platforms" {
+		return parts[1]
+	}
+	return ""
 }
 
 func mustJSON(v any) datatypes.JSON {

@@ -343,6 +343,7 @@ type CapabilityItem struct {
 	SourcePath      string               `json:"sourcePath"`
 	SourceSHA       string               `json:"sourceSha"`
 	SourceType      string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
+	Source          string               `json:"source"`                                      // 导入来源，如 anthropic/claude-code, superpower, github
 	PreviewCount    int                  `gorm:"default:0" json:"previewCount"`
 	InstallCount    int                  `gorm:"default:0" json:"installCount"`
 	FavoriteCount   int                  `gorm:"default:0" json:"favoriteCount"`
