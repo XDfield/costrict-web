@@ -321,13 +321,6 @@ type importPayload struct {
 	Source      string
 }
 
-func (p importPayload) favoriteCount() int {
-	if p.Stars == nil {
-		return 0
-	}
-	return *p.Stars
-}
-
 type importStats struct {
 	CreatedByType map[string]int
 	UpdatedByType map[string]int
@@ -743,7 +736,6 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			Status:          "active",
 			CreatedBy:       importCreatedBy,
 			UpdatedBy:       importCreatedBy,
-			FavoriteCount:   payload.favoriteCount(),
 		}
 		if err := db.Omit("Embedding").Create(&item).Error; err != nil {
 			return fmt.Errorf("create capability item: %w", err)
@@ -767,7 +759,11 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		return nil
 	}
 
-	if existing.Content == payload.Content && string(existing.Metadata) == string(payload.Metadata) && existing.Name == payload.Name && existing.Description == payload.Description && existing.Category == payload.Category {
+	if err := syncItemTags(db, existing.ID, payload.Tags); err != nil {
+		return fmt.Errorf("sync tags for existing item %s: %w", existing.ID, err)
+	}
+
+	if existing.Content == payload.Content && string(existing.Metadata) == string(payload.Metadata) && existing.Name == payload.Name && existing.Description == payload.Description && existing.Category == payload.Category && existing.Source == payload.Source {
 		stats.addSkipped(payload.ItemType)
 		return nil
 	}
@@ -778,28 +774,23 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 	}
 
 	updates := map[string]any{
-		"name":           payload.Name,
-		"description":    payload.Description,
-		"category":       payload.Category,
-		"version":        payload.Version,
-		"content":        payload.Content,
-		"content_md5":    contentMD5,
-		"metadata":       payload.Metadata,
-		"source_path":    payload.SourcePath,
-		"source_sha":     sourceSHA(payload.Content),
-		"source":         payload.Source,
-		"updated_by":     importCreatedBy,
-		"favorite_count": payload.favoriteCount(),
+		"name":        payload.Name,
+		"description": payload.Description,
+		"category":    payload.Category,
+		"version":     payload.Version,
+		"content":     payload.Content,
+		"content_md5": contentMD5,
+		"metadata":    payload.Metadata,
+		"source_path": payload.SourcePath,
+		"source_sha":  sourceSHA(payload.Content),
+		"source":      payload.Source,
+		"updated_by":  importCreatedBy,
 	}
 	if contentMD5 != existing.ContentMD5 {
 		updates["current_revision"] = existing.CurrentRevision + 1
 	}
 	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update capability item: %w", err)
-	}
-
-	if err := syncItemTags(db, existing.ID, payload.Tags); err != nil {
-		return fmt.Errorf("sync tags for updated item %s: %w", existing.ID, err)
 	}
 
 	if contentMD5 == existing.ContentMD5 {
