@@ -89,8 +89,9 @@ type createItemRequest struct {
 	Metadata    datatypes.JSON
 	SourcePath  string
 	SourceSHA   string
-	CreatedBy   string
 	SourceType  string
+	Source      string
+	CreatedBy   string
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -259,6 +260,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		SourcePath:      req.SourcePath,
 		SourceSHA:       req.SourceSHA,
 		SourceType:      req.SourceType,
+		Source:          req.Source,
 		Status:          "active",
 		CreatedBy:       req.CreatedBy,
 	}
@@ -522,6 +524,7 @@ func CreateItem(c *gin.Context) {
 		Content     string          `json:"content"`
 		Metadata    json.RawMessage `json:"metadata"`
 		SourcePath  string          `json:"sourcePath"`
+		Source      string          `json:"source"`
 		CreatedBy   string          `json:"createdBy" binding:"required"`
 	}
 
@@ -561,6 +564,7 @@ func CreateItem(c *gin.Context) {
 		ContentMD5:  contentMD5,
 		Metadata:    metadata,
 		SourcePath:  req.SourcePath,
+		Source:      req.Source,
 		CreatedBy:   req.CreatedBy,
 		SourceType:  "direct",
 	}, createItemAssets{})
@@ -635,6 +639,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		Version     string             `json:"version"`
 		Content     *string            `json:"content"`
 		SourcePath  string             `json:"sourcePath"`
+		Source      string             `json:"source"`
 		Assets      []itemAssetPayload `json:"assets"`
 		Status      string             `json:"status"`
 		UpdatedBy   string             `json:"updatedBy"`
@@ -742,6 +747,9 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 			}
 			item.Metadata = meta
 		}
+	}
+	if req.Source != "" {
+		item.Source = req.Source
 	}
 	if req.Status != "" {
 		item.Status = req.Status
@@ -1520,6 +1528,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Content     string             `json:"content"`
 		Metadata    json.RawMessage    `json:"metadata"`
 		SourcePath  string             `json:"sourcePath"`
+		Source      string             `json:"source"`
 		Assets      []itemAssetPayload `json:"assets"`
 		CreatedBy   string             `json:"createdBy"`
 		Tags        []string           `json:"tags"`
@@ -1592,6 +1601,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Metadata:    metadata,
 		CreatedBy:   req.CreatedBy,
 		SourcePath:  req.SourcePath,
+		Source:      req.Source,
 		SourceType:  "direct",
 	}, createItemAssets{Records: assetRecords})
 	if err != nil {

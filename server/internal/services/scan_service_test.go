@@ -42,6 +42,7 @@ func TestScanItemUpdatesCategoryFromScanResult(t *testing.T) {
 			source_path TEXT,
 			source_sha TEXT,
 			source_type TEXT DEFAULT 'direct',
+			source TEXT DEFAULT '',
 			preview_count INTEGER DEFAULT 0,
 			install_count INTEGER DEFAULT 0,
 			favorite_count INTEGER DEFAULT 0,
