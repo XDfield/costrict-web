@@ -128,9 +128,54 @@ jobs:
           path: ./packages/*.tgz
           retention-days: 30
 
+  release-efficiency-dashboard-chart:
+    needs: detect-charts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EFFICIENCY_DASHBOARD_SSH_KEY }}
+
+      - name: Clone efficiency-dashboard repository
+        run: |
+          git clone git@github.com:zgsm-sangfor/efficiency-dashboard.git
+          cd efficiency-dashboard
+          git fetch --force --tags
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Update chart version
+        run: |
+          VERSION="${{ needs.detect-charts.outputs.version }}"
+          CHART_PATH="efficiency-dashboard/helm/efficiency-dashboard/Chart.yaml"
+          yq -i ".version = \"$VERSION\"" "$CHART_PATH"
+          yq -i ".appVersion = \"$VERSION\"" "$CHART_PATH"
+          echo "Updated Chart.yaml:"
+          cat "$CHART_PATH"
+
+      - name: Package efficiency-dashboard chart
+        run: |
+          helm package efficiency-dashboard/helm/efficiency-dashboard \
+            --version ${{ needs.detect-charts.outputs.version }} \
+            --destination ./packages
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: efficiency-dashboard-chart
+          path: ./packages/*.tgz
+          retention-days: 30
+
   # Create GitHub Release
   create-release:
-    needs: [detect-charts, release-charts]
+    needs: [detect-charts, release-charts, release-efficiency-dashboard-chart]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -152,6 +197,7 @@ jobs:
 
             ### Charts
             ${{ join(fromJson(needs.detect-charts.outputs.charts), '\n') }}
+            - efficiency-dashboard
 
             ### Download Charts
             Download the `.tgz` files from the release assets and install:
@@ -161,13 +207,14 @@ jobs:
             helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz
             helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz
             helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml
+            helm install efficiency-dashboard ./efficiency-dashboard-${{ needs.detect-charts.outputs.version }}.tgz
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Summary job
   release-summary:
-    needs: [detect-charts, release-charts, create-release]
+    needs: [detect-charts, release-charts, create-release, release-efficiency-dashboard-chart]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -181,6 +228,7 @@ jobs:
           echo '${{ needs.detect-charts.outputs.charts }}' | jq -r '.[]' | while read chart; do
             echo "- $chart" >> $GITHUB_STEP_SUMMARY
           done
+          echo "- efficiency-dashboard" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Download from GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
@@ -190,4 +238,5 @@ jobs:
           echo "helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml" >> $GITHUB_STEP_SUMMARY
+          echo "helm install efficiency-dashboard ./efficiency-dashboard-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
