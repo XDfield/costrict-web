@@ -42,6 +42,13 @@ func ExpandRoles(roles []string) []string {
 	return result
 }
 
+// CapabilityProvider wraps the package-level CapabilitiesForRoles for injection.
+type CapabilityProvider struct{}
+
+func (CapabilityProvider) CapabilitiesForRoles(roles []string) []string {
+	return CapabilitiesForRoles(roles)
+}
+
 func CapabilitiesForRoles(roles []string) []string {
 	roleSet := make(map[string]struct{}, len(roles))
 	for _, role := range ExpandRoles(roles) {

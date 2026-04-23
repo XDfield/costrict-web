@@ -1,8 +1,12 @@
-> **实现状态：待实现**
+> **实现状态：已实现**
 >
-> - 状态：📋 待实现
-> - 实现位置：`server/internal/systemrole/`（建议新增）
-> - 数据模型：`UserSystemRole` 待在 `server/internal/models/models.go` 中添加
+> - 状态：✅ 已实现（2026/04/23）
+> - 实现位置：
+>   - `server/internal/systemrole/` — 角色服务与管理 API
+>   - `server/internal/authz/` — 通用权限中心（新增）
+>   - `server/internal/kanban/` — 指标看板示例模块（新增）
+> - 数据模型：`UserSystemRole` 已在 `server/internal/models/models.go` 中定义，对应表 `user_system_roles` 已通过迁移创建
+> - 前端动态菜单：已基于 `/api/auth/permissions` 接口实现权限驱动的 Console Sidebar 渲染
 > - 说明：本提案用于为 Server 引入系统级角色能力，支持“平台管理员”和“业务管理成员”两类角色，并为后续全局后台权限治理提供基础。
 
 ---
@@ -158,23 +162,37 @@ RequireAuth Middleware
   │
   │  注入 userId / accessToken
   ▼
-SystemRole Middleware
+Authz Middleware (通用权限中心)
   │
-  ├── RequirePlatformAdmin
-  └── RequireBusinessAdminOrAbove
+  ├── RequirePermission("admin.system-roles")
+  ├── RequirePermission("admin.notification-channels")
+  └── RequirePermission("api.kanban.overview")
+  ▼
+SystemRole Service (底层角色查询)
   ▼
 业务模块 Handler / Service
 ```
 
-### 建议目录结构
+### 目录结构
 
 ```text
-server/internal/systemrole/
-├── systemrole.go        # 模块初始化、路由注册（如需要）
-├── service.go           # SystemRoleService
-├── middleware.go        # 系统角色鉴权中间件
-├── types.go             # 角色常量、能力常量
-└── handlers.go          # 平台管理员管理系统角色的 HTTP Handler
+server/internal/systemrole/     # 角色服务与管理 API
+├── systemrole.go
+├── service.go
+├── middleware.go               # 保留的硬编码角色中间件（已逐步迁移至 authz）
+├── types.go                    # 角色常量、能力常量、CapabilityProvider
+└── handlers.go
+
+server/internal/authz/          # 通用权限中心（新增）
+├── authz.go                    # 模块初始化、路由注册
+├── registry.go                 # 菜单/API 资源权限注册表
+├── service.go                  # 权限计算、token 远程校验
+├── middleware.go               # RequirePermission / RequireAnyPermission
+└── handlers.go                 # /api/auth/permissions + /internal/auth/verify
+
+server/internal/kanban/         # 指标看板示例模块（新增）
+├── kanban.go
+└── handlers.go
 ```
 
 ### 与现有模块的关系
@@ -325,7 +343,7 @@ const (
 
 ### SystemRoleService
 
-建议提供以下核心方法：
+已实现的核心方法：
 
 ```go
 type SystemRoleService struct {
@@ -333,11 +351,59 @@ type SystemRoleService struct {
 }
 
 func (s *SystemRoleService) ListRoles(userID string) ([]string, error)
+func (s *SystemRoleService) GetExpandedRoles(userID string) ([]string, error)
+func (s *SystemRoleService) GetCapabilities(userID string) ([]string, error)
 func (s *SystemRoleService) HasRole(userID, role string) (bool, error)
 func (s *SystemRoleService) HasAnyRole(userID string, roles ...string) (bool, error)
 func (s *SystemRoleService) GrantRole(userID, role, operatorID string) error
 func (s *SystemRoleService) RevokeRole(userID, role, operatorID string) error
 func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
+```
+
+### Authz Service（通用权限中心）
+
+新增 `server/internal/authz/service.go`，提供基于资源码（resource code）的通用权限判定：
+
+```go
+type Service struct {
+    db                 *gorm.DB
+    roleProvider       RoleProvider
+    capabilityProvider CapabilityProvider
+    casdoorEndpoint    string
+    jwksProvider       *middleware.JWKSProvider
+}
+
+func (s *Service) GetUserPermissions(userID string) (*PermissionResult, error)
+func (s *Service) HasPermission(userID, resourceCode string) (bool, error)
+func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResult, error)
+```
+
+其中 `PermissionResult` 结构：
+
+```go
+type PermissionResult struct {
+    Menus        []string `json:"menus"`
+    APIs         []string `json:"apis"`
+    Capabilities []string `json:"capabilities"`
+}
+```
+
+### 权限注册表
+
+`server/internal/authz/registry.go` 中维护统一的资源-角色映射，新增菜单或 API 时只需在此注册：
+
+```go
+var MenuResources = ResourceRegistry{
+    "console.capabilities":    {RolePlatformAdmin},
+    "console.devices":         {},                          // 所有登录用户
+    "console.kanban":          {RoleBusinessAdmin, RolePlatformAdmin},
+}
+
+var APIResources = ResourceRegistry{
+    "admin.system-roles":          {RolePlatformAdmin},
+    "admin.notification-channels": {RolePlatformAdmin},
+    "api.kanban.overview":         {RoleBusinessAdmin, RolePlatformAdmin},
+}
 ```
 
 ### 关键业务规则
@@ -365,12 +431,9 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 
 ## API 设计
 
-所有系统角色管理接口均应要求：
+### 系统角色管理接口（要求 `platform_admin`）
 
-- 用户已登录
-- 调用方拥有 `platform_admin` 角色
-
-### 1. 查询用户系统角色
+#### 1. 查询用户系统角色
 
 `GET /admin/system-roles/users/:userId`
 
@@ -383,7 +446,7 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 }
 ```
 
-### 2. 授予系统角色
+#### 2. 授予系统角色
 
 `POST /admin/system-roles/users/:userId`
 
@@ -395,14 +458,6 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 }
 ```
 
-或：
-
-```json
-{
-  "role": "business_admin"
-}
-```
-
 响应示例：
 
 ```json
@@ -411,7 +466,7 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 }
 ```
 
-### 3. 撤销系统角色
+#### 3. 撤销系统角色
 
 `DELETE /admin/system-roles/users/:userId/:role`
 
@@ -423,7 +478,7 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 }
 ```
 
-### 4. 按角色查询成员列表
+#### 4. 按角色查询成员列表
 
 `GET /admin/system-roles?role=business_admin`
 
@@ -442,15 +497,9 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 }
 ```
 
-### 5. 查询当前用户系统角色（可选）
+#### 5. 查询当前用户系统角色
 
 `GET /auth/system-roles/me`
-
-用途：
-
-- 前端登录后获取当前用户系统角色
-- 决定后台菜单与页面可见性
-- 避免前端依赖 Casdoor Claim 判断是否管理员
 
 响应示例：
 
@@ -470,46 +519,113 @@ func (s *SystemRoleService) ListUsersByRole(role string) ([]models.User, error)
 
 ---
 
+### 通用权限接口（新增）
+
+#### 6. 查询当前用户完整权限快照
+
+`GET /api/auth/permissions`
+
+用途：
+
+- 前端首次加载时获取当前用户可见的菜单列表、可访问的 API 列表和能力列表
+- 驱动前端动态菜单渲染，无权限入口自动隐去
+- 替代前端直接调用 `/auth/system-roles/me` 做硬编码角色判断
+
+响应示例：
+
+```json
+{
+  "menus": [
+    "console.capabilities",
+    "console.devices",
+    "console.kanban"
+  ],
+  "apis": [
+    "api.kanban.overview"
+  ],
+  "capabilities": [
+    "CanViewGlobalBusinessData",
+    "CanAccessBusinessDashboard"
+  ]
+}
+```
+
+#### 7. 网关/内部服务 Token 校验
+
+`POST /internal/auth/verify`
+
+保护方式：`InternalAuth`（`X-Internal-Secret`）
+
+请求体：
+
+```json
+{
+  "token": "Bearer eyJ...",
+  "resource": "api.kanban.overview"
+}
+```
+
+响应示例：
+
+```json
+{
+  "allowed": true,
+  "menus": ["console.devices", "console.kanban"],
+  "capabilities": ["CanViewGlobalBusinessData"]
+}
+```
+
+用途：
+
+- 网关层（gateway）或其他内部服务可通过此接口校验任意 token 对指定资源的访问权限
+- 网关如需拦截某次请求，可提取用户 token 调用此接口，根据 `allowed` 决定是否放行或返回 403
+- 当前 `gateway/` 服务暂不直接面向浏览器用户，但已预留标准化内部验证能力供后续扩展
+
+---
+
 ## 鉴权与中间件设计
 
-建议在 `server/internal/systemrole/middleware.go` 中实现统一中间件。
+### 已实现的中间件
 
-### 1. RequirePlatformAdmin
+#### 1. RequirePermission（通用权限中间件，推荐优先使用）
 
-仅允许平台管理员访问。
-
-适用场景：
-
-- 系统通知渠道管理
-- 系统级配置管理
-- 系统角色管理
-- 平台级高危接口
-
-### 2. RequireBusinessAdminOrAbove
-
-允许 `business_admin` 或 `platform_admin` 访问。
-
-适用场景：
-
-- 领导看板
-- 全局报表
-- 经营分析数据
-- 业务管理后台只读页面
-
-### 示例逻辑
+位于 `server/internal/authz/middleware.go`，基于资源码（resource code）做权限判定：
 
 ```go
-func RequirePlatformAdmin(roleSvc *SystemRoleService) gin.HandlerFunc
-func RequireBusinessAdminOrAbove(roleSvc *SystemRoleService) gin.HandlerFunc
+func RequirePermission(svc *authz.Service, resourceCode string) gin.HandlerFunc
+func RequireAnyPermission(svc *authz.Service, resourceCodes ...string) gin.HandlerFunc
 ```
 
 执行流程：
 
 1. 从上下文获取 `userId`
 2. 若为空，返回 `401 Unauthorized`
-3. 查询用户本地系统角色
-4. 若不满足目标角色要求，返回 `403 Forbidden`
-5. 校验通过后进入下游 Handler
+3. 调用 `authz.Service.HasPermission(userID, resourceCode)`
+4. 根据 `authz/registry.go` 中的资源-角色映射判断是否允许
+5. 若无权限，返回 `403 Forbidden`
+6. 校验通过后进入下游 Handler
+
+示例用法（Kanban 模块）：
+
+```go
+kanban := apiGroup.Group("/kanban")
+kanban.Use(authz.RequirePermission(authzSvc, "api.kanban.overview"))
+{
+    kanban.GET("/overview", GetOverviewHandler())
+}
+```
+
+#### 2. RequirePlatformAdmin（保留，逐步迁移）
+
+位于 `server/internal/systemrole/middleware.go`，硬编码校验 `platform_admin` 角色。
+
+当前 `/admin/system-roles` 和 `/admin/notification-channels` 仍使用此中间件，后续可逐步迁移至 `RequirePermission`。
+
+#### 3. RequireBusinessAdminOrAbove（保留，逐步迁移）
+
+位于 `server/internal/systemrole/middleware.go`，硬编码校验 `business_admin` 或 `platform_admin` 角色。
+
+当前尚未在任何路由上使用，建议新路由直接采用 `RequirePermission`。
 
 ### 对现有代码的改造建议
 
@@ -517,7 +633,95 @@ func RequireBusinessAdminOrAbove(roleSvc *SystemRoleService) gin.HandlerFunc
 
 - `server/internal/notification/handlers.go` 下的 `/admin/notification-channels`
 
-这些接口应统一切换为 `RequirePlatformAdmin`，避免“只登录即管理员”的风险。
+这些接口已使用 `RequirePlatformAdmin` 保护，后续新增后台接口应优先使用 `RequirePermission("admin.xxx")`，避免硬编码角色名。
+
+---
+
+## 前端动态菜单渲染
+
+### 权限感知初始化
+
+前端 `AuthProvider`（`portal/packages/app-ai-native/src/context/auth.tsx`）在 `onMount` 时执行两步加载：
+
+1. `GET /api/auth/me` — 获取用户基本信息
+2. `GET /api/auth/permissions` — 获取完整权限快照
+
+权限快照结构：
+
+```ts
+interface UserPermissions {
+  menus: string[]        // 可见菜单 code 列表
+  apis: string[]         // 可访问 API code 列表
+  capabilities: string[] // 能力列表
+}
+```
+
+### 动态菜单过滤
+
+Console Sidebar（`console-sidebar.tsx`）不再使用硬编码 `NAV` 数组，而是：
+
+1. 定义完整菜单注册表 `ALL_CONSOLE_MENUS`（`console/lib/menu-registry.ts`），每项包含 `code`、`href`、`labelKey`、`icon`
+2. 使用 `auth.canAccessMenu(code)` 过滤，只渲染 `permissions.menus` 中包含的项
+3. 无权限的入口自动隐去
+
+示例：
+
+```ts
+const ALL_CONSOLE_MENUS = [
+  { code: "console.capabilities", href: "/console/capabilities", labelKey: "...", icon: "sparkles" },
+  { code: "console.devices",      href: "/console/devices",      labelKey: "...", icon: "server" },
+  { code: "console.kanban",       href: "/console/kanban",       labelKey: "...", icon: "chart" },
+]
+
+const visibleMenus = () => ALL_CONSOLE_MENUS.filter(item => auth.canAccessMenu(item.code))
+```
+
+### 好处
+
+- 新增菜单只需在 `registry.go`（后端）和 `menu-registry.ts`（前端）各注册一行
+- 前端无需硬编码角色判断逻辑
+- 菜单可见性完全由后端权限接口驱动
+
+---
+
+## 网关层权限拦截
+
+### 现状
+
+`gateway/` 服务当前只做设备隧道和反向代理，**不做用户权限校验**。
+
+### 已预留能力
+
+通过 `POST /internal/auth/verify` 接口，网关或任何内部服务都可以远程校验 token 权限：
+
+```text
+Gateway 收到请求
+  │
+  ├── 提取用户 token（Bearer Token）
+  ├── 调用 POST /internal/auth/verify
+  │     { "token": "Bearer eyJ...", "resource": "api.xxx.yyy" }
+  ├── 根据返回的 "allowed" 决定是否放行
+  └── 若 allowed=false，直接返回 403，不转发到后端
+```
+
+### 接入方式
+
+如需在 `gateway/internal/router.go` 中集成，可在代理链路中加入：
+
+```go
+// 伪代码示例
+func PermissionCheckMiddleware(authzURL, internalSecret string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        token := ExtractToken(c.Request)
+        allowed, err := VerifyViaInternalAPI(authzURL, internalSecret, token, "api.target.resource")
+        if err != nil || !allowed {
+            c.AbortWithStatusJSON(403, gin.H{"error": "Permission denied"})
+            return
+        }
+        c.Next()
+    }
+}
+```
 
 ---
 
@@ -583,31 +787,37 @@ func RequireBusinessAdminOrAbove(roleSvc *SystemRoleService) gin.HandlerFunc
 
 ## 实施计划
 
-### 第一阶段：数据层与服务层
+### 第一阶段：数据层与服务层 ✅ 已完成
 
-1. 创建迁移：新增 `user_system_roles` 表
-2. 在 `server/internal/models/models.go` 中添加 `UserSystemRole`
-3. 新增 `server/internal/systemrole/service.go`
-4. 实现角色查询、授予、撤销与列表能力
+1. ~~创建迁移：新增 `user_system_roles` 表~~（已存在：`20260406100000_create_user_system_roles_table.sql`）
+2. ~~在 `server/internal/models/models.go` 中添加 `UserSystemRole`~~ ✅
+3. ~~新增 `server/internal/systemrole/service.go`~~ ✅
+4. ~~实现角色查询、授予、撤销与列表能力~~ ✅
 
-### 第二阶段：鉴权中间件接入
+### 第二阶段：鉴权中间件接入 ✅ 已完成
 
-1. 实现 `RequirePlatformAdmin`
-2. 实现 `RequireBusinessAdminOrAbove`
-3. 接入现有“admin only”接口
-4. 修正原有仅登录校验的伪管理员接口
+1. ~~实现 `RequirePlatformAdmin`~~ ✅
+2. ~~实现 `RequireBusinessAdminOrAbove`~~ ✅
+3. ~~接入现有“admin only”接口~~ ✅（`/admin/notification-channels` 已接入）
+4. ~~修正原有仅登录校验的伪管理员接口~~ ✅
 
-### 第三阶段：管理接口与前端联动
+### 第三阶段：通用权限中心 + 前端动态菜单 ✅ 已完成
 
-1. 增加系统角色管理 API
-2. 增加当前用户系统角色查询接口
-3. 前端基于 `/auth/system-roles/me` 渲染后台菜单与页面访问控制
+1. ~~新增 `server/internal/authz/` 通用权限中心~~ ✅
+   - `registry.go` — 资源-角色映射表
+   - `service.go` — 权限计算 + token 远程校验
+   - `middleware.go` — `RequirePermission` 通用中间件
+   - `handlers.go` — `/api/auth/permissions` + `/internal/auth/verify`
+2. ~~前端 `AuthContext` 调用 `/api/auth/permissions`~~ ✅
+3. ~~Console Sidebar 基于 `permissions.menus` 动态渲染~~ ✅
+4. ~~新增 `/console/kanban` 路由与页面~~ ✅
 
-### 第四阶段：业务看板接入
+### 第四阶段：业务看板接入 ✅ 已完成
 
-1. 将全局统计、经营分析、看板类接口接入 `RequireBusinessAdminOrAbove`
-2. 校准只读与可写操作边界
-3. 评估是否需要更细粒度能力模型
+1. ~~新增 `server/internal/kanban/` 指标看板模块~~ ✅
+2. ~~`GET /api/kanban/overview` 受 `RequirePermission("api.kanban.overview")` 保护~~ ✅
+3. ~~前端 Kanban 页面调用受保护 API 展示占位数据~~ ✅
+4. 后续：填充真实统计数据（项目数、用户数、设备数、请求量等）
 
 ---
 

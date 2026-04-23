@@ -34,6 +34,10 @@ func SetSubjectResolver(resolver SubjectResolver) {
 	subjectResolver = resolver
 }
 
+func GetSubjectResolver() SubjectResolver {
+	return subjectResolver
+}
+
 // InternalAuth validates requests from internal services (gateway, etc.) using a shared secret.
 // If secret is empty, all requests are rejected to prevent misconfiguration.
 func InternalAuth(secret string) gin.HandlerFunc {
@@ -135,7 +139,7 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	}
 }
 
-type casdoorUserInfo struct {
+type CasdoorUserInfo struct {
 	ID               string `json:"id"`
 	Sub              string `json:"sub"`
 	UniversalID      string `json:"universal_id"`
@@ -156,7 +160,7 @@ type casdoorUserinfoResponse struct {
 
 // parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
 // If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
-func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, error) {
+func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS provider not configured")
 	}
@@ -199,7 +203,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, er
 	}
 	email, _ := claims["email"].(string)
 
-	return &casdoorUserInfo{
+	return &CasdoorUserInfo{
 		ID:               strClaim(claims, "id"),
 		Sub:              sub,
 		UniversalID:      strClaim(claims, "universal_id"),
@@ -209,7 +213,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*casdoorUserInfo, er
 	}, nil
 }
 
-func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
+func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
 	url := endpoint + "/api/userinfo"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -244,7 +248,7 @@ func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
 		return nil, fmt.Errorf("no sub in response")
 	}
 
-	return &casdoorUserInfo{
+	return &CasdoorUserInfo{
 		ID:               casdoorResp.ID,
 		Sub:              casdoorResp.Sub,
 		UniversalID:      casdoorResp.UniversalID,
@@ -254,7 +258,19 @@ func fetchUserInfo(endpoint, token string) (*casdoorUserInfo, error) {
 	}, nil
 }
 
-func setAuthContext(c *gin.Context, userInfo *casdoorUserInfo) {
+// ParseToken verifies a token using JWKS first, falling back to Casdoor userinfo API.
+func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
+	userInfo, err := parseJWTToken(token, jwks)
+	if err != nil {
+		userInfo, err = fetchUserInfo(casdoorEndpoint, token)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return userInfo, nil
+}
+
+func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	userID := userInfo.Sub
 	userName := userInfo.PreferredUsername
 	if subjectResolver != nil {
