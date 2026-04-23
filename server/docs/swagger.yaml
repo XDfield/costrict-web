@@ -354,28 +354,44 @@ definitions:
     - ContextRecommend
     - ContextDirectAccess
     - ContextBrowse
-  github_com_costrict_costrict-web_server_internal_models.ItemTagDict:
+  github_com_costrict_costrict-web_server_internal_models.ItemCategory:
     properties:
       createdAt:
         type: string
       createdBy:
         type: string
       descriptions:
-        items:
-          type: integer
-        type: array
+        description: '{"en":"...","zh":"..."}'
+        type: object
+      icon:
+        description: 图标（可选）
+        type: string
       id:
         type: string
       names:
-        items:
-          type: integer
-        type: array
+        description: '{"en":"Development","zh":"开发工具"}'
+        type: object
+      slug:
+        description: 唯一标识，如 "development", "testing"
+        type: string
+      sortOrder:
+        description: 排序
+        type: integer
+      updatedAt:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.ItemTagDict:
+    properties:
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      id:
+        type: string
       slug:
         type: string
       tagClass:
-        description: system | functional | custom
-        type: string
-      updatedAt:
+        description: system | custom
         type: string
     type: object
   github_com_costrict_costrict-web_server_internal_models.NotificationLog:
@@ -783,6 +799,16 @@ definitions:
     - name
     - path
     type: object
+  github_com_costrict_costrict-web_server_internal_services.CreateTagReq:
+    properties:
+      slug:
+        type: string
+      tagClass:
+        type: string
+    required:
+    - slug
+    - tagClass
+    type: object
   github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest:
     properties:
       description:
@@ -1054,6 +1080,11 @@ definitions:
       settings:
         additionalProperties: true
         type: object
+    type: object
+  github_com_costrict_costrict-web_server_internal_services.UpdateTagReq:
+    properties:
+      tagClass:
+        type: string
     type: object
   github_com_costrict_costrict-web_server_internal_services.UpdateWorkspaceRequest:
     properties:
@@ -1477,6 +1508,44 @@ definitions:
         type: string
       textContent:
         type: string
+    type: object
+  internal_handlers.listTagsResponse:
+    properties:
+      hasMore:
+        type: boolean
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      tags:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict'
+        type: array
+      total:
+        type: integer
+    type: object
+  internal_handlers.setItemTagsRequest:
+    properties:
+      tagIds:
+        items:
+          type: string
+        type: array
+      tags:
+        items:
+          type: string
+        type: array
+    type: object
+  internal_handlers.setItemTagsResponse:
+    properties:
+      tags:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict'
+        type: array
+    type: object
+  internal_handlers.tagResponse:
+    properties:
+      tag:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict'
     type: object
   internal_handlers.userBasicInfoResponse:
     properties:
@@ -3878,9 +3947,17 @@ paths:
         in: query
         name: search
         type: string
-      - description: Filter by category
+      - description: Filter by category (legacy single value)
         in: query
         name: category
+        type: string
+      - description: Filter by categories (comma-separated)
+        in: query
+        name: categories
+        type: string
+      - description: Filter by security statuses (comma-separated)
+        in: query
+        name: securityStatuses
         type: string
       - description: Filter by registry ID
         in: query
@@ -3942,7 +4019,7 @@ paths:
       - multipart/form-data
       description: Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz
         archive via multipart/form-data. Auto-selects public registry if registryId
-        is omitted.
+        is omitted. Successful responses include populated tags when available.
       parameters:
       - description: Item data (JSON)
         in: body
@@ -3967,6 +4044,10 @@ paths:
               type: string
             slug:
               type: string
+            tags:
+              items:
+                type: string
+              type: array
             version:
               type: string
           type: object
@@ -4043,8 +4124,8 @@ paths:
       tags:
       - items
     get:
-      description: Get skill item by ID with registry, versions, artifacts and repo
-        visibility
+      description: Get skill item by ID with registry, versions, artifacts, repo visibility,
+        and populated tags
       parameters:
       - description: Item ID
         in: path
@@ -4773,6 +4854,59 @@ paths:
       summary: Get item behavior statistics
       tags:
       - behavior
+  /items/{id}/tags:
+    post:
+      consumes:
+      - application/json
+      description: Replace all tags on an item. Non-admin users may assign builtin
+        and custom tags; submitted system tags are silently filtered.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Set item tags request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.setItemTagsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.setItemTagsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              code:
+                type: string
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Set item tags
+      tags:
+      - tags
   /items/{id}/transfer:
     put:
       consumes:
@@ -4911,6 +5045,36 @@ paths:
                 type: string
             type: object
       summary: Get item version
+      tags:
+      - items
+  /items/filter-options:
+    get:
+      description: Get filter options for item list, including categories and security
+        statuses with i18n names
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              categories:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemCategory'
+                type: array
+              securityStatuses:
+                items:
+                  type: object
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List item filter options
       tags:
       - items
   /items/my:
@@ -8000,6 +8164,218 @@ paths:
       summary: Get sync log detail
       tags:
       - sync
+  /tags:
+    get:
+      description: List tags with optional slug keyword search, tag class filtering,
+        and pagination
+      parameters:
+      - description: Keyword matched against tag slug
+        in: query
+        name: q
+        type: string
+      - description: 'Filter by tag class: system or custom'
+        in: query
+        name: tagClass
+        type: string
+      - description: 'Page number (default: 1)'
+        in: query
+        name: page
+        type: integer
+      - description: 'Page size (default: 20, max: 100)'
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.listTagsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List tags
+      tags:
+      - tags
+    post:
+      consumes:
+      - application/json
+      description: Create a new tag (platform admin only)
+      parameters:
+      - description: Create tag request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateTagReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handlers.tagResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              code:
+                type: string
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+              slug:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create tag
+      tags:
+      - tags
+  /tags/{id}:
+    delete:
+      description: Delete a tag and its item associations (platform admin only)
+      parameters:
+      - description: Tag ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete tag
+      tags:
+      - tags
+    put:
+      consumes:
+      - application/json
+      description: Update an existing tag (platform admin only)
+      parameters:
+      - description: Tag ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update tag request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateTagReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.tagResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update tag
+      tags:
+      - tags
   /team/approvals/:approvalId:
     patch:
       consumes:
