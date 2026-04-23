@@ -1,147 +1,166 @@
-# Capability Item 多标签支持设计
+# Capability Item 多标签支持设计（修订版）
 
 ## 1. 概述
 
-本文档描述 capability item 多标签支持的设计与实现。在此之前，item 仅通过单一的 `item_type`（如 `skill`、`mcp`、`command`）和一个可选的 `category` 进行分类。新的标签系统允许一个 item 携带多个不同类别的标签，从而实现更丰富的过滤、组织和发现能力。
+本文档描述 capability item 多标签支持的修订设计。
+
+相较于早期方案，本次设计将标签系统收敛为：
+
+- 轻量级标签字典
+- 三类标签：`system`、`builtin`、`custom`
+- 面向 slug 的查询与过滤
+- 标签管理接口仅系统管理员可调用
+- 普通用户不得通过接口向 item 绑定 `system` 类型标签
+
+设计目标是在保留 item 多标签过滤能力的同时，降低模型复杂度，减少国际化与描述字段维护成本，并增强平台治理能力。
+
+---
 
 ## 2. 目标
 
 - 支持 capability item 拥有多个标签。
-- 支持标签分类：`system`、`functional`、`custom`。
+- 标签类型调整为：`system`、`builtin`、`custom`。
+- 提供标签列表查询接口，支持关键字匹配与分页/数量限制。
 - 在 item 列表 API 中支持基于标签的过滤。
-- 在注册表同步时，自动从 `SKILLMD` 和 `plugin.json` 的 frontmatter 中提取标签。
+- 在注册表同步时，从 `SKILL.md` 和 `plugin.json` 的 `tags` 中提取标签。
 - 在直接创建 item（JSON / 文件上传）时支持设置标签。
-- 提供支持国际化的标签字典（名称和描述使用 JSONB 存储）。
+- 通过 migration 初始化系统标签。
 - 保持与现有 `item_type` 和 `category` 字段的向后兼容。
 
-## 3. 数据模型与表关系
+---
+
+## 3. 数据模型
 
 ### 3.1 标签字典表（`item_tag_dicts`）
 
-存储所有唯一的标签及其元数据。
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | UUID | 主键，自动生成 |
+| `slug` | TEXT | 唯一标识，如 `skill`、`http-client` |
+| `tag_class` | TEXT | `system` \| `builtin` \| `custom` |
+| `created_by` | TEXT | `system` 或用户 ID |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
 
-| 字段           | 类型        | 说明                                              |
-|----------------|-------------|---------------------------------------------------|
-| `id`           | UUID        | 主键，自动生成。                                  |
-| `slug`         | TEXT        | 唯一标识符（如 `skill`、`http-client`）。         |
-| `tag_class`    | TEXT        | `system` \| `functional` \| `custom`。            |
-| `names`        | JSONB       | 本地化名称：`{"en":"Skill","zh":"技能"}`。 |
-| `descriptions` | JSONB       | 本地化描述。                                      |
-| `created_by`   | TEXT        | `system` 或用户 ID。                              |
-| `created_at`   | TIMESTAMPTZ |                                                   |
-| `updated_at`   | TIMESTAMPTZ |                                                   |
+说明：
+
+- 移除 `names`
+- 移除 `descriptions`
+- 移除 `updated_at`
 
 ### 3.2 Item-标签关联表（`item_tags`）
 
-多对多连接表，将 item 与标签关联。
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | UUID | 主键 |
+| `item_id` | UUID | 外键 → `capability_items.id` |
+| `tag_id` | UUID | 外键 → `item_tag_dicts.id` |
+| `created_at` | TIMESTAMPTZ | 创建时间 |
 
-| 字段        | 类型        | 说明                               |
-|-------------|-------------|------------------------------------|
-| `id`        | UUID        | 主键。                             |
-| `item_id`   | UUID        | 外键 → `capability_items.id`。     |
-| `tag_id`    | UUID        | 外键 → `item_tag_dicts.id`。       |
-| `created_at`| TIMESTAMPTZ |                                    |
+约束：
 
-**约束：**
-- (`item_id`, `tag_id`) 唯一索引，防止重复。
-- 外键使用 `ON DELETE CASCADE` 级联删除。
-- `tag_id` 索引，支持反向查询。
+- (`item_id`, `tag_id`) 唯一索引
+- 外键使用 `ON DELETE CASCADE`
+- `tag_id` 索引支持反向查询
 
-### 3.3 CapabilityItem 模型更新
-
-`CapabilityItem` 结构体增加一个虚拟 `Tags` 字段：
+### 3.3 CapabilityItem 模型扩展
 
 ```go
 type CapabilityItem struct {
-    // ... 已有字段 ...
+    // ... existing fields ...
     Tags []ItemTagDict `gorm:"-" json:"tags,omitempty"`
 }
 ```
 
-该字段**不**由 GORM 持久化（`gorm:"-"`）。在查询时通过批量加载填充，并在 API 响应中序列化。
+该字段不由 GORM 持久化，仅在查询后批量填充并序列化到响应中。
 
-### 3.4 数据表关系图
+---
 
-```plantuml
-@startuml
-!define table(x) class x << (T,#FFAAAA) >>
-!define primary_key(x) <u>x</u>
-!define foreign_key(x) #x#
+## 4. 标签类型
 
-table(capability_items) {
-  primary_key(id): UUID
-  registry_id: UUID
-  repo_id: UUID
-  slug: TEXT
-  item_type: TEXT
-  name: TEXT
-  description: TEXT
-  category: TEXT
-  status: TEXT
-  created_by: TEXT
-  // ... 其他字段
-}
+| 类型 | 说明 | 示例 |
+|---|---|---|
+| `system` | 系统保留标签，仅管理员可配置到 item | `official`、`best-practice` |
+| `builtin` | 系统内置标准标签，用户可选择配置到 item | `planning`、`design`、`development` |
+| `custom` | 用户自定义标签，以及旧设计中的 `functional` 标签 | `auth`、`http-client`、`team-alpha` |
 
-table(item_tag_dicts) {
-  primary_key(id): UUID
-  slug: TEXT
-  tag_class: TEXT
-  names: JSONB
-  descriptions: JSONB
-  created_by: TEXT
-}
+说明：
 
-table(item_tags) {
-  primary_key(id): UUID
-  foreign_key(item_id): UUID
-  foreign_key(tag_id): UUID
-  created_at: TIMESTAMPTZ
-}
+- 旧设计中的 `functional` 类型被移除，统一归并到 `custom`
+- `system` 标签不允许普通用户通过接口直接分配给 item
+- `builtin` 标签为平台预置标准标签，普通用户可以选择配置
+- `item_type` 不再自动映射为任何 tag
 
-capability_items "1" -- "0..*" item_tags : item_id
-capability_items "1" -- "0..*" item_tags : item_id
-item_tag_dicts "1" -- "0..*" item_tags : tag_id
+---
 
-@enduml
+## 5. slug 规范
+
+标签 slug 必须满足以下约束：
+
+- 仅允许小写字母、数字、中划线、下划线
+- 不允许空格
+- 不允许其他特殊字符
+
+正则规则：
+
+```regex
+^[a-z0-9_-]+$
 ```
 
-**关系说明：**
+建议统一处理流程：
 
-- `capability_items` 与 `item_tag_dicts` 之间通过 `item_tags` 建立**多对多**关系。
-- 一个 item 可以拥有**零个或多个**标签。
-- 一个标签可以被**多个 item** 共享使用。
-- `item_tags` 作为纯关联表，仅维护 `item_id` → `tag_id` 的映射，不包含业务字段。
-- 外键约束设置为 `ON DELETE CASCADE`：删除 item 或删除 tag 时，关联记录自动清理，无需应用层手动处理。
+1. `TrimSpace`
+2. 转小写
+3. 按正则校验
 
-## 4. 标签分类
+非法时返回：
 
-| 分类           | 说明                                                              | 示例                              |
-|----------------|-------------------------------------------------------------------|-----------------------------------|
-| `system`       | 从 `item_type` 派生的内置标签，由系统自动管理。                    | `skill`、`mcp`、`command`、`hook` |
-| `functional`   | 从 `category` 字段或同步时 frontmatter 的 `tags` 提取的标签。       | `http-client`、`data-processing` |
-| `custom`       | 用户通过 API 创建，或从 API 调用中的未知 slug 自动生成的标签。      | `team-alpha`、`wip`               |
+```json
+{
+  "error": "Tag slug may only contain lowercase letters, numbers, hyphens, and underscores",
+  "code": "invalid_tag_slug"
+}
+```
 
-## 5. 数据库迁移
+---
+
+## 6. 数据库迁移与初始化
 
 迁移文件：`server/migrations/20260422100000_create_item_tags.sql`
 
-### 5.1 Up 阶段
+### 6.1 Up 阶段
 
-1. **创建表**：`item_tag_dicts` 和 `item_tags`，包含索引和外键。
-2. **预置 system 标签**：为每个 `item_type` 值插入预定义标签：
-   - `skill`、`mcp`、`command`、`subagent`、`hook`
-3. **生成 functional 标签**：从现有 `capability_items` 中的不同 `category` 值自动生成标签。
-4. **回刷关联数据**：根据 `item_type` 将所有现有活跃 item 关联到对应的 system 标签。
+1. 创建 `item_tag_dicts` 与 `item_tags`
+2. 初始化 `system` 标签：
+   - `official`
+   - `best-practice`
+3. 初始化 `builtin` 标签：
+   - `planning`
+   - `design`
+   - `development`
+   - `testing`
+   - `staging`
+   - `release`
+   - `maintenance`
 
-### 5.2 Down 阶段
+### 6.2 Down 阶段
 
-按顺序删除两张表（先 `item_tags`，再 `item_tag_dicts`）。
+按顺序删除：
 
-## 6. 服务层（TagService）
+1. `item_tags`
+2. `item_tag_dicts`
+
+### 6.3 初始化要求
+
+系统标签初始化必须在 migration 中完成，保证：
+
+- 新环境迁移后可立即使用
+- 不依赖额外手工步骤
+
+---
+
+## 7. 服务层（TagService）
 
 位置：`server/internal/services/tag_service.go`
-
-### 6.1 核心方法
 
 ```go
 type TagService struct {
@@ -149,17 +168,35 @@ type TagService struct {
 }
 ```
 
+### 7.1 核心方法
+
+#### ValidateTagSlug
+
+```go
+func ValidateTagSlug(slug string) error
+```
+
+- 清洗并校验 slug
+- 仅允许 `[a-z0-9_-]+`
+
 #### EnsureTags
 
 ```go
 func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]models.ItemTagDict, error)
 ```
 
-- 对输入 slug 去重并去除空白。
-- 按 slug 查询已有标签。
-- 为缺失的标签创建记录，默认名称格式为 `{"en": slug}`。
-- 优雅处理并发创建冲突（遇到重复键则重新查询）。
-- 按输入顺序返回解析后的标签记录。
+- 去重并过滤空值
+- 校验 slug
+- 查询已有标签
+- 创建缺失标签
+- 并发冲突时重试查询
+- 按输入顺序返回
+
+说明：
+
+- 普通业务流程创建的标签默认应为 `custom`
+- `builtin` 标签由 migration 或管理员预置，不通过普通流程自动创建
+- `system` 标签由 migration 或管理员预置，仅管理员可分配
 
 #### SetItemTags
 
@@ -167,9 +204,9 @@ func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]m
 func (s *TagService) SetItemTags(itemID string, tagIDs []string) error
 ```
 
-- 在事务中执行。
-- 先删除该 item 的所有现有标签关联。
-- 插入新的关联记录，忽略重复项。
+- 在事务中执行
+- 删除旧关联
+- 写入新关联
 
 #### GetItemTags
 
@@ -177,71 +214,85 @@ func (s *TagService) SetItemTags(itemID string, tagIDs []string) error
 func (s *TagService) GetItemTags(itemIDs []string) (map[string][]models.ItemTagDict, error)
 ```
 
-- 批量查询多个 item 的标签关联。
-- 批量加载标签字典记录。
-- 返回 `itemID → []ItemTagDict` 的映射，便于高效填充。
+- 批量查询多个 item 的标签
+- 返回 `itemID -> []ItemTagDict`
 
-### 6.2 CRUD 操作
+#### List
 
-- `List(tagClass)` — 列出所有标签，可按分类过滤。
-- `Get(id)` / `GetBySlug(slug)` — 查询单个标签。
-- `Create(req, createdBy)` — 创建新标签。
-- `Update(id, req)` — 修改名称、描述或分类。
-- `Delete(id)` — 删除标签及其所有 item 关联（事务内执行）。
+```go
+type ListTagsOptions struct {
+    Query    string
+    TagClass string
+    Page     int
+    PageSize int
+}
 
-## 7. 文件解析
+func (s *TagService) List(opts ListTagsOptions) ([]models.ItemTagDict, int64, error)
+```
+
+- 支持 slug 关键字匹配
+- 支持按 `tagClass` 过滤
+- 支持 `page` / `pageSize`
+
+### 7.2 CRUD 权限要求
+
+以下能力仅允许系统管理员调用：
+
+- Create
+- Update
+- Delete
+
+---
+
+## 8. 文件解析
 
 位置：`server/internal/services/parser_service.go`
 
-`ParsedItem` 结构体新增 `Tags []string` 字段。
+`ParsedItem` 保持 `Tags []string` 字段。
 
-### 7.1 SKILLMD 解析
+### 8.1 SKILL.md
 
-读取 frontmatter 中的 `tags` 键（字符串数组）：
+从 frontmatter 中读取：
 
 ```yaml
 ---
 name: My Skill
-category: http-client
 tags:
   - rest-api
   - authentication
 ---
 ```
 
-### 7.2 Plugin JSON 解析
+### 8.2 plugin.json
 
-从 `plugin.json` 中读取 `tags` 数组字段：
+从 JSON 中读取：
 
 ```json
 {
   "name": "My Plugin",
-  "category": "data-processing",
   "tags": ["etl", "pipeline"]
 }
 ```
 
-## 8. 注册表同步集成
+这些标签在落库时统一视为 `custom`。
 
-位置：`server/internal/services/sync_service.go`
+---
 
-在 `SyncRegistry` 中解析 item 后（无论是新建还是更新）：
+## 9. 同步与创建规则
 
-1. 如果 `parsed.Tags` 非空，调用 `EnsureTags(parsed.Tags, TagClassFunctional, triggerUser)`。
-2. 收集返回的标签 ID。
-3. 调用 `SetItemTags(itemID, tagIDs)` 建立关联。
+### 9.1 注册表同步
 
-这确保了源文件中的标签能够自动反映到数据库中，无需人工干预。
+在 `SyncRegistry` 中：
 
-## 9. 创建 Item 时设置标签
+1. 若解析到 `parsed.Tags`，调用 `EnsureTags(parsed.Tags, custom, triggerUser)`
+2. 调用 `SetItemTags(itemID, tagIDs)` 建立关联
+3. 不再根据 `item_type` 自动附加任何 tag
 
-除了注册表同步，直接创建 item 的两种入口也支持标签设置。
-
-### 9.1 JSON 直接创建
+### 9.2 JSON 创建 item
 
 接口：`POST /api/items`
 
-请求体新增 `tags` 字段：
+请求体支持：
 
 ```json
 {
@@ -251,435 +302,219 @@ tags:
 }
 ```
 
-- `tags` 为可选的 slug 字符串数组。
-- 后端调用 `EnsureTags(slugs, TagClassCustom, createdBy)` 自动创建不存在的标签。
-- 随后调用 `SetItemTags(itemID, tagIDs)` 建立 item-tag 关联。
-- 标签在用户提交后立即绑定，无需二次调用。
+规则：
 
-### 9.2 文件上传创建
+- `tags` 为可选 slug 数组
+- 普通流程通过 `EnsureTags(..., custom, createdBy)` 创建或获取标签
+- 之后通过 `SetItemTags` 建立 item-tag 关联
 
-接口：`POST /api/items`（`multipart/form-data`）
+### 9.3 文件上传创建 item
 
-上传的 archive（`.zip` / `.tar.gz`）中包含 `SKILLMD` 或 `plugin.json` 时，解析器会从 frontmatter 中提取 `tags`：
+接口：`POST /api/items`（multipart/form-data）
 
-```yaml
+规则：
+
+- 从 archive 中解析 `SKILL.md` / `plugin.json` 的 `tags`
+- 解析出的标签统一作为 `custom`
+- 不额外通过表单字段传入 tags
+
 ---
-name: My Skill
-tags:
-  - rest-api
-  - authentication
+
+## 10. 权限规则
+
+### 10.1 标签管理接口
+
+以下接口仅系统管理员可调用：
+
+- `POST /api/tags`
+- `PUT /api/tags/:id`
+- `DELETE /api/tags/:id`
+
+### 10.2 item 标签分配限制
+
+接口：
+
+- `POST /api/items/:id/tags`
+- `POST /api/items`（JSON）
+- `POST /api/items`（multipart）
+
+规则：
+
+- 普通用户可为 item 分配 `builtin` 与 `custom` 标签
+- 只有系统管理员可以通过接口为 item 分配 `system` 标签
+- 非系统管理员请求中的 `system` 标签会被静默过滤
+
+普通用户尝试通过接口提交 `system` 标签时，不报错，系统会在数据层静默过滤这些标签。
+
 ---
+
+## 11. API 设计
+
+### 11.1 标签列表接口
+
+```http
+GET /api/tags?q=auth&tagClass=custom&page=1&pageSize=20
 ```
 
-- `ParseArchive` 返回的 `Parsed.Tags` 会被自动提取。
-- 后端调用 `EnsureTags(slugs, TagClassFunctional, createdBy)` 创建/获取标签。
-- 随后调用 `SetItemTags(itemID, tagIDs)` 建立关联。
+Query 参数：
 
-**注意**：文件上传方式不额外提供表单字段传 tags，完全依赖 frontmatter 自动提取。如需覆盖，可在创建后调用 `POST /api/items/:id/tags` 修改。
+- `q`：按 `slug` 关键字匹配
+- `tagClass`：可选，`system` / `custom`
+- `page`：可选，默认 `1`
+- `pageSize`：可选，默认 `20`，最大建议 `100`
 
-## 10. API 设计
-
-### 10.1 标签字典（公开读取）
-
-| 方法 | 接口           | 说明                                |
-|------|----------------|-------------------------------------|
-| GET  | `/api/tags`    | 列出所有标签。Query: `?tagClass=`   |
-| GET  | `/api/tags/:id`| 按 ID 查询单个标签。                |
-
-### 10.2 Item 创建时设置标签
-
-| 方法 | 接口            | 说明                        |
-|------|-----------------|-----------------------------|
-| POST | `/api/items`    | JSON 创建 item，请求体支持 `tags: ["slug1"]`。 |
-| POST | `/api/items`    | 文件上传创建，从 archive frontmatter 自动提取 tags。 |
-
-### 10.3 标签管理（需认证）
-
-| 方法   | 接口            | 说明                       |
-|--------|-----------------|----------------------------|
-| POST   | `/api/tags`     | 创建新标签。               |
-| PUT    | `/api/tags/:id` | 更新已有标签。             |
-| DELETE | `/api/tags/:id` | 删除标签及其所有关联。     |
-
-### 10.4 Item 标签分配
-
-| 方法 | 接口                  | 请求体                                    |
-|------|-----------------------|-------------------------------------------|
-| POST | `/api/items/:id/tags` | `{"tagIds": ["uuid1", "uuid2"]}` 或 `{"tags": ["slug1", "slug2"]}` |
-
-- 如果提供 `tags`（slug 列表），不存在的 slug 会通过 `EnsureTags` 自动创建为 `custom` 类标签。
-- 如果提供 `tagIds`，会验证其是否存在于字典中。
-- 返回该 item 更新后的标签列表。
-
-### 10.5 Item 列表过滤
-
-公开和个人 item 列表接口均支持标签过滤：
-
-- `GET /api/marketplace/items?tags=rest-api,authentication`
-- `GET /api/registry/:id/items?tags=mcp,hook`
-
-过滤条件通过关联表对 `item_tag_dicts.slug` 执行 `IN` 查询。
-
-#### 多标签过滤语义
-
-当前实现采用 **OR 语义**：传入多个 tag slug（逗号分隔）时，只要 item 拥有其中**任意一个**标签即被命中。
-
-例如 `?tags=rest-api,auth` 生成的 SQL：
-
-```sql
-id IN (
-    SELECT item_id
-    FROM item_tags
-    JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id
-    WHERE item_tag_dicts.slug IN ('rest-api', 'auth')
-)
-```
-
-#### AND 语义（精确交集）
-
-若业务需要「**同时满足所有指定标签**」的精确匹配，应改用 `GROUP BY + HAVING`：
-
-```sql
-id IN (
-    SELECT item_id
-    FROM item_tags
-    JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id
-    WHERE item_tag_dicts.slug IN ('rest-api', 'auth')
-    GROUP BY item_id
-    HAVING COUNT(DISTINCT item_tag_dicts.slug) = 2
-)
-```
-
-对应的 GORM 代码：
-
-```go
-tagSlugs := strings.Split(tags, ",")
-query = query.Where(
-    `id IN (
-        SELECT item_id
-        FROM item_tags
-        JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id
-        WHERE item_tag_dicts.slug IN ?
-        GROUP BY item_id
-        HAVING COUNT(DISTINCT item_tag_dicts.slug) = ?
-    )`,
-    tagSlugs, len(tagSlugs),
-)
-```
-
-| 语义 | 适用场景 |
-|------|----------|
-| **OR**（当前默认） | 扩大召回面，推荐「与 API 或认证相关的 item」 |
-| **AND**（精确匹配） | 严格筛选「同时具备 API 和认证能力的 item」 |
-
-### 10.6 语义搜索中的标签过滤
-
-当前 `SemanticSearch` 与 `HybridSearch` 的 `SearchRequest` 尚未包含 `Tags` 字段，因此**语义/混合搜索暂不支持按标签过滤**。如需支持，需在 `SearchRequest` 中增加 `Tags []string`，并在 SQL 拼接阶段加入与列表过滤相同的 `IN` 子查询条件。
-
-### 10.7 响应增强
-
-Item 列表响应现在包含已填充的 `tags` 数组：
+返回示例：
 
 ```json
 {
-  "items": [
+  "tags": [
     {
-      "id": "...",
-      "name": "My Skill",
-      "tags": [
-        {
-          "id": "...",
-          "slug": "skill",
-          "tagClass": "system",
-          "names": {"en": "Skill", "zh": "技能"}
-        },
-        {
-          "id": "...",
-          "slug": "rest-api",
-          "tagClass": "functional",
-          "names": {"en": "rest-api"}
-        }
-      ]
+      "id": "uuid",
+      "slug": "auth-client",
+      "tagClass": "custom",
+      "createdBy": "u1",
+      "createdAt": "2026-04-22T10:00:00Z"
     }
-  ]
+  ],
+  "total": 132,
+  "page": 1,
+  "pageSize": 20,
+  "hasMore": true
 }
 ```
 
-## 11. 虚拟 Tags 字段查询链路详解
+### 11.2 标签管理接口
 
-### 11.1 字段定义与特性
+| 方法 | 接口 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/tags` | 公开可读 | 列表查询，支持关键字匹配与分页 |
+| GET | `/api/tags/:id` | 公开可读 | 按 ID 查询单个标签 |
+| POST | `/api/tags` | 系统管理员 | 创建新标签 |
+| PUT | `/api/tags/:id` | 系统管理员 | 更新标签 |
+| DELETE | `/api/tags/:id` | 系统管理员 | 删除标签 |
 
-`CapabilityItem.Tags` 是一个**虚拟字段**：
+### 11.3 Item 标签设置接口
 
-```go
-type CapabilityItem struct {
-    // ... 数据库持久化字段 ...
-    Tags []ItemTagDict `gorm:"-" json:"tags,omitempty"`
+```http
+POST /api/items/:id/tags
+```
+
+请求体：
+
+```json
+{
+  "tagIds": ["uuid1", "uuid2"]
 }
 ```
 
-- `gorm:"-"`：GORM **完全忽略**这个字段。建表、INSERT、UPDATE、SELECT 时都不涉及它。
-- `json:"tags,omitempty"`：JSON 序列化时输出为 `"tags"`，为空时省略。
+或：
 
-**为什么不用 GORM 自动多对多关联？**
-
-如果配置 `gorm:"many2many:item_tags"`，GORM 的 `Preload("Tags")` 虽然能自动加载，但存在以下问题：
-
-1. **N+1 风险**：列表查询时若忘记 Preload，访问 `item.Tags` 会触发懒加载，导致严重性能问题。
-2. **控制粒度不足**：无法自定义关联表的查询条件（如按 `tag_class` 过滤），也无法控制加载时机。
-3. **分页失真**：如果用 `JOIN` 做一次性查询，`capability_items` 的行会被 tag 数量**放大**（一个 item 有 3 个 tag 就返回 3 行），导致 `LIMIT 20` 实际只返回 7-8 个不同的 item。
-
-因此采用「**虚拟字段 + 批量手动填充**」的方案。
-
-### 11.2 批量加载流程
-
-以 `ListAllItems` 为例，虚拟 `Tags` 字段的填充分为两个阶段：
-
-**阶段一：主查询（不含 tags）**
-
-```go
-// GORM 查询 capability_items，Tags 字段被忽略（值为 nil）
-query.Preload("Registry").Limit(20).Offset(0).Find(&items)
+```json
+{
+  "tags": ["slug1", "slug2"]
+}
 ```
 
-生成的 SQL：
+规则：
+
+- 若提供 `tags`，不存在的 slug 通过 `EnsureTags(..., custom, createdBy)` 创建
+- 已存在的 `builtin` 标签可被普通用户直接绑定
+- 非系统管理员提交的 `system` 标签会被静默过滤
+- 返回 item 更新后的标签列表
+
+---
+
+## 12. Item 列表过滤
+
+公开和个人 item 列表接口均支持标签过滤：
+
+- `GET /api/items?tags=rest-api,authentication`
+- `GET /api/items/my?tags=mcp,hook`
+
+过滤条件通过 `item_tag_dicts.slug IN (...)` 进行匹配。
+
+### 12.1 多标签过滤语义
+
+当前采用 **OR 语义**：
+
+- 传入多个 tag slug 时，只要 item 拥有任意一个标签即可命中
+
+示例 SQL：
 
 ```sql
-SELECT * FROM capability_items
-WHERE registry_id IN (...)
-  AND status = 'active'
-ORDER BY created_at DESC
-LIMIT 20 OFFSET 0;
+id IN (
+    SELECT item_id
+    FROM item_tags
+    JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id
+    WHERE item_tag_dicts.slug IN ('rest-api', 'auth')
+)
 ```
 
-此时 `items` 中每个元素的 `Tags` 都是 `nil`。
+---
 
-**阶段二：批量加载 tags**
+## 13. 查询与响应增强
+
+### 13.1 虚拟 Tags 字段
+
+`CapabilityItem.Tags` 为虚拟字段：
 
 ```go
-// 收集本页所有 item ID
-itemIDs := make([]string, len(items))
-for i, item := range items {
-    itemIDs[i] = item.ID
-}
-
-// 一次性批量查询这些 item 的标签
-tagsMap, _ = TagSvc.GetItemTags(itemIDs)
+Tags []ItemTagDict `gorm:"-" json:"tags,omitempty"`
 ```
 
-`GetItemTags` 内部执行两条 SQL：
+查询时采用：
 
-```sql
--- 第 1 条：查关联表
-SELECT * FROM item_tags WHERE item_id IN ('id1', 'id2', ...);
+1. 先查 item 主记录
+2. 批量查询 `item_tags`
+3. 批量查询 `item_tag_dicts`
+4. 回填到响应结构体
 
--- 第 2 条：查字典表
-SELECT * FROM item_tag_dicts WHERE id IN ('tagId1', 'tagId2', ...);
-```
+### 13.2 当前覆盖范围
 
-然后组装成 `map[itemID][]ItemTagDict` 返回。
+建议至少在以下接口中支持 tags 返回：
 
-**阶段三：手动赋值到响应结构体**
+- `GET /api/items`
+- `GET /api/items/:id`
+- `GET /api/items/my`
 
-```go
-type ItemWithRepo struct {
-    models.CapabilityItem
-    RepoName  string `json:"repoName,omitempty"`
-    Favorited bool   `json:"favorited"`
-}
-out := make([]ItemWithRepo, len(items))
-for i, item := range items {
-    out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID]}
-    if tagsMap != nil {
-        out[i].Tags = tagsMap[item.ID]  // ← 虚拟字段在这里被赋值
-    }
-}
-c.JSON(200, gin.H{"items": out})
-```
+创建类接口如需返回 tags，可在创建成功后补充一次批量查询或单项查询。
 
-### 11.3 活动图
+---
 
-```plantuml
-@startuml
-title 虚拟 Tags 字段查询链路（ListAllItems）
+## 14. 关键设计决策
 
-|用户|
-start
-:GET /api/items?tags=rest-api;
+### 14.1 去掉国际化与描述字段
 
-|Handler|
-:解析查询参数;
-:构建 GORM Query;
-note right
-  query.Where("id IN (SELECT item_id
-    FROM item_tags JOIN item_tag_dicts
-    ON ... WHERE slug IN ?)", ["rest-api"])
-end note
+标签系统仅作为轻量分类与过滤字典使用，不再承载展示型多语言元数据。
 
-:执行主查询;
-note right
-  SELECT * FROM capability_items
-  WHERE ... AND status = 'active'
-  ORDER BY created_at DESC
-  LIMIT 20 OFFSET 0
-  
-  → 返回 20 条 item
-  → Tags 字段为 nil（gorm:"-"）
-end note
+### 14.2 标签类型收敛
 
-:收集本页 item IDs;
+将旧设计中的 `functional` 并入 `custom`，避免类型边界模糊。
 
-|TagService|
-:GetItemTags(itemIDs);
+### 14.3 严格治理 system 标签
 
-|数据库|
-:SELECT * FROM item_tags
-WHERE item_id IN (...);
-:SELECT * FROM item_tag_dicts
-WHERE id IN (...);
+`system` 标签属于平台保留语义，普通用户不得通过接口直接分配。
 
-|TagService|
-:组装 map[itemID][]ItemTagDict;
+### 14.4 面向 slug 的查询
 
-|Handler|
-:遍历 items;
-:tags = tagsMap[item.ID];
-:item.Tags = tags;
-:JSON 序列化输出;
-note right
-  {
-    "items": [
-      {
-        "id": "...",
-        "name": "...",
-        "tags": [
-          {"slug": "rest-api", ...},
-          {"slug": "skill", ...}
-        ]
-      }
-    ]
-  }
-end note
+外部接口统一使用 slug，而非内部 UUID，以提升可读性与稳定性。
 
-|用户|
-:接收响应;
+### 14.5 保持兼容
 
-stop
-@enduml
-```
+保留现有 `item_type` 与 `category` 字段，不破坏既有逻辑；标签作为增强维度逐步接入。
 
-### 11.4 为什么分两步查询而不是 JOIN
+---
 
-如果尝试用一条 SQL JOIN 同时返回 item 和 tags：
-
-```sql
-SELECT ci.*, itd.*
-FROM capability_items ci
-JOIN item_tags it ON it.item_id = ci.id
-JOIN item_tag_dicts itd ON itd.id = it.tag_id
-WHERE ci.status = 'active'
-LIMIT 20;
-```
-
-假设每个 item 平均有 3 个 tag，结果集会变成 **60 行**（20 item × 3 tags），且 `ci.*` 列在每个 tag 行上重复。
-
-这会导致：
-- `LIMIT 20` 实际只返回约 **7 个不同的 item**（60 / 3 = 20 行被 tag 数量稀释）。
-- GORM `Find` 无法正确去重和映射到结构体数组。
-- 内存中数据冗余（item 基础字段重复 N 次）。
-
-而分两步的方案：
-- 第一步精确返回 **20 个 item**（分页不受影响）。
-- 第二步用 **2 条 SQL** 批量加载所有 tags，总查询次数固定为 3 次，与 item 数量无关。
-
-### 11.5 消费者
-
-前端接收到的 JSON 中，`tags` 数组可用于：
-
-1. **展示**：在每个 item 卡片下方渲染标签 badge
-2. **交互**：点击标签跳转到 `?tags=slug` 过滤同类型 item
-3. **搜索**：结合标签过滤接口实现多维度检索
-
-**当前覆盖范围：**
-
-| 接口 | 是否填充 Tags |
-|------|---------------|
-| `GET /api/items`（ListAllItems） | 是 |
-| `GET /api/registry/:id/items`（ListMyItems） | 否（MyItem 结构体未继承 Tags） |
-| `GET /api/items/:id`（GetItem） | 否 |
-| `POST /api/items`（CreateItemDirect） | 否（响应未二次查询） |
-
-如需在更多接口中展示 tags，只需在对应 handler 中复用相同的「收集 IDs → GetItemTags → 赋值」模式。
-
-## 12. Handler 集成
-
-### 12.1 ItemHandler
-
-`NewItemHandler` 现在接受 `*services.TagService` 参数。`ItemHandler` 使用它进行：
-- 列表查询时的标签批量加载（`GetItemTags`）。
-- 将标签附加到响应结构体。
-- JSON / 文件上传创建 item 时设置标签（`EnsureTags` + `SetItemTags`）。
-
-### 12.2 全局服务引用
-
-`TagSvc` 作为包级变量在 `handlers/sync.go` 中注册，并在 `main.go` 中赋值，与 `CategorySvc` 类似。
-
-## 13. 依赖注入
-
-在 `server/cmd/api/main.go` 中：
-
-```go
-tagSvc := &services.TagService{DB: db}
-handlers.TagSvc = tagSvc
-itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc, categorySvc, tagSvc)
-```
-
-注册路由：
-
-```go
-api.GET("/tags", handlers.ListTagsHandler(tagSvc))
-api.GET("/tags/:id", handlers.GetTagHandler(tagSvc))
-// (POST、PUT、DELETE 按现有权限中间件配置)
-```
-
-## 14. Item 删除时的清理
-
-删除 item 时（`capability_item.go` 中的 `DeleteItem`），由于外键约束设置了 `ON DELETE CASCADE`，`item_tags` 关联记录会自动级联删除，无需手动处理。
-
-## 15. 关键设计决策
-
-### 15.1 CapabilityItem 上的虚拟 Tags 字段
-
-未使用 GORM 的自动多对多关联，而是将 `Tags` 字段标记为 `gorm:"-"`，并通过 `GetItemTags` 显式填充。这避免了非预期的懒加载查询，并在列表 API 中实现对批量获取的完全控制。
-
-### 15.2 面向 Slug 的外部接口
-
-API 对外使用标签 slug（人类可读的字符串）进行过滤和分配，内部关联则使用 UUID。这使得 URL 和 frontmatter 更具可读性和稳定性。
-
-### 15.3 EnsureTags 自动创建
-
-文件或 API 调用中引用的标签若不存在会自动创建。这消除了"先创建标签再使用"的额外流程，确保同步过程无缝衔接。
-
-### 15.4 标签分类隔离
-
-`tag_class` 字段防止用户定义的标签与系统语义冲突。system 标签由迁移和同步逻辑管理；custom 标签由用户驱动创建。
-
-### 15.5 向后兼容
-
-现有的 `item_type` 和 `category` 列保持不变。system 标签从 `item_type` 派生，functional 标签可从 `category` 派生，但这两个字段均未被移除或修改，现有查询继续正常工作。
-
-## 16. 文件变更清单
+## 15. 文件变更清单（目标）
 
 | 文件 | 变更 |
-|------|------|
-| `server/internal/models/models.go` | 增加 `ItemTagDict`、`ItemTag` 模型；为 `CapabilityItem` 增加虚拟 `Tags` 字段。 |
-| `server/internal/services/tag_service.go` | **新增。** 标签服务完整实现。 |
-| `server/internal/services/parser_service.go` | 从 SKILLMD 和 plugin.json 解析 `tags` 数组。 |
-| `server/internal/services/sync_service.go` | 注册表同步期间自动创建/关联标签。 |
-| `server/internal/handlers/tag.go` | **新增。** 标签 CRUD 及 item 标签分配 handler。 |
-| `server/internal/handlers/capability_item.go` | 注入 `TagService`；增加标签过滤和响应增强；JSON/文件上传创建 item 时支持设置标签。 |
-| `server/internal/handlers/capability_item_test.go` | 修复 `NewItemHandler` 构造函数调用，适配新增 tagSvc 参数。 |
-| `server/internal/handlers/capability_registry.go` | 在注册表 item 列表中增加 `?tags` 查询过滤。 |
-| `server/internal/handlers/sync.go` | 增加 `TagSvc` 全局引用。 |
-| `server/cmd/api/main.go` | 初始化 `TagService`，注入 handler，注册路由。 |
-| `server/migrations/20260422100000_create_item_tags.sql` | **新增。** 表、索引、种子数据和回刷的迁移脚本。 |
+|---|---|
+| `server/internal/models/models.go` | 精简 `ItemTagDict` 字段；保留 `CapabilityItem.Tags` 虚拟字段 |
+| `server/internal/services/tag_service.go` | 增加 slug 校验；列表查询支持关键字与分页；支持 `system/builtin/custom` 三类标签 |
+| `server/internal/services/parser_service.go` | 保持 tags 解析逻辑 |
+| `server/internal/services/sync_service.go` | 将同步提取标签统一落为 custom；不再自动附加 item_type 对应 tag |
+| `server/internal/handlers/tag.go` | 列表接口支持 `q/page/pageSize`；system 仅管理员可配，builtin/custom 可按规则绑定 |
+| `server/internal/handlers/capability_item.go` | item 创建时 tags 仅自动创建 custom；builtin 可直接绑定；非管理员提交的 system tag 静默过滤 |
+| `server/internal/handlers/capability_registry.go` | 继续支持 `?tags` 过滤 |
+| `server/cmd/api/main.go` | 注册 tags 写接口，并接入系统管理员权限中间件 |
+| `server/migrations/20260422100000_create_item_tags.sql` | 简化表结构；migration 中初始化 system 与 builtin tags |

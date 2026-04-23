@@ -1,57 +1,100 @@
 package services
 
 import (
-	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/models"
-	"gorm.io/datatypes"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 var (
-	ErrTagNotFound  = errors.New("tag not found")
-	ErrTagSlugTaken = errors.New("tag slug already exists")
+	ErrTagNotFound    = errors.New("tag not found")
+	ErrTagSlugTaken   = errors.New("tag slug already exists")
+	ErrInvalidTagSlug = errors.New("invalid tag slug")
 )
 
 const (
-	TagClassSystem    = "system"
-	TagClassFunctional = "functional"
-	TagClassCustom    = "custom"
+	TagClassSystem  = "system"
+	TagClassBuiltin = "builtin"
+	TagClassCustom  = "custom"
 )
+
+var tagSlugPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 type TagService struct {
 	DB *gorm.DB
 }
 
+func (s *TagService) ListByClass(tagClass string) ([]models.ItemTagDict, error) {
+	if tagClass == "" {
+		return nil, nil
+	}
+	var tags []models.ItemTagDict
+	if err := s.DB.Where("tag_class = ?", tagClass).Order("slug ASC").Find(&tags).Error; err != nil {
+		return nil, err
+	}
+	return tags, nil
+}
+
 type CreateTagReq struct {
-	Slug         string            `json:"slug" binding:"required"`
-	TagClass     string            `json:"tagClass" binding:"required"`
-	Names        map[string]string `json:"names" binding:"required"`
-	Descriptions map[string]string `json:"descriptions"`
+	Slug     string `json:"slug" binding:"required"`
+	TagClass string `json:"tagClass" binding:"required"`
 }
 
 type UpdateTagReq struct {
-	TagClass     *string           `json:"tagClass"`
-	Names        map[string]string `json:"names"`
-	Descriptions map[string]string `json:"descriptions"`
+	TagClass *string `json:"tagClass"`
+}
+
+type ListTagsOptions struct {
+	Query    string
+	TagClass string
+	Page     int
+	PageSize int
+}
+
+func normalizeTagSlug(slug string) string {
+	return strings.ToLower(strings.TrimSpace(slug))
+}
+
+func ValidateTagSlug(slug string) error {
+	slug = normalizeTagSlug(slug)
+	if slug == "" || !tagSlugPattern.MatchString(slug) {
+		return ErrInvalidTagSlug
+	}
+	return nil
+}
+
+func isUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "UNIQUE constraint") ||
+		strings.Contains(msg, "duplicated key not allowed")
 }
 
 // EnsureTags ensures tag records exist for the given slugs.
-// Returns the resolved tag records. Missing tags are created with the given class.
 func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]models.ItemTagDict, error) {
 	if len(slugs) == 0 {
 		return nil, nil
 	}
+	if tagClass != TagClassSystem && tagClass != TagClassBuiltin && tagClass != TagClassCustom {
+		tagClass = TagClassCustom
+	}
 
-	// Deduplicate
 	seen := make(map[string]bool)
 	unique := make([]string, 0, len(slugs))
 	for _, slug := range slugs {
-		slug = strings.TrimSpace(slug)
+		slug = normalizeTagSlug(slug)
 		if slug == "" || seen[slug] {
 			continue
+		}
+		if err := ValidateTagSlug(slug); err != nil {
+			return nil, err
 		}
 		seen[slug] = true
 		unique = append(unique, slug)
@@ -60,7 +103,6 @@ func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]m
 		return nil, nil
 	}
 
-	// Fetch existing
 	var existing []models.ItemTagDict
 	if err := s.DB.Where("slug IN ?", unique).Find(&existing).Error; err != nil {
 		return nil, err
@@ -71,23 +113,22 @@ func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]m
 		existingMap[t.Slug] = t
 	}
 
-	// Create missing
 	for _, slug := range unique {
 		if _, ok := existingMap[slug]; ok {
 			continue
 		}
-		names, _ := json.Marshal(map[string]string{"en": slug})
 		tag := models.ItemTagDict{
+			ID:        uuid.NewString(),
 			Slug:      slug,
 			TagClass:  tagClass,
-			Names:     datatypes.JSON(names),
 			CreatedBy: createdBy,
 		}
 		if err := s.DB.Create(&tag).Error; err != nil {
-			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "UNIQUE constraint") {
-				s.DB.Where("slug = ?", slug).First(&tag)
-				existingMap[slug] = tag
-				continue
+			if isUniqueConstraintError(err) {
+				if err := s.DB.Where("slug = ?", slug).First(&tag).Error; err == nil {
+					existingMap[slug] = tag
+					continue
+				}
 			}
 			return nil, err
 		}
@@ -110,9 +151,9 @@ func (s *TagService) SetItemTags(itemID string, tagIDs []string) error {
 			return err
 		}
 		for _, tagID := range tagIDs {
-			itemTag := models.ItemTag{ItemID: itemID, TagID: tagID}
+			itemTag := models.ItemTag{ID: uuid.NewString(), ItemID: itemID, TagID: tagID}
 			if err := tx.Create(&itemTag).Error; err != nil {
-				if !strings.Contains(err.Error(), "duplicate key") && !strings.Contains(err.Error(), "UNIQUE constraint") {
+				if !isUniqueConstraintError(err) {
 					return err
 				}
 			}
@@ -122,7 +163,6 @@ func (s *TagService) SetItemTags(itemID string, tagIDs []string) error {
 }
 
 // GetItemTags batch-fetches tags for multiple items.
-// Returns a map of itemID -> []ItemTagDict.
 func (s *TagService) GetItemTags(itemIDs []string) (map[string][]models.ItemTagDict, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
@@ -160,13 +200,16 @@ func (s *TagService) GetItemTags(itemIDs []string) (map[string][]models.ItemTagD
 	return result, nil
 }
 
-// GetTagIDsBySlugs resolves tag slugs to IDs.
 func (s *TagService) GetTagIDsBySlugs(slugs []string) ([]string, error) {
 	if len(slugs) == 0 {
 		return nil, nil
 	}
+	normalized := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		normalized = append(normalized, normalizeTagSlug(slug))
+	}
 	var tags []models.ItemTagDict
-	if err := s.DB.Select("id").Where("slug IN ?", slugs).Find(&tags).Error; err != nil {
+	if err := s.DB.Select("id").Where("slug IN ?", normalized).Find(&tags).Error; err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(tags))
@@ -176,18 +219,38 @@ func (s *TagService) GetTagIDsBySlugs(slugs []string) ([]string, error) {
 	return ids, nil
 }
 
-// List returns all tags, optionally filtered by tagClass.
-func (s *TagService) List(tagClass string) ([]models.ItemTagDict, error) {
-	var tags []models.ItemTagDict
-	q := s.DB.Order("tag_class ASC, slug ASC")
-	if tagClass != "" {
-		q = q.Where("tag_class = ?", tagClass)
+func (s *TagService) List(opts ListTagsOptions) ([]models.ItemTagDict, int64, error) {
+	page := opts.Page
+	pageSize := opts.PageSize
+	if page < 1 {
+		page = 1
 	}
-	err := q.Find(&tags).Error
-	return tags, err
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	q := s.DB.Model(&models.ItemTagDict{})
+	if opts.TagClass != "" {
+		q = q.Where("tag_class = ?", opts.TagClass)
+	}
+	if query := strings.TrimSpace(opts.Query); query != "" {
+		query = strings.ToLower(query)
+		q = q.Where("LOWER(slug) LIKE ?", "%"+query+"%")
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var tags []models.ItemTagDict
+	err := q.Order("tag_class ASC, slug ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&tags).Error
+	return tags, total, err
 }
 
-// Get returns a single tag by ID.
 func (s *TagService) Get(id string) (*models.ItemTagDict, error) {
 	var tag models.ItemTagDict
 	if err := s.DB.First(&tag, "id = ?", id).Error; err != nil {
@@ -199,8 +262,8 @@ func (s *TagService) Get(id string) (*models.ItemTagDict, error) {
 	return &tag, nil
 }
 
-// GetBySlug returns a single tag by slug.
 func (s *TagService) GetBySlug(slug string) (*models.ItemTagDict, error) {
+	slug = normalizeTagSlug(slug)
 	var tag models.ItemTagDict
 	if err := s.DB.Where("slug = ?", slug).First(&tag).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -211,23 +274,81 @@ func (s *TagService) GetBySlug(slug string) (*models.ItemTagDict, error) {
 	return &tag, nil
 }
 
-// Create creates a new tag.
-func (s *TagService) Create(req CreateTagReq, createdBy string) (*models.ItemTagDict, error) {
-	names, _ := json.Marshal(req.Names)
-	descs, _ := json.Marshal(req.Descriptions)
-	if descs == nil {
-		descs = []byte("{}")
+// ResolveOrCreateForAssignment resolves existing tags by slug first, and only
+// creates missing slugs as custom tags. This allows builtin/system tags to be
+// referenced directly by slug without downgrading their class.
+func (s *TagService) ResolveOrCreateForAssignment(slugs []string, createdBy string) ([]models.ItemTagDict, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	normalized := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		slug = normalizeTagSlug(slug)
+		if slug == "" || seen[slug] {
+			continue
+		}
+		if err := ValidateTagSlug(slug); err != nil {
+			return nil, err
+		}
+		seen[slug] = true
+		normalized = append(normalized, slug)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
 	}
 
+	var existing []models.ItemTagDict
+	if err := s.DB.Where("slug IN ?", normalized).Find(&existing).Error; err != nil {
+		return nil, err
+	}
+	existingMap := make(map[string]models.ItemTagDict, len(existing))
+	for _, tag := range existing {
+		existingMap[tag.Slug] = tag
+	}
+
+	missing := make([]string, 0)
+	for _, slug := range normalized {
+		if _, ok := existingMap[slug]; !ok {
+			missing = append(missing, slug)
+		}
+	}
+	if len(missing) > 0 {
+		created, err := s.EnsureTags(missing, TagClassCustom, createdBy)
+		if err != nil {
+			return nil, err
+		}
+		for _, tag := range created {
+			existingMap[tag.Slug] = tag
+		}
+	}
+
+	result := make([]models.ItemTagDict, 0, len(normalized))
+	for _, slug := range normalized {
+		if tag, ok := existingMap[slug]; ok {
+			result = append(result, tag)
+		}
+	}
+	return result, nil
+}
+
+func (s *TagService) Create(req CreateTagReq, createdBy string) (*models.ItemTagDict, error) {
+	slug := normalizeTagSlug(req.Slug)
+	if err := ValidateTagSlug(slug); err != nil {
+		return nil, err
+	}
+	tagClass := req.TagClass
+	if tagClass != TagClassSystem && tagClass != TagClassBuiltin && tagClass != TagClassCustom {
+		tagClass = TagClassCustom
+	}
 	tag := models.ItemTagDict{
-		Slug:         req.Slug,
-		TagClass:     req.TagClass,
-		Names:        datatypes.JSON(names),
-		Descriptions: datatypes.JSON(descs),
-		CreatedBy:    createdBy,
+		ID:        uuid.NewString(),
+		Slug:      slug,
+		TagClass:  tagClass,
+		CreatedBy: createdBy,
 	}
 	if err := s.DB.Create(&tag).Error; err != nil {
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "UNIQUE constraint") {
+		if isUniqueConstraintError(err) {
 			return nil, ErrTagSlugTaken
 		}
 		return nil, err
@@ -235,7 +356,6 @@ func (s *TagService) Create(req CreateTagReq, createdBy string) (*models.ItemTag
 	return &tag, nil
 }
 
-// Update updates an existing tag.
 func (s *TagService) Update(id string, req UpdateTagReq) (*models.ItemTagDict, error) {
 	var tag models.ItemTagDict
 	if err := s.DB.First(&tag, "id = ?", id).Error; err != nil {
@@ -244,26 +364,17 @@ func (s *TagService) Update(id string, req UpdateTagReq) (*models.ItemTagDict, e
 		}
 		return nil, err
 	}
-
 	if req.TagClass != nil {
-		tag.TagClass = *req.TagClass
+		if *req.TagClass == TagClassSystem || *req.TagClass == TagClassBuiltin || *req.TagClass == TagClassCustom {
+			tag.TagClass = *req.TagClass
+		}
 	}
-	if req.Names != nil {
-		names, _ := json.Marshal(req.Names)
-		tag.Names = datatypes.JSON(names)
-	}
-	if req.Descriptions != nil {
-		descs, _ := json.Marshal(req.Descriptions)
-		tag.Descriptions = datatypes.JSON(descs)
-	}
-
 	if err := s.DB.Save(&tag).Error; err != nil {
 		return nil, err
 	}
 	return &tag, nil
 }
 
-// Delete removes a tag and all its item associations.
 func (s *TagService) Delete(id string) error {
 	return s.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("tag_id = ?", id).Delete(&models.ItemTag{}).Error; err != nil {

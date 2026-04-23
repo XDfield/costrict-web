@@ -267,6 +267,7 @@ func main() {
 			marketplace.GET("/items/new", recommendHandler.GetNewAndNoteworthy)
 		}
 		api.GET("/items/:id/similar", searchHandler.FindSimilar)
+		api.GET("/items/filter-options", handlers.ListItemFilterOptions)
 		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
 		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
 
@@ -340,6 +341,15 @@ func main() {
 			authed.POST("/categories", handlers.CreateCategoryHandler(categorySvc))
 			authed.PUT("/categories/:id", handlers.UpdateCategoryHandler(categorySvc))
 			authed.DELETE("/categories/:id", handlers.DeleteCategoryHandler(categorySvc))
+			authed.POST("/items/:id/tags", handlers.SetItemTagsHandler(tagSvc))
+
+			platformAdmin := authed.Group("")
+			platformAdmin.Use(systemrole.RequirePlatformAdmin(db))
+			{
+				platformAdmin.POST("/tags", handlers.CreateTagHandler(tagSvc))
+				platformAdmin.PUT("/tags/:id", handlers.UpdateTagHandler(tagSvc))
+				platformAdmin.DELETE("/tags/:id", handlers.DeleteTagHandler(tagSvc))
+			}
 
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)

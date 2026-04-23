@@ -3213,8 +3213,20 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter by category",
+                        "description": "Filter by category (legacy single value)",
                         "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by categories (comma-separated)",
+                        "name": "categories",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by security statuses (comma-separated)",
+                        "name": "securityStatuses",
                         "in": "query"
                     },
                     {
@@ -3295,7 +3307,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted.",
+                "description": "Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -3341,6 +3353,12 @@ const docTemplate = `{
                                 },
                                 "slug": {
                                     "type": "string"
+                                },
+                                "tags": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
                                 },
                                 "version": {
                                     "type": "string"
@@ -3392,6 +3410,51 @@ const docTemplate = `{
                             "properties": {
                                 "error": {
                                     "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/filter-options": {
+            "get": {
+                "description": "Get filter options for item list, including categories and security statuses with i18n names",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "List item filter options",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "categories": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemCategory"
+                                    }
+                                },
+                                "securityStatuses": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
                                 }
                             }
                         }
@@ -3483,7 +3546,7 @@ const docTemplate = `{
         },
         "/items/{id}": {
             "get": {
-                "description": "Get skill item by ID with registry, versions, artifacts and repo visibility",
+                "description": "Get skill item by ID with registry, versions, artifacts, repo visibility, and populated tags",
                 "produces": [
                     "application/json"
                 ],
@@ -4627,6 +4690,88 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/tags": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Replace all tags on an item. Non-admin users may assign builtin and custom tags; submitted system tags are silently filtered.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tags"
+                ],
+                "summary": "Set item tags",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Set item tags request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.setItemTagsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.setItemTagsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
                         }
                     },
                     "500": {
@@ -9539,6 +9684,338 @@ const docTemplate = `{
                 }
             }
         },
+        "/tags": {
+            "get": {
+                "description": "List tags with optional slug keyword search, tag class filtering, and pagination",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tags"
+                ],
+                "summary": "List tags",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Keyword matched against tag slug",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by tag class: system or custom",
+                        "name": "tagClass",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.listTagsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Create a new tag (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tags"
+                ],
+                "summary": "Create tag",
+                "parameters": [
+                    {
+                        "description": "Create tag request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.CreateTagReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tagResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "slug": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/tags/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update an existing tag (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tags"
+                ],
+                "summary": "Update tag",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tag ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update tag request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UpdateTagReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tagResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Delete a tag and its item associations (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tags"
+                ],
+                "summary": "Delete tag",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tag ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/team/approvals/:approvalId": {
             "patch": {
                 "consumes": [
@@ -12460,7 +12937,7 @@ const docTemplate = `{
                 "ContextBrowse"
             ]
         },
-        "github_com_costrict_costrict-web_server_internal_models.ItemTagDict": {
+        "github_com_costrict_costrict-web_server_internal_models.ItemCategory": {
             "type": "object",
             "properties": {
                 "createdAt": {
@@ -12470,28 +12947,50 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "descriptions": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "description": "{\"en\":\"...\",\"zh\":\"...\"}",
+                    "type": "object"
+                },
+                "icon": {
+                    "description": "图标（可选）",
+                    "type": "string"
                 },
                 "id": {
                     "type": "string"
                 },
                 "names": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "description": "{\"en\":\"Development\",\"zh\":\"开发工具\"}",
+                    "type": "object"
+                },
+                "slug": {
+                    "description": "唯一标识，如 \"development\", \"testing\"",
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "description": "排序",
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.ItemTagDict": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
                 },
                 "slug": {
                     "type": "string"
                 },
                 "tagClass": {
-                    "description": "system | functional | custom",
-                    "type": "string"
-                },
-                "updatedAt": {
+                    "description": "system | custom",
                     "type": "string"
                 }
             }
@@ -13098,6 +13597,21 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_server_internal_services.CreateTagReq": {
+            "type": "object",
+            "required": [
+                "slug",
+                "tagClass"
+            ],
+            "properties": {
+                "slug": {
+                    "type": "string"
+                },
+                "tagClass": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_server_internal_services.CreateWorkspaceRequest": {
             "type": "object",
             "required": [
@@ -13501,6 +14015,14 @@ const docTemplate = `{
                 "settings": {
                     "type": "object",
                     "additionalProperties": true
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UpdateTagReq": {
+            "type": "object",
+            "properties": {
+                "tagClass": {
+                    "type": "string"
                 }
             }
         },
@@ -14132,6 +14654,65 @@ const docTemplate = `{
                 },
                 "textContent": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_handlers.listTagsResponse": {
+            "type": "object",
+            "properties": {
+                "hasMore": {
+                    "type": "boolean"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "pageSize": {
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_handlers.setItemTagsRequest": {
+            "type": "object",
+            "properties": {
+                "tagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "internal_handlers.setItemTagsResponse": {
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                }
+            }
+        },
+        "internal_handlers.tagResponse": {
+            "type": "object",
+            "properties": {
+                "tag": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
                 }
             }
         },

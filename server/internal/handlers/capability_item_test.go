@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -36,7 +37,9 @@ func newItemRouter(userID string) *gin.Engine {
 
 	// Create ItemHandler for CreateItemDirect
 	db := database.GetDB()
-	itemHandler := NewItemHandler(db, nil, &services.ParserService{}, nil, nil)
+	tagSvc := &services.TagService{DB: db}
+	TagSvc = tagSvc
+	itemHandler := NewItemHandler(db, nil, &services.ParserService{}, nil, tagSvc)
 
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
@@ -115,6 +118,48 @@ func (m *memoryBackend) Len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.data)
+}
+
+func TestIsUniqueConstraintError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "sqlite unique constraint",
+			err:  errors.New("UNIQUE constraint failed: capability_items.repo_id, capability_items.slug, capability_items.item_type"),
+			want: true,
+		},
+		{
+			name: "postgres unique constraint",
+			err:  errors.New("duplicate key value violates unique constraint \"idx_item_repo_type_slug\""),
+			want: true,
+		},
+		{
+			name: "gorm duplicated key not allowed",
+			err:  errors.New("duplicated key not allowed"),
+			want: true,
+		},
+		{
+			name: "other database error",
+			err:  errors.New("connection refused"),
+			want: false,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUniqueConstraintError(tt.err); got != tt.want {
+				t.Fatalf("isUniqueConstraintError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func createTestZip(files map[string][]byte) []byte {
@@ -345,6 +390,41 @@ func TestListItems_SortByFavoriteCountDesc(t *testing.T) {
 	}
 }
 
+func TestListItems_DefaultSortByUpdatedAtDesc(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-li-sort-updated", Name: "sort-updated-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-li-updated-old", RegistryID: "reg-li-sort-updated", RepoID: "repo-1", Slug: "updated-old", ItemType: "skill",
+		Name: "Updated Old", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		CreatedAt: older, UpdatedAt: older,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-li-updated-new", RegistryID: "reg-li-sort-updated", RepoID: "repo-1", Slug: "updated-new", ItemType: "skill",
+		Name: "Updated New", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+		CreatedAt: older, UpdatedAt: newer,
+	})
+
+	w := get(newItemRouter(""), "/api/registries/reg-li-sort-updated/items")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-li-updated-new" {
+		t.Fatalf("expected latest updatedAt first, got %v", first["id"])
+	}
+}
+
 func TestListAllItems_SortByPreviewCountDesc(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
@@ -404,6 +484,89 @@ func TestListAllItems_SortByInstallCountAsc(t *testing.T) {
 	first := items[0].(map[string]interface{})
 	if first["id"] != "item-all-install-low" {
 		t.Fatalf("expected lowest installCount first, got %v", first["id"])
+	}
+}
+
+func TestListAllItems_SortByFavoriteCount_UsesUpdatedAtAsSecondarySort(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-sort-secondary-updated", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-secondary-old", RegistryID: "reg-all-sort-secondary-updated", RepoID: "public", Slug: "secondary-old", ItemType: "skill",
+		Name: "Secondary Old", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 5,
+		CreatedAt: older, UpdatedAt: older,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-secondary-new", RegistryID: "reg-all-sort-secondary-updated", RepoID: "public", Slug: "secondary-new", ItemType: "skill",
+		Name: "Secondary New", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 5,
+		CreatedAt: older, UpdatedAt: newer,
+	})
+
+	w := get(newItemRouter(""), "/api/items?sortBy=favoriteCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-all-secondary-new" {
+		t.Fatalf("expected newer updatedAt item first when favoriteCount ties, got %v", first["id"])
+	}
+}
+
+func TestListAllItems_TagFilterUsesANDSemantics(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-tags-and", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	for _, tag := range []models.ItemTagDict{
+		{ID: "tag-and-auth", Slug: "auth", TagClass: services.TagClassCustom, CreatedBy: "u1", CreatedAt: time.Now()},
+		{ID: "tag-and-api", Slug: "api", TagClass: services.TagClassCustom, CreatedBy: "u1", CreatedAt: time.Now()},
+	} {
+		if err := database.DB.Create(&tag).Error; err != nil {
+			t.Fatalf("seed tag: %v", err)
+		}
+	}
+	for _, item := range []models.CapabilityItem{
+		{ID: "item-all-tags-both", RegistryID: "reg-all-tags-and", RepoID: "public", Slug: "tags-both", ItemType: "skill", Name: "Tags Both", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "item-all-tags-auth", RegistryID: "reg-all-tags-and", RepoID: "public", Slug: "tags-auth", ItemType: "skill", Name: "Tags Auth", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}"))},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+	}
+	for _, itemTag := range []models.ItemTag{
+		{ID: "item-tag-both-auth", ItemID: "item-all-tags-both", TagID: "tag-and-auth", CreatedAt: time.Now()},
+		{ID: "item-tag-both-api", ItemID: "item-all-tags-both", TagID: "tag-and-api", CreatedAt: time.Now()},
+		{ID: "item-tag-auth-only", ItemID: "item-all-tags-auth", TagID: "tag-and-auth", CreatedAt: time.Now()},
+	} {
+		if err := database.DB.Create(&itemTag).Error; err != nil {
+			t.Fatalf("seed item tag: %v", err)
+		}
+	}
+
+	w := get(newItemRouter(""), "/api/items?tags=auth,api")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item matching all tags, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-all-tags-both" {
+		t.Fatalf("expected item with both tags, got %v", first["id"])
 	}
 }
 
@@ -491,11 +654,15 @@ func TestGetItem_Found(t *testing.T) {
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gi1", Name: "gi-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
+	database.DB.Create(&models.ItemTagDict{ID: "tag-official", Slug: "official", TagClass: services.TagClassSystem, CreatedBy: "system"})
+	database.DB.Create(&models.ItemTagDict{ID: "tag-auth", Slug: "auth", TagClass: services.TagClassCustom, CreatedBy: "u1"})
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-gi1", RegistryID: "reg-gi1", RepoID: "repo-1", Slug: "get-me", ItemType: "skill",
 		Name: "Get Me", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 		PreviewCount: 12, InstallCount: 3, FavoriteCount: 5,
 	})
+	database.DB.Create(&models.ItemTag{ID: "it-1", ItemID: "item-gi1", TagID: "tag-official"})
+	database.DB.Create(&models.ItemTag{ID: "it-2", ItemID: "item-gi1", TagID: "tag-auth"})
 
 	w := get(newItemRouter(""), "/api/items/item-gi1")
 	if w.Code != http.StatusOK {
@@ -514,6 +681,10 @@ func TestGetItem_Found(t *testing.T) {
 	}
 	if item["currentVersionLabel"] == nil {
 		t.Fatal("expected currentVersionLabel in response")
+	}
+	tags, ok := item["tags"].([]interface{})
+	if !ok || len(tags) != 2 {
+		t.Fatalf("expected 2 tags in response, got %v", item["tags"])
 	}
 }
 
@@ -1329,6 +1500,63 @@ func TestCreateItemDirect_Success(t *testing.T) {
 	}
 	if item["registryId"] != PublicRegistryID {
 		t.Fatalf("expected public registry, got %v", item["registryId"])
+	}
+	if raw, exists := item["tags"]; exists {
+		tags, ok := raw.([]interface{})
+		if !ok || len(tags) != 0 {
+			t.Fatalf("expected omitted or empty tags in create response by default, got %v", item["tags"])
+		}
+	}
+}
+
+func TestCreateItemDirect_ResponseIncludesCustomTags(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+
+	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
+		"itemType": "skill",
+		"name":     "Tagged Skill",
+		"content":  "# Tagged",
+		"tags":     []string{"auth"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	tags, ok := item["tags"].([]interface{})
+	if !ok || len(tags) != 1 {
+		t.Fatalf("expected only custom tags in response, got %v", item["tags"])
+	}
+}
+
+func TestCreateItemDirect_ResponseIncludesBuiltinTags(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.ItemTagDict{ID: "tag-planning", Slug: "planning", TagClass: services.TagClassBuiltin, CreatedBy: "system"})
+
+	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
+		"itemType": "skill",
+		"name":     "Builtin Tagged Skill",
+		"content":  "# Tagged",
+		"tags":     []string{"planning"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	tags, ok := item["tags"].([]interface{})
+	if !ok || len(tags) != 1 {
+		t.Fatalf("expected builtin tag in response, got %v", item["tags"])
 	}
 }
 

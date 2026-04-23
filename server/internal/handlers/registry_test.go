@@ -90,6 +90,7 @@ func setupTestDB(t *testing.T) func() {
 			source_path          TEXT,
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
+			source               TEXT NOT NULL DEFAULT '',
 			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
 			favorite_count       INTEGER DEFAULT 0,
@@ -201,6 +202,20 @@ func setupTestDB(t *testing.T) func() {
 			created_at DATETIME,
 			UNIQUE(item_id, user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS item_tag_dicts (
+			id TEXT PRIMARY KEY,
+			slug TEXT NOT NULL UNIQUE,
+			tag_class TEXT NOT NULL DEFAULT 'custom',
+			created_by TEXT NOT NULL,
+			created_at DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS item_tags (
+			id TEXT PRIMARY KEY,
+			item_id TEXT NOT NULL,
+			tag_id TEXT NOT NULL,
+			created_at DATETIME,
+			UNIQUE(item_id, tag_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			subject_id TEXT NOT NULL,
@@ -219,6 +234,16 @@ func setupTestDB(t *testing.T) func() {
 			updated_at DATETIME,
 			deleted_at DATETIME,
 			UNIQUE(subject_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_system_roles (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			granted_by TEXT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			UNIQUE(user_id, role)
 		)`,
 		`CREATE TABLE IF NOT EXISTS experience_candidates (
 			id             TEXT PRIMARY KEY,

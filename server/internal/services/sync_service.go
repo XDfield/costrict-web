@@ -348,7 +348,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
 				}
 				if s.TagSvc != nil && len(parsed.Tags) > 0 {
-					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassFunctional, triggerUser)
+					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassCustom, triggerUser)
 					if err == nil {
 						var tagIDs []string
 						for _, t := range tags {
@@ -428,7 +428,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
 				}
 				if s.TagSvc != nil && len(parsed.Tags) > 0 {
-					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassFunctional, triggerUser)
+					tags, err := s.TagSvc.EnsureTags(parsed.Tags, TagClassCustom, triggerUser)
 					if err == nil {
 						var tagIDs []string
 						for _, t := range tags {

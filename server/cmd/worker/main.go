@@ -137,6 +137,7 @@ func runWorker() {
 			LLMClient:   scanLLMClient,
 			ModelName:   llmCfg.Model,
 			CategorySvc: &services.CategoryService{DB: db},
+			TagSvc:      &services.TagService{DB: db},
 		}
 
 		scanConcurrency, _ := strconv.Atoi(os.Getenv("SCAN_WORKER_CONCURRENCY"))

@@ -343,6 +343,7 @@ type CapabilityItem struct {
 	SourcePath      string               `json:"sourcePath"`
 	SourceSHA       string               `json:"sourceSha"`
 	SourceType      string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
+	Source          string               `json:"source"`                                      // 导入来源，如 anthropic/claude-code, superpower, github
 	PreviewCount    int                  `gorm:"default:0" json:"previewCount"`
 	InstallCount    int                  `gorm:"default:0" json:"installCount"`
 	FavoriteCount   int                  `gorm:"default:0" json:"favoriteCount"`
@@ -373,8 +374,8 @@ type ItemCategory struct {
 	Slug         string         `gorm:"not null;uniqueIndex"                           json:"slug"`         // 唯一标识，如 "development", "testing"
 	Icon         string         `                                                      json:"icon"`         // 图标（可选）
 	SortOrder    int            `gorm:"default:0"                                      json:"sortOrder"`    // 排序
-	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"               json:"names"`        // {"en":"Development","zh":"开发工具"}
-	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"descriptions"` // {"en":"...","zh":"..."}
+	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"               json:"names" swaggertype:"object"`        // {"en":"Development","zh":"开发工具"}
+	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."}
 	CreatedBy    string         `gorm:"not null"                                       json:"createdBy"`
 	CreatedAt    time.Time      `                                                      json:"createdAt"`
 	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
@@ -387,16 +388,13 @@ type ItemFavorite struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// ItemTagDict tag 字典表，支持 tag 分类和国际化
+// ItemTagDict tag dictionary with simplified metadata.
 type ItemTagDict struct {
-	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	Slug         string         `gorm:"not null;uniqueIndex" json:"slug"`
-	TagClass     string         `gorm:"not null;default:'custom'" json:"tagClass"` // system | functional | custom
-	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"names"`
-	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"descriptions"`
-	CreatedBy    string         `gorm:"not null" json:"createdBy"`
-	CreatedAt    time.Time      `json:"createdAt"`
-	UpdatedAt    time.Time      `json:"updatedAt"`
+	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Slug      string    `gorm:"not null;uniqueIndex" json:"slug"`
+	TagClass  string    `gorm:"not null;default:'custom'" json:"tagClass"` // system | custom
+	CreatedBy string    `gorm:"not null" json:"createdBy"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // ItemTag item-tag 关联表（多对多）
@@ -477,6 +475,7 @@ type SecurityScan struct {
 	TriggerType     string         `gorm:"not null" json:"triggerType"` // create | update | sync | manual
 	ScanModel       string         `json:"scanModel"`
 	Category        string         `gorm:"default:''" json:"category"`
+	BuiltinTags     datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"builtinTags" swaggertype:"array,string"`
 	RiskLevel       string         `gorm:"default:''" json:"riskLevel"` // clean | low | medium | high | extreme
 	Verdict         string         `gorm:"default:''" json:"verdict"`   // safe | caution | reject
 	RedFlags        datatypes.JSON `gorm:"type:jsonb;default:'[]'" json:"redFlags" swaggertype:"array,object"`

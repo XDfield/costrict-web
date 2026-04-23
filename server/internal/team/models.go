@@ -38,7 +38,7 @@ type TeamSessionMember struct {
 	MemoryFreeMB         float64        `gorm:"default:0" json:"memoryFreeMB,omitempty"`
 	RTTMs                float64        `gorm:"default:0" json:"rttMs,omitempty"`
 	HeartbeatSuccessRate float64        `gorm:"default:0" json:"heartbeatSuccessRate,omitempty"`
-	ReportedRepoURLs     pq.StringArray `gorm:"type:text[]" json:"reportedRepoUrls,omitempty"`
+	ReportedRepoURLs     pq.StringArray `gorm:"type:text[]" json:"reportedRepoUrls,omitempty" swaggertype:"array,string"`
 	CreatedAt            time.Time      `json:"createdAt"`
 	UpdatedAt            time.Time      `json:"updatedAt"`
 	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
@@ -49,9 +49,9 @@ type TeamTask struct {
 	ID               string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	SessionID        string         `gorm:"type:uuid;not null;index" json:"sessionId"`
 	Description      string         `gorm:"type:text;not null" json:"description"`
-	RepoAffinity     pq.StringArray `gorm:"type:text[]" json:"repoAffinity,omitempty"`
-	FileHints        pq.StringArray `gorm:"type:text[]" json:"fileHints,omitempty"`
-	Dependencies     pq.StringArray `gorm:"type:text[]" json:"dependencies,omitempty"`
+	RepoAffinity     pq.StringArray `gorm:"type:text[]" json:"repoAffinity,omitempty" swaggertype:"array,string"`
+	FileHints        pq.StringArray `gorm:"type:text[]" json:"fileHints,omitempty" swaggertype:"array,string"`
+	Dependencies     pq.StringArray `gorm:"type:text[]" json:"dependencies,omitempty" swaggertype:"array,string"`
 	AssignedMemberID *string        `gorm:"type:uuid;index" json:"assignedMemberId,omitempty"`
 	Status           string         `gorm:"not null;default:'pending';index" json:"status"`
 	Priority         int            `gorm:"not null;default:5" json:"priority"`

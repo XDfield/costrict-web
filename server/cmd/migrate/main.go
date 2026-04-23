@@ -318,6 +318,7 @@ type importPayload struct {
 	Metadata    datatypes.JSON
 	Stars       *int
 	Tags        []string
+	Source      string
 }
 
 func (p importPayload) favoriteCount() int {
@@ -596,6 +597,7 @@ func buildCatalogPayload(entry externalCatalogEntry, fallbackType string) import
 		Metadata:    metadataJSON,
 		Stars:       entry.Stars,
 		Tags:        entry.Tags,
+		Source:      entry.Source,
 	}
 }
 
@@ -657,6 +659,7 @@ func buildMarkdownPayloads(sourceRoot, pattern, forceItemType string) ([]importP
 			Content:     string(b),
 			Metadata:    mustJSON(metadata),
 			Tags:        parsed.Tags,
+			Source:      inferSourceFromPath(relPath),
 		})
 	}
 	return payloads, nil
@@ -736,6 +739,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			SourcePath:      payload.SourcePath,
 			SourceSHA:       sourceSHA(payload.Content),
 			SourceType:      "direct",
+			Source:          payload.Source,
 			Status:          "active",
 			CreatedBy:       importCreatedBy,
 			UpdatedBy:       importCreatedBy,
@@ -783,6 +787,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		"metadata":       payload.Metadata,
 		"source_path":    payload.SourcePath,
 		"source_sha":     sourceSHA(payload.Content),
+		"source":         payload.Source,
 		"updated_by":     importCreatedBy,
 		"favorite_count": payload.favoriteCount(),
 	}
@@ -824,7 +829,7 @@ func syncItemTags(db *gorm.DB, itemID string, tags []string) error {
 		return nil
 	}
 	tagSvc := &services.TagService{DB: db}
-	tagDicts, err := tagSvc.EnsureTags(tags, services.TagClassFunctional, importCreatedBy)
+	tagDicts, err := tagSvc.EnsureTags(tags, services.TagClassCustom, importCreatedBy)
 	if err != nil {
 		return fmt.Errorf("ensure tags: %w", err)
 	}
@@ -872,6 +877,17 @@ func inferName(path string) string {
 		return "Imported Item"
 	}
 	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+// inferSourceFromPath extracts the platform/org name from paths like:
+// platforms/claude-code/skills/.../SKILL.md -> claude-code
+// platforms/superpower/commands/.../xxx.md -> superpower
+func inferSourceFromPath(relPath string) string {
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	if len(parts) >= 2 && parts[0] == "platforms" {
+		return parts[1]
+	}
+	return ""
 }
 
 func mustJSON(v any) datatypes.JSON {
