@@ -1356,7 +1356,9 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        type        query     string   false  "Filter by item type"
 // @Param        status      query     string   false  "Filter by status (default: active)"
 // @Param        search      query     string   false  "Search by name or description"
-// @Param        category    query     string   false  "Filter by category"
+// @Param        category    query     string   false  "Filter by category (legacy single value)"
+// @Param        categories  query     string   false  "Filter by categories (comma-separated)"
+// @Param        securityStatuses  query     string   false  "Filter by security statuses (comma-separated)"
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
 // @Param        page        query     int      false  "Page number (default: 1)"
@@ -1400,8 +1402,31 @@ func ListAllItems(c *gin.Context) {
 		like := database.ILike(db)
 		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
 	}
-	if category := c.Query("category"); category != "" {
+	if categoriesRaw := c.Query("categories"); categoriesRaw != "" {
+		categories := make([]string, 0)
+		for _, part := range strings.Split(categoriesRaw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				categories = append(categories, part)
+			}
+		}
+		if len(categories) > 0 {
+			query = query.Where("category IN ?", categories)
+		}
+	} else if category := c.Query("category"); category != "" {
 		query = query.Where("category = ?", category)
+	}
+	if securityStatusesRaw := c.Query("securityStatuses"); securityStatusesRaw != "" {
+		securityStatuses := make([]string, 0)
+		for _, part := range strings.Split(securityStatusesRaw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				securityStatuses = append(securityStatuses, part)
+			}
+		}
+		if len(securityStatuses) > 0 {
+			query = query.Where("security_status IN ?", securityStatuses)
+		}
 	}
 	if registryID := c.Query("registryId"); registryID != "" {
 		query = query.Where("registry_id = ?", registryID)
@@ -1490,6 +1515,47 @@ func ListAllItems(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
+}
+
+// ListItemFilterOptions godoc
+// @Summary      List item filter options
+// @Description  Get filter options for item list, including categories and security statuses with i18n names
+// @Tags         items
+// @Produce      json
+// @Success      200  {object}  object{categories=[]models.ItemCategory,securityStatuses=[]object}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/filter-options [get]
+func ListItemFilterOptions(c *gin.Context) {
+	db := database.GetDB()
+
+	var categories []models.ItemCategory
+	if err := db.Order("sort_order ASC, slug ASC").Find(&categories).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load item filter options"})
+		return
+	}
+
+	type SecurityStatusOption struct {
+		Value string            `json:"value"`
+		Names map[string]string `json:"names"`
+	}
+
+	securityStatuses := []SecurityStatusOption{
+		{Value: "unscanned", Names: map[string]string{"zh": "待扫描", "en": "Unscanned"}},
+		{Value: "pending", Names: map[string]string{"zh": "扫描中...", "en": "Scanning..."}},
+		{Value: "scanning", Names: map[string]string{"zh": "扫描中...", "en": "Scanning..."}},
+		{Value: "clean", Names: map[string]string{"zh": "安全", "en": "Safe"}},
+		{Value: "low", Names: map[string]string{"zh": "安全", "en": "Safe"}},
+		{Value: "medium", Names: map[string]string{"zh": "注意", "en": "Caution"}},
+		{Value: "high", Names: map[string]string{"zh": "高风险", "en": "High Risk"}},
+		{Value: "extreme", Names: map[string]string{"zh": "极高风险", "en": "Extreme Risk"}},
+		{Value: "error", Names: map[string]string{"zh": "扫描失败", "en": "Scan Failed"}},
+		{Value: "skipped", Names: map[string]string{"zh": "已跳过", "en": "Skipped"}},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"categories":       categories,
+		"securityStatuses": securityStatuses,
+	})
 }
 
 // CreateItemDirect godoc
