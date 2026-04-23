@@ -29,6 +29,7 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/authz"
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
@@ -37,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/kanban"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -206,6 +208,8 @@ func main() {
 	deviceSvc := &services.DeviceService{DB: db}
 	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
+
+	authzModule := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{}, casdoorEndpoint, jwksProvider)
 
 	api := r.Group("/api")
 	{
@@ -388,10 +392,15 @@ func main() {
 				workspaces.DELETE("/:workspaceID/directories/:directoryID", handlers.DeleteWorkspaceDirectoryHandler(workspaceSvc))
 			}
 
+			authzModule.RegisterAPIRoutes(authed)
+
 			notificationModule := notification.New(db, cfg.CloudBaseURL)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
+
+			kanbanModule := kanban.New()
+			kanbanModule.RegisterRoutes(authed, authzModule.Service)
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
@@ -403,6 +412,7 @@ func main() {
 			_ = notificationModule
 			_ = systemRoleModule
 			_ = projectModule
+			_ = kanbanModule
 		}
 	}
 
@@ -426,6 +436,7 @@ func main() {
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
 	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
+	authzModule.RegisterInternalRoutes(internalGroup)
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 

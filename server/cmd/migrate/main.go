@@ -303,6 +303,7 @@ type externalCatalogEntry struct {
 	Tags        []string       `json:"tags"`
 	TechStack   []string       `json:"tech_stack"`
 	Source      string         `json:"source"`
+	Stars       *int           `json:"stars"`
 }
 
 type importPayload struct {
@@ -315,7 +316,16 @@ type importPayload struct {
 	Version     string
 	Content     string
 	Metadata    datatypes.JSON
+	Stars       *int
+	Tags        []string
 	Source      string
+}
+
+func (p importPayload) favoriteCount() int {
+	if p.Stars == nil {
+		return 0
+	}
+	return *p.Stars
 }
 
 type importStats struct {
@@ -436,43 +446,85 @@ func ensurePublicRegistry(db *gorm.DB) error {
 }
 
 func buildImportPayloads(sourceRoot string) ([]importPayload, error) {
-	payloads := make([]importPayload, 0, 2048)
+	payloads := make([]importPayload, 0, 4096)
 
 	mcpEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "mcp", "index.json"))
 	if err != nil {
-		return nil, err
-	}
-	for _, entry := range mcpEntries {
-		payloads = append(payloads, buildCatalogPayload(entry, "mcp"))
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		log.Printf("Warning: catalog/mcp/index.json not found, skipping mcp import")
+	} else {
+		for _, entry := range mcpEntries {
+			payloads = append(payloads, buildCatalogPayload(entry, "mcp"))
+		}
 	}
 
 	skillEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "skills", "index.json"))
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		log.Printf("Warning: catalog/skills/index.json not found, skipping skill import")
+	} else {
+		for _, entry := range skillEntries {
+			payloads = append(payloads, buildCatalogPayload(entry, "skill"))
+		}
 	}
-	for _, entry := range skillEntries {
-		payloads = append(payloads, buildCatalogPayload(entry, "skill"))
+
+	ruleEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "rules", "index.json"))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		log.Printf("Warning: catalog/rules/index.json not found, skipping rule import")
+	} else {
+		for _, entry := range ruleEntries {
+			payloads = append(payloads, buildCatalogPayload(entry, "rule"))
+		}
+	}
+
+	promptEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "prompts", "index.json"))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		log.Printf("Warning: catalog/prompts/index.json not found, skipping prompt import")
+	} else {
+		for _, entry := range promptEntries {
+			payloads = append(payloads, buildCatalogPayload(entry, "prompt"))
+		}
 	}
 
 	// Import concrete SKILL.md files and let them override catalog summary records
 	// with the same (itemType, slug), so skill content is actual markdown.
-	skillMarkdownPayloads, err := buildMarkdownPayloads(sourceRoot, "platforms/*/skills/**/SKILL.md", "skill")
-	if err != nil {
-		return nil, err
+	// Support both everything-ai-coding (platforms/*/) and awesome-claude-skills (flat) layouts.
+	skillPatterns := []string{"platforms/*/skills/**/SKILL.md", "skills/**/SKILL.md"}
+	for _, pattern := range skillPatterns {
+		skillMarkdownPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "skill")
+		if err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, skillMarkdownPayloads...)
 	}
-	payloads = append(payloads, skillMarkdownPayloads...)
 
-	commandPayloads, err := buildMarkdownPayloads(sourceRoot, "platforms/*/commands/**/*.md", "command")
-	if err != nil {
-		return nil, err
+	commandPatterns := []string{"platforms/*/commands/**/*.md", "commands/**/*.md"}
+	for _, pattern := range commandPatterns {
+		commandPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "command")
+		if err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, commandPayloads...)
 	}
-	payloads = append(payloads, commandPayloads...)
 
-	agentPayloads, err := buildMarkdownPayloads(sourceRoot, "platforms/*/agents/**/*.md", "subagent")
-	if err != nil {
-		return nil, err
+	agentPatterns := []string{"platforms/*/agents/**/*.md", "agents/**/*.md"}
+	for _, pattern := range agentPatterns {
+		agentPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "subagent")
+		if err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, agentPayloads...)
 	}
-	payloads = append(payloads, agentPayloads...)
 
 	return dedupePayloads(payloads), nil
 }
@@ -502,6 +554,9 @@ func buildCatalogPayload(entry externalCatalogEntry, fallbackType string) import
 		"install":    entry.Install,
 		"tags":       entry.Tags,
 		"techStack":  entry.TechStack,
+	}
+	if entry.Stars != nil {
+		metadata["stars"] = *entry.Stars
 	}
 	metadataJSON := mustJSON(metadata)
 
@@ -540,6 +595,8 @@ func buildCatalogPayload(entry externalCatalogEntry, fallbackType string) import
 		Version:     version,
 		Content:     string(contentBytes),
 		Metadata:    metadataJSON,
+		Stars:       entry.Stars,
+		Tags:        entry.Tags,
 		Source:      entry.Source,
 	}
 }
@@ -601,6 +658,7 @@ func buildMarkdownPayloads(sourceRoot, pattern, forceItemType string) ([]importP
 			Version:     version,
 			Content:     string(b),
 			Metadata:    mustJSON(metadata),
+			Tags:        parsed.Tags,
 			Source:      inferSourceFromPath(relPath),
 		})
 	}
@@ -685,6 +743,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			Status:          "active",
 			CreatedBy:       importCreatedBy,
 			UpdatedBy:       importCreatedBy,
+			FavoriteCount:   payload.favoriteCount(),
 		}
 		if err := db.Omit("Embedding").Create(&item).Error; err != nil {
 			return fmt.Errorf("create capability item: %w", err)
@@ -702,6 +761,9 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		if err := db.Create(&version).Error; err != nil {
 			return fmt.Errorf("create capability version: %w", err)
 		}
+		if err := syncItemTags(db, item.ID, payload.Tags); err != nil {
+			return fmt.Errorf("sync tags for new item %s: %w", item.ID, err)
+		}
 		return nil
 	}
 
@@ -716,23 +778,28 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 	}
 
 	updates := map[string]any{
-		"name":        payload.Name,
-		"description": payload.Description,
-		"category":    payload.Category,
-		"version":     payload.Version,
-		"content":     payload.Content,
-		"content_md5": contentMD5,
-		"metadata":    payload.Metadata,
-		"source_path": payload.SourcePath,
-		"source_sha":  sourceSHA(payload.Content),
-		"source":      payload.Source,
-		"updated_by":  importCreatedBy,
+		"name":           payload.Name,
+		"description":    payload.Description,
+		"category":       payload.Category,
+		"version":        payload.Version,
+		"content":        payload.Content,
+		"content_md5":    contentMD5,
+		"metadata":       payload.Metadata,
+		"source_path":    payload.SourcePath,
+		"source_sha":     sourceSHA(payload.Content),
+		"source":         payload.Source,
+		"updated_by":     importCreatedBy,
+		"favorite_count": payload.favoriteCount(),
 	}
 	if contentMD5 != existing.ContentMD5 {
 		updates["current_revision"] = existing.CurrentRevision + 1
 	}
 	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update capability item: %w", err)
+	}
+
+	if err := syncItemTags(db, existing.ID, payload.Tags); err != nil {
+		return fmt.Errorf("sync tags for updated item %s: %w", existing.ID, err)
 	}
 
 	if contentMD5 == existing.ContentMD5 {
@@ -754,6 +821,25 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		return fmt.Errorf("create capability version: %w", err)
 	}
 
+	return nil
+}
+
+func syncItemTags(db *gorm.DB, itemID string, tags []string) error {
+	if db == nil || len(tags) == 0 {
+		return nil
+	}
+	tagSvc := &services.TagService{DB: db}
+	tagDicts, err := tagSvc.EnsureTags(tags, services.TagClassCustom, importCreatedBy)
+	if err != nil {
+		return fmt.Errorf("ensure tags: %w", err)
+	}
+	tagIDs := make([]string, 0, len(tagDicts))
+	for _, t := range tagDicts {
+		tagIDs = append(tagIDs, t.ID)
+	}
+	if err := tagSvc.SetItemTags(itemID, tagIDs); err != nil {
+		return fmt.Errorf("set item tags: %w", err)
+	}
 	return nil
 }
 
