@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -94,6 +95,7 @@ const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
   "category": "从固定分类 slug 列表中选择一个",
   "risk_level": "clean | low | medium | high | extreme",
   "verdict": "safe | caution | reject",
+  "builtin_tags": ["从给定 builtin 标签 slug 列表中选择 0-3 个最合适、且当前尚未存在的标签"],
   "red_flags": ["具体描述发现的红线行为，引用原文"],
   "permissions": {
     "files": ["列出需要访问的文件路径"],
@@ -120,6 +122,19 @@ const scanUserPromptTemplate = `请对以下 AI 能力项进行安全审查：
 ## 配置信息（metadata）
 %s
 
+## 当前已有标签
+%s
+
+## 可选 builtin 标签 slug 列表
+%s
+
+如果你认为该能力项适合补充 builtin 标签，请遵循以下规则：
+- 只能从上述 builtin 标签 slug 列表中选择
+- 不能选择“当前已有标签”中已经存在的标签
+- 最多选择 3 个
+- 优先选择最能概括该能力项主题/场景的标签，不要为了凑数而选择
+- 如果没有明显合适的 builtin 标签，返回空数组
+
 ## 完整内容
 %s
 
@@ -131,6 +146,7 @@ type ScanReport struct {
 	Category        string      `json:"category"`
 	RiskLevel       string      `json:"risk_level"`
 	Verdict         string      `json:"verdict"`
+	BuiltinTags     []string    `json:"builtin_tags"`
 	RedFlags        []string    `json:"red_flags"`
 	Permissions     Permissions `json:"permissions"`
 	Summary         string      `json:"summary"`
@@ -148,6 +164,7 @@ type ScanService struct {
 	LLMClient   *llm.Client
 	ModelName   string
 	CategorySvc *CategoryService
+	TagSvc       *TagService
 }
 
 func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision int, triggerType string) (*models.SecurityScan, error) {
@@ -165,6 +182,28 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		metaStr = string(item.Metadata)
 	}
 
+	existingTagsStr := "[]"
+	builtinTagsStr := "[]"
+	validBuiltinSlugs := make(map[string]struct{})
+	existingTagSlugs := make(map[string]struct{})
+	if s.TagSvc != nil {
+		existingTagMap, tagErr := s.TagSvc.GetItemTags([]string{itemID})
+		if tagErr == nil {
+			existingTags := existingTagMap[itemID]
+			existingTagsStr = marshalTagSlugs(existingTags)
+			for _, tag := range existingTags {
+				existingTagSlugs[tag.Slug] = struct{}{}
+			}
+		}
+		builtinTags, tagErr := s.TagSvc.ListByClass(TagClassBuiltin)
+		if tagErr == nil {
+			builtinTagsStr = marshalTagSlugs(builtinTags)
+			for _, tag := range builtinTags {
+				validBuiltinSlugs[tag.Slug] = struct{}{}
+			}
+		}
+	}
+
 	content := truncateContent(item.Content, maxInputRunes)
 	userPrompt := fmt.Sprintf(scanUserPromptTemplate,
 		item.Name,
@@ -172,11 +211,16 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		item.SourcePath,
 		item.Description,
 		metaStr,
+		existingTagsStr,
+		builtinTagsStr,
 		content,
 	)
 
 	report, rawOutput, err := s.callLLMWithRetry(ctx, userPrompt)
 	durationMs := time.Since(startTime).Milliseconds()
+	if err == nil {
+		report.BuiltinTags = filterSuggestedBuiltinTags(report.BuiltinTags, validBuiltinSlugs, existingTagSlugs)
+	}
 
 	scanRecord := &models.SecurityScan{
 		ID:           uuid.New().String(),
@@ -211,9 +255,11 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 	}
 
 	redFlagsJSON, _ := json.Marshal(report.RedFlags)
+	builtinTagsJSON, _ := json.Marshal(nonNilStrings(report.BuiltinTags))
 	permsJSON, _ := json.Marshal(report.Permissions)
 	recsJSON, _ := json.Marshal(report.Recommendations)
 
+	scanRecord.BuiltinTags = datatypes.JSON(builtinTagsJSON)
 	scanRecord.RiskLevel = report.RiskLevel
 	scanRecord.Verdict = report.Verdict
 	scanRecord.Summary = report.Summary
@@ -236,8 +282,61 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 	if scanRecord.Category != "" && s.CategorySvc != nil {
 		_, _ = s.CategorySvc.EnsureCategory(scanRecord.Category, "scan")
 	}
+	if s.TagSvc != nil {
+		_ = s.backfillBuiltinTags(item.ID, report.BuiltinTags)
+	}
 
 	return scanRecord, nil
+}
+
+func (s *ScanService) backfillBuiltinTags(itemID string, suggestedSlugs []string) error {
+	if s.TagSvc == nil || len(suggestedSlugs) == 0 {
+		return nil
+	}
+	builtinTags, err := s.TagSvc.ListByClass(TagClassBuiltin)
+	if err != nil || len(builtinTags) == 0 {
+		return err
+	}
+	builtinBySlug := make(map[string]models.ItemTagDict, len(builtinTags))
+	for _, tag := range builtinTags {
+		builtinBySlug[tag.Slug] = tag
+	}
+	existingTagMap, err := s.TagSvc.GetItemTags([]string{itemID})
+	if err != nil {
+		return err
+	}
+	existingTags := existingTagMap[itemID]
+	existingBySlug := make(map[string]struct{}, len(existingTags))
+	mergedIDs := make([]string, 0, len(existingTags)+len(suggestedSlugs))
+	seenIDs := make(map[string]struct{}, len(existingTags)+len(suggestedSlugs))
+	for _, tag := range existingTags {
+		existingBySlug[tag.Slug] = struct{}{}
+		if _, ok := seenIDs[tag.ID]; ok {
+			continue
+		}
+		seenIDs[tag.ID] = struct{}{}
+		mergedIDs = append(mergedIDs, tag.ID)
+	}
+	added := false
+	for _, slug := range normalizeSuggestedTagSlugs(suggestedSlugs) {
+		if _, exists := existingBySlug[slug]; exists {
+			continue
+		}
+		tag, ok := builtinBySlug[slug]
+		if !ok {
+			continue
+		}
+		if _, exists := seenIDs[tag.ID]; exists {
+			continue
+		}
+		seenIDs[tag.ID] = struct{}{}
+		mergedIDs = append(mergedIDs, tag.ID)
+		added = true
+	}
+	if !added {
+		return nil
+	}
+	return s.TagSvc.SetItemTags(itemID, mergedIDs)
 }
 
 func (s *ScanService) callLLMWithRetry(ctx context.Context, userPrompt string) (*ScanReport, string, error) {
@@ -273,8 +372,79 @@ func (s *ScanService) callLLM(ctx context.Context, userPrompt string) (*ScanRepo
 	if !isValidScanCategory(report.Category) {
 		return nil, raw, fmt.Errorf("invalid category in LLM output: %q", report.Category)
 	}
+	report.BuiltinTags = limitSuggestedTagSlugs(normalizeSuggestedTagSlugs(report.BuiltinTags), 3)
 
 	return &report, raw, nil
+}
+
+func marshalTagSlugs(tags []models.ItemTagDict) string {
+	if len(tags) == 0 {
+		return "[]"
+	}
+	slugs := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		slugs = append(slugs, tag.Slug)
+	}
+	sort.Strings(slugs)
+	b, err := json.Marshal(slugs)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func normalizeSuggestedTagSlugs(slugs []string) []string {
+	if len(slugs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(slugs))
+	result := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		slug = normalizeTagSlug(slug)
+		if slug == "" {
+			continue
+		}
+		if _, ok := seen[slug]; ok {
+			continue
+		}
+		seen[slug] = struct{}{}
+		result = append(result, slug)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func limitSuggestedTagSlugs(slugs []string, limit int) []string {
+	if limit <= 0 || len(slugs) <= limit {
+		return slugs
+	}
+	return slugs[:limit]
+}
+
+func filterSuggestedBuiltinTags(slugs []string, validBuiltinSlugs map[string]struct{}, existingTagSlugs map[string]struct{}) []string {
+	if len(slugs) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if len(validBuiltinSlugs) > 0 {
+			if _, ok := validBuiltinSlugs[slug]; !ok {
+				continue
+			}
+		}
+		if _, exists := existingTagSlugs[slug]; exists {
+			continue
+		}
+		result = append(result, slug)
+	}
+	return limitSuggestedTagSlugs(result, 3)
+}
+
+func nonNilStrings(items []string) []string {
+	if items == nil {
+		return []string{}
+	}
+	return items
 }
 
 func reportCategoryValue(report *ScanReport) string {
