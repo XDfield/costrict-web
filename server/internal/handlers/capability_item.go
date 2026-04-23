@@ -20,6 +20,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -64,6 +65,50 @@ func enqueueScanAsync(itemID string, revision int, triggerType string) {
 			log.Printf("scan enqueue failed for item %s: %v", itemID, err)
 		}
 	}()
+}
+
+func callerIsPlatformAdmin(c *gin.Context, db *gorm.DB) bool {
+	userID := c.GetString(middleware.UserIDKey)
+	if userID == "" || db == nil {
+		return false
+	}
+	service := systemrole.NewSystemRoleService(db)
+	hasRole, err := service.HasRole(userID, systemrole.SystemRolePlatformAdmin)
+	return err == nil && hasRole
+}
+
+func resolveAssignableTags(tagSvc *services.TagService, slugs []string, createdBy string, allowSystem bool) ([]string, error) {
+	if tagSvc == nil {
+		return nil, nil
+	}
+	resolved, err := tagSvc.ResolveOrCreateForAssignment(slugs, createdBy)
+	if err != nil {
+		return nil, err
+	}
+	tagIDs := make([]string, 0, len(resolved)+1)
+	for _, tag := range resolved {
+		if tag.TagClass == services.TagClassSystem && !allowSystem {
+			continue
+		}
+		tagIDs = append(tagIDs, tag.ID)
+	}
+	seen := make(map[string]struct{}, len(tagIDs))
+	unique := make([]string, 0, len(tagIDs))
+	for _, id := range tagIDs {
+		if _, ok := seen[id]; ok || id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique, nil
+}
+
+func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []string) error {
+	if tagSvc == nil {
+		return nil
+	}
+	return tagSvc.SetItemTags(itemID, tagIDs)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +285,16 @@ func registryRepoID(db *gorm.DB, registryID string) string {
 	return repoID
 }
 
+func isUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicate key value violates unique constraint") ||
+		strings.Contains(msg, "duplicated key not allowed")
+}
+
 // persistNewItem creates an item, its initial version, optional assets and artifact
 // in a single DB transaction. No storage I/O or async work happens here.
 func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
@@ -325,8 +380,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		return nil
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") ||
-			strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+		if isUniqueConstraintError(err) {
 			return nil, ErrSlugConflict
 		}
 		return nil, err
@@ -398,7 +452,36 @@ func newVersionResponse(version models.CapabilityVersion) VersionResponse {
 	return resp
 }
 
+func reconcileItemCurrentRevision(db *gorm.DB, item *models.CapabilityItem) {
+	if item == nil || item.ID == "" {
+		return
+	}
+
+	var latestRevision int
+	if err := db.Model(&models.CapabilityVersion{}).
+		Where("item_id = ?", item.ID).
+		Select("COALESCE(MAX(revision), 0)").
+		Scan(&latestRevision).Error; err != nil {
+		return
+	}
+
+	if latestRevision <= 0 || item.CurrentRevision == latestRevision {
+		return
+	}
+
+	item.CurrentRevision = latestRevision
+	_ = db.Model(&models.CapabilityItem{}).
+		Where("id = ?", item.ID).
+		Update("current_revision", latestRevision).Error
+	}
+
 func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
+	reconcileItemCurrentRevision(db, &item)
+	if TagSvc != nil && item.ID != "" && len(item.Tags) == 0 {
+		if tagsMap, err := TagSvc.GetItemTags([]string{item.ID}); err == nil && tagsMap != nil {
+			item.Tags = tagsMap[item.ID]
+		}
+	}
 	resp := ItemResponse{CapabilityItem: item}
 	resp.CurrentVersionLabel = services.NewContentHashService().BuildVersionLabel(item.CurrentRevision)
 	if len(item.Assets) > 0 {
@@ -429,14 +512,15 @@ func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) I
 
 func itemListSortOrder(sortBy, sortOrder string) string {
 	column := map[string]string{
-		"":              "created_at",
+		"":              "updated_at",
 		"createdAt":     "created_at",
+		"updatedAt":     "updated_at",
 		"previewCount":  "preview_count",
 		"installCount":  "install_count",
 		"favoriteCount": "favorite_count",
 	}[sortBy]
 	if column == "" {
-		column = "created_at"
+		column = "updated_at"
 	}
 
 	direction := "DESC"
@@ -444,7 +528,48 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 		direction = "ASC"
 	}
 
-	return fmt.Sprintf("%s %s, created_at DESC", column, direction)
+	if column == "updated_at" {
+		return fmt.Sprintf("%s %s", column, direction)
+	}
+
+	return fmt.Sprintf("%s %s, updated_at DESC", column, direction)
+}
+
+func parseTagSlugs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	tagSlugs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		slug := strings.TrimSpace(part)
+		if slug == "" {
+			continue
+		}
+		if _, ok := seen[slug]; ok {
+			continue
+		}
+		seen[slug] = struct{}{}
+		tagSlugs = append(tagSlugs, slug)
+	}
+	return tagSlugs
+}
+
+func applyItemTagsFilter(query *gorm.DB, rawTags string) *gorm.DB {
+	tagSlugs := parseTagSlugs(rawTags)
+	if len(tagSlugs) == 0 {
+		return query
+	}
+
+	return query.Where(`id IN (
+		SELECT item_tags.item_id
+		FROM item_tags
+		JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id
+		WHERE item_tag_dicts.slug IN ?
+		GROUP BY item_tags.item_id
+		HAVING COUNT(DISTINCT item_tag_dicts.slug) = ?
+	)`, tagSlugs, len(tagSlugs))
 }
 
 // ListItems godoc
@@ -458,7 +583,7 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 // @Param        search    query     string  false  "Search by name or description"
 // @Param        page      query     int     false  "Page number (default: 1)"
 // @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
-// @Param        sortBy    query     string  false  "Sort by createdAt, previewCount, installCount, or favoriteCount"
+// @Param        sortBy    query     string  false  "Sort by updatedAt, createdAt, previewCount, installCount, or favoriteCount"
 // @Param        sortOrder query     string  false  "Sort order: asc or desc (default: desc)"
 // @Success      200       {object}  object{items=[]models.CapabilityItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500       {object}  object{error=string}
@@ -588,7 +713,7 @@ func CreateItem(c *gin.Context) {
 
 // GetItem godoc
 // @Summary      Get item
-// @Description  Get skill item by ID with registry, versions, artifacts and repo visibility
+// @Description  Get skill item by ID with registry, versions, artifacts, repo visibility, and populated tags
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -764,11 +889,6 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		newRevision = item.CurrentRevision
 	}
 
-	if result := db.Save(&item); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
-		return
-	}
-
 	if versionedChanged {
 		createdBy := item.UpdatedBy
 		if createdBy == "" {
@@ -777,7 +897,10 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		commitMsg := req.CommitMsg
 		itemID := item.ID
 		itemContent := item.Content
-		_ = db.Transaction(func(tx *gorm.DB) error {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Save(&item).Error; err != nil {
+				return err
+			}
 			var versionAssetSnapshots []models.CapabilityVersionAsset
 			if tx.Migrator().HasTable(&models.CapabilityVersionAsset{}) {
 				var currentAssets []models.CapabilityAsset
@@ -813,9 +936,17 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 				}
 			}
 			return nil
-		})
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
+			return
+		}
 		if contentChanged {
 			enqueueScanAsync(itemID, newRevision, "update")
+		}
+	} else {
+		if result := db.Save(&item); result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
+			return
 		}
 	}
 
@@ -1363,7 +1494,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
-// @Param        sortBy      query     string   false  "Sort by createdAt, previewCount, installCount, or favoriteCount"
+// @Param        sortBy      query     string   false  "Sort by updatedAt, createdAt, previewCount, installCount, or favoriteCount"
 // @Param        sortOrder   query     string   false  "Sort order: asc or desc (default: desc)"
 // @Success      200         {object}  object{items=[]object,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      500         {object}  object{error=string}
@@ -1434,10 +1565,7 @@ func ListAllItems(c *gin.Context) {
 	if c.Query("favorited") == "true" && uid != "" {
 		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", uid)
 	}
-	if tags := c.Query("tags"); tags != "" {
-		tagSlugs := strings.Split(tags, ",")
-		query = query.Where("id IN (SELECT item_id FROM item_tags JOIN item_tag_dicts ON item_tags.tag_id = item_tag_dicts.id WHERE item_tag_dicts.slug IN ?)", tagSlugs)
-	}
+	query = applyItemTagsFilter(query, c.Query("tags"))
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
@@ -1541,11 +1669,11 @@ func ListItemFilterOptions(c *gin.Context) {
 
 	securityStatuses := []SecurityStatusOption{
 		{Value: "unscanned", Names: map[string]string{"zh": "待扫描", "en": "Unscanned"}},
-		{Value: "pending", Names: map[string]string{"zh": "扫描中...", "en": "Scanning..."}},
-		{Value: "scanning", Names: map[string]string{"zh": "扫描中...", "en": "Scanning..."}},
-		{Value: "clean", Names: map[string]string{"zh": "安全", "en": "Safe"}},
-		{Value: "low", Names: map[string]string{"zh": "安全", "en": "Safe"}},
-		{Value: "medium", Names: map[string]string{"zh": "注意", "en": "Caution"}},
+		{Value: "pending", Names: map[string]string{"zh": "等待扫描", "en": "Pending Scan"}},
+		{Value: "scanning", Names: map[string]string{"zh": "扫描中", "en": "Scanning"}},
+		{Value: "clean", Names: map[string]string{"zh": "无风险", "en": "No Risk"}},
+		{Value: "low", Names: map[string]string{"zh": "低风险", "en": "Low Risk"}},
+		{Value: "medium", Names: map[string]string{"zh": "中风险", "en": "Medium Risk"}},
 		{Value: "high", Names: map[string]string{"zh": "高风险", "en": "High Risk"}},
 		{Value: "extreme", Names: map[string]string{"zh": "极高风险", "en": "Extreme Risk"}},
 		{Value: "error", Names: map[string]string{"zh": "扫描失败", "en": "Scan Failed"}},
@@ -1560,7 +1688,7 @@ func ListItemFilterOptions(c *gin.Context) {
 
 // CreateItemDirect godoc
 // @Summary      Create item (direct)
-// @Description  Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted.
+// @Description  Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
@@ -1625,6 +1753,13 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 
 	if req.SourcePath == "" {
 		req.SourcePath = defaultSourcePathForItemType(req.ItemType)
+	}
+	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, req.CreatedBy, callerIsPlatformAdmin(c, h.db))
+	if err != nil {
+		if errors.Is(err, services.ErrInvalidTagSlug) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tag slug may only contain lowercase letters, numbers, hyphens, and underscores", "code": "invalid_tag_slug"})
+			return
+		}
 	}
 	assetRecords, archiveAssets, err := buildTextAssetRecords(req.Assets, req.SourcePath)
 	if err != nil {
@@ -1695,14 +1830,10 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
 	}
 
-	if h.tagSvc != nil && len(req.Tags) > 0 {
-		tags, err := h.tagSvc.EnsureTags(req.Tags, services.TagClassCustom, req.CreatedBy)
-		if err == nil {
-			var tagIDs []string
-			for _, t := range tags {
-				tagIDs = append(tagIDs, t.ID)
-			}
-			h.tagSvc.SetItemTags(item.ID, tagIDs)
+	if h.tagSvc != nil {
+		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign item tags"})
+			return
 		}
 	}
 
@@ -1837,6 +1968,13 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	if version == "" {
 		version = "1.0.0"
 	}
+	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, result.Parsed.Tags, createdBy, callerIsPlatformAdmin(c, h.db))
+	if err != nil {
+		if errors.Is(err, services.ErrInvalidTagSlug) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Tag slug may only contain lowercase letters, numbers, hyphens, and underscores", "code": "invalid_tag_slug"})
+			return
+		}
+	}
 
 	itemID := uuid.New().String()
 	ctx := context.Background()
@@ -1956,14 +2094,10 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		}()
 	}
 
-	if h.tagSvc != nil && len(result.Parsed.Tags) > 0 {
-		tags, err := h.tagSvc.EnsureTags(result.Parsed.Tags, services.TagClassFunctional, createdBy)
-		if err == nil {
-			var tagIDs []string
-			for _, t := range tags {
-				tagIDs = append(tagIDs, t.ID)
-			}
-			h.tagSvc.SetItemTags(item.ID, tagIDs)
+	if h.tagSvc != nil {
+		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign item tags"})
+			return
 		}
 	}
 
