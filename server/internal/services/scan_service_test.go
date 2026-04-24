@@ -228,6 +228,7 @@ func TestScanItemBackfillsBuiltinTagsFromScanResult(t *testing.T) {
 			source_path TEXT,
 			source_sha TEXT,
 			source_type TEXT DEFAULT 'direct',
+			source TEXT DEFAULT '',
 			preview_count INTEGER DEFAULT 0,
 			install_count INTEGER DEFAULT 0,
 			favorite_count INTEGER DEFAULT 0,
@@ -368,22 +369,22 @@ func TestScanItemBackfillsBuiltinTagsFromScanResult(t *testing.T) {
 		t.Fatalf("get item tags failed: %v", err)
 	}
 	got := tagMap[item.ID]
-	if len(got) != 3 {
-		t.Fatalf("expected 3 tags after backfill, got %d (%v)", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tags after backfill, got %d (%v)", len(got), got)
 	}
 	slugs := make([]string, 0, len(got))
 	for _, tag := range got {
 		slugs = append(slugs, tag.Slug)
 	}
-	if !(containsString(slugs, "auth") && containsString(slugs, "api-design") && containsString(slugs, "planning")) {
-		t.Fatalf("expected auth, api-design and planning tags, got %v", slugs)
+	if !(containsString(slugs, "auth") && containsString(slugs, "api-design")) {
+		t.Fatalf("expected auth and api-design tags, got %v", slugs)
 	}
 
 	var persistedScan models.SecurityScan
 	if err := db.Order("created_at DESC").First(&persistedScan).Error; err != nil {
 		t.Fatalf("reload persisted scan failed: %v", err)
 	}
-	if string(persistedScan.BuiltinTags) != `["api-design","planning"]` {
+	if string(persistedScan.BuiltinTags) != `["api-design"]` {
 		t.Fatalf("unexpected persisted builtinTags: %s", string(persistedScan.BuiltinTags))
 	}
 }

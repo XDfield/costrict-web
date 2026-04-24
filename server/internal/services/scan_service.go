@@ -95,7 +95,7 @@ const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
   "category": "从固定分类 slug 列表中选择一个",
   "risk_level": "clean | low | medium | high | extreme",
   "verdict": "safe | caution | reject",
-  "builtin_tags": ["从给定 builtin 标签 slug 列表中选择 0-3 个最合适、且当前尚未存在的标签"],
+  "builtin_tags": ["从给定 builtin 标签 slug 列表中选择 0-1 个最合适、且当前尚未存在的标签"],
   "red_flags": ["具体描述发现的红线行为，引用原文"],
   "permissions": {
     "files": ["列出需要访问的文件路径"],
@@ -131,7 +131,7 @@ const scanUserPromptTemplate = `请对以下 AI 能力项进行安全审查：
 如果你认为该能力项适合补充 builtin 标签，请遵循以下规则：
 - 只能从上述 builtin 标签 slug 列表中选择
 - 不能选择“当前已有标签”中已经存在的标签
-- 最多选择 3 个
+- 最多选择 1 个
 - 优先选择最能概括该能力项主题/场景的标签，不要为了凑数而选择
 - 如果没有明显合适的 builtin 标签，返回空数组
 
@@ -372,7 +372,7 @@ func (s *ScanService) callLLM(ctx context.Context, userPrompt string) (*ScanRepo
 	if !isValidScanCategory(report.Category) {
 		return nil, raw, fmt.Errorf("invalid category in LLM output: %q", report.Category)
 	}
-	report.BuiltinTags = limitSuggestedTagSlugs(normalizeSuggestedTagSlugs(report.BuiltinTags), 3)
+	report.BuiltinTags = limitSuggestedTagSlugs(normalizeSuggestedTagSlugs(report.BuiltinTags), 1)
 
 	return &report, raw, nil
 }
@@ -437,7 +437,7 @@ func filterSuggestedBuiltinTags(slugs []string, validBuiltinSlugs map[string]str
 		}
 		result = append(result, slug)
 	}
-	return limitSuggestedTagSlugs(result, 3)
+	return limitSuggestedTagSlugs(result, 1)
 }
 
 func nonNilStrings(items []string) []string {
