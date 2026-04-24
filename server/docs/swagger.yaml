@@ -84,10 +84,6 @@ definitions:
         items:
           $ref: '#/definitions/models.CapabilityArtifact'
         type: array
-      assets:
-        items:
-          $ref: '#/definitions/handlers.itemAssetPayload'
-        type: array
       category:
         type: string
       content:
@@ -161,9 +157,12 @@ definitions:
         type: string
       version:
         type: string
-      versions:
+    type: object
+  handlers.ItemAssetsResponse:
+    properties:
+      assets:
         items:
-          $ref: '#/definitions/models.CapabilityVersion'
+          $ref: '#/definitions/handlers.itemAssetPayload'
         type: array
     type: object
   handlers.MyItem:
@@ -4194,8 +4193,8 @@ paths:
       tags:
       - items
     get:
-      description: Get skill item by ID with registry, versions, artifacts, repo visibility,
-        and populated tags
+      description: Get skill item by ID with registry, artifacts, repo visibility, and
+        populated tags
       parameters:
       - description: Item ID
         in: path
@@ -4217,6 +4216,39 @@ paths:
                 type: string
             type: object
       summary: Get item
+      tags:
+      - items
+  /items/{id}/assets:
+    get:
+      description: Get current text assets of a skill item for on-demand editor loading
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.ItemAssetsResponse'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List item assets
       tags:
       - items
     put:

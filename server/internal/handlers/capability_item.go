@@ -441,11 +441,45 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 // ItemResponse wraps a CapabilityItem with optional repo visibility,
 // keeping a flat JSON structure compatible with the previous ItemWithAuthor.
 type ItemResponse struct {
-	models.CapabilityItem
-	Assets              []itemAssetPayload `json:"assets,omitempty"`
-	RepoVisibility      string             `json:"repoVisibility,omitempty"`
-	Favorited           bool               `json:"favorited"`
-	CurrentVersionLabel string             `json:"currentVersionLabel"`
+	ID                  string                      `json:"id"`
+	RegistryID          string                      `json:"registryId"`
+	RepoID              string                      `json:"repoId"`
+	Slug                string                      `json:"slug"`
+	ItemType            string                      `json:"itemType"`
+	Name                string                      `json:"name"`
+	Description         string                      `json:"description"`
+	Category            string                      `json:"category"`
+	Version             string                      `json:"version"`
+	Content             string                      `json:"content"`
+	ContentMD5          string                      `json:"contentMd5"`
+	CurrentRevision     int                         `json:"currentRevision"`
+	Metadata            datatypes.JSON              `json:"metadata" swaggertype:"object"`
+	SourcePath          string                      `json:"sourcePath"`
+	SourceSHA           string                      `json:"sourceSha"`
+	SourceType          string                      `json:"sourceType"`
+	Source              string                      `json:"source"`
+	PreviewCount        int                         `json:"previewCount"`
+	InstallCount        int                         `json:"installCount"`
+	FavoriteCount       int                         `json:"favoriteCount"`
+	Status              string                      `json:"status"`
+	SecurityStatus      string                      `json:"securityStatus"`
+	LastScanID          *string                     `json:"lastScanId,omitempty"`
+	CreatedBy           string                      `json:"createdBy"`
+	UpdatedBy           string                      `json:"updatedBy"`
+	Registry            *models.CapabilityRegistry  `json:"registry,omitempty"`
+	Artifacts           []models.CapabilityArtifact `json:"artifacts,omitempty"`
+	CreatedAt           time.Time                   `json:"createdAt"`
+	UpdatedAt           time.Time                   `json:"updatedAt"`
+	ExperienceScore     float64                     `json:"experienceScore"`
+	EmbeddingUpdatedAt  *time.Time                  `json:"embeddingUpdatedAt"`
+	Tags                []models.ItemTagDict        `json:"tags,omitempty"`
+	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
+	Favorited           bool                        `json:"favorited"`
+	CurrentVersionLabel string                      `json:"currentVersionLabel"`
+}
+
+type ItemAssetsResponse struct {
+	Assets []itemAssetPayload `json:"assets"`
 }
 
 type VersionResponse struct {
@@ -531,19 +565,40 @@ func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) I
 			item.Tags = tagsMap[item.ID]
 		}
 	}
-	resp := ItemResponse{CapabilityItem: item}
-	resp.CurrentVersionLabel = services.NewContentHashService().BuildVersionLabel(item.CurrentRevision)
-	if len(item.Assets) > 0 {
-		resp.Assets = make([]itemAssetPayload, 0, len(item.Assets))
-		for _, asset := range item.Assets {
-			resp.Assets = append(resp.Assets, itemAssetPayload{
-				RelPath:     asset.RelPath,
-				TextContent: asset.TextContent,
-				MimeType:    asset.MimeType,
-				FileSize:    asset.FileSize,
-				ContentSHA:  asset.ContentSHA,
-			})
-		}
+	resp := ItemResponse{
+		ID:                 item.ID,
+		RegistryID:         item.RegistryID,
+		RepoID:             item.RepoID,
+		Slug:               item.Slug,
+		ItemType:           item.ItemType,
+		Name:               item.Name,
+		Description:        item.Description,
+		Category:           item.Category,
+		Version:            item.Version,
+		Content:            item.Content,
+		ContentMD5:         item.ContentMD5,
+		CurrentRevision:    item.CurrentRevision,
+		Metadata:           item.Metadata,
+		SourcePath:         item.SourcePath,
+		SourceSHA:          item.SourceSHA,
+		SourceType:         item.SourceType,
+		Source:             item.Source,
+		PreviewCount:       item.PreviewCount,
+		InstallCount:       item.InstallCount,
+		FavoriteCount:      item.FavoriteCount,
+		Status:             item.Status,
+		SecurityStatus:     item.SecurityStatus,
+		LastScanID:         item.LastScanID,
+		CreatedBy:          item.CreatedBy,
+		UpdatedBy:          item.UpdatedBy,
+		Registry:           item.Registry,
+		Artifacts:          item.Artifacts,
+		CreatedAt:          item.CreatedAt,
+		UpdatedAt:          item.UpdatedAt,
+		ExperienceScore:    item.ExperienceScore,
+		EmbeddingUpdatedAt: item.EmbeddingUpdatedAt,
+		Tags:                item.Tags,
+		CurrentVersionLabel: services.NewContentHashService().BuildVersionLabel(item.CurrentRevision),
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
@@ -763,7 +818,7 @@ func CreateItem(c *gin.Context) {
 
 // GetItem godoc
 // @Summary      Get item
-// @Description  Get skill item by ID with registry, versions, artifacts, repo visibility, and populated tags
+// @Description  Get skill item by ID with registry, artifacts, repo visibility, and populated tags
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -774,12 +829,52 @@ func GetItem(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 	var item models.CapabilityItem
-	result := db.Preload("Registry").Preload("Versions").Preload("Artifacts").Preload("Assets").First(&item, "id = ?", id)
+	result := db.Preload("Registry").Preload("Artifacts").First(&item, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
 	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+}
+
+// ListItemAssets godoc
+// @Summary      List item assets
+// @Description  Get current text assets of a skill item for on-demand editor loading
+// @Tags         items
+// @Produce      json
+// @Param        id   path      string  true  "Item ID"
+// @Success      200  {object}  ItemAssetsResponse
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/assets [get]
+func ListItemAssets(c *gin.Context) {
+	id := c.Param("id")
+	db := database.GetDB()
+
+	var item models.CapabilityItem
+	if err := db.Select("id").First(&item, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	var assets []models.CapabilityAsset
+	if err := db.Where("item_id = ?", id).Order("rel_path asc").Find(&assets).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch item assets"})
+		return
+	}
+
+	resp := ItemAssetsResponse{Assets: make([]itemAssetPayload, 0, len(assets))}
+	for _, asset := range assets {
+		resp.Assets = append(resp.Assets, itemAssetPayload{
+			RelPath:     asset.RelPath,
+			TextContent: asset.TextContent,
+			MimeType:    asset.MimeType,
+			FileSize:    asset.FileSize,
+			ContentSHA:  asset.ContentSHA,
+		})
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // UpdateItem godoc

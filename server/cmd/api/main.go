@@ -236,6 +236,7 @@ func main() {
 		// Items read (anonymous can preview public items)
 		api.GET("/items", handlers.ListAllItems)
 		api.GET("/items/:id", handlers.GetItem)
+		api.GET("/items/:id/assets", handlers.ListItemAssets)
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)

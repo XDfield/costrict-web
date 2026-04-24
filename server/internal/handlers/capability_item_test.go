@@ -44,6 +44,7 @@ func newItemRouter(userID string) *gin.Engine {
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
 	r.GET("/api/items/:id", injectUser, GetItem)
+	r.GET("/api/items/:id/assets", injectUser, ListItemAssets)
 	r.PUT("/api/items/:id", injectUser, itemHandler.UpdateItem)
 	r.DELETE("/api/items/:id", injectUser, DeleteItem)
 	r.GET("/api/items/:id/versions", injectUser, ListItemVersions)
@@ -939,9 +940,8 @@ func TestUpdateItem_JSON_WithAssets(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	assets, ok := item["assets"].([]interface{})
-	if !ok || len(assets) != 1 {
-		t.Fatalf("expected 1 asset in response, got %#v", item["assets"])
+	if _, ok := item["assets"]; ok {
+		t.Fatalf("expected assets omitted from item response, got %#v", item["assets"])
 	}
 
 	var persistedAssets []models.CapabilityAsset
@@ -1185,6 +1185,75 @@ func TestListItemVersions(t *testing.T) {
 	first := versions[0].(map[string]interface{})
 	if first["versionLabel"] != "v1" {
 		t.Fatalf("expected first versionLabel=v1, got %v", first["versionLabel"])
+	}
+}
+
+func TestGetItem_ExcludesVersionsAndAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-gi-slim", Name: "gi-slim-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-gi-slim", RegistryID: "reg-gi-slim", RepoID: "repo-1", Slug: "gi-slim", ItemType: "skill",
+		Name: "GI Slim", Content: "# hello", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), SourcePath: "SKILL.md",
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-gi-slim-1", ItemID: "item-gi-slim", Revision: 1, Content: "# hello", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	assetText := "echo slim\n"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-gi-slim-1", ItemID: "item-gi-slim", RelPath: "scripts/setup.sh", TextContent: &assetText, MimeType: "text/x-sh", FileSize: int64(len([]byte(assetText))),
+	})
+
+	w := get(newItemRouter("u1"), "/api/items/item-gi-slim")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if _, ok := body["versions"]; ok {
+		t.Fatalf("expected versions omitted, got %#v", body["versions"])
+	}
+	if _, ok := body["assets"]; ok {
+		t.Fatalf("expected assets omitted, got %#v", body["assets"])
+	}
+	if body["content"] != "# hello" {
+		t.Fatalf("expected content preserved, got %#v", body["content"])
+	}
+}
+
+func TestListItemAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-lia1", Name: "lia-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-lia1", RegistryID: "reg-lia1", RepoID: "repo-1", Slug: "lia-item", ItemType: "skill",
+		Name: "LIA Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	assetText := "echo asset\n"
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-lia1", ItemID: "item-lia1", RelPath: "scripts/setup.sh", TextContent: &assetText, MimeType: "text/x-sh", FileSize: int64(len([]byte(assetText))), ContentSHA: "sha-1",
+	})
+
+	w := get(newItemRouter(""), "/api/items/item-lia1/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	assets, ok := body["assets"].([]interface{})
+	if !ok || len(assets) != 1 {
+		t.Fatalf("expected 1 asset, got %#v", body["assets"])
+	}
+	first := assets[0].(map[string]interface{})
+	if first["relPath"] != "scripts/setup.sh" {
+		t.Fatalf("unexpected relPath: %#v", first["relPath"])
+	}
+	if first["textContent"] != assetText {
+		t.Fatalf("unexpected textContent: %#v", first["textContent"])
 	}
 }
 
@@ -1949,9 +2018,8 @@ func TestCreateItemDirect_JSON_WithAssets(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	assets, ok := item["assets"].([]interface{})
-	if !ok || len(assets) != 1 {
-		t.Fatalf("expected 1 asset in response, got %#v", item["assets"])
+	if _, ok := item["assets"]; ok {
+		t.Fatalf("expected assets omitted from item response, got %#v", item["assets"])
 	}
 
 	var count int64

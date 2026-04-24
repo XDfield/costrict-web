@@ -3538,7 +3538,7 @@ const docTemplate = `{
         },
         "/items/{id}": {
             "get": {
-                "description": "Get skill item by ID with registry, versions, artifacts, repo visibility, and populated tags",
+                "description": "Get skill item by ID with registry, artifacts, repo visibility, and populated tags",
                 "produces": [
                     "application/json"
                 ],
@@ -3704,6 +3704,57 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+            },
+        "/items/{id}/assets": {
+            "get": {
+                "description": "Get current text assets of a skill item for on-demand editor loading",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "List item assets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ItemAssetsResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
                                     "type": "string"
                                 }
                             }
@@ -12531,12 +12582,6 @@ const docTemplate = `{
                         "$ref": "#/definitions/models.CapabilityArtifact"
                     }
                 },
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.itemAssetPayload"
-                    }
-                },
                 "category": {
                     "type": "string"
                 },
@@ -12645,10 +12690,15 @@ const docTemplate = `{
                 "version": {
                     "type": "string"
                 },
-                "versions": {
+            }
+        },
+        "handlers.ItemAssetsResponse": {
+            "type": "object",
+            "properties": {
+                "assets": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/models.CapabilityVersion"
+                        "$ref": "#/definitions/handlers.itemAssetPayload"
                     }
                 }
             }
