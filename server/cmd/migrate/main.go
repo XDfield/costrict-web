@@ -715,6 +715,10 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		if dryRun {
 			return nil
 		}
+		expScore := 0.0
+		if payload.Stars != nil {
+			expScore = float64(*payload.Stars)
+		}
 		item := models.CapabilityItem{
 			ID:              uuid.New().String(),
 			RegistryID:      publicRegistryID,
@@ -736,6 +740,7 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 			Status:          "active",
 			CreatedBy:       importCreatedBy,
 			UpdatedBy:       importCreatedBy,
+			ExperienceScore: expScore,
 		}
 		if err := db.Omit("Embedding").Create(&item).Error; err != nil {
 			return fmt.Errorf("create capability item: %w", err)
@@ -773,18 +778,23 @@ func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *
 		return nil
 	}
 
+	expScore := 0.0
+	if payload.Stars != nil {
+		expScore = float64(*payload.Stars)
+	}
 	updates := map[string]any{
-		"name":        payload.Name,
-		"description": payload.Description,
-		"category":    payload.Category,
-		"version":     payload.Version,
-		"content":     payload.Content,
-		"content_md5": contentMD5,
-		"metadata":    payload.Metadata,
-		"source_path": payload.SourcePath,
-		"source_sha":  sourceSHA(payload.Content),
-		"source":      payload.Source,
-		"updated_by":  importCreatedBy,
+		"name":            payload.Name,
+		"description":     payload.Description,
+		"category":        payload.Category,
+		"version":         payload.Version,
+		"content":         payload.Content,
+		"content_md5":     contentMD5,
+		"metadata":        payload.Metadata,
+		"source_path":     payload.SourcePath,
+		"source_sha":      sourceSHA(payload.Content),
+		"source":          payload.Source,
+		"updated_by":      importCreatedBy,
+		"experience_score": expScore,
 	}
 	if contentMD5 != existing.ContentMD5 {
 		updates["current_revision"] = existing.CurrentRevision + 1
