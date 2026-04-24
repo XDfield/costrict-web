@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -421,12 +422,19 @@ func TestLogBehavior_Success(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var item models.CapabilityItem
-	if err := database.DB.First(&item, "id = ?", "item-behavior").Error; err != nil {
-		t.Fatalf("failed to load item: %v", err)
-	}
-	if item.PreviewCount != 1 {
-		t.Fatalf("expected preview_count=1, got %d", item.PreviewCount)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var item models.CapabilityItem
+		if err := database.DB.First(&item, "id = ?", "item-behavior").Error; err != nil {
+			t.Fatalf("failed to load item: %v", err)
+		}
+		if item.PreviewCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected preview_count=1 eventually, got %d", item.PreviewCount)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

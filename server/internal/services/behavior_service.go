@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -81,40 +81,53 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		}
 	}
 
-	// Use Omit to skip empty UUID fields
-	result := s.db.Omit("ItemID", "RegistryID").Create(log)
+	createDB := s.db.WithContext(ctx)
+	if log.ItemID == "" {
+		createDB = createDB.Omit("ItemID")
+	}
+	if log.RegistryID == "" {
+		createDB = createDB.Omit("RegistryID")
+	}
+
+	result := createDB.Create(log)
 	if result.Error != nil {
 		return nil, result.Error
 	}
 
-	// Manually set ItemID and RegistryID if they have valid values
-	if log.ItemID != "" {
-		s.db.Model(log).Update("item_id", log.ItemID)
+	// Keep aggregate counters in sync without blocking the request path in production.
+	if req.ItemID != "" {
+		if s.db.Dialector.Name() == "postgres" {
+			go s.updateItemStats(req.ItemID, req.ActionType)
+		} else {
+			s.updateItemStats(req.ItemID, req.ActionType)
+		}
 	}
-	if log.RegistryID != "" {
-		s.db.Model(log).Update("registry_id", log.RegistryID)
-	}
-
-	// Keep aggregate counters in sync so list/detail APIs can return them directly.
-	s.updateItemStats(req.ItemID, req.ActionType)
 
 	return log, nil
 }
 
 // updateItemStats updates item statistics based on behavior
 func (s *BehaviorService) updateItemStats(itemID string, actionType models.ActionType) {
-	db := database.GetDB()
+	db := s.db
+	if db == nil {
+		logger.Warn("[behavior] skip aggregate update: db is nil item=%s action=%s", itemID, actionType)
+		return
+	}
 
 	switch actionType {
 	case models.ActionView:
-		db.Model(&models.CapabilityItem{}).
+		if err := db.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
-			UpdateColumn("preview_count", gorm.Expr("preview_count + 1"))
+			UpdateColumn("preview_count", gorm.Expr("preview_count + 1")).Error; err != nil {
+			logger.Warn("[behavior] update preview_count failed item=%s: %v", itemID, err)
+		}
 
 	case models.ActionInstall:
-		db.Model(&models.CapabilityItem{}).
+		if err := db.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
-			UpdateColumn("install_count", gorm.Expr("install_count + 1"))
+			UpdateColumn("install_count", gorm.Expr("install_count + 1")).Error; err != nil {
+			logger.Warn("[behavior] update install_count failed item=%s: %v", itemID, err)
+		}
 
 	case models.ActionSuccess, models.ActionFail:
 		s.updateExperienceScore(itemID)
@@ -219,7 +232,11 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 
 // updateExperienceScore updates the experience score for an item
 func (s *BehaviorService) updateExperienceScore(itemID string) {
-	db := database.GetDB()
+	db := s.db
+	if db == nil {
+		logger.Warn("[behavior] skip experience score update: db is nil item=%s", itemID)
+		return
+	}
 
 	// Calculate success rate
 	var total, success int64
