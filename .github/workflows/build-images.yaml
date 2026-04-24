@@ -11,7 +11,7 @@ on:
         required: true
         default: "v0.0.1"
       services:
-        description: "Services to build (comma-separated: gateway,api,worker,portal,all)"
+        description: "Services to build (comma-separated: gateway,api,worker,portal,dashboard,all)"
         required: false
         default: "all"
       portal_branch:
@@ -36,6 +36,7 @@ jobs:
       services: ${{ steps.set-services.outputs.services }}
       version: ${{ steps.version.outputs.version }}
       should_push: ${{ steps.set-push.outputs.should_push }}
+      build_efficiency_dashboard: ${{ steps.set-services.outputs.build_efficiency_dashboard }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,12 +65,23 @@ jobs:
             SERVICES_INPUT="all"
           fi
 
+          # Normalize to lowercase and remove spaces
+          SERVICES_INPUT=$(echo "$SERVICES_INPUT" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+
           if [ "$SERVICES_INPUT" = "all" ]; then
             echo 'services=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
+            echo 'build_efficiency_dashboard=true' >> $GITHUB_OUTPUT
           else
-            # Convert comma-separated to JSON array (compact single-line output)
-            SERVICES_JSON=$(echo "$SERVICES_INPUT" | tr ',' '\n' | xargs | tr ' ' ',' | jq -Rc 'split(",")')
+            # Convert comma-separated to JSON array, filtering out dashboard
+            SERVICES_JSON=$(echo "$SERVICES_INPUT" | tr ',' '\n' | grep -vxi "dashboard" | xargs | tr ' ' ',' | jq -Rc 'split(",") | map(select(. != ""))')
             echo "services=$SERVICES_JSON" >> $GITHUB_OUTPUT
+
+            # Check if dashboard is in the list
+            if echo "$SERVICES_INPUT" | tr ',' '\n' | grep -qxi "dashboard"; then
+              echo 'build_efficiency_dashboard=true' >> $GITHUB_OUTPUT
+            else
+              echo 'build_efficiency_dashboard=false' >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Set push flag
@@ -186,6 +198,58 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
 
+  build-efficiency-dashboard:
+    needs: prepare
+    if: needs.prepare.outputs.build_efficiency_dashboard == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EFFICIENCY_DASHBOARD_SSH_KEY }}
+
+      - name: Clone efficiency-dashboard repository
+        run: |
+          git clone git@github.com:zgsm-sangfor/efficiency-dashboard.git
+          cd efficiency-dashboard
+          git fetch --force --tags
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./efficiency-dashboard
+          file: ./efficiency-dashboard/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}
+            ${{ env.REGISTRY }}/efficiency-dashboard-backend:latest
+          build-args: VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Image Summary
+        run: |
+          echo "## Efficiency Dashboard Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+
   summary:
     needs: [prepare, build-and-push]
     runs-on: ubuntu-latest
@@ -208,6 +272,9 @@ jobs:
             esac
             echo "- \`${{ env.REGISTRY }}/${IMAGE}:${{ needs.prepare.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           done
+          if [ "${{ needs.prepare.outputs.build_efficiency_dashboard }}" = "true" ]; then
+            echo "- \`${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Usage" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
@@ -216,6 +283,9 @@ jobs:
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-api:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-worker:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-portal:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.prepare.outputs.build_efficiency_dashboard }}" = "true" ]; then
+            echo "docker pull ${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
         env:
           REGISTRY: ${{ env.REGISTRY }}
