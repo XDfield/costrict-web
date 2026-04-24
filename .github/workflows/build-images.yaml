@@ -70,7 +70,7 @@ jobs:
 
           if [ "$SERVICES_INPUT" = "all" ]; then
             echo 'services=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
-            echo 'build_efficiency_dashboard=true' >> $GITHUB_OUTPUT
+            echo 'build_efficiency_dashboard=false' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array, filtering out dashboard
             SERVICES_JSON=$(echo "$SERVICES_INPUT" | tr ',' '\n' | grep -vxi "dashboard" | xargs | tr ' ' ',' | jq -Rc 'split(",") | map(select(. != ""))')
