@@ -55,11 +55,14 @@ initSQL: |
 # Persistence
 persistence:
   enabled: true
-  storageClass: "managed-nfs-storage"
   accessModes:
     - ReadWriteMany
   size: 10Gi
   existingClaim: ""
+  # NFS provisioner used by the created StorageClass; update to match your cluster
+  provisioner: "nfs-subdir-external-provisioner"
+  # Reclaim policy for dynamically provisioned volumes (Retain or Delete)
+  reclaimPolicy: Retain
 
 # Health checks
 livenessProbe:
