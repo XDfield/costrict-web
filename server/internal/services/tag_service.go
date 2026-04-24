@@ -56,7 +56,22 @@ type ListTagsOptions struct {
 }
 
 func normalizeTagSlug(slug string) string {
-	return strings.ToLower(strings.TrimSpace(slug))
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	var b strings.Builder
+	b.Grow(len(slug))
+	lastDash := false
+	for _, r := range slug {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func ValidateTagSlug(slug string) error {

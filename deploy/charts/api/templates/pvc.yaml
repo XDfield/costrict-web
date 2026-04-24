@@ -5,6 +5,8 @@ metadata:
   name: {{ include "api.fullname" . }}-artifacts
   labels:
     {{- include "api.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     {{- toYaml .Values.persistence.accessModes | nindent 4 }}
