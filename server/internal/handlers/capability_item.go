@@ -38,6 +38,55 @@ type ItemHandler struct {
 	hashSvc     *services.ContentHashService
 }
 
+type SecurityStatusOption struct {
+	Value string            `json:"value"`
+	Names map[string]string `json:"names"`
+}
+
+type SecurityRiskGroupOption struct {
+	Value string            `json:"value"`
+	Names map[string]string `json:"names"`
+}
+
+type SourceOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+type ItemFilterOptionsResponse struct {
+	Categories         []models.ItemCategory        `json:"categories"`
+	SecurityStatuses   []SecurityStatusOption       `json:"securityStatuses"`
+	SecurityRiskGroups []SecurityRiskGroupOption    `json:"securityRiskGroups"`
+	Sources            []SourceOption               `json:"sources"`
+}
+
+var securityStatusGroups = map[string][]string{
+	"unknown": {"unscanned", "pending", "scanning", "error", "skipped"},
+	"low":     {"clean", "low"},
+	"medium":  {"medium"},
+	"high":    {"high", "extreme"},
+}
+
+func expandSecurityStatusFilters(values []string) []string {
+	expanded := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		group, ok := securityStatusGroups[value]
+		if !ok {
+			group = []string{value}
+		}
+		for _, status := range group {
+			if _, exists := seen[status]; exists {
+				continue
+			}
+			seen[status] = struct{}{}
+			expanded = append(expanded, status)
+		}
+	}
+	return expanded
+}
+
 // NewItemHandler creates a new item handler
 func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService, tagSvc *services.TagService) *ItemHandler {
 	var archiveSvc *services.ArchiveService
@@ -518,6 +567,7 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 		"previewCount":  "preview_count",
 		"installCount":  "install_count",
 		"favoriteCount": "favorite_count",
+		"experienceScore": "experience_score",
 	}[sortBy]
 	if column == "" {
 		column = "updated_at"
@@ -1490,6 +1540,7 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        category    query     string   false  "Filter by category (legacy single value)"
 // @Param        categories  query     string   false  "Filter by categories (comma-separated)"
 // @Param        securityStatuses  query     string   false  "Filter by security statuses (comma-separated)"
+// @Param        source      query     string   false  "Filter by sources (comma-separated, OR logic)"
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
 // @Param        page        query     int      false  "Page number (default: 1)"
@@ -1555,8 +1606,21 @@ func ListAllItems(c *gin.Context) {
 				securityStatuses = append(securityStatuses, part)
 			}
 		}
+		securityStatuses = expandSecurityStatusFilters(securityStatuses)
 		if len(securityStatuses) > 0 {
 			query = query.Where("security_status IN ?", securityStatuses)
+		}
+	}
+	if sourcesRaw := c.Query("source"); sourcesRaw != "" {
+		sources := make([]string, 0)
+		for _, part := range strings.Split(sourcesRaw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				sources = append(sources, part)
+			}
+		}
+		if len(sources) > 0 {
+			query = query.Where("source IN ?", sources)
 		}
 	}
 	if registryID := c.Query("registryId"); registryID != "" {
@@ -1647,10 +1711,10 @@ func ListAllItems(c *gin.Context) {
 
 // ListItemFilterOptions godoc
 // @Summary      List item filter options
-// @Description  Get filter options for item list, including categories and security statuses with i18n names
+// @Description  Get filter options for item list, including categories, security statuses, security risk groups, and sources
 // @Tags         items
 // @Produce      json
-// @Success      200  {object}  object{categories=[]models.ItemCategory,securityStatuses=[]object}
+// @Success      200  {object}  ItemFilterOptionsResponse
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/filter-options [get]
 func ListItemFilterOptions(c *gin.Context) {
@@ -1660,11 +1724,6 @@ func ListItemFilterOptions(c *gin.Context) {
 	if err := db.Order("sort_order ASC, slug ASC").Find(&categories).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load item filter options"})
 		return
-	}
-
-	type SecurityStatusOption struct {
-		Value string            `json:"value"`
-		Names map[string]string `json:"names"`
 	}
 
 	securityStatuses := []SecurityStatusOption{
@@ -1680,9 +1739,30 @@ func ListItemFilterOptions(c *gin.Context) {
 		{Value: "skipped", Names: map[string]string{"zh": "已跳过", "en": "Skipped"}},
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"categories":       categories,
-		"securityStatuses": securityStatuses,
+	securityRiskGroups := []SecurityRiskGroupOption{
+		{Value: "unknown", Names: map[string]string{"zh": "未知", "en": "Unknown"}},
+		{Value: "low", Names: map[string]string{"zh": "低风险", "en": "Low Risk"}},
+		{Value: "medium", Names: map[string]string{"zh": "中风险", "en": "Medium Risk"}},
+		{Value: "high", Names: map[string]string{"zh": "高风险", "en": "High Risk"}},
+	}
+
+	sources := []SourceOption{
+		{Value: "awesome-mcp-servers", Label: "awesome-mcp-servers", URL: "https://github.com/punkpeye/awesome-mcp-servers"},
+		{Value: "mcp.so", Label: "mcp.so", URL: "https://mcp.so"},
+		{Value: "anthropics-skills", Label: "Anthropic Skills", URL: "https://github.com/anthropics/skills"},
+		{Value: "ai-agent-skills", Label: "Ai-Agent-Skills", URL: "https://github.com/skillcreatorai/Ai-Agent-Skills"},
+		{Value: "antigravity-skills", Label: "antigravity-skills", URL: "https://github.com/antigravities/awesome-claude-code-skills"},
+		{Value: "awesome-cursorrules", Label: "awesome-cursorrules", URL: "https://github.com/PatrickJS/awesome-cursorrules"},
+		{Value: "rules-2.1-optimized", Label: "Rules 2.1", URL: "https://github.com/Mr-chen-05/rules-2.1-optimized"},
+		{Value: "prompts-chat", Label: "prompts.chat", URL: "https://github.com/f/prompts.chat"},
+		{Value: "wonderful-prompts", Label: "wonderful-prompts", URL: "https://github.com/langgptai/wonderful-prompts"},
+	}
+
+	c.JSON(http.StatusOK, ItemFilterOptionsResponse{
+		Categories:         categories,
+		SecurityStatuses:   securityStatuses,
+		SecurityRiskGroups: securityRiskGroups,
+		Sources:            sources,
 	})
 }
 
