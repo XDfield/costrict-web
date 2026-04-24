@@ -13,6 +13,7 @@ var (
 	// MenuResources defines console navigation menu permissions.
 	MenuResources = ResourceRegistry{
 		"console.repositories":    {},                         // all authenticated users
+		"console.projects":        {},                         // all authenticated users
 		"console.capabilities":    {RolePlatformAdmin},
 		"console.devices":         {},                         // all authenticated users
 		"console.notifications":   {RolePlatformAdmin},
