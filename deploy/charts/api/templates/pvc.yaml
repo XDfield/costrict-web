@@ -5,12 +5,12 @@ metadata:
   name: {{ include "api.fullname" . }}-artifacts
   labels:
     {{- include "api.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     {{- toYaml .Values.persistence.accessModes | nindent 4 }}
-  {{- if .Values.persistence.storageClass }}
-  storageClassName: {{ .Values.persistence.storageClass | quote }}
-  {{- end }}
+  storageClassName: {{ include "api.fullname" . | quote }}
   resources:
     requests:
       storage: {{ .Values.persistence.size }}
