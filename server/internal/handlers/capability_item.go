@@ -334,6 +334,20 @@ func registryRepoID(db *gorm.DB, registryID string) string {
 	return repoID
 }
 
+// getRepoName returns the name of a repository for the given repoID.
+// For the virtual "public" repo it returns "public".
+func getRepoName(repoID string) string {
+	if repoID == "public" {
+		return "public"
+	}
+	db := database.GetDB()
+	var repo models.Repository
+	if db.Select("name").Where("id = ?", repoID).First(&repo).Error != nil {
+		return ""
+	}
+	return repo.Name
+}
+
 func isUniqueConstraintError(err error) bool {
 	if err == nil {
 		return false
@@ -474,6 +488,7 @@ type ItemResponse struct {
 	EmbeddingUpdatedAt  *time.Time                  `json:"embeddingUpdatedAt"`
 	Tags                []models.ItemTagDict        `json:"tags,omitempty"`
 	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
+	RepoName            string                      `json:"repoName,omitempty"`
 	Favorited           bool                        `json:"favorited"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
 }
@@ -602,6 +617,7 @@ func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) I
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
+		resp.RepoName = getRepoName(item.Registry.RepoID)
 	}
 	if userID != "" {
 		var count int64

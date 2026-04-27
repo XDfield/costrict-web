@@ -483,12 +483,18 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	}
 
 	if !opts.DryRun {
+		seenItemIDs := make(map[string]bool)
 		for path, item := range existingByPath {
-			if !seenPaths[path] && item.RegistryID == registryID {
-				s.DB.Model(item).Updates(map[string]any{"status": "archived"})
-				s.DB.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
-				result.Deleted++
+			if seenPaths[path] || item.RegistryID != registryID {
+				continue
 			}
+			if seenItemIDs[item.ID] {
+				continue
+			}
+			seenItemIDs[item.ID] = true
+			s.DB.Model(item).Updates(map[string]any{"status": "archived"})
+			s.DB.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
+			result.Deleted++
 		}
 
 		now := time.Now()
