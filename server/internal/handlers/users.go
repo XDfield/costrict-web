@@ -281,6 +281,7 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 			Picture:           u.Picture,
 			Owner:             u.Owner,
 		}
+		claims = userpkg.MergeJWTClaims(claims, nil)
 		_, _ = UserModule.Service.GetOrCreateUser(claims)
 	}
 }

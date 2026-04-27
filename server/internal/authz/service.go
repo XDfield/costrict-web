@@ -157,6 +157,9 @@ func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResu
 			Name:              userInfo.Name,
 			PreferredUsername: userInfo.PreferredUsername,
 			Email:             userInfo.Email,
+			Provider:          userInfo.Provider,
+			ProviderUserID:    userInfo.ProviderUserID,
+			Phone:             userInfo.Phone,
 		})
 		if err == nil && resolvedID != "" {
 			userID = resolvedID

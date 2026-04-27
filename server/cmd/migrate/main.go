@@ -60,6 +60,21 @@ func main() {
 				log.Println("Legacy user reference backfill completed successfully")
 			}
 			return
+		case "user-external-identities":
+			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
+			if err := backfillUserExternalIdentities(db, dryRun); err != nil {
+				if dryRun && errors.Is(err, errDryRunRollback) {
+					log.Println("User external identity dry-run completed successfully")
+					return
+				}
+				log.Fatalf("Failed to backfill user external identities: %v", err)
+			}
+			if dryRun {
+				log.Println("User external identity dry-run completed successfully")
+			} else {
+				log.Println("User external identity backfill completed successfully")
+			}
+			return
 		case "import-everything-ai-coding":
 			sourcePath := ""
 			dryRun := false
@@ -158,9 +173,15 @@ func main() {
 	if err := runGooseMigrations(db); err != nil {
 		log.Fatalf("Failed to run goose migrations: %v", err)
 	}
+	if err := ensureUserIdentityColumns(db); err != nil {
+		log.Fatalf("Failed to ensure user identity columns: %v", err)
+	}
 
 	if err := backfillCapabilityContentVersioning(db); err != nil {
 		log.Fatalf("Failed to backfill capability content versioning: %v", err)
+	}
+	if err := backfillUserExternalIdentities(db, false); err != nil {
+		log.Fatalf("Failed to backfill user external identities: %v", err)
 	}
 
 	log.Println("All migrations completed successfully")
@@ -173,6 +194,8 @@ func printMigrateHelp() {
 	fmt.Println("                                                Backfill content_md5 and current_revision for capability items")
 	fmt.Println("  go run ./cmd/migrate user-subject-ids [--dry-run]")
 	fmt.Println("                                                Backfill legacy user IDs to subject_id")
+	fmt.Println("  go run ./cmd/migrate user-external-identities [--dry-run]")
+	fmt.Println("                                                Backfill users.external_key/auth_provider/provider_user_id/phone")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding <source-path> [--dry-run]")
 	fmt.Println("                                                Import MCP/command/skills/agent data")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
@@ -181,8 +204,128 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate")
 	fmt.Println("  go run ./cmd/migrate backfill-capability-content-versioning")
 	fmt.Println("  go run ./cmd/migrate user-subject-ids --dry-run")
+	fmt.Println("  go run ./cmd/migrate user-external-identities --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding /Users/linkai/code/.../everything-ai-coding --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=/Users/linkai/code/.../everything-ai-coding")
+}
+
+func ensureUserIdentityColumns(db *gorm.DB) error {
+	stmts := []string{
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone text`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider text`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS external_key text`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS provider_user_id text`,
+		`CREATE INDEX IF NOT EXISTS idx_user_phone ON users(phone)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_auth_provider ON users(auth_provider)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_provider_user_id ON users(provider_user_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_external_key ON users(external_key) WHERE external_key IS NOT NULL`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("ensure users identity columns failed (%s): %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func backfillUserExternalIdentities(db *gorm.DB, dryRun bool) error {
+	hasPhone := db.Migrator().HasColumn(&models.User{}, "phone")
+	hasAuthProvider := db.Migrator().HasColumn(&models.User{}, "auth_provider")
+	hasExternalKey := db.Migrator().HasColumn(&models.User{}, "external_key")
+	hasProviderUserID := db.Migrator().HasColumn(&models.User{}, "provider_user_id")
+
+	selectColumns := []string{"id", "subject_id", "username", "email", "casdoor_id", "casdoor_universal_id", "casdoor_sub"}
+	if hasPhone {
+		selectColumns = append(selectColumns, "phone")
+	}
+	if hasAuthProvider {
+		selectColumns = append(selectColumns, "auth_provider")
+	}
+	if hasExternalKey {
+		selectColumns = append(selectColumns, "external_key")
+	}
+	if hasProviderUserID {
+		selectColumns = append(selectColumns, "provider_user_id")
+	}
+
+	type userIdentityRow struct {
+		ID                uint
+		SubjectID         string
+		Username          string
+		Email             *string
+		Phone             *string
+		AuthProvider      *string
+		ExternalKey       *string
+		ProviderUserID    *string
+		CasdoorID         *string
+		CasdoorUniversalID *string
+		CasdoorSub        *string
+	}
+
+	var users []userIdentityRow
+	if err := db.Table("users").Select(strings.Join(selectColumns, ", ")).Find(&users).Error; err != nil {
+		return fmt.Errorf("load users for external identity backfill: %w", err)
+	}
+
+	updatedRows := 0
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, user := range users {
+			updates := map[string]any{}
+
+			if hasExternalKey && (user.ExternalKey == nil || *user.ExternalKey == "") {
+				if user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "" {
+					updates["external_key"] = "casdoor:" + *user.CasdoorUniversalID
+				} else if user.CasdoorSub != nil && *user.CasdoorSub != "" {
+					updates["external_key"] = "casdoor-sub:" + *user.CasdoorSub
+				} else if user.CasdoorID != nil && *user.CasdoorID != "" {
+					updates["external_key"] = "casdoor-id:" + *user.CasdoorID
+				}
+			}
+
+			if hasAuthProvider && (user.AuthProvider == nil || *user.AuthProvider == "") && user.Username != "" {
+				switch {
+				case strings.HasPrefix(user.Username, "phone_"):
+					updates["auth_provider"] = "phone"
+				case user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "":
+					updates["auth_provider"] = "casdoor"
+				}
+			}
+
+			if hasPhone && (user.Phone == nil || *user.Phone == "") && user.Email != nil && *user.Email != "" && isLikelyPhoneValue(*user.Email) {
+				updates["phone"] = *user.Email
+			}
+
+			if len(updates) == 0 {
+				continue
+			}
+			updatedRows++
+			if dryRun {
+				continue
+			}
+			if err := tx.Table("users").Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+				return fmt.Errorf("update user %d external identities: %w", user.ID, err)
+			}
+		}
+
+		log.Printf("user external identity summary (dry-run=%v): updated users=%d", dryRun, updatedRows)
+		if dryRun {
+			return errDryRunRollback
+		}
+		return nil
+	})
+}
+
+func isLikelyPhoneValue(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	for _, ch := range v {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return len(v) >= 6 && len(v) <= 20
 }
 
 func backfillCapabilityContentVersioning(db *gorm.DB) error {

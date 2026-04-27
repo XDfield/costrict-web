@@ -190,6 +190,9 @@ func main() {
 			Name:              claims.Name,
 			PreferredUsername: claims.PreferredUsername,
 			Email:             claims.Email,
+			Provider:          claims.Provider,
+			ProviderUserID:    claims.ProviderUserID,
+			Phone:             claims.Phone,
 		})
 	})
 

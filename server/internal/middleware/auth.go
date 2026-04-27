@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/authidentity"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v4"
@@ -14,6 +15,7 @@ import (
 
 const UserIDKey = "userId"
 const UserNameKey = "userName"
+const AuthClaimsKey = "authClaims"
 const InternalSecretHeader = "X-Internal-Secret"
 const SystemTokenHeader = "X-System-Token"
 
@@ -26,6 +28,9 @@ type AuthClaims struct {
 	Name              string
 	PreferredUsername string
 	Email             string
+	Provider          string
+	ProviderUserID    string
+	Phone             string
 }
 
 var subjectResolver SubjectResolver
@@ -146,6 +151,9 @@ type CasdoorUserInfo struct {
 	Name             string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
 	Email            string `json:"email"`
+	Provider         string `json:"provider"`
+	ProviderUserID   string `json:"provider_user_id"`
+	Phone            string `json:"phone"`
 }
 
 type casdoorUserinfoResponse struct {
@@ -184,32 +192,28 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
-	// Extract sub (universal_id in Casdoor)
-	sub, _ := claims["id"].(string)
+	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
+	sub := normalized.UniversalID
 	if sub == "" {
-		sub, _ = claims["sub"].(string)
+		sub = normalized.Sub
 	}
 	if sub == "" {
-		sub, _ = claims["universal_id"].(string)
+		sub = normalized.ID
 	}
 	if sub == "" {
 		return nil, fmt.Errorf("no id, sub or universal_id in token")
 	}
 
-	name, _ := claims["name"].(string)
-	preferredUsername, _ := claims["preferred_username"].(string)
-	if preferredUsername == "" {
-		preferredUsername = name
-	}
-	email, _ := claims["email"].(string)
-
 	return &CasdoorUserInfo{
-		ID:               strClaim(claims, "id"),
+		ID:               normalized.ID,
 		Sub:              sub,
-		UniversalID:      strClaim(claims, "universal_id"),
-		Name:             name,
-		PreferredUsername: preferredUsername,
-		Email:            email,
+		UniversalID:      normalized.UniversalID,
+		Name:             normalized.Name,
+		PreferredUsername: normalized.PreferredUsername,
+		Email:            normalized.Email,
+		Provider:         normalized.Provider,
+		ProviderUserID:   normalized.ProviderUserID,
+		Phone:            normalized.Phone,
 	}, nil
 }
 
@@ -255,6 +259,9 @@ func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
 		Name:             casdoorResp.Name,
 		PreferredUsername: casdoorResp.Name,
 		Email:            casdoorResp.Email,
+		Provider:         "",
+		ProviderUserID:   "",
+		Phone:            "",
 	}, nil
 }
 
@@ -273,15 +280,19 @@ func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*Casd
 func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	userID := userInfo.Sub
 	userName := userInfo.PreferredUsername
+	authClaims := AuthClaims{
+		ID:                userInfo.ID,
+		Sub:               userInfo.Sub,
+		UniversalID:       userInfo.UniversalID,
+		Name:              userInfo.Name,
+		PreferredUsername: userInfo.PreferredUsername,
+		Email:             userInfo.Email,
+		Provider:          userInfo.Provider,
+		ProviderUserID:    userInfo.ProviderUserID,
+		Phone:             userInfo.Phone,
+	}
 	if subjectResolver != nil {
-		resolvedID, resolvedName, err := subjectResolver(AuthClaims{
-			ID:                userInfo.ID,
-			Sub:               userInfo.Sub,
-			UniversalID:       userInfo.UniversalID,
-			Name:              userInfo.Name,
-			PreferredUsername: userInfo.PreferredUsername,
-			Email:             userInfo.Email,
-		})
+		resolvedID, resolvedName, err := subjectResolver(authClaims)
 		if err == nil {
 			if resolvedID != "" {
 				userID = resolvedID
@@ -293,6 +304,7 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	}
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)
+	c.Set(AuthClaimsKey, authClaims)
 }
 
 func strClaim(claims jwt.MapClaims, key string) string {

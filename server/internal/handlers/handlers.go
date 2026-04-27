@@ -26,6 +26,18 @@ var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fa
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 
+type authUserDTO struct {
+	ID                 string         `json:"id"`
+	SubjectID          string         `json:"subjectId"`
+	Name               string         `json:"name"`
+	Username           string         `json:"username"`
+	Email              *string        `json:"email,omitempty"`
+	Phone              *string        `json:"phone,omitempty"`
+	AvatarURL          *string        `json:"avatarUrl,omitempty"`
+	CasdoorUniversalID *string        `json:"casdoorUniversalId,omitempty"`
+	Auth               map[string]any `json:"auth,omitempty"`
+}
+
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
 }
@@ -109,6 +121,63 @@ func decodeOAuthState(encoded string) oauthState {
 	}
 }
 
+func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
+	name := user.Username
+	if user.DisplayName != nil && *user.DisplayName != "" {
+		name = *user.DisplayName
+	}
+	var auth map[string]any
+	if user.AuthProvider != nil || user.ExternalKey != nil || user.ProviderUserID != nil || user.CasdoorUniversalID != nil {
+		auth = gin.H{}
+		if user.AuthProvider != nil {
+			auth["provider"] = *user.AuthProvider
+		}
+		if user.ExternalKey != nil {
+			auth["externalKey"] = *user.ExternalKey
+		}
+		if user.ProviderUserID != nil {
+			auth["providerUserId"] = *user.ProviderUserID
+		}
+		if user.CasdoorUniversalID != nil {
+			auth["externalSubject"] = *user.CasdoorUniversalID
+		}
+	}
+	return authUserDTO{
+		ID:                 user.SubjectID,
+		SubjectID:          user.SubjectID,
+		Name:               name,
+		Username:           user.Username,
+		Email:              user.Email,
+		Phone:              user.Phone,
+		AvatarURL:          user.AvatarURL,
+		CasdoorUniversalID: user.CasdoorUniversalID,
+		Auth:               auth,
+	}
+}
+
+func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
+	name := claims.Name
+	if claims.PreferredUsername != "" {
+		name = claims.PreferredUsername
+	}
+	return authUserDTO{
+		ID:                 claims.UniversalID,
+		SubjectID:          claims.UniversalID,
+		Name:               name,
+		Username:           claims.Name,
+		Email:              stringPtr(claims.Email),
+		Phone:              stringPtr(claims.Phone),
+		AvatarURL:          stringPtr(claims.Picture),
+		CasdoorUniversalID: stringPtr(claims.UniversalID),
+		Auth: gin.H{
+			"provider":        claims.Provider,
+			"providerUserId":  claims.ProviderUserID,
+			"externalKey":     buildExternalKeyForResponse(claims),
+			"externalSubject": claims.UniversalID,
+		},
+	}
+}
+
 // splitOriginPath splits a full URL into origin (scheme://host) and path.
 // For non-URL strings it returns ("", original).
 func splitOriginPath(rawURL string) (string, string) {
@@ -166,30 +235,7 @@ func AuthCallback(c *gin.Context) {
 				Owner:             userInfo.User.Owner,
 			}
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
-				if claims.ID == "" {
-					claims.ID = tokenClaims.ID
-				}
-				if claims.Sub == "" {
-					claims.Sub = tokenClaims.Sub
-				}
-				if claims.UniversalID == "" {
-					claims.UniversalID = tokenClaims.UniversalID
-				}
-				if claims.Name == "" {
-					claims.Name = tokenClaims.Name
-				}
-				if claims.PreferredUsername == "" {
-					claims.PreferredUsername = tokenClaims.PreferredUsername
-				}
-				if claims.Email == "" {
-					claims.Email = tokenClaims.Email
-				}
-				if claims.Picture == "" {
-					claims.Picture = tokenClaims.Picture
-				}
-				if claims.Owner == "" {
-					claims.Owner = tokenClaims.Owner
-				}
+				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
 			}
 			if _, err := UserModule.Service.GetOrCreateUser(claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
@@ -303,19 +349,7 @@ func GetCurrentUser(c *gin.Context) {
 			user, err = UserModule.Service.GetUserByID(currentUserID)
 		}
 		if err == nil && user != nil {
-			name := user.Username
-			if user.DisplayName != nil && *user.DisplayName != "" {
-				name = *user.DisplayName
-			}
-			c.JSON(http.StatusOK, gin.H{"user": gin.H{
-				"id":                 user.SubjectID,
-				"subjectId":          user.SubjectID,
-				"name":               name,
-				"username":           user.Username,
-				"email":              user.Email,
-				"avatarUrl":          user.AvatarURL,
-				"casdoorUniversalId": user.CasdoorUniversalID,
-			}})
+			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
 			return
 		}
 	}
@@ -332,7 +366,51 @@ func GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"user": userInfo.User})
+	claims := &userpkg.JWTClaims{
+		ID:                userInfo.User.Id,
+		Sub:               userInfo.User.Sub,
+		UniversalID:       userInfo.User.UniversalID,
+		Name:              userInfo.User.Name,
+		PreferredUsername: userInfo.User.PreferredUsername,
+		Email:             userInfo.User.Email,
+		Picture:           userInfo.User.Picture,
+		Owner:             userInfo.User.Owner,
+	}
+	if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(token.(string)); parseErr == nil {
+		claims = userpkg.MergeJWTClaims(claims, tokenClaims)
+	}
+
+	if UserModule != nil && UserModule.Service != nil {
+		if user, userErr := UserModule.Service.GetOrCreateUser(claims); userErr == nil && user != nil {
+			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
+}
+
+func stringPtr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
+func buildExternalKeyForResponse(claims *userpkg.JWTClaims) string {
+	if claims == nil {
+		return ""
+	}
+	if claims.UniversalID != "" {
+		return "casdoor:" + claims.UniversalID
+	}
+	if claims.Sub != "" {
+		return "casdoor-sub:" + claims.Sub
+	}
+	if claims.ID != "" {
+		return "casdoor-id:" + claims.ID
+	}
+	return ""
 }
 
 // ListRepositories godoc
