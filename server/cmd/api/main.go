@@ -209,7 +209,10 @@ func main() {
 	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
-	authzModule := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{}, casdoorEndpoint, jwksProvider)
+	authzModule, err := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{}, casdoorEndpoint, jwksProvider)
+	if err != nil {
+		log.Fatalf("failed to initialize authz module: %v", err)
+	}
 
 	api := r.Group("/api")
 	{

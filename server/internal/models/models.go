@@ -568,3 +568,14 @@ type User struct {
 func (User) TableName() string {
 	return "users"
 }
+
+// ResourcePermission 资源权限映射表
+// 将菜单/API 资源码与允许访问的系统角色列表绑定，空角色列表表示任何登录用户均可访问。
+type ResourcePermission struct {
+	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ResourceCode string         `gorm:"not null;uniqueIndex;size:128"                  json:"resourceCode"`
+	ResourceType string         `gorm:"not null;size:32"                               json:"resourceType"` // menu | api
+	AllowedRoles pq.StringArray `gorm:"type:text[];not null;default:'{}'"              json:"allowedRoles"`
+	CreatedAt    time.Time      `                                                      json:"createdAt"`
+	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
+}
