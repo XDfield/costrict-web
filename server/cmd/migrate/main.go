@@ -1,15 +1,14 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +18,8 @@ import (
 	"github.com/costrict/costrict-web/server/internal/team"
 	"github.com/costrict/costrict-web/server/internal/services"
 	migrations "github.com/costrict/costrict-web/server/migrations"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 	"gorm.io/datatypes"
@@ -566,83 +567,6 @@ func hashCurrentItemContent(hashSvc *services.ContentHashService, item models.Ca
 	return hashSvc.HashTextContent(item.ItemType, item.Content)
 }
 
-type externalCatalogEntry struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Type        string         `json:"type"`
-	Description string         `json:"description"`
-	Category    string         `json:"category"`
-	Version     string         `json:"version"`
-	SourceURL   string         `json:"source_url"`
-	Install     map[string]any `json:"install"`
-	Tags        []string       `json:"tags"`
-	TechStack   []string       `json:"tech_stack"`
-	Source      string         `json:"source"`
-	Stars       *int           `json:"stars"`
-}
-
-type importPayload struct {
-	SourcePath  string
-	Slug        string
-	ItemType    string
-	Name        string
-	Description string
-	Category    string
-	Version     string
-	Content     string
-	Metadata    datatypes.JSON
-	Stars       *int
-	Tags        []string
-	Source      string
-}
-
-type importStats struct {
-	CreatedByType map[string]int
-	UpdatedByType map[string]int
-	SkippedByType map[string]int
-	FailedByType  map[string]int
-}
-
-func newImportStats() *importStats {
-	return &importStats{
-		CreatedByType: map[string]int{},
-		UpdatedByType: map[string]int{},
-		SkippedByType: map[string]int{},
-		FailedByType:  map[string]int{},
-	}
-}
-
-func (s *importStats) addCreated(itemType string) { s.CreatedByType[itemType]++ }
-func (s *importStats) addUpdated(itemType string) { s.UpdatedByType[itemType]++ }
-func (s *importStats) addSkipped(itemType string) { s.SkippedByType[itemType]++ }
-func (s *importStats) addFailed(itemType string)  { s.FailedByType[itemType]++ }
-
-func (s *importStats) logSummary(dryRun bool) {
-	log.Printf("everything-ai-coding import summary (dry-run=%v)", dryRun)
-	log.Printf("  created: %s", formatTypeCounters(s.CreatedByType))
-	log.Printf("  updated: %s", formatTypeCounters(s.UpdatedByType))
-	log.Printf("  skipped: %s", formatTypeCounters(s.SkippedByType))
-	if len(s.FailedByType) > 0 {
-		log.Printf("  failed:  %s", formatTypeCounters(s.FailedByType))
-	}
-}
-
-func formatTypeCounters(m map[string]int) string {
-	if len(m) == 0 {
-		return "none"
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
-	}
-	return strings.Join(parts, ", ")
-}
-
 func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error {
 	if strings.TrimSpace(sourcePath) == "" {
 		return fmt.Errorf("source path is required")
@@ -658,33 +582,148 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 		return fmt.Errorf("source path is not a directory: %s", absSource)
 	}
 
-	payloads, err := buildImportPayloads(absSource)
+	catalogDownloadRoot := filepath.Join(absSource, "catalog-download")
+	if _, err := os.Stat(catalogDownloadRoot); err != nil {
+		return fmt.Errorf("catalog-download directory not found in %s", absSource)
+	}
+
+	// 1. Prepare temp sync directory with mapped file structure.
+	tempDir, err := os.MkdirTemp("", "costrict-sync-everything-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	if err := mapEverythingToSyncDir(catalogDownloadRoot, tempDir); err != nil {
+		return fmt.Errorf("map source to sync dir: %w", err)
+	}
+
+	// 2. Init a temporary git repo so SyncService can clone from it.
+	if err := initTempGitRepo(tempDir); err != nil {
+		return fmt.Errorf("init temp git repo: %w", err)
+	}
+
+	// Ensure public registry exists before syncing.
+	if err := ensurePublicRegistry(db); err != nil {
+		return fmt.Errorf("ensure public registry: %w", err)
+	}
+
+	// 3. Create a temporary registry pointing at the temp git repo.
+	tempRegistryID := uuid.New().String()
+	registry := models.CapabilityRegistry{
+		ID:             tempRegistryID,
+		Name:           "everything-ai-coding-import",
+		Description:    "Temporary registry for importing everything-ai-coding",
+		ExternalURL:    tempDir,
+		ExternalBranch: "main",
+		SyncConfig: mustJSON(map[string]any{
+			"includePatterns": []string{
+				"mcp/**/.mcp.json",
+				"prompts/**/PROMPT.md",
+				"rules/**/RULE.md",
+				"skills/**/SKILL.md",
+			},
+		}),
+		RepoID:      publicRepoID,
+		OwnerID:     importCreatedBy,
+		SyncEnabled: true,
+	}
+	if err := db.Create(&registry).Error; err != nil {
+		return fmt.Errorf("create temp registry: %w", err)
+	}
+
+	// 4. Run sync via SyncService.
+	syncSvc := &services.SyncService{
+		DB:     db,
+		Git:    &services.GitService{TempBaseDir: os.TempDir()},
+		Parser: &services.ParserService{},
+	}
+
+	result, err := syncSvc.SyncRegistry(context.Background(), tempRegistryID, services.SyncOptions{
+		TriggerType: "manual",
+		TriggerUser: importCreatedBy,
+		DryRun:      dryRun,
+	})
+	if err != nil {
+		deleteTempRegistry(db, tempRegistryID)
+		return fmt.Errorf("sync registry: %w", err)
+	}
+
+	// 5. Relationship mapping: migrate synced items to the public registry.
+	if !dryRun {
+		if err := db.Model(&models.CapabilityItem{}).Where("registry_id = ?", tempRegistryID).Update("registry_id", publicRegistryID).Error; err != nil {
+			return fmt.Errorf("migrate items to public registry: %w", err)
+		}
+		if err := deleteTempRegistry(db, tempRegistryID); err != nil {
+			return fmt.Errorf("delete temp registry: %w", err)
+		}
+	}
+
+	log.Printf("everything-ai-coding sync summary: added=%d updated=%d skipped=%d deleted=%d failed=%d",
+		result.Added, result.Updated, result.Skipped, result.Deleted, result.Failed)
+	if len(result.Errors) > 0 {
+		for _, e := range result.Errors {
+			log.Printf("  sync error: %s", e)
+		}
+	}
+
+	return nil
+}
+
+func mapEverythingToSyncDir(sourceRoot, targetRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		relPath, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		targetPath := filepath.Join(targetRoot, relPath)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, content, 0644)
+	})
+}
+
+func initTempGitRepo(dir string) error {
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		return fmt.Errorf("git init: %w", err)
+	}
+	w, err := repo.Worktree()
 	if err != nil {
 		return err
 	}
-	if len(payloads) == 0 {
-		return fmt.Errorf("no importable entries found in %s", absSource)
+	if _, err := w.Add("."); err != nil {
+		return fmt.Errorf("git add: %w", err)
 	}
+	if _, err := w.Commit("Initial import", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "import",
+			Email: "import@costrict.local",
+			When:  time.Now(),
+		},
+	}); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
 
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := ensurePublicRegistry(tx); err != nil {
-			return err
-		}
-
-		stats := newImportStats()
-		for _, payload := range payloads {
-			if err := upsertImportedItem(tx, payload, dryRun, stats); err != nil {
-				stats.addFailed(payload.ItemType)
-				return fmt.Errorf("import %s (%s): %w", payload.SourcePath, payload.ItemType, err)
-			}
-		}
-
-		stats.logSummary(dryRun)
-		if dryRun {
-			return errDryRunRollback
-		}
-		return nil
-	})
+func deleteTempRegistry(db *gorm.DB, registryID string) error {
+	db.Where("registry_id = ?", registryID).Delete(&models.SyncLog{})
+	db.Where("registry_id = ?", registryID).Delete(&models.SyncJob{})
+	return db.Delete(&models.CapabilityRegistry{ID: registryID}).Error
 }
 
 func ensurePublicRegistry(db *gorm.DB) error {
@@ -713,459 +752,6 @@ func ensurePublicRegistry(db *gorm.DB) error {
 	return nil
 }
 
-func buildImportPayloads(sourceRoot string) ([]importPayload, error) {
-	payloads := make([]importPayload, 0, 4096)
-
-	mcpEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "mcp", "index.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		log.Printf("Warning: catalog/mcp/index.json not found, skipping mcp import")
-	} else {
-		for _, entry := range mcpEntries {
-			payloads = append(payloads, buildCatalogPayload(entry, "mcp"))
-		}
-	}
-
-	skillEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "skills", "index.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		log.Printf("Warning: catalog/skills/index.json not found, skipping skill import")
-	} else {
-		for _, entry := range skillEntries {
-			payloads = append(payloads, buildCatalogPayload(entry, "skill"))
-		}
-	}
-
-	ruleEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "rules", "index.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		log.Printf("Warning: catalog/rules/index.json not found, skipping rule import")
-	} else {
-		for _, entry := range ruleEntries {
-			payloads = append(payloads, buildCatalogPayload(entry, "rule"))
-		}
-	}
-
-	promptEntries, err := readCatalogEntries(filepath.Join(sourceRoot, "catalog", "prompts", "index.json"))
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		log.Printf("Warning: catalog/prompts/index.json not found, skipping prompt import")
-	} else {
-		for _, entry := range promptEntries {
-			payloads = append(payloads, buildCatalogPayload(entry, "prompt"))
-		}
-	}
-
-	// Import concrete SKILL.md files and let them override catalog summary records
-	// with the same (itemType, slug), so skill content is actual markdown.
-	// Support both everything-ai-coding (platforms/*/) and awesome-claude-skills (flat) layouts.
-	skillPatterns := []string{"platforms/*/skills/**/SKILL.md", "skills/**/SKILL.md"}
-	for _, pattern := range skillPatterns {
-		skillMarkdownPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "skill")
-		if err != nil {
-			return nil, err
-		}
-		payloads = append(payloads, skillMarkdownPayloads...)
-	}
-
-	commandPatterns := []string{"platforms/*/commands/**/*.md", "commands/**/*.md"}
-	for _, pattern := range commandPatterns {
-		commandPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "command")
-		if err != nil {
-			return nil, err
-		}
-		payloads = append(payloads, commandPayloads...)
-	}
-
-	agentPatterns := []string{"platforms/*/agents/**/*.md", "agents/**/*.md"}
-	for _, pattern := range agentPatterns {
-		agentPayloads, err := buildMarkdownPayloads(sourceRoot, pattern, "subagent")
-		if err != nil {
-			return nil, err
-		}
-		payloads = append(payloads, agentPayloads...)
-	}
-
-	return dedupePayloads(payloads), nil
-}
-
-func readCatalogEntries(path string) ([]externalCatalogEntry, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read catalog file %s: %w", path, err)
-	}
-	var entries []externalCatalogEntry
-	if err := json.Unmarshal(b, &entries); err != nil {
-		return nil, fmt.Errorf("parse catalog file %s: %w", path, err)
-	}
-	return entries, nil
-}
-
-func buildCatalogPayload(entry externalCatalogEntry, fallbackType string) importPayload {
-	itemType := strings.TrimSpace(entry.Type)
-	if itemType == "" {
-		itemType = fallbackType
-	}
-
-	metadata := map[string]any{
-		"externalId": entry.ID,
-		"sourceUrl":  entry.SourceURL,
-		"source":     entry.Source,
-		"install":    entry.Install,
-		"tags":       entry.Tags,
-		"techStack":  entry.TechStack,
-	}
-	if entry.Stars != nil {
-		metadata["stars"] = *entry.Stars
-	}
-	metadataJSON := mustJSON(metadata)
-
-	contentBytes, _ := json.MarshalIndent(map[string]any{
-		"id":          entry.ID,
-		"name":        entry.Name,
-		"type":        itemType,
-		"description": entry.Description,
-		"source_url":  entry.SourceURL,
-		"category":    entry.Category,
-		"install":     entry.Install,
-	}, "", "  ")
-
-	version := strings.TrimSpace(entry.Version)
-	if version == "" {
-		version = "1.0.0"
-	}
-
-	name := strings.TrimSpace(entry.Name)
-	if name == "" {
-		name = entry.ID
-	}
-
-	slug := normalizeSlug(entry.ID)
-	if slug == "" {
-		slug = normalizeSlug(entry.Name)
-	}
-
-	return importPayload{
-		SourcePath:  filepath.ToSlash(filepath.Join("catalog", itemType, "index.json#", entry.ID)),
-		Slug:        slug,
-		ItemType:    itemType,
-		Name:        name,
-		Description: entry.Description,
-		Category:    entry.Category,
-		Version:     version,
-		Content:     string(contentBytes),
-		Metadata:    metadataJSON,
-		Stars:       entry.Stars,
-		Tags:        entry.Tags,
-		Source:      entry.Source,
-	}
-}
-
-func buildMarkdownPayloads(sourceRoot, pattern, forceItemType string) ([]importPayload, error) {
-	parser := &services.ParserService{}
-	files, err := filepath.Glob(filepath.Join(sourceRoot, filepath.FromSlash(pattern)))
-	if err != nil {
-		return nil, fmt.Errorf("glob %s: %w", pattern, err)
-	}
-	payloads := make([]importPayload, 0, len(files))
-	for _, absPath := range files {
-		relPath, err := filepath.Rel(sourceRoot, absPath)
-		if err != nil {
-			return nil, fmt.Errorf("build relative path for %s: %w", absPath, err)
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		b, err := os.ReadFile(absPath)
-		if err != nil {
-			return nil, fmt.Errorf("read markdown %s: %w", absPath, err)
-		}
-
-		parsed, err := parser.ParseSKILLMD(b, relPath)
-		if err != nil {
-			return nil, fmt.Errorf("parse markdown %s: %w", relPath, err)
-		}
-
-		itemType := forceItemType
-		if itemType == "" {
-			itemType = parsed.ItemType
-		}
-
-		name := strings.TrimSpace(parsed.Name)
-		if name == "" {
-			name = inferName(relPath)
-		}
-
-		description := strings.TrimSpace(parsed.Description)
-		if description == "" {
-			description = fmt.Sprintf("Imported from %s", relPath)
-		}
-
-		version := strings.TrimSpace(parsed.Version)
-		if version == "" {
-			version = "1.0.0"
-		}
-
-		metadata := map[string]any(parsed.Metadata)
-		metadata["sourcePath"] = relPath
-
-		payloads = append(payloads, importPayload{
-			SourcePath:  relPath,
-			Slug:        normalizeSlug(parsed.Slug),
-			ItemType:    itemType,
-			Name:        name,
-			Description: description,
-			Category:    strings.TrimSpace(parsed.Category),
-			Version:     version,
-			Content:     string(b),
-			Metadata:    mustJSON(metadata),
-			Tags:        parsed.Tags,
-			Source:      inferSourceFromPath(relPath),
-		})
-	}
-	return payloads, nil
-}
-
-func dedupePayloads(payloads []importPayload) []importPayload {
-	byKey := make(map[string]importPayload, len(payloads))
-	order := make([]string, 0, len(payloads))
-	for _, p := range payloads {
-		if p.ItemType == "agent" {
-			p.ItemType = "subagent"
-		}
-		if p.ItemType == "skills" {
-			p.ItemType = "skill"
-		}
-		if p.ItemType == "commands" {
-			p.ItemType = "command"
-		}
-		if p.Slug == "" {
-			p.Slug = normalizeSlug(p.Name)
-		}
-		if p.Slug == "" {
-			p.Slug = uuid.New().String()
-		}
-		key := p.ItemType + ":" + p.Slug
-		if _, exists := byKey[key]; !exists {
-			order = append(order, key)
-		}
-		byKey[key] = p
-	}
-	out := make([]importPayload, 0, len(order))
-	for _, key := range order {
-		out = append(out, byKey[key])
-	}
-	return out
-}
-
-func upsertImportedItem(db *gorm.DB, payload importPayload, dryRun bool, stats *importStats) error {
-	if payload.ItemType == "" {
-		return fmt.Errorf("missing item type")
-	}
-	if payload.Slug == "" {
-		return fmt.Errorf("missing slug")
-	}
-
-	hashSvc := services.NewContentHashService()
-	contentMD5, err := hashSvc.HashTextContent(payload.ItemType, payload.Content)
-	if err != nil {
-		return fmt.Errorf("hash imported content: %w", err)
-	}
-
-	var existing models.CapabilityItem
-	err = db.Where("repo_id = ? AND item_type = ? AND slug = ?", publicRepoID, payload.ItemType, payload.Slug).First(&existing).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("query existing item: %w", err)
-	}
-
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		stats.addCreated(payload.ItemType)
-		if dryRun {
-			return nil
-		}
-		expScore := 0.0
-		if payload.Stars != nil {
-			expScore = float64(*payload.Stars)
-		}
-		item := models.CapabilityItem{
-			ID:              uuid.New().String(),
-			RegistryID:      publicRegistryID,
-			RepoID:          publicRepoID,
-			Slug:            payload.Slug,
-			ItemType:        payload.ItemType,
-			Name:            payload.Name,
-			Description:     payload.Description,
-			Category:        payload.Category,
-			Version:         payload.Version,
-			Content:         payload.Content,
-			ContentMD5:      contentMD5,
-			CurrentRevision: 1,
-			Metadata:        payload.Metadata,
-			SourcePath:      payload.SourcePath,
-			SourceSHA:       sourceSHA(payload.Content),
-			SourceType:      "direct",
-			Source:          payload.Source,
-			Status:          "active",
-			CreatedBy:       importCreatedBy,
-			UpdatedBy:       importCreatedBy,
-			ExperienceScore: expScore,
-		}
-		if err := db.Omit("Embedding").Create(&item).Error; err != nil {
-			return fmt.Errorf("create capability item: %w", err)
-		}
-		version := models.CapabilityVersion{
-			ID:         uuid.New().String(),
-			ItemID:     item.ID,
-			Revision:   1,
-			Content:    item.Content,
-			ContentMD5: contentMD5,
-			Metadata:   item.Metadata,
-			CommitMsg:  "Import from everything-ai-coding",
-			CreatedBy:  importCreatedBy,
-		}
-		if err := db.Create(&version).Error; err != nil {
-			return fmt.Errorf("create capability version: %w", err)
-		}
-		if err := syncItemTags(db, item.ID, payload.Tags); err != nil {
-			return fmt.Errorf("sync tags for new item %s: %w", item.ID, err)
-		}
-		return nil
-	}
-
-	if err := syncItemTags(db, existing.ID, payload.Tags); err != nil {
-		return fmt.Errorf("sync tags for existing item %s: %w", existing.ID, err)
-	}
-
-	if existing.Content == payload.Content && string(existing.Metadata) == string(payload.Metadata) && existing.Name == payload.Name && existing.Description == payload.Description && existing.Category == payload.Category && existing.Source == payload.Source {
-		stats.addSkipped(payload.ItemType)
-		return nil
-	}
-
-	stats.addUpdated(payload.ItemType)
-	if dryRun {
-		return nil
-	}
-
-	expScore := 0.0
-	if payload.Stars != nil {
-		expScore = float64(*payload.Stars)
-	}
-	updates := map[string]any{
-		"name":            payload.Name,
-		"description":     payload.Description,
-		"category":        payload.Category,
-		"version":         payload.Version,
-		"content":         payload.Content,
-		"content_md5":     contentMD5,
-		"metadata":        payload.Metadata,
-		"source_path":     payload.SourcePath,
-		"source_sha":      sourceSHA(payload.Content),
-		"source":          payload.Source,
-		"updated_by":      importCreatedBy,
-		"experience_score": expScore,
-	}
-	if contentMD5 != existing.ContentMD5 {
-		updates["current_revision"] = existing.CurrentRevision + 1
-	}
-	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-		return fmt.Errorf("update capability item: %w", err)
-	}
-
-	if contentMD5 == existing.ContentMD5 {
-		return nil
-	}
-
-	nextRevision := existing.CurrentRevision + 1
-	version := models.CapabilityVersion{
-		ID:         uuid.New().String(),
-		ItemID:     existing.ID,
-		Revision:   nextRevision,
-		Content:    payload.Content,
-		ContentMD5: contentMD5,
-		Metadata:   payload.Metadata,
-		CommitMsg:  "Sync from everything-ai-coding",
-		CreatedBy:  importCreatedBy,
-	}
-	if err := db.Create(&version).Error; err != nil {
-		return fmt.Errorf("create capability version: %w", err)
-	}
-
-	return nil
-}
-
-func syncItemTags(db *gorm.DB, itemID string, tags []string) error {
-	if db == nil || len(tags) == 0 {
-		return nil
-	}
-	tagSvc := &services.TagService{DB: db}
-	tagDicts, err := tagSvc.EnsureTags(tags, services.TagClassCustom, importCreatedBy)
-	if err != nil {
-		return fmt.Errorf("ensure tags: %w", err)
-	}
-	tagIDs := make([]string, 0, len(tagDicts))
-	for _, t := range tagDicts {
-		tagIDs = append(tagIDs, t.ID)
-	}
-	if err := tagSvc.SetItemTags(itemID, tagIDs); err != nil {
-		return fmt.Errorf("set item tags: %w", err)
-	}
-	return nil
-}
-
-func normalizeSlug(v string) string {
-	v = strings.TrimSpace(strings.ToLower(v))
-	v = strings.ReplaceAll(v, "_", "-")
-	v = strings.ReplaceAll(v, " ", "-")
-	var b strings.Builder
-	b.Grow(len(v))
-	lastDash := false
-	for _, r := range v {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if r == '-' || r == '/' || r == '.' {
-			if !lastDash {
-				b.WriteByte('-')
-				lastDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func inferName(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	name := strings.TrimSuffix(base, ext)
-	name = strings.ReplaceAll(name, "-", " ")
-	name = strings.ReplaceAll(name, "_", " ")
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "Imported Item"
-	}
-	return strings.ToUpper(name[:1]) + name[1:]
-}
-
-// inferSourceFromPath extracts the platform/org name from paths like:
-// platforms/claude-code/skills/.../SKILL.md -> claude-code
-// platforms/superpower/commands/.../xxx.md -> superpower
-func inferSourceFromPath(relPath string) string {
-	parts := strings.Split(filepath.ToSlash(relPath), "/")
-	if len(parts) >= 2 && parts[0] == "platforms" {
-		return parts[1]
-	}
-	return ""
-}
-
 func mustJSON(v any) datatypes.JSON {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -1175,11 +761,6 @@ func mustJSON(v any) datatypes.JSON {
 		return datatypes.JSON([]byte("{}"))
 	}
 	return datatypes.JSON(b)
-}
-
-func sourceSHA(content string) string {
-	sum := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(sum[:])
 }
 
 func runGooseMigrations(db *gorm.DB) error {

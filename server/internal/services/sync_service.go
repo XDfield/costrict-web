@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -115,6 +116,10 @@ func (s *SyncService) enqueueScan(itemID string, revision int) {
 	go func() {
 		_, _ = s.ScanJobService.Enqueue(itemID, revision, "sync", "", ScanEnqueueOptions{})
 	}()
+}
+
+func sanitizeSyncContent(content []byte) []byte {
+	return bytes.ReplaceAll(content, []byte{0}, nil)
 }
 
 func metadataJSON(m map[string]any) datatypes.JSON {
@@ -263,6 +268,17 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		existingByPath[existingItems[i].SourcePath] = &existingItems[i]
 	}
 
+	// Index globally existing items by repo+type+slug so that cross-registry
+	// duplicates are treated as updates instead of inserts.
+	var globalItems []models.CapabilityItem
+	s.DB.Where("repo_id = ? AND status = 'active'", syncRepoID(registry.RepoID)).Find(&globalItems)
+	for i := range globalItems {
+		key := globalItems[i].ItemType + ":" + globalItems[i].Slug
+		if _, exists := existingByPath[key]; !exists {
+			existingByPath[key] = &globalItems[i]
+		}
+	}
+
 	seenPaths := make(map[string]bool)
 
 	for _, relPath := range files {
@@ -280,6 +296,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			result.Errors = append(result.Errors, fmt.Sprintf("read %s: %v", relPath, err))
 			continue
 		}
+		content = sanitizeSyncContent(content)
 
 		if strings.ToLower(filepath.Base(relPath)) == "plugin.json" {
 			if !opts.DryRun {
@@ -310,6 +327,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			if !exists && len(parsedItems) > 1 {
 				existing = existingByPath[relPath]
 				exists = existing != nil && existing.Slug == parsed.Slug
+			}
+			if !exists {
+				existing = existingByPath[parsed.ItemType+":"+parsed.Slug]
+				exists = existing != nil
 			}
 
 			if exists && existing.SourceSHA == contentHash {
@@ -424,6 +445,11 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					continue
 				}
 
+				// Index newly created item so later files with the same slug are
+				// treated as updates instead of inserts.
+				existingByPath[newItem.SourcePath] = newItem
+				existingByPath[newItem.ItemType+":"+newItem.Slug] = newItem
+
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
 				}
@@ -458,7 +484,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 
 	if !opts.DryRun {
 		for path, item := range existingByPath {
-			if !seenPaths[path] {
+			if !seenPaths[path] && item.RegistryID == registryID {
 				s.DB.Model(item).Updates(map[string]any{"status": "archived"})
 				s.DB.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
 				result.Deleted++
@@ -513,6 +539,7 @@ func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]stri
 			*errs = append(*errs, fmt.Sprintf("asset read %s: %v", f, err))
 			continue
 		}
+		content = sanitizeSyncContent(content)
 
 		contentSHA := s.Git.ContentHash(content)
 
