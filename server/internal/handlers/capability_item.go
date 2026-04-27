@@ -677,6 +677,74 @@ func applyItemTagsFilter(query *gorm.DB, rawTags string) *gorm.DB {
 	)`, tagSlugs, len(tagSlugs))
 }
 
+func parseCSVQueryValues(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+
+	values := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+
+	return values
+}
+
+type itemListFilterOptions struct {
+	DefaultActiveStatus bool
+	AllowRegistryID     bool
+	AllowFavorited      bool
+	UserID              string
+}
+
+func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opts itemListFilterOptions) *gorm.DB {
+	if itemType := c.Query("type"); itemType != "" {
+		query = query.Where("item_type = ?", itemType)
+	}
+	if status := c.Query("status"); status != "" {
+		query = query.Where("status = ?", status)
+	} else if opts.DefaultActiveStatus {
+		query = query.Where("status = 'active'")
+	}
+	if search := c.Query("search"); search != "" {
+		like := database.ILike(db)
+		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
+	}
+	if categoriesRaw := c.Query("categories"); categoriesRaw != "" {
+		categories := parseCSVQueryValues(categoriesRaw)
+		if len(categories) > 0 {
+			query = query.Where("category IN ?", categories)
+		}
+	} else if category := c.Query("category"); category != "" {
+		query = query.Where("category = ?", category)
+	}
+	if securityStatusesRaw := c.Query("securityStatuses"); securityStatusesRaw != "" {
+		securityStatuses := expandSecurityStatusFilters(parseCSVQueryValues(securityStatusesRaw))
+		if len(securityStatuses) > 0 {
+			query = query.Where("security_status IN ?", securityStatuses)
+		}
+	}
+	if sourcesRaw := c.Query("source"); sourcesRaw != "" {
+		sources := parseCSVQueryValues(sourcesRaw)
+		if len(sources) > 0 {
+			query = query.Where("source IN ?", sources)
+		}
+	}
+	if opts.AllowRegistryID {
+		if registryID := c.Query("registryId"); registryID != "" {
+			query = query.Where("registry_id = ?", registryID)
+		}
+	}
+	if opts.AllowFavorited && c.Query("favorited") == "true" && opts.UserID != "" {
+		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", opts.UserID)
+	}
+
+	return applyItemTagsFilter(query, c.Query("tags"))
+}
+
 // ListItems godoc
 // @Summary      List registry items
 // @Description  Get all items in a registry with author information
@@ -1666,65 +1734,12 @@ func ListAllItems(c *gin.Context) {
 	}
 
 	query := db.Where("registry_id IN ?", registryIDs)
-
-	if itemType := c.Query("type"); itemType != "" {
-		query = query.Where("item_type = ?", itemType)
-	}
-	if status := c.Query("status"); status != "" {
-		query = query.Where("status = ?", status)
-	} else {
-		query = query.Where("status = 'active'")
-	}
-	if search := c.Query("search"); search != "" {
-		like := database.ILike(db)
-		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
-	}
-	if categoriesRaw := c.Query("categories"); categoriesRaw != "" {
-		categories := make([]string, 0)
-		for _, part := range strings.Split(categoriesRaw, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				categories = append(categories, part)
-			}
-		}
-		if len(categories) > 0 {
-			query = query.Where("category IN ?", categories)
-		}
-	} else if category := c.Query("category"); category != "" {
-		query = query.Where("category = ?", category)
-	}
-	if securityStatusesRaw := c.Query("securityStatuses"); securityStatusesRaw != "" {
-		securityStatuses := make([]string, 0)
-		for _, part := range strings.Split(securityStatusesRaw, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				securityStatuses = append(securityStatuses, part)
-			}
-		}
-		securityStatuses = expandSecurityStatusFilters(securityStatuses)
-		if len(securityStatuses) > 0 {
-			query = query.Where("security_status IN ?", securityStatuses)
-		}
-	}
-	if sourcesRaw := c.Query("source"); sourcesRaw != "" {
-		sources := make([]string, 0)
-		for _, part := range strings.Split(sourcesRaw, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				sources = append(sources, part)
-			}
-		}
-		if len(sources) > 0 {
-			query = query.Where("source IN ?", sources)
-		}
-	}
-	if registryID := c.Query("registryId"); registryID != "" {
-		query = query.Where("registry_id = ?", registryID)
-	}
-	if c.Query("favorited") == "true" && uid != "" {
-		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", uid)
-	}
-	query = applyItemTagsFilter(query, c.Query("tags"))
+	query = applySharedItemListFilters(query, db, c, itemListFilterOptions{
+		DefaultActiveStatus: true,
+		AllowRegistryID:     true,
+		AllowFavorited:      true,
+		UserID:              uid,
+	})
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)

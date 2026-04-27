@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -621,6 +622,101 @@ func TestListMyItems_NoDuplicateWhenBothMatch(t *testing.T) {
 	items := body["items"].([]interface{})
 	if len(items) != 1 {
 		t.Fatalf("expected exactly 1 item (no duplicates), got %d", len(items))
+	}
+}
+
+func TestListMyItems_SupportsSortingByFavoriteCount(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-my-sort", Name: "my-sort-reg", SourceType: "internal", RepoID: "public", OwnerID: "sort-user",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "my-sort-low", RegistryID: "reg-my-sort", RepoID: "public", Slug: "my-sort-low", ItemType: "skill",
+		Name: "My Sort Low", Status: "active", CreatedBy: "sort-user", FavoriteCount: 1, Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "my-sort-high", RegistryID: "reg-my-sort", RepoID: "public", Slug: "my-sort-high", ItemType: "skill",
+		Name: "My Sort High", Status: "active", CreatedBy: "sort-user", FavoriteCount: 9, Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRegistryRouter("sort-user"), "/api/items/my?sortBy=favoriteCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "my-sort-high" {
+		t.Fatalf("expected highest favoriteCount first, got %v", first["id"])
+	}
+}
+
+func TestListMyItems_SupportsMultiFieldFiltering(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-my-filter", Name: "my-filter-reg", SourceType: "internal", RepoID: "public", OwnerID: "filter-user",
+	})
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	for _, item := range []models.CapabilityItem{
+		{
+			ID: "my-filter-match", RegistryID: "reg-my-filter", RepoID: "public", Slug: "my-filter-match", ItemType: "skill",
+			Name: "Deploy Helper", Description: "deploy pipeline helper", Category: "automation", Status: "active",
+			SecurityStatus: "clean", Source: "github", CreatedBy: "filter-user", Metadata: datatypes.JSON([]byte("{}")),
+			CreatedAt: older, UpdatedAt: newer,
+		},
+		{
+			ID: "my-filter-wrong-category", RegistryID: "reg-my-filter", RepoID: "public", Slug: "my-filter-wrong-category", ItemType: "skill",
+			Name: "Deploy Docs", Description: "deploy docs", Category: "docs", Status: "active",
+			SecurityStatus: "clean", Source: "github", CreatedBy: "filter-user", Metadata: datatypes.JSON([]byte("{}")),
+			CreatedAt: older, UpdatedAt: older,
+		},
+		{
+			ID: "my-filter-wrong-source", RegistryID: "reg-my-filter", RepoID: "public", Slug: "my-filter-wrong-source", ItemType: "skill",
+			Name: "Deploy Mirror", Description: "deploy mirror", Category: "automation", Status: "active",
+			SecurityStatus: "clean", Source: "gitlab", CreatedBy: "filter-user", Metadata: datatypes.JSON([]byte("{}")),
+			CreatedAt: older, UpdatedAt: older,
+		},
+		{
+			ID: "my-filter-wrong-status", RegistryID: "reg-my-filter", RepoID: "public", Slug: "my-filter-wrong-status", ItemType: "skill",
+			Name: "Deploy Legacy", Description: "deploy legacy", Category: "automation", Status: "inactive",
+			SecurityStatus: "clean", Source: "github", CreatedBy: "filter-user", Metadata: datatypes.JSON([]byte("{}")),
+			CreatedAt: older, UpdatedAt: older,
+		},
+		{
+			ID: "my-filter-wrong-owner", RegistryID: "reg-my-filter", RepoID: "public", Slug: "my-filter-wrong-owner", ItemType: "skill",
+			Name: "Deploy Other", Description: "deploy helper", Category: "automation", Status: "active",
+			SecurityStatus: "clean", Source: "gitlab", CreatedBy: "other-user", Metadata: datatypes.JSON([]byte("{}")),
+			CreatedAt: older, UpdatedAt: older,
+		},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+	}
+
+	w := get(newRegistryRouter("filter-user"), "/api/items/my?search=deploy&categories=automation,tools&securityStatuses=low&source=github&status=active&registryId=reg-my-filter")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 filtered item, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "my-filter-match" {
+		t.Fatalf("expected my-filter-match, got %v", first["id"])
+	}
+	if body["total"].(float64) != 1 {
+		t.Fatalf("expected total=1, got %v", body["total"])
 	}
 }
 

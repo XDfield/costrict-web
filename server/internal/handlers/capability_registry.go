@@ -352,8 +352,17 @@ type MyItem struct {
 // @Tags         items
 // @Produce      json
 // @Param        type      query     string  false  "Filter by item type"
+// @Param        status    query     string  false  "Filter by status"
+// @Param        search    query     string  false  "Search by name or description"
+// @Param        category  query     string  false  "Filter by category (legacy single value)"
+// @Param        categories  query   string  false  "Filter by categories (comma-separated)"
+// @Param        securityStatuses  query  string  false  "Filter by security statuses (comma-separated)"
+// @Param        source    query     string  false  "Filter by sources (comma-separated, OR logic)"
+// @Param        registryId  query   string  false  "Filter by registry ID"
 // @Param        page      query     int     false  "Page number (default: 1)"
 // @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
+// @Param        sortBy    query     string  false  "Sort by updatedAt, createdAt, previewCount, installCount, favoriteCount, or experienceScore"
+// @Param        sortOrder query     string  false  "Sort order: asc or desc (default: desc)"
 // @Success      200      {object}  object{items=[]MyItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      401      {object}  object{error=string}
 // @Router       /items/my [get]
@@ -393,17 +402,17 @@ func ListMyItems(c *gin.Context) {
 	} else {
 		query = db.Where("created_by = ?", ownerID)
 	}
-	if itemType := c.Query("type"); itemType != "" {
-		query = query.Where("item_type = ?", itemType)
-	}
-	query = applyItemTagsFilter(query, c.Query("tags"))
+	query = applySharedItemListFilters(query, db, c, itemListFilterOptions{
+		AllowRegistryID: true,
+		UserID:          ownerID.(string),
+	})
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
 
 	var items []models.CapabilityItem
 	offset := (page - 1) * pageSize
-	query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&items)
+	query.Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset(offset).Find(&items)
 
 	// Supplement registryMap with any registries not yet loaded (e.g. public registry items created by the user)
 	// Batch-fetch all missing registry IDs in a single query to avoid N+1.
