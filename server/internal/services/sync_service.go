@@ -261,8 +261,11 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		return result, err
 	}
 
+	// Load all items for the current registry so that archived entries are
+	// also indexed; this prevents duplicate-key violations when a previously
+	// archived item re-appears in the source repo.
 	var existingItems []models.CapabilityItem
-	s.DB.Where("registry_id = ? AND status = 'active'", registryID).Find(&existingItems)
+	s.DB.Where("registry_id = ?", registryID).Find(&existingItems)
 	existingByPath := make(map[string]*models.CapabilityItem, len(existingItems))
 	for i := range existingItems {
 		existingByPath[existingItems[i].SourcePath] = &existingItems[i]
@@ -271,7 +274,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	// Index globally existing items by repo+type+slug so that cross-registry
 	// duplicates are treated as updates instead of inserts.
 	var globalItems []models.CapabilityItem
-	s.DB.Where("repo_id = ? AND status = 'active'", syncRepoID(registry.RepoID)).Find(&globalItems)
+	s.DB.Where("repo_id = ?", syncRepoID(registry.RepoID)).Find(&globalItems)
 	for i := range globalItems {
 		key := globalItems[i].ItemType + ":" + globalItems[i].Slug
 		if _, exists := existingByPath[key]; !exists {
@@ -364,6 +367,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Category = parsed.Category
 				existing.Version = parsed.Version
 				existing.Content = parsed.Content
+				existing.Status = "active"
 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
