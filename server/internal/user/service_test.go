@@ -179,6 +179,9 @@ func TestUserServiceGetOrCreateUserCreate(t *testing.T) {
 	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
 		t.Fatalf("casdoor_sub not set: %+v", user)
 	}
+	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:uuid-u1" {
+		t.Fatalf("external_key not set: %+v", user)
+	}
 }
 
 func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
@@ -238,6 +241,48 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	}
 	if user.Organization == nil || *user.Organization != "org" {
 		t.Fatalf("organization not backfilled: %+v", user)
+	}
+	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:uuid-u1" {
+		t.Fatalf("external_key not backfilled: %+v", user)
+	}
+}
+
+func TestUserServiceGetOrCreateUserMatchesByExternalKey(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	externalKey := "casdoor:uuid-u1"
+	provider := "Github"
+	seed := models.User{
+		SubjectID:   "legacy-u1",
+		Username:    "alice",
+		ExternalKey: &externalKey,
+		AuthProvider: &provider,
+		IsActive:    true,
+	}
+	if err := db.Create(&seed).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	claims := &JWTClaims{
+		ID:                "new-id",
+		Sub:               "new-sub",
+		UniversalID:       "uuid-u1",
+		Name:              "alice-gh",
+		PreferredUsername: "Alice GH",
+		Provider:          "Github",
+		ProviderUserID:    "18633160",
+	}
+
+	user, err := svc.GetOrCreateUser(claims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser error: %v", err)
+	}
+	if user.SubjectID != "legacy-u1" {
+		t.Fatalf("expected match by external key, got %+v", user)
+	}
+	if user.ProviderUserID == nil || *user.ProviderUserID != "18633160" {
+		t.Fatalf("provider_user_id not updated: %+v", user)
 	}
 }
 
@@ -327,6 +372,80 @@ func TestParseJWTClaimsFromAccessToken(t *testing.T) {
 	}
 	if claims.PreferredUsername != "Alice" || claims.Email != "alice@example.com" || claims.Owner != "org" {
 		t.Fatalf("unexpected profile claims: %+v", claims)
+	}
+}
+
+func TestParseJWTClaimsFromAccessTokenGithubProperties(t *testing.T) {
+	tokenString := signUserTestJWT(t, jwt.MapClaims{
+		"id":           "18633160",
+		"sub":          "universal-gh-1",
+		"universal_id": "universal-gh-1",
+		"name":         "XDfield",
+		"displayName":  "gh_XDfield",
+		"provider":     "Github",
+		"properties": map[string]any{
+			"oauth_GitHub_id":          "18633160",
+			"oauth_GitHub_username":    "XDfield",
+			"oauth_GitHub_displayName": "DoSun",
+			"oauth_GitHub_email":       "chenxuan@example.com",
+			"oauth_GitHub_avatarUrl":   "https://avatars.githubusercontent.com/u/18633160?v=4",
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	claims, err := ParseJWTClaimsFromAccessToken(tokenString)
+	if err != nil {
+		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
+	}
+	if claims.Name != "XDfield" {
+		t.Fatalf("expected github username from properties, got %+v", claims)
+	}
+	if claims.PreferredUsername != "DoSun" {
+		t.Fatalf("expected github display name from properties, got %+v", claims)
+	}
+	if claims.Email != "chenxuan@example.com" {
+		t.Fatalf("expected github email from properties, got %+v", claims)
+	}
+	if claims.Picture == "" || claims.ProviderUserID != "18633160" || claims.Provider != "Github" {
+		t.Fatalf("expected github provider profile fields, got %+v", claims)
+	}
+}
+
+func TestParseJWTClaimsFromAccessTokenIDTrustUsesProperties(t *testing.T) {
+	tokenString := signUserTestJWT(t, jwt.MapClaims{
+		"id":           "42766",
+		"sub":          "universal-custom-1",
+		"universal_id": "universal-custom-1",
+		"name":         "random-generated-name",
+		"displayName":  "陈烜42766",
+		"provider":     "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom_id":          "42766",
+			"oauth_Custom_username":    "陈烜",
+			"oauth_Custom_displayName": "陈烜",
+			"oauth_Custom_email":       "15986746954",
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	claims, err := ParseJWTClaimsFromAccessToken(tokenString)
+	if err != nil {
+		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
+	}
+	if claims.Name != "陈烜" {
+		t.Fatalf("expected idtrust username from properties, got %+v", claims)
+	}
+	if claims.PreferredUsername != "陈烜" {
+		t.Fatalf("expected idtrust display name from properties, got %+v", claims)
+	}
+	if claims.ProviderUserID != "42766" {
+		t.Fatalf("expected idtrust provider user id from properties, got %+v", claims)
+	}
+	if claims.Email != "" {
+		t.Fatalf("expected invalid email-like phone not mapped to email, got %+v", claims)
+	}
+	if claims.Phone != "15986746954" {
+		t.Fatalf("expected phone inferred from custom email field, got %+v", claims)
 	}
 }
 

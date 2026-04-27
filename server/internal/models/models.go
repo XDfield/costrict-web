@@ -545,7 +545,11 @@ type User struct {
 	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`     // Casdoor name
 	DisplayName *string `gorm:"size:191" json:"display_name"`                                        // Casdoor preferred_username
 	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                          // Email
+	Phone       *string `gorm:"index:idx_user_phone;size:64" json:"phone"`
 	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                         // Avatar URL
+	AuthProvider *string `gorm:"index:idx_user_auth_provider;size:64" json:"auth_provider"`
+	ExternalKey *string `gorm:"uniqueIndex:idx_user_external_key;size:255" json:"external_key"`
+	ProviderUserID *string `gorm:"index:idx_user_provider_user_id;size:191" json:"provider_user_id"`
 
 	// Casdoor 相关字段
 	CasdoorID          *string `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`                     // Casdoor id claim, used only for compatibility lookup

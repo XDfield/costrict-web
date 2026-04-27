@@ -85,6 +85,47 @@ func newMigrateTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func TestBackfillUserExternalIdentities(t *testing.T) {
+	db := newMigrateTestDB(t)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatalf("migrate users: %v", err)
+	}
+
+	u1 := models.User{SubjectID: "u1", Username: "alice", CasdoorUniversalID: strPtr("uuid-1"), IsActive: true}
+	u2 := models.User{SubjectID: "u2", Username: "phone_15986746954", Email: strPtr("15986746954"), IsActive: true}
+	if err := db.Create(&u1).Error; err != nil {
+		t.Fatalf("create u1: %v", err)
+	}
+	if err := db.Create(&u2).Error; err != nil {
+		t.Fatalf("create u2: %v", err)
+	}
+
+	if err := backfillUserExternalIdentities(db, false); err != nil {
+		t.Fatalf("backfill external identities: %v", err)
+	}
+
+	var got1, got2 models.User
+	if err := db.First(&got1, "subject_id = ?", "u1").Error; err != nil {
+		t.Fatalf("reload u1: %v", err)
+	}
+	if err := db.First(&got2, "subject_id = ?", "u2").Error; err != nil {
+		t.Fatalf("reload u2: %v", err)
+	}
+	if got1.ExternalKey == nil || *got1.ExternalKey != "casdoor:uuid-1" {
+		t.Fatalf("expected u1 external_key backfilled, got %+v", got1)
+	}
+	if got1.AuthProvider == nil || *got1.AuthProvider != "casdoor" {
+		t.Fatalf("expected u1 auth_provider backfilled, got %+v", got1)
+	}
+	if got2.AuthProvider == nil || *got2.AuthProvider != "phone" {
+		t.Fatalf("expected u2 auth_provider backfilled, got %+v", got2)
+	}
+	if got2.Phone == nil || *got2.Phone != "15986746954" {
+		t.Fatalf("expected u2 phone backfilled from legacy email-like value, got %+v", got2)
+	}
+}
+
+
 func TestBackfillCapabilityContentVersioning_SingleFile(t *testing.T) {
 	db := newMigrateTestDB(t)
 	db.Create(&models.CapabilityRegistry{ID: publicRegistryID, Name: "public", SourceType: "internal", RepoID: publicRepoID, OwnerID: "system"})

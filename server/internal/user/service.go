@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/authidentity"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -23,6 +23,9 @@ type JWTClaims struct {
 	Email             string
 	Picture           string
 	Owner             string
+	Provider          string
+	ProviderUserID    string
+	Phone             string
 }
 
 // UserService provides user data operations
@@ -136,9 +139,11 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("nil JWT claims")
 	}
+	claims = normalizeJWTClaims(claims)
 
 	// 1. SubjectID is always generated locally and remains stable afterward.
 	subjectID := "usr_" + uuid.NewString()
+	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
 		return nil, fmt.Errorf("no valid user identifier in JWT claims")
@@ -147,6 +152,14 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	// 2. Try to get existing user by external identities first.
 	var user models.User
 	found := false
+	if externalKey != "" {
+		err := s.db.Where("external_key = ?", externalKey).Take(&user).Error
+		if err == nil {
+			found = true
+		} else if err != gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+		}
+	}
 	if claims.UniversalID != "" {
 		err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
 		if err == nil {
@@ -203,6 +216,18 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			user.CasdoorID = &claims.ID
 			shouldUpdate = true
 		}
+		if externalKey != "" && (user.ExternalKey == nil || *user.ExternalKey != externalKey) {
+			user.ExternalKey = &externalKey
+			shouldUpdate = true
+		}
+		if claims.Provider != "" && (user.AuthProvider == nil || *user.AuthProvider != claims.Provider) {
+			user.AuthProvider = &claims.Provider
+			shouldUpdate = true
+		}
+		if claims.ProviderUserID != "" && (user.ProviderUserID == nil || *user.ProviderUserID != claims.ProviderUserID) {
+			user.ProviderUserID = &claims.ProviderUserID
+			shouldUpdate = true
+		}
 		if claims.UniversalID != "" && (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != claims.UniversalID) {
 			user.CasdoorUniversalID = &claims.UniversalID
 			shouldUpdate = true
@@ -221,6 +246,10 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
 			user.Email = &claims.Email
+			shouldUpdate = true
+		}
+		if claims.Phone != "" && (user.Phone == nil || *user.Phone != claims.Phone) {
+			user.Phone = &claims.Phone
 			shouldUpdate = true
 		}
 		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
@@ -245,7 +274,11 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		Username:           claims.Name,
 		DisplayName:        stringPtr(claims.PreferredUsername),
 		Email:              stringPtr(claims.Email),
+		Phone:              stringPtr(claims.Phone),
 		AvatarURL:          stringPtr(claims.Picture),
+		AuthProvider:       stringPtr(claims.Provider),
+		ExternalKey:        stringPtr(externalKey),
+		ProviderUserID:     stringPtr(claims.ProviderUserID),
 		CasdoorID:          stringPtr(claims.ID),
 		CasdoorUniversalID: stringPtr(claims.UniversalID),
 		CasdoorSub:         stringPtr(claims.Sub),
@@ -256,13 +289,18 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	}
 
 	if err := s.db.Create(&user).Error; err != nil {
-		if claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
+		if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
 			var existing models.User
-			err := s.db.Clauses(clause.Locking{Strength: "UPDATE"}).
-				Where("casdoor_universal_id = ?", claims.UniversalID).
+			query := s.db.Clauses(clause.Locking{Strength: "UPDATE"})
+			if externalKey != "" {
+				query = query.Where("external_key = ?", externalKey)
+			} else {
+				query = query.Where("casdoor_universal_id = ?", claims.UniversalID)
+			}
+			query = query.Or("casdoor_universal_id = ?", claims.UniversalID).
 				Or("casdoor_id = ?", claims.ID).
-				Or("casdoor_sub = ?", claims.Sub).
-				Take(&existing).Error
+				Or("casdoor_sub = ?", claims.Sub)
+			err := query.Take(&existing).Error
 			if err == nil {
 				return &existing, nil
 			}
@@ -276,6 +314,22 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 // ParseJWTClaimsFromMiddleware extracts JWT claims from gin.Context
 // This is a helper to convert middleware context to JWTClaims
 func ParseJWTClaimsFromMiddleware(c *gin.Context) (*JWTClaims, error) {
+	if rawClaims, exists := c.Get(middleware.AuthClaimsKey); exists && rawClaims != nil {
+		if authClaims, ok := rawClaims.(middleware.AuthClaims); ok {
+			return normalizeJWTClaims(&JWTClaims{
+				ID:                authClaims.ID,
+				Sub:               authClaims.Sub,
+				UniversalID:       authClaims.UniversalID,
+				Name:              authClaims.Name,
+				PreferredUsername: authClaims.PreferredUsername,
+				Email:             authClaims.Email,
+				Provider:          authClaims.Provider,
+				ProviderUserID:    authClaims.ProviderUserID,
+				Phone:             authClaims.Phone,
+			}), nil
+		}
+	}
+
 	userID, exists := c.Get(middleware.UserIDKey)
 	if !exists || userID == nil {
 		return nil, fmt.Errorf("user ID not found in context")
@@ -302,33 +356,24 @@ func ParseJWTClaimsFromMiddleware(c *gin.Context) (*JWTClaims, error) {
 // The token is obtained directly from Casdoor during login, so this helper only decodes
 // claims to enrich profile data when /api/userinfo omits fields like id/universal_id.
 func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
-	parser := jwt.Parser{}
-	claims := jwt.MapClaims{}
-
-	if _, _, err := parser.ParseUnverified(tokenString, claims); err != nil {
-		return nil, fmt.Errorf("failed to parse access token claims: %w", err)
+	rawClaims, err := authidentity.ParseUnverifiedTokenClaims(tokenString)
+	if err != nil {
+		return nil, err
 	}
-
-	str := func(keys ...string) string {
-		for _, key := range keys {
-			if v, ok := claims[key]; ok {
-				if s, ok := v.(string); ok && s != "" {
-					return s
-				}
-			}
-		}
-		return ""
-	}
+	normalized := authidentity.NormalizeClaimsMap(rawClaims)
 
 	result := &JWTClaims{
-		ID:                str("id"),
-		Sub:               str("sub"),
-		UniversalID:       str("universal_id"),
-		Name:              str("name"),
-		PreferredUsername: str("preferred_username"),
-		Email:             str("email"),
-		Picture:           str("picture", "avatar"),
-		Owner:             str("owner"),
+		ID:                normalized.ID,
+		Sub:               normalized.Sub,
+		UniversalID:       normalized.UniversalID,
+		Name:              normalized.Name,
+		PreferredUsername: normalized.PreferredUsername,
+		Email:             normalized.Email,
+		Picture:           normalized.Picture,
+		Owner:             normalized.Owner,
+		Provider:          normalized.Provider,
+		ProviderUserID:    normalized.ProviderUserID,
+		Phone:             normalized.Phone,
 	}
 
 	if result.ID == "" && result.Sub == "" && result.UniversalID == "" {
@@ -336,6 +381,106 @@ func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
 	}
 
 	return result, nil
+}
+
+func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
+	if base == nil {
+		if override == nil {
+			return nil
+		}
+		merged := *override
+		return normalizeJWTClaims(&merged)
+	}
+	merged := *base
+	if override == nil {
+		return normalizeJWTClaims(&merged)
+	}
+
+	if merged.ID == "" {
+		merged.ID = override.ID
+	}
+	if merged.Sub == "" {
+		merged.Sub = override.Sub
+	}
+	if merged.UniversalID == "" {
+		merged.UniversalID = override.UniversalID
+	}
+	if merged.Owner == "" {
+		merged.Owner = override.Owner
+	}
+	if merged.Provider == "" {
+		merged.Provider = override.Provider
+	}
+	if merged.ProviderUserID == "" {
+		merged.ProviderUserID = override.ProviderUserID
+	}
+	if merged.Phone == "" {
+		merged.Phone = override.Phone
+	}
+
+	if shouldPreferOverrideName(merged, *override) {
+		merged.Name = override.Name
+	}
+	if override.PreferredUsername != "" {
+		merged.PreferredUsername = override.PreferredUsername
+	}
+	if override.Email != "" {
+		merged.Email = override.Email
+	}
+	if override.Picture != "" {
+		merged.Picture = override.Picture
+	}
+
+	return normalizeJWTClaims(&merged)
+}
+
+func shouldPreferOverrideName(base, override JWTClaims) bool {
+	if override.Name == "" {
+		return false
+	}
+	if base.Name == "" {
+		return true
+	}
+	if override.Provider == "idtrust" {
+		return true
+	}
+	return false
+}
+
+func normalizeJWTClaims(claims *JWTClaims) *JWTClaims {
+	if claims == nil {
+		return nil
+	}
+	if claims.PreferredUsername == "" {
+		claims.PreferredUsername = claims.Name
+	}
+	if claims.Name == "" && claims.PreferredUsername != "" {
+		claims.Name = claims.PreferredUsername
+	}
+	if claims.Name == "" {
+		if claims.Phone != "" {
+			claims.Name = "phone_" + claims.Phone
+		} else if claims.ProviderUserID != "" {
+			claims.Name = claims.ProviderUserID
+		}
+	}
+	return claims
+}
+
+func buildExternalKey(claims *JWTClaims) string {
+	if claims == nil {
+		return ""
+	}
+	if claims.UniversalID != "" {
+		return "casdoor:" + claims.UniversalID
+	}
+	if claims.Sub != "" {
+		return "casdoor-sub:" + claims.Sub
+	}
+	if claims.ID != "" {
+		return "casdoor-id:" + claims.ID
+	}
+	return ""
 }
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
