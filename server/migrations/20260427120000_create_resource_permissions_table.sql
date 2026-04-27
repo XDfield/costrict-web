@@ -19,18 +19,18 @@ CREATE TABLE IF NOT EXISTS resource_permissions (
 CREATE INDEX IF NOT EXISTS idx_resource_permissions_type ON resource_permissions(resource_type);
 
 COMMENT ON TABLE resource_permissions IS '资源权限映射表';
-COMMENT ON COLUMN resource_permissions.resource_code IS '资源码，如 console.projects';
+COMMENT ON COLUMN resource_permissions.resource_code IS '资源码，如 repositories';
 COMMENT ON COLUMN resource_permissions.resource_type IS '资源类型：menu | api';
 COMMENT ON COLUMN resource_permissions.allowed_roles IS '允许访问的角色列表，空数组表示任何登录用户';
 
 -- Seed existing permissions (same as previous hard-coded values)
 INSERT INTO resource_permissions (resource_code, resource_type, allowed_roles) VALUES
-    ('console.repositories', 'menu', '{}'),
-    ('console.projects', 'menu', '{}'),
-    ('console.capabilities', 'menu', ARRAY['platform_admin']::text[]),
-    ('console.devices', 'menu', '{}'),
-    ('console.notifications', 'menu', ARRAY['platform_admin']::text[]),
-    ('console.kanban', 'menu', ARRAY['business_admin', 'platform_admin']::text[]),
+    ('repositories', 'menu', '{}'),
+    ('projects', 'menu', '{}'),
+    ('capabilities', 'menu', ARRAY['platform_admin']::text[]),
+    ('devices', 'menu', '{}'),
+    ('notifications', 'menu', ARRAY['platform_admin']::text[]),
+    ('kanban', 'menu', ARRAY['business_admin', 'platform_admin']::text[]),
     ('admin.system-roles', 'api', ARRAY['platform_admin']::text[]),
     ('admin.notification-channels', 'api', ARRAY['platform_admin']::text[]),
     ('api.kanban.overview', 'api', ARRAY['business_admin', 'platform_admin']::text[])
