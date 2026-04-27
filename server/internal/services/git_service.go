@@ -28,6 +28,27 @@ func (s *GitService) Clone(repoURL, branch string) (*CloneResult, error) {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	// If repoURL is a local directory, copy it instead of cloning.
+	// go-git's PlainClone against a local non-bare repo may fall back
+	// to the external "git" binary, which might not be available.
+	if fi, err := os.Stat(repoURL); err == nil && fi.IsDir() {
+		if err := copyDir(repoURL, localPath); err != nil {
+			os.RemoveAll(localPath)
+			return nil, fmt.Errorf("failed to copy local repo: %w", err)
+		}
+		repo, err := git.PlainOpen(localPath)
+		if err != nil {
+			os.RemoveAll(localPath)
+			return nil, fmt.Errorf("failed to open copied repo: %w", err)
+		}
+		sha, err := s.getHeadSHAFromRepo(repo)
+		if err != nil {
+			os.RemoveAll(localPath)
+			return nil, err
+		}
+		return &CloneResult{LocalPath: localPath, CommitSHA: sha}, nil
+	}
+
 	cloneOpts := &git.CloneOptions{
 		URL:          repoURL,
 		Depth:        1,
@@ -50,6 +71,27 @@ func (s *GitService) Clone(repoURL, branch string) (*CloneResult, error) {
 	}
 
 	return &CloneResult{LocalPath: localPath, CommitSHA: sha}, nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0644)
+	})
 }
 
 func (s *GitService) Fetch(localPath, branch string) (string, error) {
