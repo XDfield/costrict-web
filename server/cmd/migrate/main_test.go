@@ -92,7 +92,7 @@ func TestBackfillUserExternalIdentities(t *testing.T) {
 	}
 
 	u1 := models.User{SubjectID: "u1", Username: "alice", CasdoorUniversalID: strPtr("uuid-1"), IsActive: true}
-	u2 := models.User{SubjectID: "u2", Username: "phone_15986746954", Email: strPtr("15986746954"), IsActive: true}
+	u2 := models.User{SubjectID: "u2", Username: "phone_15500000001", Email: strPtr("15500000001"), IsActive: true}
 	if err := db.Create(&u1).Error; err != nil {
 		t.Fatalf("create u1: %v", err)
 	}
@@ -120,8 +120,29 @@ func TestBackfillUserExternalIdentities(t *testing.T) {
 	if got2.AuthProvider == nil || *got2.AuthProvider != "phone" {
 		t.Fatalf("expected u2 auth_provider backfilled, got %+v", got2)
 	}
-	if got2.Phone == nil || *got2.Phone != "15986746954" {
+	if got2.Phone == nil || *got2.Phone != "15500000001" {
 		t.Fatalf("expected u2 phone backfilled from legacy email-like value, got %+v", got2)
+	}
+}
+
+func TestBackfillUserAuthIdentities(t *testing.T) {
+	db := newMigrateTestDB(t)
+	if err := db.AutoMigrate(&models.User{}, &models.UserAuthIdentity{}); err != nil {
+		t.Fatalf("migrate users/auth identities: %v", err)
+	}
+	u := models.User{SubjectID: "u1", Username: "alice", AuthProvider: strPtr("github"), ExternalKey: strPtr("casdoor:uuid-1"), ProviderUserID: strPtr("18633160"), CasdoorUniversalID: strPtr("uuid-1"), IsActive: true}
+	if err := db.Create(&u).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := backfillUserAuthIdentities(db, false); err != nil {
+		t.Fatalf("backfill auth identities: %v", err)
+	}
+	var count int64
+	if err := db.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", "u1").Count(&count).Error; err != nil {
+		t.Fatalf("count identities: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 backfilled identity, got %d", count)
 	}
 }
 

@@ -583,3 +583,29 @@ type ResourcePermission struct {
 	CreatedAt    time.Time      `                                                      json:"createdAt"`
 	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
 }
+
+// UserAuthIdentity stores one external login identity bound to a local user.
+type UserAuthIdentity struct {
+	ID              uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserSubjectID   string         `gorm:"index:idx_user_auth_identities_user_subject_id;not null;size:191" json:"user_subject_id"`
+	Provider        string         `gorm:"size:64;not null" json:"provider"`
+	Issuer          *string        `gorm:"size:255" json:"issuer"`
+	ExternalKey     string         `gorm:"uniqueIndex:idx_user_auth_identities_external_key;not null;size:255" json:"external_key"`
+	ExternalSubject *string        `gorm:"size:191" json:"external_subject"`
+	ExternalUserID  *string        `gorm:"size:191" json:"external_user_id"`
+	ProviderUserID  *string        `gorm:"size:191" json:"provider_user_id"`
+	DisplayName     *string        `gorm:"size:191" json:"display_name"`
+	Email           *string        `gorm:"size:191" json:"email"`
+	Phone           *string        `gorm:"size:64" json:"phone"`
+	AvatarURL       *string        `gorm:"type:text" json:"avatar_url"`
+	Organization    *string        `gorm:"size:191" json:"organization"`
+	IsPrimary       bool           `gorm:"not null;default:false" json:"is_primary"`
+	LastLoginAt     *time.Time     `json:"last_login_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (UserAuthIdentity) TableName() string {
+	return "user_auth_identities"
+}

@@ -224,6 +224,7 @@ func main() {
 			auth.GET("/callback", handlers.AuthCallback)
 			auth.GET("/login", handlers.Login)
 			auth.POST("/logout", handlers.Logout)
+			auth.GET("/bind/callback", handlers.AuthCallback)
 		}
 
 		// === Public read-only endpoints (OptionalAuth, no login required) ===
@@ -283,6 +284,9 @@ func main() {
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
+			authed.GET("/auth/identities", handlers.ListBoundIdentities)
+			authed.POST("/auth/bind/start", handlers.StartBindAuth)
+			authed.POST("/auth/identities/:id/unbind", handlers.UnbindIdentity)
 
 			usage := authed.Group("/usage")
 			{

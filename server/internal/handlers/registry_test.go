@@ -239,6 +239,27 @@ func setupTestDB(t *testing.T) func() {
 			deleted_at DATETIME,
 			UNIQUE(subject_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS user_auth_identities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_subject_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			issuer TEXT,
+			external_key TEXT NOT NULL,
+			external_subject TEXT,
+			external_user_id TEXT,
+			provider_user_id TEXT,
+			display_name TEXT,
+			email TEXT,
+			phone TEXT,
+			avatar_url TEXT,
+			organization TEXT,
+			is_primary INTEGER DEFAULT 0,
+			last_login_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			UNIQUE(external_key)
+		)`,
 		`CREATE TABLE IF NOT EXISTS user_system_roles (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,

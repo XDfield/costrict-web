@@ -37,7 +37,7 @@ func setupUserTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.UserAuthIdentity{}); err != nil {
 		t.Fatalf("failed to migrate user table: %v", err)
 	}
 
@@ -380,14 +380,14 @@ func TestParseJWTClaimsFromAccessTokenGithubProperties(t *testing.T) {
 		"id":           "18633160",
 		"sub":          "universal-gh-1",
 		"universal_id": "universal-gh-1",
-		"name":         "XDfield",
-		"displayName":  "gh_XDfield",
+		"name":         "acct_github_user",
+		"displayName":  "gh_acct_github_user",
 		"provider":     "Github",
 		"properties": map[string]any{
 			"oauth_GitHub_id":          "18633160",
-			"oauth_GitHub_username":    "XDfield",
-			"oauth_GitHub_displayName": "DoSun",
-			"oauth_GitHub_email":       "chenxuan@example.com",
+			"oauth_GitHub_username":    "acct_github_user",
+			"oauth_GitHub_displayName": "Display Github User",
+			"oauth_GitHub_email":       "user_github@example.com",
 			"oauth_GitHub_avatarUrl":   "https://avatars.githubusercontent.com/u/18633160?v=4",
 		},
 		"exp": time.Now().Add(time.Hour).Unix(),
@@ -397,13 +397,13 @@ func TestParseJWTClaimsFromAccessTokenGithubProperties(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
 	}
-	if claims.Name != "XDfield" {
+	if claims.Name != "acct_github_user" {
 		t.Fatalf("expected github username from properties, got %+v", claims)
 	}
-	if claims.PreferredUsername != "DoSun" {
+	if claims.PreferredUsername != "Display Github User" {
 		t.Fatalf("expected github display name from properties, got %+v", claims)
 	}
-	if claims.Email != "chenxuan@example.com" {
+	if claims.Email != "user_github@example.com" {
 		t.Fatalf("expected github email from properties, got %+v", claims)
 	}
 	if claims.Picture == "" || claims.ProviderUserID != "18633160" || claims.Provider != "Github" {
@@ -413,17 +413,17 @@ func TestParseJWTClaimsFromAccessTokenGithubProperties(t *testing.T) {
 
 func TestParseJWTClaimsFromAccessTokenIDTrustUsesProperties(t *testing.T) {
 	tokenString := signUserTestJWT(t, jwt.MapClaims{
-		"id":           "42766",
+		"id":           "custom-user-001",
 		"sub":          "universal-custom-1",
 		"universal_id": "universal-custom-1",
 		"name":         "random-generated-name",
-		"displayName":  "陈烜42766",
+		"displayName":  "display_custom_user_001",
 		"provider":     "idtrust",
 		"properties": map[string]any{
-			"oauth_Custom_id":          "42766",
-			"oauth_Custom_username":    "陈烜",
-			"oauth_Custom_displayName": "陈烜",
-			"oauth_Custom_email":       "15986746954",
+			"oauth_Custom_id":          "custom-user-001",
+			"oauth_Custom_username":    "custom_user",
+			"oauth_Custom_displayName": "Display Custom User",
+			"oauth_Custom_email":       "15500000001",
 		},
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
@@ -432,19 +432,19 @@ func TestParseJWTClaimsFromAccessTokenIDTrustUsesProperties(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
 	}
-	if claims.Name != "陈烜" {
+	if claims.Name != "custom_user" {
 		t.Fatalf("expected idtrust username from properties, got %+v", claims)
 	}
-	if claims.PreferredUsername != "陈烜" {
+	if claims.PreferredUsername != "Display Custom User" {
 		t.Fatalf("expected idtrust display name from properties, got %+v", claims)
 	}
-	if claims.ProviderUserID != "42766" {
+	if claims.ProviderUserID != "custom-user-001" {
 		t.Fatalf("expected idtrust provider user id from properties, got %+v", claims)
 	}
 	if claims.Email != "" {
 		t.Fatalf("expected invalid email-like phone not mapped to email, got %+v", claims)
 	}
-	if claims.Phone != "15986746954" {
+	if claims.Phone != "15500000001" {
 		t.Fatalf("expected phone inferred from custom email field, got %+v", claims)
 	}
 }
@@ -474,5 +474,78 @@ func TestCachedUserServiceGetUsersByIDsAndWarmup(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 users, got %d", len(got))
+	}
+}
+
+func TestBindIdentityToUserCreatesSecondaryIdentityAndPromotesByRank(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	phoneClaims := &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}
+	user, err := svc.GetOrCreateUser(phoneClaims)
+	if err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+
+	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001", Picture: "https://avatars.example.com/a.png"}
+	if err := svc.BindIdentityToUser(user.SubjectID, githubClaims); err != nil {
+		t.Fatalf("bind github identity: %v", err)
+	}
+
+	identities, err := svc.ListUserIdentities(user.SubjectID)
+	if err != nil {
+		t.Fatalf("list identities: %v", err)
+	}
+	if len(identities) != 2 {
+		t.Fatalf("expected 2 identities, got %d", len(identities))
+	}
+	primaryCount := 0
+	for _, identity := range identities {
+		if identity.IsPrimary {
+			primaryCount++
+			if identity.Provider != "github" {
+				t.Fatalf("expected github to be promoted primary, got %+v", identity)
+			}
+		}
+	}
+	if primaryCount != 1 {
+		t.Fatalf("expected exactly 1 primary identity, got %d", primaryCount)
+	}
+	refreshed, err := svc.GetUserByID(user.SubjectID)
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if refreshed.AuthProvider == nil || *refreshed.AuthProvider != "github" {
+		t.Fatalf("expected user auth_provider upgraded to github, got %+v", refreshed)
+	}
+}
+
+func TestUnbindIdentityReassignsPrimary(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
+	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	var githubIdentityID uint
+	for _, identity := range identities {
+		if identity.Provider == "github" {
+			githubIdentityID = identity.ID
+		}
+	}
+	if githubIdentityID == 0 {
+		t.Fatal("expected github identity to exist")
+	}
+	if err := svc.UnbindIdentity(user.SubjectID, githubIdentityID); err != nil {
+		t.Fatalf("unbind github identity: %v", err)
+	}
+	identities, _ = svc.ListUserIdentities(user.SubjectID)
+	if len(identities) != 1 || !identities[0].IsPrimary || identities[0].Provider != "phone" {
+		t.Fatalf("expected remaining phone identity to become primary, got %+v", identities)
 	}
 }
