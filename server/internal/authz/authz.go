@@ -10,8 +10,12 @@ type Module struct {
 	Service *Service
 }
 
-func New(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) *Module {
-	return &Module{Service: NewService(db, roleProvider, capabilityProvider, casdoorEndpoint, jwksProvider)}
+func New(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) (*Module, error) {
+	svc, err := NewService(db, roleProvider, capabilityProvider, casdoorEndpoint, jwksProvider)
+	if err != nil {
+		return nil, err
+	}
+	return &Module{Service: svc}, nil
 }
 
 func (m *Module) RegisterAPIRoutes(apiGroup *gin.RouterGroup) {

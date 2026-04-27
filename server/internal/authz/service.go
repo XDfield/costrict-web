@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -33,16 +35,45 @@ type Service struct {
 	capabilityProvider CapabilityProvider
 	casdoorEndpoint    string
 	jwksProvider       *middleware.JWKSProvider
+	menuRegistry       ResourceRegistry
+	apiRegistry        ResourceRegistry
+	mu                 sync.RWMutex
 }
 
-func NewService(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) *Service {
-	return &Service{
+func NewService(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) (*Service, error) {
+	s := &Service{
 		db:                 db,
 		roleProvider:       roleProvider,
 		capabilityProvider: capabilityProvider,
 		casdoorEndpoint:    casdoorEndpoint,
 		jwksProvider:       jwksProvider,
 	}
+	if err := s.loadRegistry(); err != nil {
+		return nil, fmt.Errorf("load authz registry: %w", err)
+	}
+	return s, nil
+}
+
+func (s *Service) loadRegistry() error {
+	var perms []models.ResourcePermission
+	if err := s.db.Find(&perms).Error; err != nil {
+		return err
+	}
+	menu := make(ResourceRegistry, len(perms))
+	api := make(ResourceRegistry, len(perms))
+	for _, p := range perms {
+		switch p.ResourceType {
+		case "menu":
+			menu[p.ResourceCode] = []string(p.AllowedRoles)
+		case "api":
+			api[p.ResourceCode] = []string(p.AllowedRoles)
+		}
+	}
+	s.mu.Lock()
+	s.menuRegistry = menu
+	s.apiRegistry = api
+	s.mu.Unlock()
+	return nil
 }
 
 // GetUserPermissions builds the full permission snapshot for a user.
@@ -60,19 +91,21 @@ func (s *Service) GetUserPermissions(userID string) (*PermissionResult, error) {
 		caps = s.capabilityProvider.CapabilitiesForRoles(roles)
 	}
 
-	menus := make([]string, 0, len(MenuResources))
-	for code, allowed := range MenuResources {
+	s.mu.RLock()
+	menus := make([]string, 0, len(s.menuRegistry))
+	for code, allowed := range s.menuRegistry {
 		if len(allowed) == 0 || hasAny(expanded, allowed) {
 			menus = append(menus, code)
 		}
 	}
 
-	apis := make([]string, 0, len(APIResources))
-	for code, allowed := range APIResources {
+	apis := make([]string, 0, len(s.apiRegistry))
+	for code, allowed := range s.apiRegistry {
 		if len(allowed) == 0 || hasAny(expanded, allowed) {
 			apis = append(apis, code)
 		}
 	}
+	s.mu.RUnlock()
 
 	return &PermissionResult{
 		Menus:        menus,
@@ -83,11 +116,12 @@ func (s *Service) GetUserPermissions(userID string) (*PermissionResult, error) {
 
 // HasPermission checks whether a user has access to a specific resource code.
 func (s *Service) HasPermission(userID, resourceCode string) (bool, error) {
-	// Try menu resources first, then API resources.
-	allowed, ok := MenuResources.AllowedRoles(resourceCode)
+	s.mu.RLock()
+	allowed, ok := s.menuRegistry.AllowedRoles(resourceCode)
 	if !ok {
-		allowed, ok = APIResources.AllowedRoles(resourceCode)
+		allowed, ok = s.apiRegistry.AllowedRoles(resourceCode)
 	}
+	s.mu.RUnlock()
 	if !ok {
 		return false, nil // unknown resource = deny by default
 	}
