@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -176,12 +177,18 @@ func main() {
 	if err := ensureUserIdentityColumns(db); err != nil {
 		log.Fatalf("Failed to ensure user identity columns: %v", err)
 	}
+	if err := ensureUserAuthIdentitiesTable(db); err != nil {
+		log.Fatalf("Failed to ensure user auth identities table: %v", err)
+	}
 
 	if err := backfillCapabilityContentVersioning(db); err != nil {
 		log.Fatalf("Failed to backfill capability content versioning: %v", err)
 	}
 	if err := backfillUserExternalIdentities(db, false); err != nil {
 		log.Fatalf("Failed to backfill user external identities: %v", err)
+	}
+	if err := backfillUserAuthIdentities(db, false); err != nil {
+		log.Fatalf("Failed to backfill user auth identities: %v", err)
 	}
 
 	log.Println("All migrations completed successfully")
@@ -223,6 +230,39 @@ func ensureUserIdentityColumns(db *gorm.DB) error {
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {
 			return fmt.Errorf("ensure users identity columns failed (%s): %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func ensureUserAuthIdentitiesTable(db *gorm.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS user_auth_identities (
+			id BIGSERIAL PRIMARY KEY,
+			user_subject_id text NOT NULL,
+			provider text NOT NULL,
+			issuer text,
+			external_key text NOT NULL,
+			external_subject text,
+			external_user_id text,
+			provider_user_id text,
+			display_name text,
+			email text,
+			phone text,
+			avatar_url text,
+			organization text,
+			is_primary boolean NOT NULL DEFAULT false,
+			last_login_at timestamptz,
+			created_at timestamptz,
+			updated_at timestamptz,
+			deleted_at timestamptz
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_auth_identities_external_key ON user_auth_identities(external_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_auth_identities_user_subject_id ON user_auth_identities(user_subject_id)`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("ensure user_auth_identities failed (%s): %w", stmt, err)
 		}
 	}
 	return nil
@@ -313,6 +353,98 @@ func backfillUserExternalIdentities(db *gorm.DB, dryRun bool) error {
 		}
 		return nil
 	})
+}
+
+func backfillUserAuthIdentities(db *gorm.DB, dryRun bool) error {
+	type userRow struct {
+		SubjectID          string
+		DisplayName        *string
+		Email              *string
+		Phone              *string
+		AvatarURL          *string
+		Organization       *string
+		AuthProvider       *string
+		ExternalKey        *string
+		ProviderUserID     *string
+		CasdoorUniversalID *string
+		CasdoorID          *string
+		CasdoorSub         *string
+	}
+	var users []userRow
+	if err := db.Table("users").Select("subject_id, display_name, email, phone, avatar_url, organization, auth_provider, external_key, provider_user_id, casdoor_universal_id, casdoor_id, casdoor_sub").Find(&users).Error; err != nil {
+		return fmt.Errorf("load users for auth identity backfill: %w", err)
+	}
+	created := 0
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, user := range users {
+			if strings.TrimSpace(user.SubjectID) == "" {
+				continue
+			}
+			externalKey := ""
+			if user.ExternalKey != nil {
+				externalKey = strings.TrimSpace(*user.ExternalKey)
+			}
+			if externalKey == "" {
+				if user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "" {
+					externalKey = "casdoor:" + *user.CasdoorUniversalID
+				} else if user.CasdoorSub != nil && *user.CasdoorSub != "" {
+					externalKey = "casdoor-sub:" + *user.CasdoorSub
+				} else if user.CasdoorID != nil && *user.CasdoorID != "" {
+					externalKey = "casdoor-id:" + *user.CasdoorID
+				}
+			}
+			if externalKey == "" {
+				continue
+			}
+			var count int64
+			if err := tx.Table("user_auth_identities").Where("external_key = ?", externalKey).Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				continue
+			}
+			provider := "casdoor"
+			if user.AuthProvider != nil && strings.TrimSpace(*user.AuthProvider) != "" {
+				provider = strings.ToLower(strings.TrimSpace(*user.AuthProvider))
+			}
+			created++
+			if dryRun {
+				continue
+			}
+			if err := tx.Table("user_auth_identities").Create(map[string]any{
+				"user_subject_id": user.SubjectID,
+				"provider":        provider,
+				"external_key":    externalKey,
+				"external_subject": coalesceStringPtr(user.CasdoorUniversalID, user.CasdoorSub),
+				"external_user_id": user.CasdoorID,
+				"provider_user_id": user.ProviderUserID,
+				"display_name":    user.DisplayName,
+				"email":           user.Email,
+				"phone":           user.Phone,
+				"avatar_url":      user.AvatarURL,
+				"organization":    user.Organization,
+				"is_primary":      true,
+				"created_at":      time.Now(),
+				"updated_at":      time.Now(),
+			}).Error; err != nil {
+				return fmt.Errorf("create backfilled auth identity for %s: %w", user.SubjectID, err)
+			}
+		}
+		log.Printf("user auth identity summary (dry-run=%v): created identities=%d", dryRun, created)
+		if dryRun {
+			return errDryRunRollback
+		}
+		return nil
+	})
+}
+
+func coalesceStringPtr(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return value
+		}
+	}
+	return nil
 }
 
 func isLikelyPhoneValue(v string) bool {
