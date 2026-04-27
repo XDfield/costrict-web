@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,6 +28,19 @@ var cookieSecure bool              // whether to set Secure flag on auth cookies
 var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fallback
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
+var bindStateSecret string
+
+var exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+	return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+}
+
+var getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+	return CasdoorClient.GetUserInfo(accessToken)
+}
+
+var getLoginURLWithCallbackFunc = func(state, callbackURL string) string {
+	return CasdoorClient.GetLoginURLWithCallback(state, callbackURL)
+}
 
 type authUserDTO struct {
 	ID                 string         `json:"id"`
@@ -38,6 +54,18 @@ type authUserDTO struct {
 	Auth               map[string]any `json:"auth,omitempty"`
 }
 
+type authIdentityDTO struct {
+	ID             uint       `json:"id"`
+	Provider       string     `json:"provider"`
+	ProviderUserID *string    `json:"providerUserId,omitempty"`
+	DisplayName    *string    `json:"displayName,omitempty"`
+	Email          *string    `json:"email,omitempty"`
+	Phone          *string    `json:"phone,omitempty"`
+	ExternalKey    string     `json:"externalKey"`
+	IsPrimary      bool       `json:"isPrimary"`
+	LastLoginAt    *time.Time `json:"lastLoginAt,omitempty"`
+}
+
 func InitCasdoor(cfg *config.CasdoorConfig) {
 	CasdoorClient = casdoor.NewClient(cfg)
 }
@@ -49,6 +77,10 @@ func InitUserModule(module *userpkg.Module) {
 // InitCookieConfig sets cookie-related configuration from the global config.
 func InitCookieConfig(cfg *config.Config) {
 	cookieSecure = cfg.CookieSecure
+	bindStateSecret = cfg.InternalSecret
+	if strings.TrimSpace(bindStateSecret) == "" {
+		bindStateSecret = cfg.Casdoor.Secret
+	}
 
 	// Build the allowed origins whitelist from FRONTEND_URLS.
 	allowedOrigins = make(map[string]bool)
@@ -96,6 +128,16 @@ type oauthState struct {
 	CallbackURL string // full callback URL  (http://localhost:3000/api/auth/callback)
 }
 
+type bindState struct {
+	Action       string `json:"action"`
+	UserSubjectID string `json:"userSubjectId"`
+	Provider     string `json:"provider"`
+	RedirectTo   string `json:"redirectTo"`
+	CallbackURL  string `json:"callbackUrl"`
+	ExpiresAt    int64  `json:"expiresAt"`
+	Nonce        string `json:"nonce"`
+}
+
 func encodeOAuthState(s oauthState) string {
 	// Extract common origin from redirect_to and store paths only.
 	origin, redirectPath := splitOriginPath(s.RedirectTo)
@@ -119,6 +161,49 @@ func decodeOAuthState(encoded string) oauthState {
 		RedirectTo:  origin + parts[1],
 		CallbackURL: origin + parts[2],
 	}
+}
+
+func encodeBindState(s bindState) string {
+	b, _ := json.Marshal(s)
+	payload := base64.RawURLEncoding.EncodeToString(b)
+	return payload + "." + signBindStatePayload(payload)
+}
+
+func decodeBindState(encoded string) bindState {
+	parts := strings.Split(encoded, ".")
+	if len(parts) != 2 {
+		return bindState{}
+	}
+	payload, sig := parts[0], parts[1]
+	if !verifyBindStatePayload(payload, sig) {
+		return bindState{}
+	}
+	b, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return bindState{}
+	}
+	var out bindState
+	if err := json.Unmarshal(b, &out); err != nil {
+		return bindState{}
+	}
+	if out.ExpiresAt > 0 && time.Now().Unix() > out.ExpiresAt {
+		return bindState{}
+	}
+	return out
+}
+
+func signBindStatePayload(payload string) string {
+	key := strings.TrimSpace(bindStateSecret)
+	if key == "" {
+		key = "costrict-bind-state-default"
+	}
+	h := hmac.New(sha256.New, []byte(key))
+	_, _ = h.Write([]byte(payload))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func verifyBindStatePayload(payload, sig string) bool {
+	return hmac.Equal([]byte(signBindStatePayload(payload)), []byte(sig))
 }
 
 func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
@@ -178,6 +263,20 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 	}
 }
 
+func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
+	return authIdentityDTO{
+		ID:             identity.ID,
+		Provider:       identity.Provider,
+		ProviderUserID: identity.ProviderUserID,
+		DisplayName:    identity.DisplayName,
+		Email:          identity.Email,
+		Phone:          identity.Phone,
+		ExternalKey:    identity.ExternalKey,
+		IsPrimary:      identity.IsPrimary,
+		LastLoginAt:    identity.LastLoginAt,
+	}
+}
+
 // splitOriginPath splits a full URL into origin (scheme://host) and path.
 // For non-URL strings it returns ("", original).
 func splitOriginPath(rawURL string) (string, string) {
@@ -206,6 +305,17 @@ func splitOriginPath(rawURL string) (string, string) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/callback [get]
 func AuthCallback(c *gin.Context) {
+	if rawState := c.Query("state"); rawState != "" {
+		if bind := decodeBindState(rawState); bind.Action == "bind" {
+			bindAuthCallback(c, bind)
+			return
+		}
+		if strings.Contains(rawState, ".") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_state"})
+			return
+		}
+	}
+
 	code := c.Query("code")
 	if code == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
@@ -215,7 +325,7 @@ func AuthCallback(c *gin.Context) {
 	// Decode state to recover callback_url (needed for token exchange) and redirect target.
 	state := decodeOAuthState(c.Query("state"))
 
-	tokenResp, err := CasdoorClient.ExchangeCodeForToken(code, state.CallbackURL)
+	tokenResp, err := exchangeCodeForTokenFunc(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
 		fmt.Printf("[ERROR] ExchangeCodeForToken failed: err=%v, tokenResp=%+v\n", err, tokenResp)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
@@ -223,7 +333,7 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	if UserModule != nil {
-		if userInfo, userErr := CasdoorClient.GetUserInfo(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
+		if userInfo, userErr := getUserInfoFunc(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
 			claims := &userpkg.JWTClaims{
 				ID:                userInfo.User.Id,
 				Sub:               userInfo.User.Sub,
@@ -261,6 +371,106 @@ func AuthCallback(c *gin.Context) {
 		// If it's a full URL with a disallowed origin, fall through to the default.
 	}
 
+	c.Redirect(http.StatusFound, redirectURL)
+}
+
+// StartBindAuth godoc
+// @Summary      Start binding another auth provider
+// @Description  Returns an OAuth URL for binding another provider to the current logged-in user
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  object{provider=string,redirectTo=string,callbackUrl=string}  true  "Bind request"
+// @Success      200  {object}  object{authUrl=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/bind/start [post]
+func StartBindAuth(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	var req struct {
+		Provider    string `json:"provider" binding:"required"`
+		RedirectTo  string `json:"redirectTo"`
+		CallbackURL string `json:"callbackUrl"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.CallbackURL != "" && !isAllowedOrigin(req.CallbackURL) {
+		req.CallbackURL = ""
+	}
+	if req.RedirectTo == "" {
+		req.RedirectTo = defaultFrontendURL + "/settings/account"
+	}
+	state := encodeBindState(bindState{
+		Action:        "bind",
+		UserSubjectID: currentUserID,
+		Provider:      req.Provider,
+		RedirectTo:    req.RedirectTo,
+		CallbackURL:   req.CallbackURL,
+		ExpiresAt:     time.Now().Add(10 * time.Minute).Unix(),
+		Nonce:         uuid.NewString(),
+	})
+	loginURL := getLoginURLWithCallbackFunc(state, req.CallbackURL)
+	c.JSON(http.StatusOK, gin.H{"authUrl": loginURL})
+}
+
+func bindAuthCallback(c *gin.Context, state bindState) {
+	if state.ExpiresAt == 0 || time.Now().Unix() > state.ExpiresAt {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_state"})
+		return
+	}
+	code := c.Query("code")
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+		return
+	}
+	currentToken := middleware.ExtractToken(c)
+	if currentToken == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	currentClaims, err := userpkg.ParseJWTClaimsFromAccessToken(currentToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
+		return
+	}
+	currentUser, err := UserModule.Service.GetOrCreateUser(currentClaims)
+	if err != nil || currentUser == nil || currentUser.SubjectID != state.UserSubjectID {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid binding session"})
+		return
+	}
+
+	tokenResp, err := exchangeCodeForTokenFunc(code, state.CallbackURL)
+	if err != nil || tokenResp.AccessToken == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
+		return
+	}
+	claims, err := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse bound identity"})
+		return
+	}
+	if state.Provider != "" && !strings.EqualFold(claims.Provider, state.Provider) {
+		c.JSON(http.StatusConflict, gin.H{"error": "provider_mismatch"})
+		return
+	}
+	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims); err != nil {
+		if err.Error() == "identity_already_bound" {
+			c.JSON(http.StatusConflict, gin.H{"error": "identity_already_bound", "message": "该登录方式已绑定其他账号"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
+		return
+	}
+	redirectURL := state.RedirectTo
+	if redirectURL == "" {
+		redirectURL = defaultFrontendURL + "/settings/account?bind=success"
+	}
 	c.Redirect(http.StatusFound, redirectURL)
 }
 
@@ -360,7 +570,7 @@ func GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	userInfo, err := CasdoorClient.GetUserInfo(token.(string))
+	userInfo, err := getUserInfoFunc(token.(string))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 		return
@@ -388,6 +598,66 @@ func GetCurrentUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
+}
+
+// ListBoundIdentities godoc
+// @Summary      List bound auth identities
+// @Description  Lists all auth identities bound to the current user
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{identities=[]object}
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/identities [get]
+func ListBoundIdentities(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	identities, err := UserModule.Service.ListUserIdentities(currentUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list identities"})
+		return
+	}
+	out := make([]authIdentityDTO, 0, len(identities))
+	for _, identity := range identities {
+		out = append(out, buildAuthIdentityDTO(identity))
+	}
+	c.JSON(http.StatusOK, gin.H{"identities": out})
+}
+
+// UnbindIdentity godoc
+// @Summary      Unbind auth identity
+// @Description  Unbinds an auth identity from the current user
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path  int  true  "Identity ID"
+// @Success      200  {object}  object{message=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/identities/{id}/unbind [post]
+func UnbindIdentity(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	var identityID uint
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &identityID); err != nil || identityID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid identity id"})
+		return
+	}
+	if err := UserModule.Service.UnbindIdentity(currentUserID, identityID); err != nil {
+		if err.Error() == "cannot unbind last identity" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unbind identity"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Identity unbound successfully"})
 }
 
 func stringPtr(v string) *string {

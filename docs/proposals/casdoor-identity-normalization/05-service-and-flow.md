@@ -173,7 +173,7 @@ syncProfile:
 2. `phone` 需通过手机号格式校验
 3. 不符合语义的字段不应因字段名而强制落库
 
-例如：`properties.oauth_Custom_email = 15986746954` 时，不应直接写入 `email`，而应优先识别为 `phone` 候选值。
+例如：`properties.oauth_Custom_email = 15500000001` 时，不应直接写入 `email`，而应优先识别为 `phone` 候选值。
 
 ## 5.8 时序建议
 

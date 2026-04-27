@@ -2,6 +2,7 @@ package user
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/authidentity"
@@ -112,6 +113,97 @@ func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error
 	return user.SubjectID, name, nil
 }
 
+func (s *UserService) ListUserIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error) {
+	var identities []*models.UserAuthIdentity
+	err := s.db.Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
+	return identities, err
+}
+
+func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims) error {
+	if strings.TrimSpace(userSubjectID) == "" {
+		return fmt.Errorf("user_subject_id is required")
+	}
+	claims = normalizeJWTClaims(claims)
+	if claims == nil {
+		return fmt.Errorf("nil JWT claims")
+	}
+	externalKey := buildExternalKey(claims)
+	if externalKey == "" {
+		return fmt.Errorf("external key is required")
+	}
+
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var existing models.UserAuthIdentity
+		err := tx.Where("external_key = ?", externalKey).Take(&existing).Error
+		if err == nil {
+			if existing.UserSubjectID != userSubjectID {
+				return fmt.Errorf("identity_already_bound")
+			}
+			return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+		}
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+
+		identity := buildUserAuthIdentity(userSubjectID, claims)
+		var currentPrimary models.UserAuthIdentity
+		primaryExists := tx.Where("user_subject_id = ? AND is_primary = ?", userSubjectID, true).Take(&currentPrimary).Error == nil
+		if !primaryExists {
+			identity.IsPrimary = true
+		} else if providerRank(identity.Provider) > providerRank(currentPrimary.Provider) {
+			if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+				return err
+			}
+			identity.IsPrimary = true
+		}
+
+		if err := tx.Create(&identity).Error; err != nil {
+			return err
+		}
+		return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+	})
+}
+
+func (s *UserService) UnbindIdentity(userSubjectID string, identityID uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var identity models.UserAuthIdentity
+		if err := tx.Where("id = ? AND user_subject_id = ?", identityID, userSubjectID).Take(&identity).Error; err != nil {
+			return err
+		}
+
+		var count int64
+		if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count <= 1 {
+			return fmt.Errorf("cannot unbind last identity")
+		}
+
+		wasPrimary := identity.IsPrimary
+		if err := tx.Delete(&identity).Error; err != nil {
+			return err
+		}
+
+		if wasPrimary {
+			var remaining []*models.UserAuthIdentity
+			if err := tx.Where("user_subject_id = ?", userSubjectID).Find(&remaining).Error; err != nil {
+				return err
+			}
+			best := selectBestPrimary(remaining)
+			if best != nil {
+				if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&models.UserAuthIdentity{}).Where("id = ?", best.ID).Update("is_primary", true).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+	})
+}
+
 // SearchUsers searches users by username or email keyword
 func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, error) {
 	var users []*models.User
@@ -153,6 +245,16 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	var user models.User
 	found := false
 	if externalKey != "" {
+		var identity models.UserAuthIdentity
+		if err := s.db.Where("external_key = ?", externalKey).Take(&identity).Error; err == nil {
+			if err := s.db.Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
+				found = true
+			}
+		} else if err != gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
+		}
+	}
+	if externalKey != "" && !found {
 		err := s.db.Where("external_key = ?", externalKey).Take(&user).Error
 		if err == nil {
 			found = true
@@ -264,6 +366,9 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				return nil, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
+		if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+			return nil, err
+		}
 
 		return &user, nil
 	}
@@ -306,6 +411,12 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			}
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+	if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+		return nil, err
+	}
+	if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
+		return refreshed, nil
 	}
 
 	return &user, nil
@@ -481,6 +592,192 @@ func buildExternalKey(claims *JWTClaims) string {
 		return "casdoor-id:" + claims.ID
 	}
 	return ""
+}
+
+func buildUserAuthIdentity(userSubjectID string, claims *JWTClaims) models.UserAuthIdentity {
+	now := time.Now()
+	externalKey := buildExternalKey(claims)
+	provider := strings.ToLower(strings.TrimSpace(claims.Provider))
+	if provider == "" {
+		provider = "casdoor"
+	}
+	return models.UserAuthIdentity{
+		UserSubjectID:   userSubjectID,
+		Provider:        provider,
+		ExternalKey:     externalKey,
+		ExternalSubject: stringPtr(firstNonEmptyString(claims.UniversalID, claims.Sub)),
+		ExternalUserID:  stringPtr(claims.ID),
+		ProviderUserID:  stringPtr(claims.ProviderUserID),
+		DisplayName:     stringPtr(claims.PreferredUsername),
+		Email:           stringPtr(claims.Email),
+		Phone:           stringPtr(claims.Phone),
+		AvatarURL:       stringPtr(claims.Picture),
+		Organization:    stringPtr(claims.Owner),
+		LastLoginAt:     &now,
+	}
+}
+
+func providerRank(provider string) int {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "idtrust":
+		return 300
+	case "github":
+		return 200
+	case "phone":
+		return 100
+	default:
+		return 0
+	}
+}
+
+func selectBestPrimary(identities []*models.UserAuthIdentity) *models.UserAuthIdentity {
+	var best *models.UserAuthIdentity
+	for _, identity := range identities {
+		if identity == nil {
+			continue
+		}
+		if best == nil || providerRank(identity.Provider) > providerRank(best.Provider) || (providerRank(identity.Provider) == providerRank(best.Provider) && identity.ID < best.ID) {
+			best = identity
+		}
+	}
+	return best
+}
+
+func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjectID string) error {
+	var user models.User
+	if err := tx.Where("subject_id = ?", userSubjectID).Take(&user).Error; err != nil {
+		return err
+	}
+	var identities []*models.UserAuthIdentity
+	if err := tx.Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error; err != nil {
+		return err
+	}
+	if len(identities) == 0 {
+		return nil
+	}
+	primary := selectBestPrimary(identities)
+	if primary == nil {
+		return nil
+	}
+	if !primary.IsPrimary {
+		if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.UserAuthIdentity{}).Where("id = ?", primary.ID).Update("is_primary", true).Error; err != nil {
+			return err
+		}
+	}
+
+	user.AuthProvider = stringPtr(primary.Provider)
+	user.ExternalKey = stringPtr(primary.ExternalKey)
+	user.ProviderUserID = primary.ProviderUserID
+	user.DisplayName = firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
+	user.AvatarURL = firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
+	user.Email = validEmailPtr(primary.Email, identities)
+	user.Phone = preferredPhonePtr(primary, identities)
+	user.Organization = firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
+	if shouldUpgradeUsername(user.Username) {
+		if upgraded := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); upgraded != "" {
+			user.Username = sanitizeUsernameCandidate(upgraded, user.Username)
+		}
+	}
+	now := time.Now()
+	user.LastSyncAt = &now
+	return tx.Save(&user).Error
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func ptrString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
+}
+
+func firstNonNilStringPtr(values ...*string) *string {
+	for _, v := range values {
+		if v != nil && strings.TrimSpace(*v) != "" {
+			trimmed := strings.TrimSpace(*v)
+			return &trimmed
+		}
+	}
+	return nil
+}
+
+func bestIdentityString(identities []*models.UserAuthIdentity, getter func(*models.UserAuthIdentity) *string) *string {
+	var best *models.UserAuthIdentity
+	for _, identity := range identities {
+		candidate := getter(identity)
+		if candidate == nil || strings.TrimSpace(*candidate) == "" {
+			continue
+		}
+		if best == nil || providerRank(identity.Provider) > providerRank(best.Provider) {
+			best = identity
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return getter(best)
+}
+
+func githubAvatar(identities []*models.UserAuthIdentity) *string {
+	for _, identity := range identities {
+		if strings.EqualFold(identity.Provider, "github") && identity.AvatarURL != nil && strings.TrimSpace(*identity.AvatarURL) != "" {
+			return identity.AvatarURL
+		}
+	}
+	return nil
+}
+
+func validEmailPtr(primary *string, identities []*models.UserAuthIdentity) *string {
+	if primary != nil && strings.Contains(strings.TrimSpace(*primary), "@") {
+		return firstNonNilStringPtr(primary)
+	}
+	for _, identity := range identities {
+		if identity.Email != nil && strings.Contains(strings.TrimSpace(*identity.Email), "@") {
+			return firstNonNilStringPtr(identity.Email)
+		}
+	}
+	return nil
+}
+
+func preferredPhonePtr(primary *models.UserAuthIdentity, identities []*models.UserAuthIdentity) *string {
+	for _, identity := range identities {
+		if strings.EqualFold(identity.Provider, "phone") && identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
+			return firstNonNilStringPtr(identity.Phone)
+		}
+	}
+	if primary != nil && primary.Phone != nil && strings.TrimSpace(*primary.Phone) != "" {
+		return firstNonNilStringPtr(primary.Phone)
+	}
+	for _, identity := range identities {
+		if identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
+			return firstNonNilStringPtr(identity.Phone)
+		}
+	}
+	return nil
+}
+
+func shouldUpgradeUsername(username string) bool {
+	username = strings.TrimSpace(username)
+	return username == "" || strings.HasPrefix(username, "phone_") || strings.HasPrefix(username, "user_")
+}
+
+func sanitizeUsernameCandidate(candidate, fallback string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return fallback
+	}
+	return candidate
 }
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
