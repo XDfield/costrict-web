@@ -245,9 +245,17 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 	if claims.PreferredUsername != "" {
 		name = claims.PreferredUsername
 	}
+	// Fallback chain: universal_id → sub → id
+	userID := claims.UniversalID
+	if userID == "" {
+		userID = claims.Sub
+	}
+	if userID == "" {
+		userID = claims.ID
+	}
 	return authUserDTO{
-		ID:                 claims.UniversalID,
-		SubjectID:          claims.UniversalID,
+		ID:                 userID,
+		SubjectID:          userID,
 		Name:               name,
 		Username:           claims.Name,
 		Email:              stringPtr(claims.Email),
@@ -258,7 +266,7 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 			"provider":        claims.Provider,
 			"providerUserId":  claims.ProviderUserID,
 			"externalKey":     buildExternalKeyForResponse(claims),
-			"externalSubject": claims.UniversalID,
+			"externalSubject": userID,
 		},
 	}
 }
