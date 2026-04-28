@@ -267,8 +267,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	var existingItems []models.CapabilityItem
 	s.DB.Where("registry_id = ?", registryID).Find(&existingItems)
 	existingByPath := make(map[string]*models.CapabilityItem, len(existingItems))
+	slugIndex := make(map[string]*models.CapabilityItem, len(existingItems))
 	for i := range existingItems {
 		existingByPath[existingItems[i].SourcePath] = &existingItems[i]
+		slugIndex[existingItems[i].ItemType+":"+existingItems[i].Slug] = &existingItems[i]
 	}
 
 	// Index globally existing items by repo+type+slug so that cross-registry
@@ -277,8 +279,8 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 	s.DB.Where("repo_id = ?", syncRepoID(registry.RepoID)).Find(&globalItems)
 	for i := range globalItems {
 		key := globalItems[i].ItemType + ":" + globalItems[i].Slug
-		if _, exists := existingByPath[key]; !exists {
-			existingByPath[key] = &globalItems[i]
+		if _, exists := slugIndex[key]; !exists {
+			slugIndex[key] = &globalItems[i]
 		}
 	}
 
@@ -332,7 +334,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				exists = existing != nil && existing.Slug == parsed.Slug
 			}
 			if !exists {
-				existing = existingByPath[parsed.ItemType+":"+parsed.Slug]
+				existing = slugIndex[parsed.ItemType+":"+parsed.Slug]
 				exists = existing != nil
 			}
 
@@ -452,7 +454,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				// Index newly created item so later files with the same slug are
 				// treated as updates instead of inserts.
 				existingByPath[newItem.SourcePath] = newItem
-				existingByPath[newItem.ItemType+":"+newItem.Slug] = newItem
+				slugIndex[newItem.ItemType+":"+newItem.Slug] = newItem
 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
@@ -493,6 +495,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				continue
 			}
 			if seenItemIDs[item.ID] {
+				continue
+			}
+			if item.Status == "archived" {
 				continue
 			}
 			seenItemIDs[item.ID] = true
