@@ -497,6 +497,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			if seenItemIDs[item.ID] {
 				continue
 			}
+			if item.Status == "archived" {
+				continue
+			}
 			seenItemIDs[item.ID] = true
 			s.DB.Model(item).Updates(map[string]any{"status": "archived"})
 			s.DB.Where("item_id = ?", item.ID).Delete(&models.CapabilityAsset{})
