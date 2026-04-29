@@ -35,6 +35,16 @@ func SetupRouter(manager *TunnelManager, cfg *Config) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// Status endpoint for runtime connection metrics
+	r.GET("/status", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":             "ok",
+			"gatewayId":          cfg.GatewayID,
+			"currentConnections": manager.Count(),
+			"capacity":           cfg.Capacity,
+		})
+	})
+
 	// Device tunnel: authenticated by device token
 	r.GET("/device/:deviceID/tunnel", DeviceTunnelHandler(manager, cfg))
 
