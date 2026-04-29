@@ -12,18 +12,20 @@ import (
 type ParserService struct{}
 
 type ParsedItem struct {
-	Slug        string
-	ItemType    string
-	Name        string
-	Description string
-	Category    string
-	Tags        []string
-	Version     string
-	Content     string
-	Metadata    map[string]any
-	SourcePath  string
-	ContentHash string
-	AssetPaths  []string
+	Slug            string
+	ItemType        string
+	Name            string
+	Description     string
+	Category        string
+	Tags            []string
+	Version         string
+	Content         string
+	Metadata        map[string]any
+	SourcePath      string
+	ContentHash     string
+	AssetPaths      []string
+	Source          string
+	ExperienceScore float64
 }
 
 func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*ParsedItem, error) {
@@ -102,6 +104,19 @@ func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*Parsed
 		item.Version = "1.0.0"
 	}
 
+	if v, ok := frontmatter["source"].(string); ok {
+		item.Source = v
+	}
+	if v, ok := frontmatter["experienceScore"].(float64); ok {
+		item.ExperienceScore = v
+	} else if v, ok := frontmatter["experience_score"].(float64); ok {
+		item.ExperienceScore = v
+	} else if v, ok := frontmatter["experienceScore"].(int); ok {
+		item.ExperienceScore = float64(v)
+	} else if v, ok := frontmatter["experience_score"].(int); ok {
+		item.ExperienceScore = float64(v)
+	}
+
 	item.Slug = p.InferSlug(sourcePath)
 
 	return item, nil
@@ -142,6 +157,18 @@ func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*Par
 				item.Tags = append(item.Tags, s)
 			}
 		}
+	}
+	if v, ok := data["source"].(string); ok {
+		item.Source = v
+	}
+	if v, ok := data["experienceScore"].(float64); ok {
+		item.ExperienceScore = v
+	} else if v, ok := data["experience_score"].(float64); ok {
+		item.ExperienceScore = v
+	} else if v, ok := data["experienceScore"].(int); ok {
+		item.ExperienceScore = float64(v)
+	} else if v, ok := data["experience_score"].(int); ok {
+		item.ExperienceScore = float64(v)
 	}
 
 	item.Slug = p.InferSlug(sourcePath)

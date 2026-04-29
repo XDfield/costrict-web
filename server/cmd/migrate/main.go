@@ -111,6 +111,36 @@ func main() {
 				log.Println("Everything-AI-Coding import completed successfully")
 			}
 			return
+		case "backfill-everything-ai-coding-metadata":
+			sourcePath := ""
+			dryRun := false
+			for _, arg := range os.Args[2:] {
+				if arg == "--dry-run" {
+					dryRun = true
+					continue
+				}
+				if strings.HasPrefix(arg, "--source=") {
+					sourcePath = strings.TrimPrefix(arg, "--source=")
+					continue
+				}
+				if !strings.HasPrefix(arg, "--") && sourcePath == "" {
+					sourcePath = arg
+				}
+			}
+
+			if sourcePath == "" {
+				log.Fatalf("Missing source path. Use --source=<everything-ai-coding-path> or pass path as positional arg")
+			}
+
+			if err := backfillCatalogMetadata(db, sourcePath, dryRun); err != nil {
+				log.Fatalf("Failed to backfill catalog metadata: %v", err)
+			}
+			if dryRun {
+				log.Println("Catalog metadata backfill dry-run completed successfully")
+			} else {
+				log.Println("Catalog metadata backfill completed successfully")
+			}
+			return
 		case "backfill-capability-content-versioning":
 			if err := backfillCapabilityContentVersioning(db); err != nil {
 				log.Fatalf("Failed to backfill capability content versioning: %v", err)
@@ -207,6 +237,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding <source-path> [--dry-run]")
 	fmt.Println("                                                Import MCP/command/skills/agent data")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
+	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata <source-path> [--dry-run]")
+	fmt.Println("                                                Backfill source and experience_score from catalog/index.json")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
@@ -215,6 +247,7 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate user-external-identities --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding /Users/linkai/code/.../everything-ai-coding --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=/Users/linkai/code/.../everything-ai-coding")
+	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata /Users/linkai/code/.../everything-ai-coding --dry-run")
 }
 
 func ensureUserIdentityColumns(db *gorm.DB) error {
@@ -667,6 +700,89 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 		}
 	}
 
+	// 6. Backfill source and experience_score from catalog/index.json.
+	if !dryRun {
+		if err := backfillCatalogMetadata(db, absSource, false); err != nil {
+			log.Printf("Warning: failed to backfill catalog metadata: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
+	catalogPath := filepath.Join(absSource, "catalog", "index.json")
+	data, err := os.ReadFile(catalogPath)
+	if err != nil {
+		return fmt.Errorf("read catalog/index.json: %w", err)
+	}
+
+	var catalogItems []struct {
+		ID     string `json:"id"`
+		Source string `json:"source"`
+		Stars  int    `json:"stars"`
+	}
+	if err := json.Unmarshal(data, &catalogItems); err != nil {
+		return fmt.Errorf("parse catalog/index.json: %w", err)
+	}
+
+	catalogMap := make(map[string]struct {
+		Source string
+		Stars  int
+	}, len(catalogItems))
+	for _, item := range catalogItems {
+		catalogMap[item.ID] = struct {
+			Source string
+			Stars  int
+		}{
+			Source: item.Source,
+			Stars:  item.Stars,
+		}
+	}
+
+	var items []models.CapabilityItem
+	if err := db.Where("registry_id = ?", publicRegistryID).Find(&items).Error; err != nil {
+		return fmt.Errorf("load items for backfill: %w", err)
+	}
+
+	updated := 0
+	skipped := 0
+	for _, item := range items {
+		parts := strings.Split(filepath.ToSlash(item.SourcePath), "/")
+		if len(parts) < 2 {
+			skipped++
+			continue
+		}
+		dirName := parts[1]
+		meta, ok := catalogMap[dirName]
+		if !ok {
+			skipped++
+			continue
+		}
+		updates := map[string]any{}
+		if meta.Source != "" {
+			updates["source"] = meta.Source
+		}
+		if meta.Stars > 0 {
+			updates["experience_score"] = meta.Stars
+		}
+		if len(updates) == 0 {
+			skipped++
+			continue
+		}
+		if dryRun {
+			updated++
+			continue
+		}
+		if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+			log.Printf("Warning: failed to update item %s: %v", item.ID, err)
+			skipped++
+			continue
+		}
+		updated++
+	}
+
+	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d", dryRun, updated, skipped)
 	return nil
 }
 

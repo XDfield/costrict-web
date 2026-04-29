@@ -369,6 +369,8 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Category = parsed.Category
 				existing.Version = parsed.Version
 				existing.Content = parsed.Content
+				existing.Source = parsed.Source
+				existing.ExperienceScore = parsed.ExperienceScore
 				existing.Status = "active"
 
 				if s.CategorySvc != nil && parsed.Category != "" {
@@ -428,22 +430,24 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					meta = normalized
 				}
 				newItem := &models.CapabilityItem{
-					ID:          uuid.New().String(),
-					RegistryID:  registryID,
-					RepoID:      syncRepoID(registry.RepoID),
-					Slug:        parsed.Slug,
-					ItemType:    parsed.ItemType,
-					Name:        parsed.Name,
-					Description: parsed.Description,
-					Category:    parsed.Category,
-					Version:     parsed.Version,
-					Content:     parsed.Content,
-					Metadata:    metadataJSON(meta),
-					SourcePath:  relPath,
-					SourceSHA:   contentHash,
-				Status:      "active",
-				CreatedBy:   triggerUser,
-				UpdatedBy:   triggerUser,
+					ID:              uuid.New().String(),
+					RegistryID:      registryID,
+					RepoID:          syncRepoID(registry.RepoID),
+					Slug:            parsed.Slug,
+					ItemType:        parsed.ItemType,
+					Name:            parsed.Name,
+					Description:     parsed.Description,
+					Category:        parsed.Category,
+					Version:         parsed.Version,
+					Content:         parsed.Content,
+					Metadata:        metadataJSON(meta),
+					SourcePath:      relPath,
+					SourceSHA:       contentHash,
+					Source:          parsed.Source,
+					ExperienceScore: parsed.ExperienceScore,
+					Status:          "active",
+					CreatedBy:       triggerUser,
+					UpdatedBy:       triggerUser,
 				}
 				if err := s.DB.Create(newItem).Error; err != nil {
 					result.Failed++
