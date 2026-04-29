@@ -34,6 +34,62 @@ var allowedScanCategories = []string{
 	"task-scheduling",
 	"file-management",
 	"team-collaboration",
+	"programming",
+	"education",
+	"business-strategy",
+	"planning",
+	"marketing",
+	"data-analysis",
+	"writing",
+	"research",
+	"healthcare",
+	"legal",
+	"finance",
+	"gaming",
+	"design",
+	"productivity",
+	"communication",
+	"science",
+	"lifestyle",
+}
+
+// scanCategoryNames provides i18n display names for auto-created categories.
+// Keys must stay in sync with allowedScanCategories.
+var scanCategoryNames = map[string]map[string]string{
+	"frontend-development":   {"en": "Frontend Development", "zh": "前端开发"},
+	"backend-development":    {"en": "Backend Development", "zh": "后端开发"},
+	"system-architecture":    {"en": "System Architecture", "zh": "系统架构"},
+	"requirements-analysis":  {"en": "Requirements Analysis", "zh": "需求分析"},
+	"system-design":          {"en": "System Design", "zh": "系统设计"},
+	"data-processing":        {"en": "Data Processing", "zh": "数据处理"},
+	"software-testing":       {"en": "Software Testing", "zh": "软件测试"},
+	"tdd-development":        {"en": "TDD Development", "zh": "TDD 开发"},
+	"information-security":   {"en": "Information Security", "zh": "信息安全"},
+	"command-execution":      {"en": "Command Execution", "zh": "命令执行"},
+	"tool-invocation":        {"en": "Tool Invocation", "zh": "工具调用"},
+	"deployment-operations":  {"en": "Deployment Operations", "zh": "部署运维"},
+	"document-editing":       {"en": "Document Editing", "zh": "文档编辑"},
+	"meeting-management":     {"en": "Meeting Management", "zh": "会议管理"},
+	"task-scheduling":        {"en": "Task Scheduling", "zh": "任务调度"},
+	"file-management":        {"en": "File Management", "zh": "文件管理"},
+	"team-collaboration":     {"en": "Team Collaboration", "zh": "团队协作"},
+	"programming":            {"en": "Programming", "zh": "编程开发"},
+	"education":              {"en": "Education", "zh": "教育学习"},
+	"business-strategy":      {"en": "Business Strategy", "zh": "商业策略"},
+	"planning":               {"en": "Planning", "zh": "计划规划"},
+	"marketing":              {"en": "Marketing", "zh": "市场营销"},
+	"data-analysis":          {"en": "Data Analysis", "zh": "数据分析"},
+	"writing":                {"en": "Writing", "zh": "写作创作"},
+	"research":               {"en": "Research", "zh": "学术研究"},
+	"healthcare":             {"en": "Healthcare", "zh": "医疗健康"},
+	"legal":                  {"en": "Legal", "zh": "法律合规"},
+	"finance":                {"en": "Finance", "zh": "金融财务"},
+	"gaming":                 {"en": "Gaming", "zh": "游戏娱乐"},
+	"design":                 {"en": "Design", "zh": "设计创意"},
+	"productivity":           {"en": "Productivity", "zh": "生产力工具"},
+	"communication":          {"en": "Communication", "zh": "沟通交流"},
+	"science":                {"en": "Science", "zh": "科学技术"},
+	"lifestyle":              {"en": "Lifestyle", "zh": "生活方式"},
 }
 
 const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
@@ -59,6 +115,23 @@ const scanSystemPrompt = `你是一个专业的 AI 能力项安全审查员。
 - task-scheduling（任务调度）
 - file-management（文件管理）
 - team-collaboration（团队协作）
+- programming（编程开发）
+- education（教育学习）
+- business-strategy（商业策略）
+- planning（计划规划）
+- marketing（市场营销）
+- data-analysis（数据分析）
+- writing（写作创作）
+- research（学术研究）
+- healthcare（医疗健康）
+- legal（法律合规）
+- finance（金融财务）
+- gaming（游戏娱乐）
+- design（设计创意）
+- productivity（生产力工具）
+- communication（沟通交流）
+- science（科学技术）
+- lifestyle（生活方式）
 
 ## 审查维度
 
@@ -280,7 +353,11 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 	}
 	s.DB.Model(&item).Updates(itemUpdates)
 	if scanRecord.Category != "" && s.CategorySvc != nil {
-		_, _ = s.CategorySvc.EnsureCategory(scanRecord.Category, "scan")
+		names := scanCategoryNames[scanRecord.Category]
+		if names == nil {
+			names = map[string]string{"en": scanRecord.Category}
+		}
+		_, _ = s.CategorySvc.EnsureCategoryWithNames(scanRecord.Category, "scan", names)
 	}
 	if s.TagSvc != nil {
 		_ = s.backfillBuiltinTags(item.ID, report.BuiltinTags)
@@ -370,7 +447,7 @@ func (s *ScanService) callLLM(ctx context.Context, userPrompt string) (*ScanRepo
 		return nil, raw, fmt.Errorf("invalid verdict in LLM output: %q", report.Verdict)
 	}
 	if !isValidScanCategory(report.Category) {
-		return nil, raw, fmt.Errorf("invalid category in LLM output: %q", report.Category)
+		report.Category = ""
 	}
 	report.BuiltinTags = limitSuggestedTagSlugs(normalizeSuggestedTagSlugs(report.BuiltinTags), 1)
 

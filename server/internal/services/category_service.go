@@ -38,6 +38,14 @@ type UpdateCategoryReq struct {
 // If the slug is empty, it returns nil. If it doesn't exist, it creates
 // a minimal record with the slug as the default English name.
 func (s *CategoryService) EnsureCategory(slug, createdBy string) (*models.ItemCategory, error) {
+	return s.EnsureCategoryWithNames(slug, createdBy, nil)
+}
+
+// EnsureCategoryWithNames ensures a category record exists for the given slug.
+// If names is provided and the category is newly created, it will be used as the
+// display names (i18n). If names is nil or empty, the slug is used as the default
+// English name.
+func (s *CategoryService) EnsureCategoryWithNames(slug, createdBy string, names map[string]string) (*models.ItemCategory, error) {
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
 		return nil, nil
@@ -52,10 +60,13 @@ func (s *CategoryService) EnsureCategory(slug, createdBy string) (*models.ItemCa
 		return nil, err
 	}
 
-	names, _ := json.Marshal(map[string]string{"en": slug})
+	if len(names) == 0 {
+		names = map[string]string{"en": slug}
+	}
+	namesJSON, _ := json.Marshal(names)
 	cat = models.ItemCategory{
 		Slug:      slug,
-		Names:     datatypes.JSON(names),
+		Names:     datatypes.JSON(namesJSON),
 		CreatedBy: createdBy,
 	}
 	if err := s.DB.Create(&cat).Error; err != nil {
