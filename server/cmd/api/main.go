@@ -410,6 +410,10 @@ func main() {
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
 
+			admin := authed.Group("/admin")
+			admin.Use(systemrole.RequirePlatformAdmin(db))
+			authzModule.RegisterAdminRoutes(admin)
+
 			kanbanModule := kanban.New()
 			kanbanModule.RegisterRoutes(authed, authzModule.Service)
 
