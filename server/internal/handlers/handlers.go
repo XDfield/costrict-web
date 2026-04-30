@@ -364,7 +364,7 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	// Set auth cookie before redirect
-	c.SetCookie("auth_token", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+	c.SetCookie("zgsmAdminToken", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
 
 	// Determine where to send the user after login.
 	// Validate the redirect target against the allowed origins whitelist.
@@ -522,7 +522,7 @@ func Logout(c *gin.Context) {
 	token := middleware.ExtractToken(c)
 
 	// Always clear the auth cookie, regardless of whether token revocation succeeds
-	c.SetCookie("auth_token", "", -1, "/", "", cookieSecure, true)
+	c.SetCookie("zgsmAdminToken", "", -1, "/", "", cookieSecure, true)
 
 	if token == "" {
 		// No token present — cookie cleared, nothing else to do

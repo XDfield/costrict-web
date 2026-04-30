@@ -168,7 +168,7 @@ func TestExtractToken_FromCookie(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
-	c.Request.AddCookie(&http.Cookie{Name: "auth_token", Value: "cookie-token-456"})
+	c.Request.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "cookie-token-456"})
 
 	token := ExtractToken(c)
 	if token != "cookie-token-456" {
@@ -192,7 +192,7 @@ func TestExtractToken_BearerHeaderTakesPriorityOverCookie(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Request.Header.Set("Authorization", "Bearer header-token")
-	c.Request.AddCookie(&http.Cookie{Name: "auth_token", Value: "cookie-token"})
+	c.Request.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "cookie-token"})
 
 	token := ExtractToken(c)
 	if token != "header-token" {
@@ -973,7 +973,7 @@ func TestRequireAuth_TokenFromCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.AddCookie(&http.Cookie{Name: "auth_token", Value: tokenStr})
+	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: tokenStr})
 	w := performRequest(router, req)
 
 	if w.Code != http.StatusOK {
@@ -1032,7 +1032,7 @@ func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Request.Header.Set("Authorization", "Basic dXNlcjpwYXNz") // Basic auth, not Bearer
-	c.Request.AddCookie(&http.Cookie{Name: "auth_token", Value: "fallback-cookie"})
+	c.Request.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "fallback-cookie"})
 
 	token := ExtractToken(c)
 	if token != "fallback-cookie" {

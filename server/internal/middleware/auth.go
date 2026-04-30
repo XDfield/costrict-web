@@ -88,7 +88,7 @@ func ExtractToken(c *gin.Context) string {
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	if cookie, err := c.Cookie("auth_token"); err == nil && cookie != "" {
+	if cookie, err := c.Cookie("zgsmAdminToken"); err == nil && cookie != "" {
 		return cookie
 	}
 	return ""
