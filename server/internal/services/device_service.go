@@ -56,13 +56,37 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 	result := s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	if result.Error == nil {
 		if existing.UserID == userID {
-			// Same user re-registering: return existing device with its token
 			return &existing, existing.Token, ErrDeviceOwnedByCaller
 		}
 		return nil, "", ErrDeviceAlreadyRegistered
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, "", result.Error
+	}
+
+	var softDeleted models.Device
+	if err := s.DB.Unscoped().Where("device_id = ? AND deleted_at IS NOT NULL", req.DeviceID).First(&softDeleted).Error; err == nil {
+		token, err := generateDeviceToken()
+		if err != nil {
+			return nil, "", err
+		}
+		now := time.Now()
+		if err := s.DB.Unscoped().Model(&softDeleted).Updates(map[string]any{
+			"display_name":     req.DisplayName,
+			"platform":         req.Platform,
+			"version":          req.Version,
+			"user_id":          userID,
+			"token":            token,
+			"token_rotated_at": nil,
+			"status":           "offline",
+			"deleted_at":       nil,
+			"updated_at":       now,
+		}).Error; err != nil {
+			return nil, "", err
+		}
+		s.ownershipCache.Delete(softDeleted.DeviceID + ":" + softDeleted.UserID)
+		s.DB.Where("device_id = ?", req.DeviceID).First(&softDeleted)
+		return &softDeleted, token, nil
 	}
 
 	token, err := generateDeviceToken()
