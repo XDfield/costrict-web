@@ -51,12 +51,40 @@ func generateDeviceToken() (string, error) {
 	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b), nil
 }
 
+func (s *DeviceService) userExists(userID string) bool {
+	var count int64
+	s.DB.Table("users").Where("subject_id = ?", userID).Count(&count)
+	return count > 0
+}
+
 func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest) (*models.Device, string, error) {
 	var existing models.Device
 	result := s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	if result.Error == nil {
 		if existing.UserID == userID {
 			return &existing, existing.Token, ErrDeviceOwnedByCaller
+		}
+		if !s.userExists(existing.UserID) {
+			token, err := generateDeviceToken()
+			if err != nil {
+				return nil, "", err
+			}
+			now := time.Now()
+			if err := s.DB.Model(&models.Device{}).Where("device_id = ?", req.DeviceID).Updates(map[string]any{
+				"display_name":     req.DisplayName,
+				"platform":         req.Platform,
+				"version":          req.Version,
+				"user_id":          userID,
+				"token":            token,
+				"token_rotated_at": nil,
+				"status":           "offline",
+				"updated_at":       now,
+			}).Error; err != nil {
+				return nil, "", err
+			}
+			s.ownershipCache.Delete(existing.DeviceID + ":" + existing.UserID)
+			s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
+			return &existing, token, nil
 		}
 		return nil, "", ErrDeviceAlreadyRegistered
 	}
