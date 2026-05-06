@@ -147,6 +147,21 @@ func main() {
 			}
 			log.Println("Capability content versioning backfill completed successfully")
 			return
+		case "backfill-provider-aware-external-keys":
+			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
+			if err := backfillProviderAwareExternalKeys(db, dryRun); err != nil {
+				if dryRun && errors.Is(err, errDryRunRollback) {
+					log.Println("Provider-aware external key dry-run completed successfully")
+					return
+				}
+				log.Fatalf("Failed to backfill provider-aware external keys: %v", err)
+			}
+			if dryRun {
+				log.Println("Provider-aware external key dry-run completed successfully")
+			} else {
+				log.Println("Provider-aware external key backfill completed successfully")
+			}
+			return
 		default:
 			log.Printf("Unknown command: %s", os.Args[1])
 			printMigrateHelp()
@@ -239,6 +254,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
 	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata <source-path> [--dry-run]")
 	fmt.Println("                                                Backfill source and experience_score from catalog/index.json")
+	fmt.Println("  go run ./cmd/migrate backfill-provider-aware-external-keys [--dry-run]")
+	fmt.Println("                                                Migrate external_keys from casdoor:<id> to casdoor:<provider>:<id>")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
@@ -479,6 +496,101 @@ func coalesceStringPtr(values ...*string) *string {
 		}
 	}
 	return nil
+}
+
+func backfillProviderAwareExternalKeys(db *gorm.DB, dryRun bool) error {
+	type identityRow struct {
+		ID          uint
+		ExternalKey string
+		Provider    string
+	}
+	var identities []identityRow
+	if err := db.Table("user_auth_identities").
+		Select("id, external_key, provider").
+		Where("external_key LIKE 'casdoor:%' AND external_key NOT LIKE 'casdoor:%:%' AND provider != '' AND provider != 'casdoor'").
+		Find(&identities).Error; err != nil {
+		return fmt.Errorf("load identities for provider-aware key migration: %w", err)
+	}
+
+	type userRow struct {
+		ID          uint
+		ExternalKey *string
+		AuthProvider *string
+	}
+	var users []userRow
+	if err := db.Table("users").
+		Select("id, external_key, auth_provider").
+		Where("external_key LIKE 'casdoor:%' AND external_key NOT LIKE 'casdoor:%:%'").
+		Find(&users).Error; err != nil {
+		return fmt.Errorf("load users for provider-aware key migration: %w", err)
+	}
+
+	updatedIdentities := 0
+	updatedUsers := 0
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, idRow := range identities {
+			provider := strings.ToLower(strings.TrimSpace(idRow.Provider))
+			parts := strings.SplitN(idRow.ExternalKey, ":", 2)
+			if len(parts) != 2 || provider == "" {
+				continue
+			}
+			newKey := "casdoor:" + provider + ":" + parts[1]
+			var conflict int64
+			if err := tx.Table("user_auth_identities").Where("external_key = ? AND id != ?", newKey, idRow.ID).Count(&conflict).Error; err != nil {
+				return err
+			}
+			if conflict > 0 {
+				log.Printf("identity %d: skipping due to conflict with new key %q", idRow.ID, newKey)
+				continue
+			}
+			updatedIdentities++
+			if dryRun {
+				continue
+			}
+			if err := tx.Table("user_auth_identities").Where("id = ?", idRow.ID).Update("external_key", newKey).Error; err != nil {
+				return fmt.Errorf("update identity %d external_key: %w", idRow.ID, err)
+			}
+		}
+
+		for _, u := range users {
+			if u.ExternalKey == nil {
+				continue
+			}
+			provider := ""
+			if u.AuthProvider != nil {
+				provider = strings.ToLower(strings.TrimSpace(*u.AuthProvider))
+			}
+			if provider == "" || provider == "casdoor" {
+				continue
+			}
+			parts := strings.SplitN(*u.ExternalKey, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			newKey := "casdoor:" + provider + ":" + parts[1]
+			var conflict int64
+			if err := tx.Table("users").Where("external_key = ? AND id != ?", newKey, u.ID).Count(&conflict).Error; err != nil {
+				return err
+			}
+			if conflict > 0 {
+				log.Printf("user %d: skipping due to conflict with new key %q", u.ID, newKey)
+				continue
+			}
+			updatedUsers++
+			if dryRun {
+				continue
+			}
+			if err := tx.Table("users").Where("id = ?", u.ID).Update("external_key", newKey).Error; err != nil {
+				return fmt.Errorf("update user %d external_key: %w", u.ID, err)
+			}
+		}
+
+		log.Printf("provider-aware external key summary (dry-run=%v): updated identities=%d, updated users=%d", dryRun, updatedIdentities, updatedUsers)
+		if dryRun {
+			return errDryRunRollback
+		}
+		return nil
+	})
 }
 
 func isLikelyPhoneValue(v string) bool {

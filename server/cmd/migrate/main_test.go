@@ -387,3 +387,52 @@ func TestBackfillCapabilityContentVersioning_SkipsMalformedMCPContent(t *testing
 }
 
 func strPtr(v string) *string { return &v }
+
+func TestBackfillProviderAwareExternalKeys(t *testing.T) {
+	db := newMigrateTestDB(t)
+	if err := db.AutoMigrate(&models.User{}, &models.UserAuthIdentity{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	u1 := models.User{SubjectID: "u1", Username: "alice", AuthProvider: strPtr("github"), ExternalKey: strPtr("casdoor:uuid-1"), CasdoorUniversalID: strPtr("uuid-1"), IsActive: true}
+	if err := db.Create(&u1).Error; err != nil {
+		t.Fatalf("create u1: %v", err)
+	}
+	id1 := models.UserAuthIdentity{UserSubjectID: "u1", Provider: "github", ExternalKey: "casdoor:uuid-1", IsPrimary: true}
+	if err := db.Create(&id1).Error; err != nil {
+		t.Fatalf("create id1: %v", err)
+	}
+
+	u2 := models.User{SubjectID: "u2", Username: "bob", ExternalKey: strPtr("casdoor:uuid-2"), CasdoorUniversalID: strPtr("uuid-2"), IsActive: true}
+	if err := db.Create(&u2).Error; err != nil {
+		t.Fatalf("create u2: %v", err)
+	}
+
+	if err := backfillProviderAwareExternalKeys(db, false); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var gotID1 models.UserAuthIdentity
+	if err := db.First(&gotID1, "user_subject_id = ? AND provider = ?", "u1", "github").Error; err != nil {
+		t.Fatalf("reload id1: %v", err)
+	}
+	if gotID1.ExternalKey != "casdoor:github:uuid-1" {
+		t.Fatalf("expected identity key upgraded to casdoor:github:uuid-1, got %s", gotID1.ExternalKey)
+	}
+
+	var gotU1 models.User
+	if err := db.First(&gotU1, "subject_id = ?", "u1").Error; err != nil {
+		t.Fatalf("reload u1: %v", err)
+	}
+	if gotU1.ExternalKey == nil || *gotU1.ExternalKey != "casdoor:github:uuid-1" {
+		t.Fatalf("expected user key upgraded to casdoor:github:uuid-1, got %v", gotU1.ExternalKey)
+	}
+
+	var gotU2 models.User
+	if err := db.First(&gotU2, "subject_id = ?", "u2").Error; err != nil {
+		t.Fatalf("reload u2: %v", err)
+	}
+	if gotU2.ExternalKey == nil || *gotU2.ExternalKey != "casdoor:uuid-2" {
+		t.Fatalf("expected u2 key unchanged (no auth_provider), got %v", gotU2.ExternalKey)
+	}
+}
