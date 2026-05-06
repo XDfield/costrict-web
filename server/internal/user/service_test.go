@@ -284,6 +284,9 @@ func TestUserServiceGetOrCreateUserMatchesByExternalKey(t *testing.T) {
 	if user.ProviderUserID == nil || *user.ProviderUserID != "18633160" {
 		t.Fatalf("provider_user_id not updated: %+v", user)
 	}
+	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:github:uuid-u1" {
+		t.Fatalf("external_key not upgraded to provider-aware format: %+v", user)
+	}
 }
 
 func TestUserServiceGetOrCreateUserKeepsLocalSubjectIDAcrossLogins(t *testing.T) {
@@ -547,5 +550,130 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	identities, _ = svc.ListUserIdentities(user.SubjectID)
 	if len(identities) != 1 || !identities[0].IsPrimary || identities[0].Provider != "phone" {
 		t.Fatalf("expected remaining phone identity to become primary, got %+v", identities)
+	}
+}
+
+func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	githubClaims := &JWTClaims{
+		ID:                "gh-id",
+		Sub:               "gh-sub",
+		UniversalID:       "shared-uuid",
+		Name:              "gh_user",
+		PreferredUsername: "GH User",
+		Provider:          "github",
+		ProviderUserID:    "gh-001",
+		Email:             "gh@example.com",
+		Picture:           "https://avatars.example.com/gh.png",
+	}
+
+	ghUser, err := svc.GetOrCreateUser(githubClaims)
+	if err != nil {
+		t.Fatalf("create github user: %v", err)
+	}
+	if ghUser.CasdoorUniversalID == nil || *ghUser.CasdoorUniversalID != "shared-uuid" {
+		t.Fatalf("expected universal_id shared-uuid, got %+v", ghUser)
+	}
+
+	identities, _ := svc.ListUserIdentities(ghUser.SubjectID)
+	if len(identities) != 1 {
+		t.Fatalf("expected 1 identity after github login, got %d", len(identities))
+	}
+	if identities[0].Provider != "github" {
+		t.Fatalf("expected github identity, got %s", identities[0].Provider)
+	}
+
+	phoneClaims := &JWTClaims{
+		ID:                "phone-id",
+		Sub:               "phone-sub",
+		UniversalID:       "shared-uuid",
+		Name:              "phone_15500000001",
+		PreferredUsername: "ph_15500000001",
+		Provider:          "phone",
+		Phone:             "15500000001",
+	}
+
+	phoneUser, err := svc.GetOrCreateUser(phoneClaims)
+	if err != nil {
+		t.Fatalf("get or create phone user: %v", err)
+	}
+	if phoneUser.SubjectID != ghUser.SubjectID {
+		t.Fatalf("expected same subject_id for same universal_id, got github=%s phone=%s", ghUser.SubjectID, phoneUser.SubjectID)
+	}
+
+	identities, err = svc.ListUserIdentities(ghUser.SubjectID)
+	if err != nil {
+		t.Fatalf("list identities: %v", err)
+	}
+	if len(identities) != 2 {
+		t.Fatalf("expected 2 identities (github + phone), got %d", len(identities))
+	}
+
+	providerSet := map[string]bool{}
+	for _, id := range identities {
+		providerSet[id.Provider] = true
+	}
+	if !providerSet["github"] || !providerSet["phone"] {
+		t.Fatalf("expected both github and phone identities, got %+v", identities)
+	}
+
+	refreshed, _ := svc.GetUserByID(ghUser.SubjectID)
+	if refreshed.Phone == nil || *refreshed.Phone != "15500000001" {
+		t.Fatalf("expected phone to be merged into user profile, got %+v", refreshed)
+	}
+}
+
+func TestGetOrCreateUserLegacyExternalKeyFallback(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	legacyKey := "casdoor:shared-uuid"
+	provider := "github"
+	seed := models.User{
+		SubjectID:   "legacy-u1",
+		Username:    "gh_user",
+		ExternalKey: &legacyKey,
+		AuthProvider: &provider,
+		IsActive:    true,
+	}
+	if err := db.Create(&seed).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedIdentity := models.UserAuthIdentity{
+		UserSubjectID: "legacy-u1",
+		Provider:      "github",
+		ExternalKey:   legacyKey,
+		IsPrimary:     true,
+	}
+	if err := db.Create(&seedIdentity).Error; err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+
+	claims := &JWTClaims{
+		ID:                "gh-id",
+		Sub:               "gh-sub",
+		UniversalID:       "shared-uuid",
+		Name:              "gh_user",
+		PreferredUsername: "GH User",
+		Provider:          "github",
+		ProviderUserID:    "gh-001",
+	}
+
+	user, err := svc.GetOrCreateUser(claims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser error: %v", err)
+	}
+	if user.SubjectID != "legacy-u1" {
+		t.Fatalf("expected match by legacy external_key, got %+v", user)
+	}
+
+	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	if len(identities) != 1 {
+		t.Fatalf("expected 1 identity after legacy fallback, got %d", len(identities))
+	}
+	if identities[0].ExternalKey != "casdoor:github:shared-uuid" {
+		t.Fatalf("expected identity external_key upgraded to provider-aware format, got %s", identities[0].ExternalKey)
 	}
 }

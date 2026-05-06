@@ -141,8 +141,21 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 			}
 			return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
 		}
-		if err != nil && err != gorm.ErrRecordNotFound {
+		if err != gorm.ErrRecordNotFound {
 			return err
+		}
+
+		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+			err := tx.Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
+			if err == nil {
+				if err := tx.Model(&existing).Update("external_key", externalKey).Error; err != nil {
+					return err
+				}
+				return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+			}
+			if err != gorm.ErrRecordNotFound {
+				return err
+			}
 		}
 
 		identity := buildUserAuthIdentity(userSubjectID, claims)
@@ -244,9 +257,18 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	// 2. Try to get existing user by external identities first.
 	var user models.User
 	found := false
-	if externalKey != "" {
+
+	lookupKeys := []string{externalKey}
+	if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+		lookupKeys = append(lookupKeys, legacy)
+	}
+
+	for _, key := range lookupKeys {
+		if key == "" || found {
+			break
+		}
 		var identity models.UserAuthIdentity
-		if err := s.db.Where("external_key = ?", externalKey).Take(&identity).Error; err == nil {
+		if err := s.db.Where("external_key = ?", key).Take(&identity).Error; err == nil {
 			if err := s.db.Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
 				found = true
 			}
@@ -254,12 +276,17 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
 		}
 	}
-	if externalKey != "" && !found {
-		err := s.db.Where("external_key = ?", externalKey).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+	if !found {
+		for _, key := range lookupKeys {
+			if key == "" || found {
+				break
+			}
+			err := s.db.Where("external_key = ?", key).Take(&user).Error
+			if err == nil {
+				found = true
+			} else if err != gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+			}
 		}
 	}
 	if claims.UniversalID != "" {
@@ -397,12 +424,16 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
 			var existing models.User
 			query := s.db.Clauses(clause.Locking{Strength: "UPDATE"})
+			conditions := s.db
 			if externalKey != "" {
-				query = query.Where("external_key = ?", externalKey)
+				conditions = conditions.Where("external_key = ?", externalKey)
+				if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+					conditions = conditions.Or("external_key = ?", legacy)
+				}
 			} else {
-				query = query.Where("casdoor_universal_id = ?", claims.UniversalID)
+				conditions = conditions.Where("casdoor_universal_id = ?", claims.UniversalID)
 			}
-			query = query.Or("casdoor_universal_id = ?", claims.UniversalID).
+			query = conditions.Or("casdoor_universal_id = ?", claims.UniversalID).
 				Or("casdoor_id = ?", claims.ID).
 				Or("casdoor_sub = ?", claims.Sub)
 			err := query.Take(&existing).Error
@@ -582,14 +613,34 @@ func buildExternalKey(claims *JWTClaims) string {
 	if claims == nil {
 		return ""
 	}
+	provider := strings.ToLower(strings.TrimSpace(claims.Provider))
+	if claims.UniversalID != "" {
+		if provider != "" {
+			return "casdoor:" + provider + ":" + claims.UniversalID
+		}
+		return "casdoor:" + claims.UniversalID
+	}
+	if claims.Sub != "" {
+		if provider != "" {
+			return "casdoor-sub:" + provider + ":" + claims.Sub
+		}
+		return "casdoor-sub:" + claims.Sub
+	}
+	if claims.ID != "" {
+		return "casdoor-id:" + claims.ID
+	}
+	return ""
+}
+
+func legacyExternalKey(claims *JWTClaims) string {
+	if claims == nil {
+		return ""
+	}
 	if claims.UniversalID != "" {
 		return "casdoor:" + claims.UniversalID
 	}
 	if claims.Sub != "" {
 		return "casdoor-sub:" + claims.Sub
-	}
-	if claims.ID != "" {
-		return "casdoor-id:" + claims.ID
 	}
 	return ""
 }
