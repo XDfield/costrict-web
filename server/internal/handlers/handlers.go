@@ -49,7 +49,7 @@ type authUserDTO struct {
 	Username           string         `json:"username"`
 	Email              *string        `json:"email,omitempty"`
 	Phone              *string        `json:"phone,omitempty"`
-	AvatarURL          *string        `json:"avatarUrl,omitempty"`
+	AvatarURL          string         `json:"avatarUrl"`
 	CasdoorUniversalID *string        `json:"casdoorUniversalId,omitempty"`
 	Auth               map[string]any `json:"auth,omitempty"`
 }
@@ -234,7 +234,7 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 		Username:           user.Username,
 		Email:              user.Email,
 		Phone:              user.Phone,
-		AvatarURL:          user.AvatarURL,
+		AvatarURL:          derefString(user.AvatarURL),
 		CasdoorUniversalID: user.CasdoorUniversalID,
 		Auth:               auth,
 	}
@@ -260,7 +260,7 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 		Username:           claims.Name,
 		Email:              stringPtr(claims.Email),
 		Phone:              stringPtr(claims.Phone),
-		AvatarURL:          stringPtr(claims.Picture),
+		AvatarURL:          claims.Picture,
 		CasdoorUniversalID: stringPtr(claims.UniversalID),
 		Auth: gin.H{
 			"provider":        claims.Provider,
@@ -673,6 +673,13 @@ func stringPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func buildExternalKeyForResponse(claims *userpkg.JWTClaims) string {

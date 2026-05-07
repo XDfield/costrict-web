@@ -31,8 +31,9 @@ type JWTClaims struct {
 
 // UserService provides user data operations
 type UserService struct {
-	db           *gorm.DB
-	syncInterval time.Duration
+	db            *gorm.DB
+	syncInterval  time.Duration
+	onUserUpdated func(userSubjectID string)
 }
 
 // NewUserService creates a new UserService instance
@@ -40,13 +41,22 @@ func NewUserService(db *gorm.DB) *UserService {
 	return &UserService{db: db, syncInterval: 15 * time.Minute}
 }
 
-// NewUserServiceWithConfig creates a new UserService instance with config
 func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService {
 	interval := time.Duration(syncIntervalMinutes) * time.Minute
 	if syncIntervalMinutes <= 0 {
 		interval = 15 * time.Minute
 	}
 	return &UserService{db: db, syncInterval: interval}
+}
+
+func (s *UserService) SetOnUserUpdated(fn func(userSubjectID string)) {
+	s.onUserUpdated = fn
+}
+
+func (s *UserService) notifyUserUpdated(userSubjectID string) {
+	if s.onUserUpdated != nil {
+		s.onUserUpdated(userSubjectID)
+	}
 }
 
 // GetUserByID retrieves a user by ID
@@ -139,6 +149,12 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 			if existing.UserSubjectID != userSubjectID {
 				return fmt.Errorf("identity_already_bound")
 			}
+			updates := s.buildIdentityUpdates(&existing, claims)
+			if len(updates) > 0 {
+				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+					return err
+				}
+			}
 			return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
 		}
 		if err != gorm.ErrRecordNotFound {
@@ -148,7 +164,9 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
 			err := tx.Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
 			if err == nil {
-				if err := tx.Model(&existing).Update("external_key", externalKey).Error; err != nil {
+				updates := s.buildIdentityUpdates(&existing, claims)
+				updates["external_key"] = externalKey
+				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
 					return err
 				}
 				return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
@@ -397,6 +415,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			return nil, err
 		}
 
+		s.notifyUserUpdated(user.SubjectID)
 		return &user, nil
 	}
 
@@ -438,6 +457,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				Or("casdoor_sub = ?", claims.Sub)
 			err := query.Take(&existing).Error
 			if err == nil {
+				s.notifyUserUpdated(existing.SubjectID)
 				return &existing, nil
 			}
 		}
@@ -446,6 +466,7 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
 		return nil, err
 	}
+	s.notifyUserUpdated(user.SubjectID)
 	if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
 		return refreshed, nil
 	}
@@ -666,6 +687,36 @@ func buildUserAuthIdentity(userSubjectID string, claims *JWTClaims) models.UserA
 		Organization:    stringPtr(claims.Owner),
 		LastLoginAt:     &now,
 	}
+}
+
+func (s *UserService) buildIdentityUpdates(existing *models.UserAuthIdentity, claims *JWTClaims) map[string]interface{} {
+	updates := make(map[string]interface{})
+	now := time.Now()
+
+	if claims.PreferredUsername != "" && (existing.DisplayName == nil || *existing.DisplayName != claims.PreferredUsername) {
+		updates["display_name"] = claims.PreferredUsername
+	}
+	if claims.Email != "" && (existing.Email == nil || *existing.Email != claims.Email) {
+		updates["email"] = claims.Email
+	}
+	if claims.Phone != "" && (existing.Phone == nil || *existing.Phone != claims.Phone) {
+		updates["phone"] = claims.Phone
+	}
+	if claims.Picture != "" && (existing.AvatarURL == nil || *existing.AvatarURL != claims.Picture) {
+		updates["avatar_url"] = claims.Picture
+	}
+	if claims.Owner != "" && (existing.Organization == nil || *existing.Organization != claims.Owner) {
+		updates["organization"] = claims.Owner
+	}
+	if claims.ProviderUserID != "" && (existing.ProviderUserID == nil || *existing.ProviderUserID != claims.ProviderUserID) {
+		updates["provider_user_id"] = claims.ProviderUserID
+	}
+	if claims.UniversalID != "" && (existing.ExternalSubject == nil || *existing.ExternalSubject != claims.UniversalID) {
+		updates["external_subject"] = claims.UniversalID
+	}
+
+	updates["last_login_at"] = now
+	return updates
 }
 
 func providerRank(provider string) int {

@@ -158,7 +158,7 @@ func GetUserNames(c *gin.Context) {
 type userBasicInfoResponse struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
-	AvatarURL *string `json:"avatarUrl,omitempty"`
+	AvatarURL string  `json:"avatarUrl"`
 }
 
 // GetUserBasicInfo godoc
@@ -215,7 +215,7 @@ func GetUserBasicInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": userBasicInfoResponse{
 		ID:        user.SubjectID,
 		Name:      name,
-		AvatarURL: user.AvatarURL,
+		AvatarURL: derefString(user.AvatarURL),
 	}})
 }
 
