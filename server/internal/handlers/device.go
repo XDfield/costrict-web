@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/mod/semver"
 )
 
 // RegisterDeviceHandler godoc
@@ -69,14 +72,14 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 
 // ListDevicesHandler godoc
 // @Summary      List user devices
-// @Description  Get all devices registered by the authenticated user
+// @Description  Get all devices registered by the authenticated user, with update availability info
 // @Tags         devices
 // @Produce      json
 // @Success      200   {object}  object{devices=[]object}
 // @Failure      401   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /devices [get]
-func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
+func ListDevicesHandler(svc *services.DeviceService, updateSvc *services.UpdateService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
 		if userID == "" {
@@ -90,8 +93,54 @@ func ListDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"devices": devices})
+		result := make([]gin.H, 0, len(devices))
+
+		releasesMap, _ := updateSvc.GetLatestReleasesMap()
+
+		for _, d := range devices {
+			item := deviceToMap(d)
+
+			latest, ok := releasesMap[d.Platform]
+			if ok {
+				canUpdate := isNewerVersion(latest.Version, d.Version)
+				item["canUpdate"] = canUpdate
+				item["latestVersion"] = latest.Version
+			} else {
+				item["canUpdate"] = false
+				item["latestVersion"] = d.Version
+			}
+
+			result = append(result, item)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"devices": result})
 	}
+}
+
+func deviceToMap(d models.Device) gin.H {
+	b, _ := json.Marshal(d)
+	m := gin.H{}
+	json.Unmarshal(b, &m)
+	return m
+}
+
+func isNewerVersion(candidate, current string) bool {
+	cv := normalizeSemver(candidate)
+	cur := normalizeSemver(current)
+	if cur == "" {
+		return cv != ""
+	}
+	return semver.Compare(cv, cur) > 0
+}
+
+func normalizeSemver(v string) string {
+	if v == "" || v == "dev" || v == "0.0.0" {
+		return ""
+	}
+	if v[0] != 'v' {
+		return "v" + v
+	}
+	return v
 }
 
 // GetDeviceHandler godoc

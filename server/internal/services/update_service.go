@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -13,10 +14,18 @@ var (
 	ErrReleaseNotFound = errors.New("release not found")
 )
 
+type latestReleasesCache struct {
+	releases map[string]*models.DeviceRelease
+	expires  time.Time
+}
+
 type UpdateService struct {
 	DB                 *gorm.DB
 	ReleaseDownloadURL string
+	releaseCache       sync.Map
 }
+
+const releaseCacheTTL = 5 * time.Minute
 
 type PlatformAsset struct {
 	Platform    string `json:"platform" binding:"required"`
@@ -49,6 +58,38 @@ type UpdateCheckResponse struct {
 	MinClientVer  string `json:"min_client_version,omitempty"`
 	ReleaseDate   string `json:"release_date,omitempty"`
 	BinarySize    int64  `json:"size,omitempty"`
+}
+
+func (s *UpdateService) GetLatestReleasesMap() (map[string]*models.DeviceRelease, error) {
+	if v, ok := s.releaseCache.Load("all"); ok {
+		cached := v.(latestReleasesCache)
+		if time.Now().Before(cached.expires) {
+			return cached.releases, nil
+		}
+		s.releaseCache.Delete("all")
+	}
+
+	var releases []models.DeviceRelease
+	err := s.DB.Raw(`
+		SELECT DISTINCT ON (platform) *
+		FROM device_releases
+		WHERE channel = 'stable'
+		ORDER BY platform, created_at DESC
+	`).Scan(&releases).Error
+	if err != nil {
+		return nil, err
+	}
+
+	m := make(map[string]*models.DeviceRelease, len(releases))
+	for i := range releases {
+		m[releases[i].Platform] = &releases[i]
+	}
+
+	s.releaseCache.Store("all", latestReleasesCache{
+		releases: m,
+		expires:  time.Now().Add(releaseCacheTTL),
+	})
+	return m, nil
 }
 
 func (s *UpdateService) CheckForUpdate(req UpdateCheckRequest) (*UpdateCheckResponse, error) {

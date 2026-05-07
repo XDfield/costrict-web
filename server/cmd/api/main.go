@@ -378,7 +378,7 @@ func main() {
 			devices := authed.Group("/devices")
 			{
 				devices.POST("/register", handlers.RegisterDeviceHandler(deviceSvc))
-				devices.GET("", handlers.ListDevicesHandler(deviceSvc))
+				devices.GET("", handlers.ListDevicesHandler(deviceSvc, updateSvc))
 				devices.GET("/:deviceID", handlers.GetDeviceHandler(deviceSvc))
 				devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
 				devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))

@@ -75,8 +75,8 @@ func normalizeTagSlug(slug string) string {
 }
 
 func ValidateTagSlug(slug string) error {
-	slug = normalizeTagSlug(slug)
-	if slug == "" || !tagSlugPattern.MatchString(slug) {
+	trimmed := strings.TrimSpace(slug)
+	if trimmed == "" || !tagSlugPattern.MatchString(trimmed) {
 		return ErrInvalidTagSlug
 	}
 	return nil
