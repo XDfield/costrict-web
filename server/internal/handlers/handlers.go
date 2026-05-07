@@ -333,6 +333,23 @@ func AuthCallback(c *gin.Context) {
 	// Decode state to recover callback_url (needed for token exchange) and redirect target.
 	state := decodeOAuthState(c.Query("state"))
 
+	// If the user already has a valid token, reuse it instead of exchanging a new one.
+	// This prevents overwriting the cookie set by credit-manager and enables SSO.
+	if existingToken, err := c.Cookie("zgsmAdminToken"); err == nil && existingToken != "" {
+		if _, userErr := getUserInfoFunc(existingToken); userErr == nil {
+			redirectURL := defaultFrontendURL + "/"
+			if state.RedirectTo != "" {
+				if isAllowedOrigin(state.RedirectTo) {
+					redirectURL = state.RedirectTo
+				} else if !strings.HasPrefix(state.RedirectTo, "http://") && !strings.HasPrefix(state.RedirectTo, "https://") {
+					redirectURL = defaultFrontendURL + state.RedirectTo
+				}
+			}
+			c.Redirect(http.StatusFound, redirectURL)
+			return
+		}
+	}
+
 	tokenResp, err := exchangeCodeForTokenFunc(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
 		fmt.Printf("[ERROR] ExchangeCodeForToken failed: err=%v, tokenResp=%+v\n", err, tokenResp)
@@ -363,8 +380,8 @@ func AuthCallback(c *gin.Context) {
 		}
 	}
 
-	// Set auth cookie before redirect
-	c.SetCookie("zgsmAdminToken", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
+	c.SetCookie("zgsmAdminToken", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
 
 	// Determine where to send the user after login.
 	// Validate the redirect target against the allowed origins whitelist.
@@ -510,7 +527,7 @@ func Login(c *gin.Context) {
 
 // Logout godoc
 // @Summary      Logout
-// @Description  Invalidate current session, revoke token at Casdoor, and clear auth cookie
+// @Description  Clear the auth cookie. Does NOT revoke the token at Casdoor to avoid invalidating sessions in other systems (e.g., credit-manager).
 // @Tags         auth
 // @Produce      json
 // @Success      200  {object}  object{message=string}
@@ -518,23 +535,8 @@ func Login(c *gin.Context) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/logout [post]
 func Logout(c *gin.Context) {
-	// Extract token from Authorization header or cookie
-	token := middleware.ExtractToken(c)
-
-	// Always clear the auth cookie, regardless of whether token revocation succeeds
-	c.SetCookie("zgsmAdminToken", "", -1, "/", "", cookieSecure, true)
-
-	if token == "" {
-		// No token present — cookie cleared, nothing else to do
-		c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
-		return
-	}
-
-	// Revoke token at Casdoor (logout all sessions for this user)
-	if err := CasdoorClient.Logout(token, true); err != nil {
-		// Log the error but don't fail the logout — cookie is already cleared
-		fmt.Printf("[Logout] Casdoor token revocation failed: %v\n", err)
-	}
+	// Clear the auth cookie (HttpOnly=false to match the cookie strategy used by credit-manager)
+	c.SetCookie("zgsmAdminToken", "", -1, "/", "", cookieSecure, false)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
