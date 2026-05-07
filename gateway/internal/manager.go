@@ -40,6 +40,15 @@ func (m *TunnelManager) Close(deviceID string) {
 	}
 }
 
+func (m *TunnelManager) UnregisterIf(deviceID string, session *yamux.Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sessions[deviceID]; ok && s == session {
+		s.Close()
+		delete(m.sessions, deviceID)
+	}
+}
+
 func (m *TunnelManager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

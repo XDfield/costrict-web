@@ -91,7 +91,7 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 
 		<-session.CloseChan()
 
-		manager.Close(deviceID)
+		manager.UnregisterIf(deviceID, session)
 		go func() {
 			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
 				logger.Error("[Gateway] notify offline failed for device %s: %v", deviceID, err)
