@@ -5,12 +5,14 @@ import (
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type Module struct {
 	Manager             *ConnectionManager
 	Router              *EventRouter
 	NotificationService *notification.NotificationService
+	DB                  *gorm.DB
 }
 
 func New(gatewayRegistry *gateway.GatewayRegistry, gatewayClient *gateway.Client) *Module {
@@ -35,4 +37,5 @@ func (m *Module) RegisterRoutes(cloudGroup *gin.RouterGroup, deviceSvc *services
 
 func (m *Module) RegisterDeviceRoutes(cloudGroup *gin.RouterGroup, deviceSvc *services.DeviceService) {
 	cloudGroup.POST("/device/notify", DeviceNotifyHandler(m.Manager, deviceSvc, m.NotificationService))
+	cloudGroup.POST("/devices/:deviceID/commands/:commandID/result", DeviceCommandResultHandler(m.Manager, deviceSvc, m.DB))
 }

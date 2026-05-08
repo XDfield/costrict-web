@@ -116,6 +116,21 @@ type Device struct {
 	DeletedAt       gorm.DeletedAt `gorm:"index:idx_device_id_deleted_at"                   json:"-"`
 }
 
+type DeviceCommandResult struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	DeviceID    string         `gorm:"not null;uniqueIndex:idx_cmd_result_device_cmd"  json:"deviceId"`
+	CommandID   string         `gorm:"not null;uniqueIndex:idx_cmd_result_device_cmd"  json:"commandId"`
+	Type        string         `gorm:"not null"                                        json:"type"`
+	Status      string         `gorm:"not null"                                        json:"status"`
+	Result      datatypes.JSON `gorm:"type:jsonb"                                      json:"result,omitempty" swaggertype:"object"`
+	Error       string         `                                                        json:"error,omitempty"`
+	StartedAt   *time.Time     `                                                        json:"startedAt,omitempty"`
+	CompletedAt *time.Time     `                                                        json:"completedAt,omitempty"`
+	CreatedAt   time.Time      `                                                        json:"createdAt"`
+	UpdatedAt   time.Time      `                                                        json:"updatedAt"`
+	DeletedAt   gorm.DeletedAt `gorm:"index"                                           json:"-"`
+}
+
 // Repository represents a repository
 type Repository struct {
 	ID          string    `gorm:"type:uuid;primaryKey" json:"id"`

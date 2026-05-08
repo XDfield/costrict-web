@@ -459,6 +459,7 @@ func main() {
 
 	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
 	cloudModule.NotificationService = notificationSvc
+	cloudModule.DB = db
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)

@@ -45,6 +45,7 @@ const (
 	EventTeamTaskDispatch     = "team.task.dispatch"
 	EventBatch                = "batch"
 	EventInterventionRequired = "intervention.required"
+	EventCommandResult        = "command.result"
 )
 
 const (
