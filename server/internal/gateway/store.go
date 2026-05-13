@@ -11,10 +11,12 @@ type Store interface {
 	HeartbeatGateway(gatewayID string, currentConns int) error
 	ListGateways() ([]*GatewayInfo, error)
 	RemoveGateway(gatewayID string) error
+	RemoveGatewayWithDevices(gatewayID string) ([]string, error)
 
 	BindDevice(deviceID, gatewayID string) error
 	UnbindDevice(deviceID string) error
 	GetDeviceGateway(deviceID string) (string, error)
+	ListDevicesByGateway(gatewayID string) ([]string, error)
 
 	TryLock(key string, ttl time.Duration) (bool, error)
 
@@ -83,6 +85,21 @@ func (s *MemoryStore) RemoveGateway(gatewayID string) error {
 	return nil
 }
 
+func (s *MemoryStore) RemoveGatewayWithDevices(gatewayID string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.gateways, gatewayID)
+	delete(s.heartbeats, gatewayID)
+	var deviceIDs []string
+	for devID, gwID := range s.deviceGateway {
+		if gwID == gatewayID {
+			deviceIDs = append(deviceIDs, devID)
+			delete(s.deviceGateway, devID)
+		}
+	}
+	return deviceIDs, nil
+}
+
 func (s *MemoryStore) BindDevice(deviceID, gatewayID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +122,18 @@ func (s *MemoryStore) GetDeviceGateway(deviceID string) (string, error) {
 		return "", fmt.Errorf("device %s not found", deviceID)
 	}
 	return gwID, nil
+}
+
+func (s *MemoryStore) ListDevicesByGateway(gatewayID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var deviceIDs []string
+	for devID, gwID := range s.deviceGateway {
+		if gwID == gatewayID {
+			deviceIDs = append(deviceIDs, devID)
+		}
+	}
+	return deviceIDs, nil
 }
 
 func (s *MemoryStore) TryLock(key string, ttl time.Duration) (bool, error) {

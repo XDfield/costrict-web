@@ -49,12 +49,21 @@ func DeviceHeartbeatHandler(deviceSvc *services.DeviceService) gin.HandlerFunc {
 		}
 
 		var body struct {
-			DeviceID string `json:"deviceID"`
-			Version  string `json:"version"`
+			DeviceID        string `json:"deviceID"`
+			Version         string `json:"version"`
+			TunnelConnected *bool  `json:"tunnelConnected"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
+		}
+
+		if body.TunnelConnected != nil {
+			if *body.TunnelConnected && device.Status != "online" {
+				_ = deviceSvc.SetOnline(device.DeviceID)
+			} else if !*body.TunnelConnected && device.Status == "online" {
+				_ = deviceSvc.SetOffline(device.DeviceID)
+			}
 		}
 
 		if err := deviceSvc.UpdateLastSeen(device.DeviceID); err != nil {

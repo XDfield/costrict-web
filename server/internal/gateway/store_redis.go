@@ -105,6 +105,22 @@ func (s *RedisStore) RemoveGateway(gatewayID string) error {
 	return err
 }
 
+func (s *RedisStore) RemoveGatewayWithDevices(gatewayID string) ([]string, error) {
+	ctx := context.Background()
+	deviceIDs, err := s.ListDevicesByGateway(gatewayID)
+	if err != nil {
+		return nil, err
+	}
+	pipe := s.client.Pipeline()
+	pipe.HDel(ctx, redisKeyGatewayRegistry, gatewayID)
+	pipe.HDel(ctx, redisKeyGatewayHeartbeat, gatewayID)
+	for _, devID := range deviceIDs {
+		pipe.HDel(ctx, redisKeyDeviceGateway, devID)
+	}
+	_, err = pipe.Exec(ctx)
+	return deviceIDs, err
+}
+
 func (s *RedisStore) BindDevice(deviceID, gatewayID string) error {
 	return s.client.HSet(context.Background(), redisKeyDeviceGateway, deviceID, gatewayID).Err()
 }
@@ -119,6 +135,21 @@ func (s *RedisStore) GetDeviceGateway(deviceID string) (string, error) {
 		return "", fmt.Errorf("device %s not found", deviceID)
 	}
 	return gwID, err
+}
+
+func (s *RedisStore) ListDevicesByGateway(gatewayID string) ([]string, error) {
+	ctx := context.Background()
+	entries, err := s.client.HGetAll(ctx, redisKeyDeviceGateway).Result()
+	if err != nil {
+		return nil, err
+	}
+	var deviceIDs []string
+	for devID, gwID := range entries {
+		if gwID == gatewayID {
+			deviceIDs = append(deviceIDs, devID)
+		}
+	}
+	return deviceIDs, nil
 }
 
 func (s *RedisStore) TryLock(key string, ttl time.Duration) (bool, error) {

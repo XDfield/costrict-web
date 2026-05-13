@@ -445,7 +445,23 @@ func main() {
 		store = gateway.NewMemoryStore()
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
 	}
-	gatewayRegistry := gateway.NewGatewayRegistry(store)
+	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
+		for _, id := range deviceIDs {
+			_ = deviceSvc.SetOffline(id)
+		}
+	})
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
+			if err != nil {
+				log.Printf("[stale-check] error: %v", err)
+			} else if n > 0 {
+				log.Printf("[stale-check] marked %d stale device(s) offline", n)
+			}
+		}
+	}()
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
 
 	internalGroup := r.Group("/internal")

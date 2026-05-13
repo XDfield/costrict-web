@@ -8,18 +8,19 @@ import (
 )
 
 type GatewayRegistry struct {
-	store Store
-	epoch int64
+	store           Store
+	epoch           int64
+	onDevicesOffline func(deviceIDs []string)
 }
 
-func NewGatewayRegistry(store Store) *GatewayRegistry {
+func NewGatewayRegistry(store Store, onDevicesOffline func(deviceIDs []string)) *GatewayRegistry {
 	initVal := time.Now().UnixMilli()
 	epoch, err := store.GetOrInitEpoch(initVal)
 	if err != nil {
 		logger.Warn("[GatewayRegistry] failed to get epoch from store, using local: %v", err)
 		epoch = initVal
 	}
-	r := &GatewayRegistry{store: store, epoch: epoch}
+	r := &GatewayRegistry{store: store, epoch: epoch, onDevicesOffline: onDevicesOffline}
 	go r.startCleanup()
 	return r
 }
@@ -90,7 +91,20 @@ func (r *GatewayRegistry) UnbindDevice(deviceID string) {
 }
 
 func (r *GatewayRegistry) Deregister(gatewayID string) error {
-	return r.store.RemoveGateway(gatewayID)
+	deviceIDs, err := r.store.RemoveGatewayWithDevices(gatewayID)
+	if err != nil {
+		return err
+	}
+	r.notifyOffline(deviceIDs)
+	return nil
+}
+
+func (r *GatewayRegistry) notifyOffline(deviceIDs []string) {
+	if len(deviceIDs) == 0 || r.onDevicesOffline == nil {
+		return
+	}
+	logger.Info("[GatewayRegistry] marking %d device(s) offline", len(deviceIDs))
+	r.onDevicesOffline(deviceIDs)
 }
 
 func (r *GatewayRegistry) GetDeviceGateway(deviceID string) (*GatewayInfo, error) {
@@ -109,6 +123,24 @@ func (r *GatewayRegistry) GetDeviceGateway(deviceID string) (*GatewayInfo, error
 		}
 	}
 	return nil, fmt.Errorf("gateway %s not found", gwID)
+}
+
+func (r *GatewayRegistry) IsDeviceBound(deviceID string) bool {
+	gwID, err := r.store.GetDeviceGateway(deviceID)
+	if err != nil {
+		return false
+	}
+	gateways, err := r.store.ListGateways()
+	if err != nil {
+		return false
+	}
+	now := time.Now().UnixMilli()
+	for _, gw := range gateways {
+		if gw.ID == gwID && now-gw.LastHeartbeat <= GatewayHeartbeatTimeoutMs {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *GatewayRegistry) startCleanup() {
@@ -132,7 +164,12 @@ func (r *GatewayRegistry) doCleanup() {
 	for _, gw := range gateways {
 		if now-gw.LastHeartbeat > GatewayHeartbeatTimeoutMs {
 			logger.Warn("[GatewayRegistry] removing timed-out gateway %s", gw.ID)
-			_ = r.store.RemoveGateway(gw.ID)
+			deviceIDs, err := r.store.RemoveGatewayWithDevices(gw.ID)
+			if err != nil {
+				logger.Error("[GatewayRegistry] failed to remove gateway %s: %v", gw.ID, err)
+				continue
+			}
+			r.notifyOffline(deviceIDs)
 		}
 	}
 }

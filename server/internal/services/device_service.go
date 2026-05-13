@@ -324,3 +324,19 @@ func (s *DeviceService) UpdateVersion(deviceID, version string) error {
 		Where("device_id = ?", deviceID).
 		Update("version", version).Error
 }
+
+func (s *DeviceService) MarkStaleDevicesOffline(checkBound func(deviceID string) bool) (int, error) {
+	var devices []models.Device
+	if err := s.DB.Where("status = ?", "online").Find(&devices).Error; err != nil {
+		return 0, err
+	}
+	var count int
+	for _, d := range devices {
+		if !checkBound(d.DeviceID) {
+			if err := s.SetOffline(d.DeviceID); err == nil {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
