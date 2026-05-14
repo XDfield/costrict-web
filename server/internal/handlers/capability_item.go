@@ -755,7 +755,7 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 		}
 	}
 	if opts.AllowFavorited && c.Query("favorited") == "true" && opts.UserID != "" {
-		query = query.Where("id IN (SELECT item_id FROM item_favorites WHERE user_id = ?)", opts.UserID)
+		query = query.Where("EXISTS (SELECT 1 FROM item_favorites f WHERE f.item_id = capability_items.id AND f.user_id = ?)", opts.UserID)
 	}
 
 	return applyItemTagsFilter(query, c.Query("tags"))
@@ -1744,24 +1744,49 @@ func ListAllItems(c *gin.Context) {
 	}
 
 	registryIDs := buildVisibleRegistryIDs(db, uid)
-	if len(registryIDs) == 0 {
+	isFavoritedQuery := c.Query("favorited") == "true" && uid != ""
+	if len(registryIDs) == 0 && !isFavoritedQuery {
 		c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
 		return
 	}
 
-	query := db.Where("registry_id IN ?", registryIDs)
-	query = applySharedItemListFilters(query, db, c, itemListFilterOptions{
-		DefaultActiveStatus: true,
-		AllowRegistryID:     true,
-		AllowFavorited:      true,
-		UserID:              uid,
-	})
-
+	var query *gorm.DB
 	var total int64
-	query.Model(&models.CapabilityItem{}).Count(&total)
-
 	var items []models.CapabilityItem
-	result := query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
+
+	if isFavoritedQuery {
+		var favoriteItemIDs []string
+		db.Model(&models.ItemFavorite{}).Where("user_id = ?", uid).Pluck("item_id", &favoriteItemIDs)
+		if len(favoriteItemIDs) == 0 {
+			c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
+			return
+		}
+		query = db.Where("id IN ?", favoriteItemIDs)
+		if len(registryIDs) > 0 {
+			query = query.Where("registry_id IN ?", registryIDs)
+		}
+		query = applySharedItemListFilters(query, db, c, itemListFilterOptions{
+			DefaultActiveStatus: true,
+			AllowRegistryID:     true,
+			AllowFavorited:      false,
+			UserID:              uid,
+		})
+	} else {
+		query = db.Where("registry_id IN ?", registryIDs)
+		query = applySharedItemListFilters(query, db, c, itemListFilterOptions{
+			DefaultActiveStatus: true,
+			AllowRegistryID:     true,
+			AllowFavorited:      true,
+			UserID:              uid,
+		})
+		query.Model(&models.CapabilityItem{}).Count(&total)
+	}
+
+	limit := pageSize
+	if isFavoritedQuery {
+		limit = pageSize + 1
+	}
+	result := query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(limit).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
@@ -1832,7 +1857,17 @@ func ListAllItems(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
+	hasMore := false
+	if isFavoritedQuery {
+		if len(items) > pageSize {
+			hasMore = true
+			out = out[:pageSize]
+		}
+	} else {
+		hasMore = int64((page-1)*pageSize+pageSize) < total
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": out, "total": total, "page": page, "pageSize": pageSize, "hasMore": hasMore})
 }
 
 // ListItemFilterOptions godoc
