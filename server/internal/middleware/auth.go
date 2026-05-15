@@ -104,10 +104,17 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 
 		userInfo, err := parseJWTToken(token, jwks)
 		if err != nil {
-			// Fallback to Casdoor API verification
-			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-			if err != nil {
-				logger.Warn("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
+			// Only fall back to Casdoor if the token looks like a JWT.
+			// Device tokens (hex strings) and other non-JWT formats will
+			// always fail Casdoor validation, so skip the network call.
+			if looksLikeJWT(token) {
+				userInfo, err = fetchUserInfo(casdoorEndpoint, token)
+				if err != nil {
+					logger.Warn("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
+					c.Next()
+					return
+				}
+			} else {
 				c.Next()
 				return
 			}
@@ -305,6 +312,12 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)
 	c.Set(AuthClaimsKey, authClaims)
+}
+
+// looksLikeJWT returns true if the token has the standard JWT structure
+// of three base64url-encoded segments separated by dots.
+func looksLikeJWT(token string) bool {
+	return strings.Count(token, ".") == 2
 }
 
 func strClaim(claims jwt.MapClaims, key string) string {
