@@ -200,6 +200,13 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
+
+	// Device heartbeat uses its own device token authentication.
+	// Register before OptionalAuth to avoid unnecessary Casdoor validation
+	// attempts (device tokens are not Casdoor tokens).
+	deviceSvc := &services.DeviceService{DB: db}
+	r.POST("/api/devices/:deviceID/heartbeat", handlers.DeviceHeartbeatHandler(deviceSvc))
+
 	r.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
 
 	r.GET("/health", func(c *gin.Context) {
@@ -207,8 +214,6 @@ func main() {
 	})
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-
-	deviceSvc := &services.DeviceService{DB: db}
 	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
@@ -229,7 +234,6 @@ func main() {
 
 		// === Public read-only endpoints (OptionalAuth, no login required) ===
 		api.GET("/updates/check", handlers.UpdateCheckHandler(updateSvc))
-		api.POST("/devices/:deviceID/heartbeat", handlers.DeviceHeartbeatHandler(deviceSvc))
 		api.GET("/registries/public", handlers.GetPublicRegistry)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)
