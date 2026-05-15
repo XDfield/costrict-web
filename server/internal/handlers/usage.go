@@ -20,38 +20,17 @@ func NewUsageHandler(usageSvc *services.UsageService) *UsageHandler {
 
 // Report godoc
 // @Summary      Report session usage
-// @Description  Receive batched session usage reports from authenticated CLI clients and upsert them with request-level idempotency.
+// @Description  Acknowledge usage report requests (deprecated — no longer processed).
 // @Tags         usage
 // @Accept       json
 // @Produce      json
-// @Security     BearerAuth
-// @Param        body  body      services.UsageReportRequest  true  "Usage report payload"
-// @Success      200   {object}  services.UsageReportResponse
-// @Failure      400   {object}  object{error=string}
-// @Failure      401   {object}  object{error=string}
-// @Failure      500   {object}  object{error=string}
+// @Success      200  {object}  object{message=string}
 // @Router       /usage/report [post]
+// Deprecated: The usage report feature has been removed. This endpoint now
+// always returns 200 to avoid breaking existing CLI clients that still send
+// reports. It can be fully removed once all client versions are updated.
 func (h *UsageHandler) Report(c *gin.Context) {
-	userID := c.GetString(middleware.UserIDKey)
-	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	var req services.UsageReportRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
-		return
-	}
-
-	accessToken, _ := c.Get("accessToken")
-	accessTokenStr, _ := accessToken.(string)
-	result := h.usageSvc.BatchUpsert(userID, accessTokenStr, req)
-	if len(result.Errors) == 1 && result.Accepted == 0 && result.Skipped > 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Errors[0]})
-		return
-	}
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
 // Activity godoc
