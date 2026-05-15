@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -69,4 +70,16 @@ func ILike(db *gorm.DB) string {
 		return "ILIKE"
 	}
 	return "LIKE"
+}
+
+// SplitSearchKeywords splits a search query into individual keywords by whitespace.
+func SplitSearchKeywords(query string) []string {
+	parts := strings.Split(query, " ")
+	keywords := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			keywords = append(keywords, trimmed)
+		}
+	}
+	return keywords
 }
