@@ -280,9 +280,11 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 	query := s.db.Model(&models.CapabilityItem{}).Where("status = ?", "active")
 
 	like := database.ILike(s.db)
-	searchPattern := "%" + req.Query + "%"
-	query = query.Where(fmt.Sprintf("name %s ? OR description %s ? OR content %s ?", like, like, like),
-		searchPattern, searchPattern, searchPattern)
+	for _, kw := range database.SplitSearchKeywords(req.Query) {
+		pattern := "%" + kw + "%"
+		query = query.Where(fmt.Sprintf("name %s ? OR description %s ? OR content %s ?", like, like, like),
+			pattern, pattern, pattern)
+	}
 
 	if len(req.Types) > 0 {
 		query = query.Where("item_type IN ?", req.Types)

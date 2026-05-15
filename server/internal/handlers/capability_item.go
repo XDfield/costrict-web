@@ -727,7 +727,10 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 	}
 	if search := c.Query("search"); search != "" {
 		like := database.ILike(db)
-		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
+		for _, kw := range database.SplitSearchKeywords(search) {
+			pattern := "%" + kw + "%"
+			query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), pattern, pattern)
+		}
 	}
 	if categoriesRaw := c.Query("categories"); categoriesRaw != "" {
 		categories := parseCSVQueryValues(categoriesRaw)
@@ -790,7 +793,10 @@ func ListItems(c *gin.Context) {
 	}
 	if search := c.Query("search"); search != "" {
 		like := database.ILike(db)
-		query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), "%"+search+"%", "%"+search+"%")
+		for _, kw := range database.SplitSearchKeywords(search) {
+			pattern := "%" + kw + "%"
+			query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), pattern, pattern)
+		}
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
