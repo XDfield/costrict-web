@@ -31,10 +31,11 @@ type DeviceService struct {
 }
 
 type RegisterDeviceRequest struct {
-	DeviceID    string `json:"deviceId" binding:"required"`
-	DisplayName string `json:"displayName" binding:"required"`
-	Platform    string `json:"platform" binding:"required"`
-	Version     string `json:"version" binding:"required"`
+	DeviceID       string `json:"deviceId" binding:"required"`
+	LegacyDeviceID string `json:"legacyDeviceId"`
+	DisplayName    string `json:"displayName" binding:"required"`
+	Platform       string `json:"platform" binding:"required"`
+	Version        string `json:"version" binding:"required"`
 }
 
 type UpdateDeviceRequest struct {
@@ -61,32 +62,7 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 	var existing models.Device
 	result := s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	if result.Error == nil {
-		if existing.UserID == userID {
-			return &existing, existing.Token, ErrDeviceOwnedByCaller
-		}
-		if !s.userExists(existing.UserID) {
-			token, err := generateDeviceToken()
-			if err != nil {
-				return nil, "", err
-			}
-			now := time.Now()
-			if err := s.DB.Model(&models.Device{}).Where("device_id = ?", req.DeviceID).Updates(map[string]any{
-				"display_name":     req.DisplayName,
-				"platform":         req.Platform,
-				"version":          req.Version,
-				"user_id":          userID,
-				"token":            token,
-				"token_rotated_at": nil,
-				"status":           "offline",
-				"updated_at":       now,
-			}).Error; err != nil {
-				return nil, "", err
-			}
-			s.ownershipCache.Delete(existing.DeviceID + ":" + existing.UserID)
-			s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
-			return &existing, token, nil
-		}
-		return nil, "", ErrDeviceAlreadyRegistered
+		return s.handleExistingDevice(existing, userID, req, false)
 	}
 	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, "", result.Error
@@ -94,27 +70,14 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 
 	var softDeleted models.Device
 	if err := s.DB.Unscoped().Where("device_id = ? AND deleted_at IS NOT NULL", req.DeviceID).First(&softDeleted).Error; err == nil {
-		token, err := generateDeviceToken()
-		if err != nil {
-			return nil, "", err
+		return s.restoreSoftDeletedDevice(softDeleted, userID, req, false)
+	}
+
+	if req.LegacyDeviceID != "" && req.LegacyDeviceID != req.DeviceID {
+		device, token, err := s.migrateFromLegacyDeviceID(userID, req)
+		if device != nil || err != nil {
+			return device, token, err
 		}
-		now := time.Now()
-		if err := s.DB.Unscoped().Model(&softDeleted).Updates(map[string]any{
-			"display_name":     req.DisplayName,
-			"platform":         req.Platform,
-			"version":          req.Version,
-			"user_id":          userID,
-			"token":            token,
-			"token_rotated_at": nil,
-			"status":           "offline",
-			"deleted_at":       nil,
-			"updated_at":       now,
-		}).Error; err != nil {
-			return nil, "", err
-		}
-		s.ownershipCache.Delete(softDeleted.DeviceID + ":" + softDeleted.UserID)
-		s.DB.Where("device_id = ?", req.DeviceID).First(&softDeleted)
-		return &softDeleted, token, nil
 	}
 
 	token, err := generateDeviceToken()
@@ -137,6 +100,116 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 	}
 
 	return device, token, nil
+}
+
+func (s *DeviceService) migrateFromLegacyDeviceID(userID string, req RegisterDeviceRequest) (*models.Device, string, error) {
+	var existing models.Device
+	result := s.DB.Where("device_id = ?", req.LegacyDeviceID).First(&existing)
+	if result.Error == nil {
+		return s.handleExistingDevice(existing, userID, req, true)
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, "", result.Error
+	}
+
+	var softDeleted models.Device
+	if err := s.DB.Unscoped().Where("device_id = ? AND deleted_at IS NOT NULL", req.LegacyDeviceID).First(&softDeleted).Error; err == nil {
+		return s.restoreSoftDeletedDevice(softDeleted, userID, req, true)
+	}
+
+	return nil, "", nil
+}
+
+func (s *DeviceService) handleExistingDevice(existing models.Device, userID string, req RegisterDeviceRequest, isLegacyMigration bool) (*models.Device, string, error) {
+	if existing.UserID == userID {
+		if isLegacyMigration {
+			return s.migrateDeviceID(existing, userID, req)
+		}
+		return &existing, existing.Token, ErrDeviceOwnedByCaller
+	}
+	if !s.userExists(existing.UserID) {
+		return s.rebindDevice(existing, userID, req, isLegacyMigration)
+	}
+	return nil, "", ErrDeviceAlreadyRegistered
+}
+
+func (s *DeviceService) restoreSoftDeletedDevice(softDeleted models.Device, userID string, req RegisterDeviceRequest, isLegacyMigration bool) (*models.Device, string, error) {
+	token, err := generateDeviceToken()
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	updates := map[string]any{
+		"display_name":     req.DisplayName,
+		"platform":         req.Platform,
+		"version":          req.Version,
+		"user_id":          userID,
+		"token":            token,
+		"token_rotated_at": nil,
+		"status":           "offline",
+		"deleted_at":       nil,
+		"updated_at":       now,
+	}
+	if isLegacyMigration {
+		updates["device_id"] = req.DeviceID
+	}
+	if err := s.DB.Unscoped().Model(&softDeleted).Updates(updates).Error; err != nil {
+		return nil, "", err
+	}
+	s.ownershipCache.Delete(softDeleted.DeviceID + ":" + softDeleted.UserID)
+	s.DB.Where("device_id = ?", req.DeviceID).First(&softDeleted)
+	return &softDeleted, token, nil
+}
+
+func (s *DeviceService) migrateDeviceID(existing models.Device, userID string, req RegisterDeviceRequest) (*models.Device, string, error) {
+	token, err := generateDeviceToken()
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", req.LegacyDeviceID).Updates(map[string]any{
+		"device_id":        req.DeviceID,
+		"display_name":     req.DisplayName,
+		"platform":         req.Platform,
+		"version":          req.Version,
+		"token":            token,
+		"token_rotated_at": nil,
+		"status":           "offline",
+		"updated_at":       now,
+	}).Error; err != nil {
+		return nil, "", err
+	}
+	s.ownershipCache.Delete(req.LegacyDeviceID + ":" + userID)
+	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
+	return &existing, token, nil
+}
+
+func (s *DeviceService) rebindDevice(existing models.Device, userID string, req RegisterDeviceRequest, isLegacyMigration bool) (*models.Device, string, error) {
+	token, err := generateDeviceToken()
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	lookupID := existing.DeviceID
+	updates := map[string]any{
+		"display_name":     req.DisplayName,
+		"platform":         req.Platform,
+		"version":          req.Version,
+		"user_id":          userID,
+		"token":            token,
+		"token_rotated_at": nil,
+		"status":           "offline",
+		"updated_at":       now,
+	}
+	if isLegacyMigration {
+		updates["device_id"] = req.DeviceID
+	}
+	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", lookupID).Updates(updates).Error; err != nil {
+		return nil, "", err
+	}
+	s.ownershipCache.Delete(lookupID + ":" + existing.UserID)
+	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
+	return &existing, token, nil
 }
 
 func (s *DeviceService) GetDevice(deviceID, userID string) (*models.Device, error) {
