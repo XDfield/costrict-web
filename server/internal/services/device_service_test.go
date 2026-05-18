@@ -223,3 +223,154 @@ func TestRegisterDevice_OrphanedDeviceDifferentNewUser(t *testing.T) {
 		t.Fatal("ghost-user should not exist in users table")
 	}
 }
+
+func TestRegisterDevice_LegacyMigration_SameUser(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:    "legacy-id-001",
+		DisplayName: "Old Device",
+		Platform:    "windows",
+		Version:     "1.0.0",
+	})
+
+	device, token, err := svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:       "new-id-001",
+		LegacyDeviceID: "legacy-id-001",
+		DisplayName:    "Migrated Device",
+		Platform:       "windows",
+		Version:        "1.1.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if device.DeviceID != "new-id-001" {
+		t.Fatalf("expected device_id new-id-001, got %q", device.DeviceID)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token after migration")
+	}
+
+	var count int64
+	db.Where("device_id = ?", "legacy-id-001").Model(&models.Device{}).Count(&count)
+	if count != 0 {
+		t.Fatal("legacy device_id should no longer exist")
+	}
+	db.Where("device_id = ?", "new-id-001").Model(&models.Device{}).Count(&count)
+	if count != 1 {
+		t.Fatal("new device_id should exist")
+	}
+}
+
+func TestRegisterDevice_LegacyMigration_OrphanedDevice(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u1", "old-user", "Old User", time.Now(), time.Now())
+
+	svc.RegisterDevice("old-user", RegisterDeviceRequest{
+		DeviceID:    "legacy-id-002",
+		DisplayName: "Orphaned",
+		Platform:    "linux",
+		Version:     "1.0.0",
+	})
+
+	db.Exec("DELETE FROM users WHERE subject_id = ?", "old-user")
+
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u2", "new-user", "New User", time.Now(), time.Now())
+
+	device, token, err := svc.RegisterDevice("new-user", RegisterDeviceRequest{
+		DeviceID:       "new-id-002",
+		LegacyDeviceID: "legacy-id-002",
+		DisplayName:    "Reclaimed",
+		Platform:       "linux",
+		Version:        "2.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if device.DeviceID != "new-id-002" {
+		t.Fatalf("expected device_id new-id-002, got %q", device.DeviceID)
+	}
+	if device.UserID != "new-user" {
+		t.Fatalf("expected user_id new-user, got %q", device.UserID)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+}
+
+func TestRegisterDevice_LegacyMigration_DifferentActiveUser(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u1", "user-1", "User One", time.Now(), time.Now())
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u2", "user-2", "User Two", time.Now(), time.Now())
+
+	svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:    "legacy-id-003",
+		DisplayName: "Owned",
+		Platform:    "windows",
+		Version:     "1.0.0",
+	})
+
+	_, _, err := svc.RegisterDevice("user-2", RegisterDeviceRequest{
+		DeviceID:       "new-id-003",
+		LegacyDeviceID: "legacy-id-003",
+		DisplayName:    "Hijack",
+		Platform:       "linux",
+		Version:        "1.1.0",
+	})
+	if err != ErrDeviceAlreadyRegistered {
+		t.Fatalf("expected ErrDeviceAlreadyRegistered, got %v", err)
+	}
+}
+
+func TestRegisterDevice_LegacyMigration_NoMatch(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	device, token, err := svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:       "new-id-004",
+		LegacyDeviceID: "nonexistent-legacy-id",
+		DisplayName:    "New Device",
+		Platform:       "macos",
+		Version:        "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if device.DeviceID != "new-id-004" {
+		t.Fatalf("expected device_id new-id-004, got %q", device.DeviceID)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+}
+
+func TestRegisterDevice_LegacyMigration_SameIDSkipsLookup(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	device, token, err := svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:       "same-id",
+		LegacyDeviceID: "same-id",
+		DisplayName:    "Same ID",
+		Platform:       "windows",
+		Version:        "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if device.DeviceID != "same-id" {
+		t.Fatalf("expected device_id same-id, got %q", device.DeviceID)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+}
