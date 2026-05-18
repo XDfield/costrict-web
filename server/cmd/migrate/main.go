@@ -254,7 +254,7 @@ func printMigrateHelp() {
 	fmt.Println("                                                Import MCP/command/skills/agent data")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
 	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata <source-path> [--dry-run]")
-	fmt.Println("                                                Backfill source and experience_score from catalog/index.json")
+	fmt.Println("                                                Backfill source, experience_score, and upstream SecurityScan rows from catalog/index.json")
 	fmt.Println("  go run ./cmd/migrate backfill-provider-aware-external-keys [--dry-run]")
 	fmt.Println("                                                Migrate external_keys from casdoor:<id> to casdoor:<provider>:<id>")
 	fmt.Println("")
@@ -823,6 +823,43 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 	return nil
 }
 
+// catalogPermissions mirrors catalog/index.json `security.permissions` block.
+type catalogPermissions struct {
+	Files    []string `json:"files"`
+	Network  []string `json:"network"`
+	Commands []string `json:"commands"`
+}
+
+// catalogSecurityBlock mirrors catalog/index.json top-level `security` block per
+// upstream costrict-skills-repo schema. Field names match exactly.
+type catalogSecurityBlock struct {
+	RiskLevel       string              `json:"risk_level"`
+	Verdict         string              `json:"verdict"`
+	RedFlags        []string            `json:"red_flags"`
+	Permissions     *catalogPermissions `json:"permissions,omitempty"`
+	Summary         string              `json:"summary"`
+	Recommendations []string            `json:"recommendations"`
+	ScanModel       string              `json:"scan_model"`
+	RubricVersion   string              `json:"rubric_version"`
+	ContentHash     string              `json:"content_hash"`
+	ScannedAt       string              `json:"scanned_at"`
+}
+
+// validVerdictForRiskLevel implements the upstream/downstream alignment rule:
+// clean/low → safe, medium → caution, high/extreme → reject.
+func validVerdictForRiskLevel(riskLevel, verdict string) bool {
+	switch riskLevel {
+	case "clean", "low":
+		return verdict == "safe"
+	case "medium":
+		return verdict == "caution"
+	case "high", "extreme":
+		return verdict == "reject"
+	default:
+		return false
+	}
+}
+
 func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 	catalogPath := filepath.Join(absSource, "catalog", "index.json")
 	data, err := os.ReadFile(catalogPath)
@@ -831,25 +868,26 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 	}
 
 	var catalogItems []struct {
-		ID     string `json:"id"`
-		Source string `json:"source"`
-		Stars  int    `json:"stars"`
+		ID       string                `json:"id"`
+		Source   string                `json:"source"`
+		Stars    int                   `json:"stars"`
+		Security *catalogSecurityBlock `json:"security,omitempty"`
 	}
 	if err := json.Unmarshal(data, &catalogItems); err != nil {
 		return fmt.Errorf("parse catalog/index.json: %w", err)
 	}
 
-	catalogMap := make(map[string]struct {
-		Source string
-		Stars  int
-	}, len(catalogItems))
+	type catalogEntry struct {
+		Source   string
+		Stars    int
+		Security *catalogSecurityBlock
+	}
+	catalogMap := make(map[string]catalogEntry, len(catalogItems))
 	for _, item := range catalogItems {
-		catalogMap[item.ID] = struct {
-			Source string
-			Stars  int
-		}{
-			Source: item.Source,
-			Stars:  item.Stars,
+		catalogMap[item.ID] = catalogEntry{
+			Source:   item.Source,
+			Stars:    item.Stars,
+			Security: item.Security,
 		}
 	}
 
@@ -860,6 +898,8 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 
 	updated := 0
 	skipped := 0
+	securityWritten := 0
+	securitySkipped := 0
 	for _, item := range items {
 		parts := strings.Split(filepath.ToSlash(item.SourcePath), "/")
 		if len(parts) < 2 {
@@ -879,24 +919,129 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 		if meta.Stars > 0 {
 			updates["experience_score"] = meta.Stars
 		}
-		if len(updates) == 0 {
+		didMetaUpdate := false
+		if len(updates) > 0 {
+			if dryRun {
+				updated++
+				didMetaUpdate = true
+			} else {
+				if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+					log.Printf("Warning: failed to update item %s: %v", item.ID, err)
+					skipped++
+				} else {
+					updated++
+					didMetaUpdate = true
+				}
+			}
+		}
+		if !didMetaUpdate && meta.Security == nil {
 			skipped++
 			continue
 		}
-		if dryRun {
-			updated++
-			continue
+
+		if meta.Security != nil {
+			wrote, err := writeSecurityScanFromCatalog(db, item, meta.Security, dryRun)
+			if err != nil {
+				log.Printf("Warning: failed to write security scan for item %s: %v", item.ID, err)
+				securitySkipped++
+				continue
+			}
+			if wrote {
+				securityWritten++
+			} else {
+				securitySkipped++
+			}
 		}
-		if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
-			log.Printf("Warning: failed to update item %s: %v", item.ID, err)
-			skipped++
-			continue
-		}
-		updated++
 	}
 
-	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d", dryRun, updated, skipped)
+	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d, security_scans written=%d skipped=%d",
+		dryRun, updated, skipped, securityWritten, securitySkipped)
 	return nil
+}
+
+// writeSecurityScanFromCatalog maps a catalog security block to a SecurityScan
+// row for the given item. Returns (wrote, err) where wrote=true means a new
+// row was inserted (or would be inserted in dry-run). Idempotency: identical
+// (item_id, item_revision, scan_model) → returns (false, nil) without inserting.
+// Invalid risk_level/verdict mappings cause (false, nil) with a warning log.
+func writeSecurityScanFromCatalog(db *gorm.DB, item models.CapabilityItem, sec *catalogSecurityBlock, dryRun bool) (bool, error) {
+	if sec == nil {
+		return false, nil
+	}
+	if !validVerdictForRiskLevel(sec.RiskLevel, sec.Verdict) {
+		log.Printf("Warning: skip security scan for item %s: invalid risk_level/verdict mapping (%q/%q)",
+			item.ID, sec.RiskLevel, sec.Verdict)
+		return false, nil
+	}
+
+	// Idempotency: skip if (item_id, item_revision, scan_model) already present.
+	var existing models.SecurityScan
+	err := db.Where("item_id = ? AND item_revision = ? AND scan_model = ?",
+		item.ID, item.CurrentRevision, sec.ScanModel).
+		First(&existing).Error
+	if err == nil {
+		return false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, fmt.Errorf("query existing security_scan: %w", err)
+	}
+
+	if dryRun {
+		return true, nil
+	}
+
+	scannedAt := time.Now()
+	if sec.ScannedAt != "" {
+		if parsed, perr := time.Parse(time.RFC3339, sec.ScannedAt); perr == nil {
+			scannedAt = parsed
+		}
+	}
+	perms := sec.Permissions
+	if perms == nil {
+		perms = &catalogPermissions{Files: []string{}, Network: []string{}, Commands: []string{}}
+	}
+	redFlags := sec.RedFlags
+	if redFlags == nil {
+		redFlags = []string{}
+	}
+	recs := sec.Recommendations
+	if recs == nil {
+		recs = []string{}
+	}
+
+	scanID := uuid.New().String()
+	row := &models.SecurityScan{
+		ID:              scanID,
+		ItemID:          item.ID,
+		ItemRevision:    item.CurrentRevision,
+		TriggerType:     "sync",
+		ScanModel:       sec.ScanModel,
+		Category:        "",
+		BuiltinTags:     datatypes.JSON([]byte("[]")),
+		RiskLevel:       sec.RiskLevel,
+		Verdict:         sec.Verdict,
+		RedFlags:        mustJSON(redFlags),
+		Permissions:     mustJSON(perms),
+		Summary:         sec.Summary,
+		Recommendations: mustJSON(recs),
+		CreatedAt:       scannedAt,
+		FinishedAt:      &scannedAt,
+	}
+
+	return true, db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(row).Error; err != nil {
+			return fmt.Errorf("create security_scan: %w", err)
+		}
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("id = ?", item.ID).
+			Updates(map[string]any{
+				"security_status": "completed",
+				"last_scan_id":    scanID,
+			}).Error; err != nil {
+			return fmt.Errorf("update item security fields: %w", err)
+		}
+		return nil
+	})
 }
 
 func mapEverythingToSyncDir(sourceRoot, targetRoot string) error {
