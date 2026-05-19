@@ -1751,6 +1751,7 @@ func ListAllItems(c *gin.Context) {
 
 	registryIDs := buildVisibleRegistryIDs(db, uid)
 	isFavoritedQuery := c.Query("favorited") == "true" && uid != ""
+	isPaginatedFavorited := isFavoritedQuery && c.Query("paginated") == "true"
 	if len(registryIDs) == 0 && !isFavoritedQuery {
 		c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
 		return
@@ -1788,11 +1789,13 @@ func ListAllItems(c *gin.Context) {
 		query.Model(&models.CapabilityItem{}).Count(&total)
 	}
 
-	limit := pageSize
-	if isFavoritedQuery {
-		limit = pageSize + 1
+	var result *gorm.DB
+	if isFavoritedQuery && !isPaginatedFavorited {
+		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Find(&items)
+		total = int64(len(items))
+	} else {
+		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	}
-	result := query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(limit).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
@@ -1864,12 +1867,7 @@ func ListAllItems(c *gin.Context) {
 	}
 
 	hasMore := false
-	if isFavoritedQuery {
-		if len(items) > pageSize {
-			hasMore = true
-			out = out[:pageSize]
-		}
-	} else {
+	if !isFavoritedQuery || isPaginatedFavorited {
 		hasMore = int64((page-1)*pageSize+pageSize) < total
 	}
 
