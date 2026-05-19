@@ -868,26 +868,26 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 	}
 
 	var catalogItems []struct {
-		ID       string                `json:"id"`
-		Source   string                `json:"source"`
-		Stars    int                   `json:"stars"`
-		Security *catalogSecurityBlock `json:"security,omitempty"`
+		ID         string                `json:"id"`
+		Source     string                `json:"source"`
+		FinalScore float64               `json:"final_score"`
+		Security   *catalogSecurityBlock `json:"security,omitempty"`
 	}
 	if err := json.Unmarshal(data, &catalogItems); err != nil {
 		return fmt.Errorf("parse catalog/index.json: %w", err)
 	}
 
 	type catalogEntry struct {
-		Source   string
-		Stars    int
-		Security *catalogSecurityBlock
+		Source     string
+		FinalScore float64
+		Security   *catalogSecurityBlock
 	}
 	catalogMap := make(map[string]catalogEntry, len(catalogItems))
 	for _, item := range catalogItems {
 		catalogMap[item.ID] = catalogEntry{
-			Source:   item.Source,
-			Stars:    item.Stars,
-			Security: item.Security,
+			Source:     item.Source,
+			FinalScore: item.FinalScore,
+			Security:   item.Security,
 		}
 	}
 
@@ -916,8 +916,8 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 		if meta.Source != "" {
 			updates["source"] = meta.Source
 		}
-		if meta.Stars > 0 {
-			updates["experience_score"] = meta.Stars
+		if meta.FinalScore > 0 {
+			updates["experience_score"] = meta.FinalScore
 		}
 		didMetaUpdate := false
 		if len(updates) > 0 {
