@@ -246,6 +246,20 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		return nil, fmt.Errorf("item not found: %w", err)
 	}
 
+	if shortCircuitEnabled() && isShortCircuitTrigger(triggerType) {
+		var existing models.SecurityScan
+		err := s.DB.Where("item_id = ? AND item_revision = ?", itemID, itemRevision).
+			Order("created_at DESC").
+			First(&existing).Error
+		if err == nil {
+			s.DB.Model(&item).Updates(map[string]any{
+				"security_status": "completed",
+				"last_scan_id":    existing.ID,
+			})
+			return &existing, nil
+		}
+	}
+
 	s.DB.Model(&item).Updates(map[string]any{"security_status": "scanning"})
 
 	startTime := time.Now()

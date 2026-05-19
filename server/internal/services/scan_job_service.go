@@ -2,6 +2,8 @@ package services
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -10,6 +12,26 @@ import (
 )
 
 var ErrScanJobAlreadyQueued = errors.New("a scan job is already pending or running for this item")
+
+const envShortCircuitDisabled = "SECURITY_SCAN_SHORT_CIRCUIT_DISABLED"
+
+// shortCircuitEnabled reports whether the SecurityScan short-circuit is active.
+// Setting SECURITY_SCAN_SHORT_CIRCUIT_DISABLED=true (case-insensitive) disables it.
+func shortCircuitEnabled() bool {
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv(envShortCircuitDisabled)), "true")
+}
+
+// isShortCircuitTrigger reports whether the given trigger type participates
+// in the SecurityScan short-circuit. Manual triggers are excluded so admins
+// can always force a re-evaluation.
+func isShortCircuitTrigger(triggerType string) bool {
+	switch triggerType {
+	case "sync", "create", "update":
+		return true
+	default:
+		return false
+	}
+}
 
 type ScanJobService struct {
 	DB *gorm.DB
@@ -22,6 +44,15 @@ type ScanEnqueueOptions struct {
 }
 
 func (s *ScanJobService) Enqueue(itemID string, itemRevision int, triggerType, triggerUser string, opts ScanEnqueueOptions) (*models.ScanJob, error) {
+	if shortCircuitEnabled() && isShortCircuitTrigger(triggerType) {
+		var existing int64
+		if err := s.DB.Model(&models.SecurityScan{}).
+			Where("item_id = ? AND item_revision = ?", itemID, itemRevision).
+			Count(&existing).Error; err == nil && existing > 0 {
+			return nil, nil
+		}
+	}
+
 	var count int64
 	s.DB.Model(&models.ScanJob{}).
 		Where("item_id = ? AND status IN ('pending', 'running')", itemID).

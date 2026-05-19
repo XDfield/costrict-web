@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/llm"
@@ -396,4 +397,262 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// newScanShortCircuitTestDB sets up just the tables ScanItem needs for the
+// short-circuit path (no LLM is called, so we don't need tag/category tables).
+func newScanShortCircuitTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	stmts := []string{
+		`CREATE TABLE capability_items (
+			id TEXT PRIMARY KEY,
+			registry_id TEXT NOT NULL,
+			repo_id TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			item_type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT,
+			category TEXT,
+			version TEXT DEFAULT '1.0.0',
+			content TEXT,
+			content_md5 TEXT DEFAULT '',
+			current_revision INTEGER NOT NULL DEFAULT 1,
+			metadata TEXT DEFAULT '{}',
+			source_path TEXT,
+			source_sha TEXT,
+			source_type TEXT DEFAULT 'direct',
+			source TEXT DEFAULT '',
+			preview_count INTEGER DEFAULT 0,
+			install_count INTEGER DEFAULT 0,
+			favorite_count INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'active',
+			security_status TEXT DEFAULT 'unscanned',
+			last_scan_id TEXT,
+			created_by TEXT NOT NULL,
+			updated_by TEXT,
+			embedding TEXT,
+			experience_score REAL DEFAULT 0,
+			embedding_updated_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME
+		)`,
+		`CREATE TABLE security_scans (
+			id TEXT PRIMARY KEY,
+			item_id TEXT NOT NULL,
+			item_revision INTEGER NOT NULL DEFAULT 0,
+			trigger_type TEXT NOT NULL,
+			scan_model TEXT,
+			category TEXT DEFAULT '',
+			builtin_tags TEXT DEFAULT '[]',
+			risk_level TEXT DEFAULT '',
+			verdict TEXT DEFAULT '',
+			red_flags TEXT DEFAULT '[]',
+			permissions TEXT DEFAULT '{}',
+			summary TEXT,
+			recommendations TEXT DEFAULT '[]',
+			raw_output TEXT,
+			duration_ms INTEGER DEFAULT 0,
+			created_at DATETIME,
+			finished_at DATETIME
+		)`,
+	}
+	for _, s := range stmts {
+		if err := db.Exec(s).Error; err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+	}
+	return db
+}
+
+func seedShortCircuitFixture(t *testing.T, db *gorm.DB, itemID string, revision int) string {
+	t.Helper()
+	item := &models.CapabilityItem{
+		ID:              itemID,
+		RegistryID:      "registry-1",
+		RepoID:          "public",
+		Slug:            "demo",
+		ItemType:        "skill",
+		Name:            "Demo",
+		CurrentRevision: revision,
+		Status:          "active",
+		CreatedBy:       "tester",
+	}
+	if err := db.Create(item).Error; err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	now := time.Now()
+	scanID := "scan-existing-" + itemID
+	scan := &models.SecurityScan{
+		ID:           scanID,
+		ItemID:       itemID,
+		ItemRevision: revision,
+		TriggerType:  "sync",
+		ScanModel:    "deepseek-v4-flash",
+		RiskLevel:    "low",
+		Verdict:      "safe",
+		Summary:      "existing upstream scan",
+		CreatedAt:    now,
+		FinishedAt:   &now,
+	}
+	if err := db.Create(scan).Error; err != nil {
+		t.Fatalf("seed scan: %v", err)
+	}
+	return scanID
+}
+
+// failingLLMHandler returns a server that always fails so we can prove the
+// short-circuit path doesn't invoke the LLM.
+func failingLLMHandler() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"LLM must not be called when short-circuit is active"}`))
+	}))
+}
+
+func TestScanItemShortCircuit_SyncTriggerReturnsExistingScan(t *testing.T) {
+	db := newScanShortCircuitTestDB(t)
+	existingID := seedShortCircuitFixture(t, db, "item-sc-1", 1)
+
+	server := failingLLMHandler()
+	defer server.Close()
+
+	svc := &ScanService{
+		DB: db,
+		LLMClient: llm.NewClient(&config.LLMConfig{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+			Model:   "test-model",
+		}),
+		ModelName: "test-model",
+	}
+	result, err := svc.ScanItem(context.Background(), "item-sc-1", 1, "sync")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+	if result.ID != existingID {
+		t.Fatalf("expected to return existing scan ID %s, got %s", existingID, result.ID)
+	}
+	var count int64
+	db.Model(&models.SecurityScan{}).Where("item_id = ?", "item-sc-1").Count(&count)
+	if count != 1 {
+		t.Fatalf("expected exactly 1 SecurityScan (no new row created), got %d", count)
+	}
+}
+
+func TestScanItemShortCircuit_ManualTriggerStillCallsLLM(t *testing.T) {
+	db := newScanShortCircuitTestDB(t)
+	_ = seedShortCircuitFixture(t, db, "item-sc-2", 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "test-model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role": "assistant",
+						"content": `{
+							"category":"backend-development",
+							"risk_level":"low",
+							"verdict":"safe",
+							"red_flags":[],
+							"permissions":{"files":[],"network":[],"commands":[]},
+							"summary":"manual rescore",
+							"recommendations":[]
+						}`,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+			},
+		})
+	}))
+	defer server.Close()
+
+	svc := &ScanService{
+		DB: db,
+		LLMClient: llm.NewClient(&config.LLMConfig{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+			Model:   "test-model",
+		}),
+		ModelName: "test-model",
+	}
+	if _, err := svc.ScanItem(context.Background(), "item-sc-2", 1, "manual"); err != nil {
+		t.Fatalf("manual scan failed: %v", err)
+	}
+	var count int64
+	db.Model(&models.SecurityScan{}).Where("item_id = ?", "item-sc-2").Count(&count)
+	if count != 2 {
+		t.Fatalf("manual trigger must create new row alongside existing; expected 2 rows, got %d", count)
+	}
+}
+
+func TestScanItemShortCircuit_FeatureFlagDisabledFallsThrough(t *testing.T) {
+	t.Setenv("SECURITY_SCAN_SHORT_CIRCUIT_DISABLED", "true")
+	db := newScanShortCircuitTestDB(t)
+	_ = seedShortCircuitFixture(t, db, "item-sc-3", 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "test-model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role": "assistant",
+						"content": `{
+							"category":"backend-development",
+							"risk_level":"low",
+							"verdict":"safe",
+							"red_flags":[],
+							"permissions":{"files":[],"network":[],"commands":[]},
+							"summary":"sync rescore",
+							"recommendations":[]
+						}`,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2,
+			},
+		})
+	}))
+	defer server.Close()
+
+	svc := &ScanService{
+		DB: db,
+		LLMClient: llm.NewClient(&config.LLMConfig{
+			BaseURL: server.URL,
+			APIKey:  "test-key",
+			Model:   "test-model",
+		}),
+		ModelName: "test-model",
+	}
+	if _, err := svc.ScanItem(context.Background(), "item-sc-3", 1, "sync"); err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var count int64
+	db.Model(&models.SecurityScan{}).Where("item_id = ?", "item-sc-3").Count(&count)
+	if count != 2 {
+		t.Fatalf("feature flag disabled → must call LLM; expected 2 SecurityScans, got %d", count)
+	}
 }

@@ -41,6 +41,12 @@ costrict-web/
 - **API 接口改动**: 涉及 API 接口改动时，必须同步修改 Swagger 文档注释
 - **Worker 机制**: Server 层采用 Worker 机制处理异步任务
 
+### 环境变量
+
+| 变量 | 默认 | 含义 |
+|------|------|------|
+| `SECURITY_SCAN_SHORT_CIRCUIT_DISABLED` | 空（启用） | 设为 `true`（不区分大小写）禁用 `ScanJobService.Enqueue` 与 `ScanService.ScanItem` 的 SecurityScan 短路 — 所有 sync/create/update 触发都重新走 LLM。回滚步骤：在 server 容器环境设置该变量并重启进程。 |
+
 ## 快速参考
 
 ### 启动设备端
