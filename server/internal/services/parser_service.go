@@ -401,15 +401,21 @@ func synthesizePluginContent(in pluginContentInput) string {
 		sb.WriteString("\n")
 	}
 
-	// Installation.
-	sb.WriteString("## Installation\n\nInstall via the csc client:\n\n")
+	// Installation — use the costrict-plugins aggregated marketplace so users
+	// get a single source for ~700 verified plugins regardless of which
+	// upstream registry the plugin originally came from. The marketplace add
+	// step only needs to happen once across the whole catalog; the per-plugin
+	// install uses `<plugin_name>@costrict-plugins`.
+	sb.WriteString("## Installation\n\n")
+	sb.WriteString("Install via the csc client (one-time marketplace setup, then per-plugin install):\n\n")
 	sb.WriteString("```bash\n")
-	sb.WriteString(fmt.Sprintf("csc plugin marketplace add %s\n", in.MarketplaceRepo))
-	sb.WriteString(fmt.Sprintf("csc plugin install %s@%s\n", in.PluginName, in.MarketplaceName))
+	sb.WriteString("csc plugin marketplace add https://github.com/costrict-plugins-repo/marketplace.git\n")
+	sb.WriteString(fmt.Sprintf("csc plugin install %s@costrict-plugins\n", in.PluginName))
 	sb.WriteString("```\n\n")
 
-	// Repository link.
-	sb.WriteString("## Repository\n\n")
+	// Upstream source link — still useful for users who want to inspect the
+	// original repo, file issues with the plugin author, etc.
+	sb.WriteString("## Upstream Source\n\n")
 	sb.WriteString(fmt.Sprintf("[github.com/%s](https://github.com/%s)\n", in.MarketplaceRepo, in.MarketplaceRepo))
 
 	return sb.String()

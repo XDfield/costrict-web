@@ -61,11 +61,17 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	if !strings.Contains(it.Content, "## Installation") {
 		t.Errorf("Content missing Installation section")
 	}
-	if !strings.Contains(it.Content, "csc plugin marketplace add abhigyanpatwari/GitNexus") {
-		t.Errorf("Content missing csc install command")
+	if !strings.Contains(it.Content, "csc plugin marketplace add https://github.com/costrict-plugins-repo/marketplace.git") {
+		t.Errorf("Content missing aggregated marketplace add command")
 	}
-	if !strings.Contains(it.Content, "## Repository") {
-		t.Errorf("Content missing Repository section")
+	if !strings.Contains(it.Content, "csc plugin install gitnexus@costrict-plugins") {
+		t.Errorf("Content missing csc plugin install command targeting costrict-plugins")
+	}
+	if !strings.Contains(it.Content, "## Upstream Source") {
+		t.Errorf("Content missing Upstream Source section")
+	}
+	if !strings.Contains(it.Content, "github.com/abhigyanpatwari/GitNexus") {
+		t.Errorf("Content missing upstream repo link")
 	}
 	install, _ := it.Metadata["install"].(map[string]any)
 	if install["plugin_name"] != "gitnexus" {
