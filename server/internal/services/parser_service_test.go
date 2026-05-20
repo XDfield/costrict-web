@@ -51,8 +51,21 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	if it.Slug != "abhigyanpatwari-gitnexus-marketplace-gitnexus" {
 		t.Errorf("Slug = %q, want kebab from dir name", it.Slug)
 	}
-	if it.Content != "" {
-		t.Errorf("Content = %q, want empty (plugin has no server-side content)", it.Content)
+	// Content is synthesised markdown — assert key sections are present.
+	if !strings.Contains(it.Content, "---\nname: \"GitNexus\"") {
+		t.Errorf("Content missing YAML frontmatter; got prefix %q", it.Content[:min(80, len(it.Content))])
+	}
+	if !strings.Contains(it.Content, "# GitNexus") {
+		t.Errorf("Content missing display-name heading")
+	}
+	if !strings.Contains(it.Content, "## Installation") {
+		t.Errorf("Content missing Installation section")
+	}
+	if !strings.Contains(it.Content, "csc plugin marketplace add abhigyanpatwari/GitNexus") {
+		t.Errorf("Content missing csc install command")
+	}
+	if !strings.Contains(it.Content, "## Repository") {
+		t.Errorf("Content missing Repository section")
 	}
 	install, _ := it.Metadata["install"].(map[string]any)
 	if install["plugin_name"] != "gitnexus" {
@@ -61,6 +74,93 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	if _, ok := it.Metadata["bundle"]; !ok {
 		t.Errorf("Metadata.bundle missing")
 	}
+}
+
+func TestParsePluginJSON_DescriptionAndTagsFallback(t *testing.T) {
+	p := &ParserService{}
+	// Catalog entry with empty description + empty tags — should fall back.
+	content := []byte(`{
+  "name": "repomix-mcp",
+  "description": "",
+  "category": "tooling",
+  "tags": [],
+  "install": {
+    "method": "plugin_marketplace",
+    "plugin_name": "repomix-mcp",
+    "marketplace_name": "repomix",
+    "marketplace_repo": "yamadashy/repomix",
+    "marketplace_verified": true
+  },
+  "bundle": {
+    "skills_count": 0,
+    "commands_count": 0,
+    "agents_count": 0,
+    "mcp_servers_count": 1,
+    "hooks_count": 0
+  }
+}`)
+	items, err := p.ParsePluginJSON(content, "plugins/yamadashy-repomix-repomix-mcp/.plugin.json")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	it := items[0]
+	if it.Description == "" {
+		t.Errorf("Description fallback should populate when upstream is empty")
+	}
+	if !strings.Contains(it.Description, "yamadashy/repomix") {
+		t.Errorf("Description fallback should mention marketplace_repo, got %q", it.Description)
+	}
+	wantTags := []string{"mcp", "tooling"}
+	if len(it.Tags) != len(wantTags) {
+		t.Fatalf("Tags = %v, want %v", it.Tags, wantTags)
+	}
+	for i, want := range wantTags {
+		if it.Tags[i] != want {
+			t.Errorf("Tags[%d] = %q, want %q", i, it.Tags[i], want)
+		}
+	}
+}
+
+func TestParsePluginJSON_BundleTagsOrderStable(t *testing.T) {
+	p := &ParserService{}
+	content := []byte(`{
+  "name": "x",
+  "category": "frontend",
+  "install": {
+    "method": "plugin_marketplace",
+    "plugin_name": "x",
+    "marketplace_name": "mp",
+    "marketplace_repo": "o/r",
+    "marketplace_verified": true
+  },
+  "bundle": {
+    "skills_count": 3,
+    "commands_count": 2,
+    "agents_count": 1,
+    "mcp_servers_count": 1,
+    "hooks_count": 1
+  }
+}`)
+	items, err := p.ParsePluginJSON(content, "plugins/x/.plugin.json")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"skills", "commands", "agents", "mcp", "hooks", "frontend"}
+	if len(items[0].Tags) != len(want) {
+		t.Fatalf("Tags = %v, want %v", items[0].Tags, want)
+	}
+	for i, w := range want {
+		if items[0].Tags[i] != w {
+			t.Errorf("Tags[%d] = %q, want %q", i, items[0].Tags[i], w)
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func TestParsePluginJSON_FallsBackToPluginNameIfTopLevelNameMissing(t *testing.T) {
