@@ -780,10 +780,16 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 	}
 
 	// 4. Run sync via SyncService.
+	// Inject Tag + Category services so per-item tags/categories produced by
+	// the parsers (e.g. ParseSKILLMD frontmatter tags, ParsePluginJSON
+	// synthesised tags) are persisted alongside the capability_items row.
+	// Without these, sync silently drops parsed.Tags / parsed.Category links.
 	syncSvc := &services.SyncService{
-		DB:     db,
-		Git:    &services.GitService{TempBaseDir: os.TempDir()},
-		Parser: &services.ParserService{},
+		DB:          db,
+		Git:         &services.GitService{TempBaseDir: os.TempDir()},
+		Parser:      &services.ParserService{},
+		TagSvc:      &services.TagService{DB: db},
+		CategorySvc: &services.CategoryService{DB: db},
 	}
 
 	result, err := syncSvc.SyncRegistry(context.Background(), tempRegistryID, services.SyncOptions{
