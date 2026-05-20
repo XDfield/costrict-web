@@ -40,6 +40,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
 	"github.com/costrict/costrict-web/server/internal/logger"
+	"github.com/costrict/costrict-web/server/internal/memory"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
@@ -428,9 +429,14 @@ func main() {
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
+
+			memoryModule := memory.New(db, storageBackend)
+			memoryModule.RegisterRoutes(authed)
+
 			_ = notificationModule
 			_ = systemRoleModule
 			_ = projectModule
+			_ = memoryModule
 			_ = kanbanModule
 		}
 	}
