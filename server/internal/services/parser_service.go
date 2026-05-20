@@ -122,7 +122,11 @@ func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*Parsed
 	return item, nil
 }
 
-func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*ParsedItem, error) {
+// ParsePluginManifestJSON parses a `.claude-plugin/plugin.json` marketplace
+// manifest. The manifest enriches a CapabilityRegistry (name/description/etc.)
+// and is NOT the same as the per-plugin `.plugin.json` consumed by
+// ParsePluginJSON below.
+func (p *ParserService) ParsePluginManifestJSON(content []byte, sourcePath string) (*ParsedItem, error) {
 	var data map[string]any
 	if err := json.Unmarshal(content, &data); err != nil {
 		return nil, fmt.Errorf("failed to parse plugin.json: %w", err)
@@ -177,6 +181,88 @@ func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*Par
 	}
 
 	return item, nil
+}
+
+// ParsePluginJSON parses a per-plugin `.plugin.json` catalog file emitted by
+// costrict-skills-repo's download_catalog.py. The schema mirrors SKILL.md's
+// frontmatter shape so that ParsedItem fields populate during the sync phase,
+// without depending on the catalog/index.json backfill:
+//
+//	{
+//	  "name": "<display name>",
+//	  "description": "...",
+//	  "category": "...",
+//	  "tags": ["..."],
+//	  "install": {
+//	    "method": "plugin_marketplace",
+//	    "plugin_name": "...",
+//	    "marketplace_name": "...",
+//	    "marketplace_repo": "<owner>/<repo>",
+//	    "marketplace_verified": true,
+//	    ...
+//	  },
+//	  "bundle": { ... }   // optional
+//	}
+//
+// The parser stores the full envelope into Metadata, leaves Content empty
+// (plugin executable lives in the marketplace repo, not here), and derives
+// Slug from the per-plugin catalog directory name (encodes marketplace owner /
+// repo + plugin name; plain plugin_name alone collides across marketplaces).
+func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) ([]*ParsedItem, error) {
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse .plugin.json: %w", err)
+	}
+
+	install, ok := data["install"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf(".plugin.json missing required 'install' object")
+	}
+
+	pluginName, _ := install["plugin_name"].(string)
+	marketplaceName, _ := install["marketplace_name"].(string)
+	marketplaceRepo, _ := install["marketplace_repo"].(string)
+	if pluginName == "" || marketplaceName == "" || marketplaceRepo == "" {
+		return nil, fmt.Errorf(".plugin.json missing required install fields (plugin_name, marketplace_name, marketplace_repo)")
+	}
+
+	dir := filepath.Base(filepath.Dir(filepath.ToSlash(sourcePath)))
+	slug := strings.ToLower(dir)
+	if slug == "" || slug == "." {
+		slug = strings.ToLower(pluginName)
+	}
+
+	// Display name: prefer the top-level `name` (carried over from catalog
+	// `entry.name`), fall back to `install.plugin_name`.
+	displayName := pluginName
+	if v, ok := data["name"].(string); ok && v != "" {
+		displayName = v
+	}
+
+	item := &ParsedItem{
+		ItemType:   "plugin",
+		Name:       displayName,
+		Slug:       slug,
+		Version:    "1.0.0",
+		Metadata:   data,
+		SourcePath: sourcePath,
+	}
+
+	if v, ok := data["description"].(string); ok {
+		item.Description = v
+	}
+	if v, ok := data["category"].(string); ok {
+		item.Category = v
+	}
+	if rawTags, ok := data["tags"].([]any); ok {
+		for _, t := range rawTags {
+			if s, ok := t.(string); ok && s != "" {
+				item.Tags = append(item.Tags, s)
+			}
+		}
+	}
+
+	return []*ParsedItem{item}, nil
 }
 
 func (p *ParserService) ParseAgentsMD(content []byte, sourcePath string) ([]*ParsedItem, error) {
@@ -263,6 +349,8 @@ func (p *ParserService) InferItemType(filePath string) string {
 	switch {
 	case base == ".mcp.json":
 		return "mcp"
+	case base == ".plugin.json":
+		return "plugin"
 	case strings.Contains(lower, "agents/") || strings.HasSuffix(lower, "agents.md"):
 		return "subagent"
 	case strings.Contains(lower, "commands/"):

@@ -60,7 +60,7 @@ func syncRepoID(repoID string) string {
 }
 
 func (s *SyncService) applyPluginJSON(content []byte, registry *models.CapabilityRegistry) {
-	item, err := s.Parser.ParsePluginJSON(content, ".claude-plugin/plugin.json")
+	item, err := s.Parser.ParsePluginManifestJSON(content, ".claude-plugin/plugin.json")
 	if err != nil {
 		return
 	}
@@ -90,6 +90,8 @@ func (s *SyncService) parseFile(content []byte, relPath string) ([]*ParsedItem, 
 		return []*ParsedItem{item}, nil
 	case base == ".mcp.json":
 		return s.Parser.ParseMCPJSON(content, relPath)
+	case base == ".plugin.json":
+		return s.Parser.ParsePluginJSON(content, relPath)
 	case base == "agents.md" || strings.HasSuffix(lower, "/agents.md"):
 		items, err := s.Parser.ParseAgentsMD(content, relPath)
 		if err != nil || len(items) == 0 {
