@@ -259,8 +259,17 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 			Order("created_at DESC").
 			First(&existing).Error
 		if err == nil {
+			// Use the risk_level of the existing scan as security_status to stay
+			// consistent with the regular scan path (line 369) and the frontend
+			// SecurityStatus union — writing the literal "completed" here
+			// produces a value the frontend tag map cannot render and crashes
+			// the security-tag component.
+			status := existing.RiskLevel
+			if status == "" {
+				status = "unscanned"
+			}
 			s.DB.Model(&item).Updates(map[string]any{
-				"security_status": "completed",
+				"security_status": status,
 				"last_scan_id":    existing.ID,
 			})
 			return &existing, nil
