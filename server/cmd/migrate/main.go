@@ -768,6 +768,7 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 				"prompts/**/PROMPT.md",
 				"rules/**/RULE.md",
 				"skills/**/SKILL.md",
+				"plugins/**/.plugin.json",
 			},
 		}),
 		RepoID:      publicRepoID,
