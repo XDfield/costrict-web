@@ -246,6 +246,13 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		return nil, fmt.Errorf("item not found: %w", err)
 	}
 
+	// Plugin items hold no server-side content: the executable code lives in
+	// the marketplace repo and is fetched at install time by csc. Skip the LLM
+	// scan entirely and record an unscanned SecurityScan row for traceability.
+	if item.ItemType == "plugin" {
+		return s.recordPluginSkip(&item, itemRevision, triggerType)
+	}
+
 	if shortCircuitEnabled() && isShortCircuitTrigger(triggerType) {
 		var existing models.SecurityScan
 		err := s.DB.Where("item_id = ? AND item_revision = ?", itemID, itemRevision).
@@ -377,6 +384,39 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		_ = s.backfillBuiltinTags(item.ID, report.BuiltinTags)
 	}
 
+	return scanRecord, nil
+}
+
+// recordPluginSkip is the fast-path scan handler for plugin items. Plugin
+// `content` is empty by design (the executable lives in the marketplace repo,
+// not in capability_items), so there is nothing meaningful to feed an LLM.
+// We persist a SecurityScan row with security_status="unscanned" and a clear
+// reason so downstream observers can distinguish "we declined to scan" from
+// "scan failed" or "never attempted".
+func (s *ScanService) recordPluginSkip(item *models.CapabilityItem, itemRevision int, triggerType string) (*models.SecurityScan, error) {
+	startTime := time.Now()
+	scanRecord := &models.SecurityScan{
+		ID:              uuid.New().String(),
+		ItemID:          item.ID,
+		ItemRevision:    itemRevision,
+		TriggerType:     triggerType,
+		ScanModel:       s.ModelName,
+		DurationMs:      time.Since(startTime).Milliseconds(),
+		Summary:         "plugin: content not server-side",
+		RedFlags:        datatypes.JSON([]byte("[]")),
+		Permissions:     datatypes.JSON([]byte("{}")),
+		Recommendations: datatypes.JSON([]byte("[]")),
+	}
+	now := time.Now()
+	scanRecord.FinishedAt = &now
+
+	if err := s.DB.Create(scanRecord).Error; err != nil {
+		return nil, err
+	}
+	s.DB.Model(item).Updates(map[string]any{
+		"security_status": "unscanned",
+		"last_scan_id":    scanRecord.ID,
+	})
 	return scanRecord, nil
 }
 

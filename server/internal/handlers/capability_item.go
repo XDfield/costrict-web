@@ -208,6 +208,8 @@ func defaultSourcePathForItemType(itemType string) string {
 		return "SKILL.md"
 	case "mcp":
 		return ".mcp.json"
+	case "plugin":
+		return ".plugin.json"
 	default:
 		return ""
 	}
@@ -291,9 +293,10 @@ func loadExistingTextAssets(db *gorm.DB, itemID string, mainPath string) ([]serv
 
 // resolveMetadata returns the JSON-encoded metadata for an item.
 // For MCP items it normalises the raw payload to standard MCP format.
-// When metadata is absent but content holds a valid .mcp.json body,
+// For plugin items it canonicalises the {install, bundle} envelope through
+// an unmarshal + marshal round-trip to stabilise key order.
+// When metadata is absent but content holds a valid JSON body,
 // the metadata is derived from content automatically.
-// Returns an error when MCP metadata cannot be normalised.
 func resolveMetadata(itemType string, raw json.RawMessage, content string) (datatypes.JSON, error) {
 	if itemType == "mcp" {
 		src := json.RawMessage(raw)
@@ -314,6 +317,24 @@ func resolveMetadata(itemType string, raw json.RawMessage, content string) (data
 		b, err := json.Marshal(norm)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+		return datatypes.JSON(b), nil
+	}
+	if itemType == "plugin" {
+		src := json.RawMessage(raw)
+		if len(src) == 0 && content != "" {
+			src = json.RawMessage(content)
+		}
+		if len(src) == 0 {
+			return datatypes.JSON([]byte("{}")), nil
+		}
+		var m map[string]any
+		if err := json.Unmarshal(src, &m); err != nil {
+			return nil, fmt.Errorf("invalid plugin metadata JSON: %w", err)
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal plugin metadata: %w", err)
 		}
 		return datatypes.JSON(b), nil
 	}
@@ -1099,8 +1120,8 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		contentChanged = newContentMD5 != item.ContentMD5
 		item.Content = *req.Content
 		item.ContentMD5 = newContentMD5
-		if item.ItemType == "mcp" {
-			meta, err := resolveMetadata("mcp", nil, *req.Content)
+		if item.ItemType == "mcp" || item.ItemType == "plugin" {
+			meta, err := resolveMetadata(item.ItemType, nil, *req.Content)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
