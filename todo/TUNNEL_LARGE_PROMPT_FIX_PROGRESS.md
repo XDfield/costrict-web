@@ -237,7 +237,7 @@ io.CopyN(localConn, stream, int64(contentLength))
 
 ### Phase 2：根本解决
 - [x] 2.1 `handleStream` 流式代理改造
-- [ ] 2.2 减少 body 重复读取
+- [x] 2.2 减少 body 重复读取
 - [ ] 2.3 单元测试
 - [ ] 2.4 集成测试
 - [ ] 2.5 性能测试
@@ -255,6 +255,7 @@ io.CopyN(localConn, stream, int64(contentLength))
 |------|------|--------|
 | 2025-05-21 | 创建进度文档，完成根因分析 | Claude |
 | 2025-05-21 | Phase 1 全部完成 + Phase 2.1 流式代理改造完成，编译通过，测试通过 | Claude |
+| 2025-05-21 | Phase 2.2 减少 body 重复读取完成，移除 localserver/proxy.go 中的 `io.ReadAll`，设置流式传输，验证 CSC adapter 不受影响 | Claude |
 | | | |
 
 ---
