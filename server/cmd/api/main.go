@@ -364,7 +364,6 @@ func main() {
 			authed.DELETE("/distributions/:id", distHandler.RevokeDistribution)
 			authed.POST("/distributions/:id/dismiss", distHandler.DismissReceipt)
 			authed.POST("/distributions/:id/read", distHandler.MarkReceiptRead)
-			authed.POST("/distributions/:id/fork", distHandler.ForkItem)
 
 			authed.POST("/artifacts/upload", handlers.UploadArtifact)
 			authed.DELETE("/artifacts/:id", handlers.DeleteArtifact)

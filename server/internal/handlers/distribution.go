@@ -46,8 +46,8 @@ func (h *DistributionHandler) loadItem(c *gin.Context, itemID string) (*models.C
 }
 
 // DistributeItem godoc
-// @Summary      Distribute item to targets
-// @Description  Distribute an item to users or organizations with specified permission mode
+// @Summary      Push item to targets
+// @Description  Push (distribute) an item to users or organizations with specified permission mode. Only platform admins can perform this action.
 // @Tags         distributions
 // @Accept       json
 // @Produce      json
@@ -67,7 +67,7 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 
 	userID := c.GetString(middleware.UserIDKey)
 	if !h.distSvc.CanDistribute(item, userID, h.isPlatformAdmin(userID)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to distribute this item"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to push this item"})
 		return
 	}
 
@@ -255,41 +255,3 @@ func (h *DistributionHandler) MarkReceiptRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Marked as read"})
 }
 
-// ForkItem godoc
-// @Summary      Fork distributed item
-// @Description  Fork an item from a distribution into the user's personal registry
-// @Tags         distributions
-// @Produce      json
-// @Param        id   path      string  true  "Distribution ID"
-// @Success      201  {object}  models.CapabilityItem
-// @Failure      400  {object}  object{error=string}
-// @Failure      403  {object}  object{error=string}
-// @Router       /distributions/{id}/fork [post]
-func (h *DistributionHandler) ForkItem(c *gin.Context) {
-	distID := c.Param("id")
-	userID := c.GetString(middleware.UserIDKey)
-
-	forkedItem, err := h.distSvc.ForkItem(c.Request.Context(), distID, userID)
-	if err != nil {
-		switch {
-		case errors.Is(err, services.ErrForkNotAllowed):
-			c.JSON(http.StatusForbidden, gin.H{"error": "Fork not allowed for this distribution"})
-		case errors.Is(err, services.ErrAlreadyForked):
-			c.JSON(http.StatusConflict, gin.H{"error": "Item already forked"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-
-	c.JSON(http.StatusCreated, forkedItem)
-}
-
-// HasEditableDistribution is a helper to check if a user has editable access via distribution.
-func HasEditableDistribution(db *gorm.DB, itemID, userID string) bool {
-	if db == nil || itemID == "" || userID == "" {
-		return false
-	}
-	distSvc := services.NewDistributionService(db, nil)
-	return distSvc.HasEditableDistribution(nil, itemID, userID)
-}

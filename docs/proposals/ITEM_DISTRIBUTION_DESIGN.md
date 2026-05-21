@@ -1,4 +1,4 @@
-# Item Distribution（技能下发/分享）功能设计文档
+# Item Distribution（技能下发/推送）功能设计文档
 
 **Status**: Proposal  
 **Author**: Claude  
@@ -25,7 +25,7 @@
 
 - 实时协同编辑（超出范围，保持与现有 Item 更新机制一致）
 - 复杂的工作流审批（简化为主管一键下发）
-- 跨租户/跨组织分享（组织之间保持隔离）
+- 跨租户/跨组织推送（组织之间保持隔离）
 
 ---
 
@@ -311,10 +311,7 @@ const (
 
 ### 8.1 谁能下发？
 
-满足以下任一条件：
-- Item 的 `CreatedBy`（创建者）
-- Item 所在 Repo 的 `owner` / `admin`
-- `platform_admin` 系统角色
+仅拥有 `platform_admin` 系统角色的用户可以下发 Item。创建者和 Repo 管理员均不具备下发权限。
 
 ### 8.2 谁能修改/收回下发？
 
@@ -431,7 +428,7 @@ func backfillOrganizations(db *gorm.DB) error {
 - `distribution_service_test.go`
   - 下发给单个用户
   - 下发给组织（批量 receipt 创建）
-  - 权限检查（非创建者/非 admin 禁止下发）
+  - 权限检查（仅 platform_admin 可下发，创建者/Repo 管理员禁止下发）
   - 收回后收藏列表不可见
   - Fork 后新 Item 独立存在
 

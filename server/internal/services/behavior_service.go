@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -198,6 +199,21 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 			panic(r)
 		}
 	}()
+
+	// Prevent unfavororing items from readonly distributions
+	var readonlyCount int64
+	if err := tx.Model(&models.ItemDistributionReceipt{}).
+		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
+		Where("item_distribution_receipts.user_id = ? AND item_distributions.item_id = ? AND item_distributions.status = ? AND item_distributions.permission_mode = ? AND item_distribution_receipts.receipt_status != ?",
+			userID, itemID, "active", "readonly", "dismissed").
+		Count(&readonlyCount).Error; err != nil {
+		tx.Rollback()
+		return 0, false, err
+	}
+	if readonlyCount > 0 {
+		tx.Rollback()
+		return 0, false, errors.New("cannot unfavorite a required skill")
+	}
 
 	result := tx.Where("item_id = ? AND user_id = ?", itemID, userID).Delete(&models.ItemFavorite{})
 	if result.Error != nil {

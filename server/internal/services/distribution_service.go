@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -44,7 +43,7 @@ type DistributionTarget struct {
 // DistributeItemRequest represents a request to distribute an item.
 type DistributeItemRequest struct {
 	Targets        []DistributionTarget `json:"targets" binding:"required,min=1"`
-	PermissionMode string               `json:"permissionMode" binding:"required,oneof=readonly forkable editable"`
+	PermissionMode string               `json:"permissionMode" binding:"required,oneof=readonly dismissible"`
 	Message        string               `json:"message"`
 	ExpiresAt      *time.Time           `json:"expiresAt,omitempty"`
 }
@@ -59,29 +58,13 @@ var (
 	ErrNotDistributor    = errors.New("only the distributor or platform admin can modify this distribution")
 	ErrDistributionNotFound = errors.New("distribution not found")
 	ErrInvalidPermissionMode = errors.New("invalid permission mode")
-	ErrCannotDistribute    = errors.New("you do not have permission to distribute this item")
-	ErrAlreadyForked       = errors.New("item already forked")
-	ErrForkNotAllowed      = errors.New("fork not allowed for this distribution")
+	ErrCannotDistribute    = errors.New("you do not have permission to push this item")
 )
 
 // CanDistribute checks if a user can distribute an item.
+// Only platform admins are allowed to distribute items.
 func (s *DistributionService) CanDistribute(item *models.CapabilityItem, userID string, isPlatformAdmin bool) bool {
-	if isPlatformAdmin {
-		return true
-	}
-	if item.CreatedBy == userID {
-		return true
-	}
-	// Check repo admin role
-	if item.Registry != nil && item.Registry.RepoID != "" {
-		var member models.RepoMember
-		if err := s.db.Where("repo_id = ? AND user_id = ?", item.Registry.RepoID, userID).First(&member).Error; err == nil {
-			if member.Role == "owner" || member.Role == "admin" {
-				return true
-			}
-		}
-	}
-	return false
+	return isPlatformAdmin
 }
 
 // DistributeItem distributes an item to the specified targets.
@@ -385,165 +368,6 @@ func (s *DistributionService) MarkReceiptRead(ctx context.Context, distID, userI
 	return nil
 }
 
-// ForkItem creates a personal copy of an item for the recipient.
-func (s *DistributionService) ForkItem(ctx context.Context, distID, userID string) (*models.CapabilityItem, error) {
-	var receipt models.ItemDistributionReceipt
-	if err := s.db.WithContext(ctx).
-		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
-		Where("item_distribution_receipts.distribution_id = ? AND item_distribution_receipts.user_id = ? AND item_distributions.permission_mode = ? AND item_distributions.status = ?",
-			distID, userID, "forkable", "active").
-		Preload("Distribution.Item").
-		First(&receipt).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrForkNotAllowed
-		}
-		return nil, err
-	}
-
-	if receipt.ForkedItemID != nil && *receipt.ForkedItemID != "" {
-		return nil, ErrAlreadyForked
-	}
-
-	// Find or create personal registry for the user
-	personalRegistryID, err := s.getOrCreatePersonalRegistry(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get personal registry: %w", err)
-	}
-
-	origItem := receipt.Distribution.Item
-	if origItem == nil {
-		// Load item if not preloaded
-		var item models.CapabilityItem
-		if err := s.db.WithContext(ctx).First(&item, "id = ?", receipt.Distribution.ItemID).Error; err != nil {
-			return nil, err
-		}
-		origItem = &item
-	}
-
-	// Copy the item
-	forkedItem := &models.CapabilityItem{
-		ID:              uuid.New().String(),
-		RegistryID:      personalRegistryID,
-		RepoID:          "", // Will be set by registryRepoID later
-		Slug:            origItem.Slug + "-fork-" + userID[:8],
-		ItemType:        origItem.ItemType,
-		Name:            origItem.Name + " (Fork)",
-		Description:     origItem.Description,
-		Category:        origItem.Category,
-		Version:         origItem.Version,
-		Content:         origItem.Content,
-		ContentMD5:      origItem.ContentMD5,
-		CurrentRevision: 1,
-		Metadata:        origItem.Metadata,
-		SourcePath:      origItem.SourcePath,
-		SourceSHA:       origItem.SourceSHA,
-		SourceType:      "fork",
-		Source:          receipt.DistributionID,
-		Status:          "active",
-		CreatedBy:       userID,
-	}
-
-	// Use transaction
-	var resultItem *models.CapabilityItem
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Omit("Embedding").Create(forkedItem).Error; err != nil {
-			return err
-		}
-
-		// Create initial version
-		version := models.CapabilityVersion{
-			ID:          uuid.New().String(),
-			ItemID:      forkedItem.ID,
-			Revision:    1,
-			Name:        forkedItem.Name,
-			Description: forkedItem.Description,
-			Category:    forkedItem.Category,
-			Version:     forkedItem.Version,
-			Content:     forkedItem.Content,
-			ContentMD5:  forkedItem.ContentMD5,
-			Metadata:    forkedItem.Metadata,
-			SourcePath:  forkedItem.SourcePath,
-			CommitMsg:   "Forked from distribution " + receipt.DistributionID,
-			CreatedBy:   userID,
-		}
-		if err := tx.Create(&version).Error; err != nil {
-			return err
-		}
-
-		// Update receipt with forked item ID
-		if err := tx.Model(&receipt).Update("forked_item_id", forkedItem.ID).Error; err != nil {
-			return err
-		}
-
-		resultItem = forkedItem
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return resultItem, nil
-}
-
-// getOrCreatePersonalRegistry finds or creates a personal registry for a user.
-func (s *DistributionService) getOrCreatePersonalRegistry(ctx context.Context, userID string) (string, error) {
-	var registry models.CapabilityRegistry
-	personalName := "user-" + userID + "-personal"
-
-	if err := s.db.WithContext(ctx).Where("name = ?", personalName).First(&registry).Error; err == nil {
-		return registry.ID, nil
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", err
-	}
-
-	// Need to create a personal repo first
-	var repo models.Repository
-	repoName := "personal-" + userID
-	if err := s.db.WithContext(ctx).Where("name = ?", repoName).First(&repo).Error; err == nil {
-		// Repo exists, use it
-	} else if errors.Is(err, gorm.ErrRecordNotFound) {
-		repo = models.Repository{
-			ID:          uuid.New().String(),
-			Name:        repoName,
-			DisplayName: "Personal",
-			Visibility:  "private",
-			RepoType:    "normal",
-			OwnerID:     userID,
-		}
-		if err := s.db.WithContext(ctx).Create(&repo).Error; err != nil {
-			return "", err
-		}
-
-		// Add owner as member
-		member := models.RepoMember{
-			ID:     uuid.New().String(),
-			RepoID: repo.ID,
-			UserID: userID,
-			Role:   "owner",
-		}
-		if err := s.db.WithContext(ctx).Create(&member).Error; err != nil {
-			return "", err
-		}
-	} else {
-		return "", err
-	}
-
-	// Create registry
-	registry = models.CapabilityRegistry{
-		ID:         uuid.New().String(),
-		Name:       personalName,
-		RepoID:     repo.ID,
-		OwnerID:    userID,
-		SourceType: "internal",
-	}
-	if err := s.db.WithContext(ctx).Create(&registry).Error; err != nil {
-		return "", err
-	}
-
-	return registry.ID, nil
-}
-
 // GetReceiptByDistributionAndUser gets a receipt for a specific distribution and user.
 func (s *DistributionService) GetReceiptByDistributionAndUser(ctx context.Context, distID, userID string) (*models.ItemDistributionReceipt, error) {
 	var receipt models.ItemDistributionReceipt
@@ -587,19 +411,3 @@ func strPtr(s string) *string {
 }
 
 
-// GetEffectivePermissionForItem returns whether a user has editable access to an item via distribution.
-func (s *DistributionService) HasEditableDistribution(ctx context.Context, itemID, userID string) bool {
-	var count int64
-	err := s.db.WithContext(ctx).
-		Model(&models.ItemDistributionReceipt{}).
-		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
-		Where("item_distribution_receipts.user_id = ? AND item_distributions.item_id = ? AND item_distributions.status = ? AND item_distributions.permission_mode = ? AND item_distribution_receipts.receipt_status != ?",
-			userID, itemID, "active", "editable", "dismissed").
-		Count(&count).Error
-
-	if err != nil {
-		log.Printf("[distribution] HasEditableDistribution query error: %v", err)
-		return false
-	}
-	return count > 0
-}
