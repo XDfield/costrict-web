@@ -660,3 +660,46 @@ type MemoryVersion struct {
 func (MemoryVersion) TableName() string {
 	return "memory_versions"
 }
+
+// ItemDistribution represents a distribution (push/share) of an item to users or organizations.
+type ItemDistribution struct {
+	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID         string         `gorm:"type:uuid;not null;index:idx_dist_item_status" json:"itemId"`
+	DistributorID  string         `gorm:"type:text;not null;index:idx_dist_distributor" json:"distributorId"`
+	PermissionMode string         `gorm:"type:varchar(32);default:'readonly'" json:"permissionMode"` // readonly | forkable | editable
+	Status         string         `gorm:"type:varchar(32);default:'active'" json:"status"`           // active | paused | revoked
+	ScopeType      string         `gorm:"type:varchar(32);default:'user'" json:"scopeType"`          // user | organization | department | role
+	TargetID       string         `gorm:"type:text;not null;index:idx_dist_target" json:"targetId"`
+	Message        string         `gorm:"type:text" json:"message,omitempty"`
+	RevokedAt      *time.Time     `json:"revokedAt,omitempty"`
+	ExpiresAt      *time.Time     `json:"expiresAt,omitempty"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+
+	Item *CapabilityItem `gorm:"foreignKey:ItemID" json:"item,omitempty"`
+}
+
+// ItemDistributionReceipt represents a user's receipt of an item distribution.
+type ItemDistributionReceipt struct {
+	ID             string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	DistributionID string     `gorm:"type:uuid;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"distributionId"`
+	UserID         string     `gorm:"type:text;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"userId"`
+	ReceiptStatus  string     `gorm:"type:varchar(32);default:'unread'" json:"receiptStatus"` // unread | read | dismissed | accepted
+	ForkedItemID   *string    `gorm:"type:uuid" json:"forkedItemId,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+
+	Distribution *ItemDistribution `gorm:"foreignKey:DistributionID" json:"distribution,omitempty"`
+}
+
+// Organization represents a business organization/tenant, compatible with Casdoor owner field.
+type Organization struct {
+	ID          string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name        string    `gorm:"type:varchar(191);not null;uniqueIndex" json:"name"` // aligned with Casdoor owner / User.Organization
+	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
+	Description string    `gorm:"type:text" json:"description"`
+	ParentID    *string   `gorm:"type:uuid;index" json:"parentId,omitempty"` // reserved for department tree
+	OrgType     string    `gorm:"type:varchar(32);default:'company'" json:"orgType"` // company | department | team
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}

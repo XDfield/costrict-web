@@ -14,9 +14,13 @@ const (
 	EventQuestionRequired        = "question"
 	EventSessionIdle             = "idle"
 	EventSystemNotification       = "system.notification"
-	EventProjectInvitationCreated = "project.invitation.created"
+	EventProjectInvitationCreated  = "project.invitation.created"
 	EventProjectInvitationAccepted = "project.invitation.accepted"
 	EventProjectInvitationRejected = "project.invitation.rejected"
+
+	EventItemDistributed = "item.distributed"
+	EventItemRevoked     = "item.revoked"
+	EventItemPaused      = "item.paused"
 )
 
 type ProjectInvitationMessage struct {
