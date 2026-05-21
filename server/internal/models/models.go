@@ -624,3 +624,39 @@ type UserAuthIdentity struct {
 func (UserAuthIdentity) TableName() string {
 	return "user_auth_identities"
 }
+
+// MemoryFile 记忆文件元信息表
+// 每条记录对应一个记忆文件（.md），实体内容存储在 storage backend 中
+type MemoryFile struct {
+	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID         string         `gorm:"not null;index;uniqueIndex:idx_memory_file_user_project_slug,priority:1" json:"userId"`
+	ProjectPath    string         `gorm:"not null;index;uniqueIndex:idx_memory_file_user_project_slug,priority:2" json:"projectPath"`
+	WorkDir        string         `gorm:"index" json:"workDir"`
+	Name           string         `gorm:"not null" json:"name"`
+	Slug           string         `gorm:"not null;uniqueIndex:idx_memory_file_user_project_slug,priority:3" json:"slug"`
+	Type           string         `gorm:"not null;index" json:"type"` // user | feedback | project | reference
+	Description    string         `json:"description"`
+	CurrentVersion int            `gorm:"not null;default:1" json:"currentVersion"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (MemoryFile) TableName() string {
+	return "memory_files"
+}
+
+// MemoryVersion 记忆版本表
+// 记录每个记忆文件的历史版本，实体内容存储在 storage backend 中
+type MemoryVersion struct {
+	ID         string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	MemoryFileID string  `gorm:"not null;index" json:"memoryFileId"`
+	Version    int       `gorm:"not null" json:"version"`
+	ContentMD5 string    `gorm:"size:32" json:"contentMD5"`
+	StorageKey string    `gorm:"not null" json:"storageKey"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+func (MemoryVersion) TableName() string {
+	return "memory_versions"
+}
