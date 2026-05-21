@@ -768,6 +768,7 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 				"prompts/**/PROMPT.md",
 				"rules/**/RULE.md",
 				"skills/**/SKILL.md",
+				"plugins/**/.plugin.json",
 			},
 		}),
 		RepoID:      publicRepoID,
@@ -779,10 +780,16 @@ func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error
 	}
 
 	// 4. Run sync via SyncService.
+	// Inject Tag + Category services so per-item tags/categories produced by
+	// the parsers (e.g. ParseSKILLMD frontmatter tags, ParsePluginJSON
+	// synthesised tags) are persisted alongside the capability_items row.
+	// Without these, sync silently drops parsed.Tags / parsed.Category links.
 	syncSvc := &services.SyncService{
-		DB:     db,
-		Git:    &services.GitService{TempBaseDir: os.TempDir()},
-		Parser: &services.ParserService{},
+		DB:          db,
+		Git:         &services.GitService{TempBaseDir: os.TempDir()},
+		Parser:      &services.ParserService{},
+		TagSvc:      &services.TagService{DB: db},
+		CategorySvc: &services.CategoryService{DB: db},
 	}
 
 	result, err := syncSvc.SyncRegistry(context.Background(), tempRegistryID, services.SyncOptions{
@@ -1032,10 +1039,18 @@ func writeSecurityScanFromCatalog(db *gorm.DB, item models.CapabilityItem, sec *
 		if err := tx.Create(row).Error; err != nil {
 			return fmt.Errorf("create security_scan: %w", err)
 		}
+		// security_status mirrors the scan's risk_level so the frontend
+		// SecurityTag can render it directly (the union is clean/low/medium/
+		// high/extreme/unscanned/... — writing the literal "completed" here
+		// would crash the tag component which has no entry for that value).
+		statusValue := sec.RiskLevel
+		if statusValue == "" {
+			statusValue = "unscanned"
+		}
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", item.ID).
 			Updates(map[string]any{
-				"security_status": "completed",
+				"security_status": statusValue,
 				"last_scan_id":    scanID,
 			}).Error; err != nil {
 			return fmt.Errorf("update item security fields: %w", err)

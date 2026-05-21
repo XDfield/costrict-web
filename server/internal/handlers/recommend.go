@@ -222,6 +222,10 @@ func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if item.ItemType == "plugin" {
+		c.JSON(http.StatusConflict, gin.H{"error": "plugin favorite not yet supported"})
+		return
+	}
 
 	count, created, err := h.behaviorSvc.FavoriteItem(c.Request.Context(), item.ID, uid)
 	if err != nil {
@@ -251,6 +255,10 @@ func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
 func (h *RecommendHandler) UnfavoriteItem(c *gin.Context) {
 	item, uid, ok := loadAccessibleItemForMutation(c)
 	if !ok {
+		return
+	}
+	if item.ItemType == "plugin" {
+		c.JSON(http.StatusConflict, gin.H{"error": "plugin favorite not yet supported"})
 		return
 	}
 

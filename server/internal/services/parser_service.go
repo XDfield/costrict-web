@@ -122,7 +122,11 @@ func (p *ParserService) ParseSKILLMD(content []byte, sourcePath string) (*Parsed
 	return item, nil
 }
 
-func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*ParsedItem, error) {
+// ParsePluginManifestJSON parses a `.claude-plugin/plugin.json` marketplace
+// manifest. The manifest enriches a CapabilityRegistry (name/description/etc.)
+// and is NOT the same as the per-plugin `.plugin.json` consumed by
+// ParsePluginJSON below.
+func (p *ParserService) ParsePluginManifestJSON(content []byte, sourcePath string) (*ParsedItem, error) {
 	var data map[string]any
 	if err := json.Unmarshal(content, &data); err != nil {
 		return nil, fmt.Errorf("failed to parse plugin.json: %w", err)
@@ -177,6 +181,254 @@ func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) (*Par
 	}
 
 	return item, nil
+}
+
+// ParsePluginJSON parses a per-plugin `.plugin.json` catalog file emitted by
+// costrict-skills-repo's download_catalog.py. The schema mirrors SKILL.md's
+// frontmatter shape so that ParsedItem fields populate during the sync phase,
+// without depending on the catalog/index.json backfill:
+//
+//	{
+//	  "name": "<display name>",
+//	  "description": "...",
+//	  "category": "...",
+//	  "tags": ["..."],
+//	  "install": {
+//	    "method": "plugin_marketplace",
+//	    "plugin_name": "...",
+//	    "marketplace_name": "...",
+//	    "marketplace_repo": "<owner>/<repo>",
+//	    "marketplace_verified": true,
+//	    ...
+//	  },
+//	  "bundle": { ... }   // optional
+//	}
+//
+// Content is synthesised as a markdown summary (YAML frontmatter + body with
+// install + bundle sections) so the detail page can render the same
+// "Metadata block + body" shape as a skill — plugin's executable still lives
+// in the marketplace repo and isn't stored here.
+//
+// Slug is derived from the per-plugin catalog directory name (encodes
+// marketplace owner / repo + plugin name; plain plugin_name alone collides
+// across marketplaces).
+func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) ([]*ParsedItem, error) {
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse .plugin.json: %w", err)
+	}
+
+	install, ok := data["install"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf(".plugin.json missing required 'install' object")
+	}
+
+	pluginName, _ := install["plugin_name"].(string)
+	marketplaceName, _ := install["marketplace_name"].(string)
+	marketplaceRepo, _ := install["marketplace_repo"].(string)
+	if pluginName == "" || marketplaceName == "" || marketplaceRepo == "" {
+		return nil, fmt.Errorf(".plugin.json missing required install fields (plugin_name, marketplace_name, marketplace_repo)")
+	}
+
+	dir := filepath.Base(filepath.Dir(filepath.ToSlash(sourcePath)))
+	slug := strings.ToLower(dir)
+	if slug == "" || slug == "." {
+		slug = strings.ToLower(pluginName)
+	}
+
+	// Display name: prefer the top-level `name` (carried over from catalog
+	// `entry.name`), fall back to `install.plugin_name`.
+	displayName := pluginName
+	if v, ok := data["name"].(string); ok && v != "" {
+		displayName = v
+	}
+
+	item := &ParsedItem{
+		ItemType:   "plugin",
+		Name:       displayName,
+		Slug:       slug,
+		Version:    "1.0.0",
+		Metadata:   data,
+		SourcePath: sourcePath,
+	}
+
+	if v, ok := data["description"].(string); ok {
+		item.Description = v
+	}
+	if v, ok := data["category"].(string); ok {
+		item.Category = v
+	}
+	if rawTags, ok := data["tags"].([]any); ok {
+		for _, t := range rawTags {
+			if s, ok := t.(string); ok && s != "" {
+				item.Tags = append(item.Tags, s)
+			}
+		}
+	}
+
+	bundle, _ := data["bundle"].(map[string]any)
+
+	// Description fallback when upstream has none — keeps cards from showing
+	// blank for the ~1% of entries with empty catalog descriptions.
+	if item.Description == "" {
+		item.Description = fmt.Sprintf("Marketplace plugin from %s", marketplaceRepo)
+	}
+
+	// Tags fallback: derive a short, deterministic set from bundle composition
+	// + category when upstream tags are empty. Two-thirds of catalog plugin
+	// entries ship with empty tags; without this fallback the Tags column
+	// renders as em-dashes for most plugin rows.
+	if len(item.Tags) == 0 {
+		item.Tags = synthesizePluginTags(bundle, item.Category)
+	}
+
+	item.Content = synthesizePluginContent(pluginContentInput{
+		DisplayName:     displayName,
+		PluginName:      pluginName,
+		MarketplaceName: marketplaceName,
+		MarketplaceRepo: marketplaceRepo,
+		Category:        item.Category,
+		Description:     item.Description,
+		Bundle:          bundle,
+	})
+
+	return []*ParsedItem{item}, nil
+}
+
+// pluginBundleCount safely extracts an integer count from a bundle map's
+// JSON-decoded value (which arrives as float64 from encoding/json).
+func pluginBundleCount(bundle map[string]any, key string) int {
+	if bundle == nil {
+		return 0
+	}
+	if v, ok := bundle[key].(float64); ok {
+		return int(v)
+	}
+	if v, ok := bundle[key].(int); ok {
+		return v
+	}
+	return 0
+}
+
+// synthesizePluginTags derives a short tag list from a plugin's bundle
+// composition + category. Order is stable so the same input always yields
+// the same output (matters for content_md5 stability across re-imports).
+func synthesizePluginTags(bundle map[string]any, category string) []string {
+	tags := make([]string, 0, 6)
+	if pluginBundleCount(bundle, "skills_count") > 0 {
+		tags = append(tags, "skills")
+	}
+	if pluginBundleCount(bundle, "commands_count") > 0 {
+		tags = append(tags, "commands")
+	}
+	if pluginBundleCount(bundle, "agents_count") > 0 {
+		tags = append(tags, "agents")
+	}
+	if pluginBundleCount(bundle, "mcp_servers_count") > 0 {
+		tags = append(tags, "mcp")
+	}
+	if pluginBundleCount(bundle, "hooks_count") > 0 {
+		tags = append(tags, "hooks")
+	}
+	if category != "" {
+		tags = append(tags, category)
+	}
+	return tags
+}
+
+type pluginContentInput struct {
+	DisplayName     string
+	PluginName      string
+	MarketplaceName string
+	MarketplaceRepo string
+	Category        string
+	Description     string
+	Bundle          map[string]any
+}
+
+// synthesizePluginContent renders a YAML-frontmatter + markdown body summary
+// for a plugin so the detail page has the same shape as a skill's content:
+// a "Metadata" block (rendered from frontmatter) followed by body sections.
+// The body covers description, bundle composition, csc install commands and
+// a marketplace repo link.
+func synthesizePluginContent(in pluginContentInput) string {
+	var sb strings.Builder
+
+	// YAML frontmatter — quoted strings to avoid breaking on special chars.
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("name: %s\n", yamlQuote(in.DisplayName)))
+	sb.WriteString(fmt.Sprintf("plugin_name: %s\n", yamlQuote(in.PluginName)))
+	sb.WriteString(fmt.Sprintf("marketplace: %s\n", yamlQuote(in.MarketplaceName)))
+	sb.WriteString(fmt.Sprintf("marketplace_repo: %s\n", yamlQuote(in.MarketplaceRepo)))
+	if in.Category != "" {
+		sb.WriteString(fmt.Sprintf("category: %s\n", yamlQuote(in.Category)))
+	}
+	if in.Description != "" {
+		sb.WriteString(fmt.Sprintf("description: %s\n", yamlQuote(in.Description)))
+	}
+	sb.WriteString("---\n\n")
+
+	// Body.
+	sb.WriteString(fmt.Sprintf("# %s\n\n", in.DisplayName))
+	if in.Description != "" {
+		sb.WriteString(in.Description)
+		sb.WriteString("\n\n")
+	}
+
+	// Bundle composition.
+	bundleLines := make([]string, 0, 5)
+	if c := pluginBundleCount(in.Bundle, "skills_count"); c > 0 {
+		bundleLines = append(bundleLines, fmt.Sprintf("- **Skills:** %d", c))
+	}
+	if c := pluginBundleCount(in.Bundle, "commands_count"); c > 0 {
+		bundleLines = append(bundleLines, fmt.Sprintf("- **Commands:** %d", c))
+	}
+	if c := pluginBundleCount(in.Bundle, "agents_count"); c > 0 {
+		bundleLines = append(bundleLines, fmt.Sprintf("- **Agents:** %d", c))
+	}
+	if c := pluginBundleCount(in.Bundle, "mcp_servers_count"); c > 0 {
+		bundleLines = append(bundleLines, fmt.Sprintf("- **MCP Servers:** %d", c))
+	}
+	if c := pluginBundleCount(in.Bundle, "hooks_count"); c > 0 {
+		bundleLines = append(bundleLines, fmt.Sprintf("- **Hooks:** %d", c))
+	}
+	if len(bundleLines) > 0 {
+		sb.WriteString("## Bundle Contents\n\nThis plugin includes:\n\n")
+		for _, line := range bundleLines {
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Installation — use the costrict-plugins aggregated marketplace so users
+	// get a single source for ~700 verified plugins regardless of which
+	// upstream registry the plugin originally came from. The marketplace add
+	// step only needs to happen once across the whole catalog; the per-plugin
+	// install uses `<plugin_name>@costrict-plugins`.
+	sb.WriteString("## Installation\n\n")
+	sb.WriteString("Install via the csc client (one-time marketplace setup, then per-plugin install):\n\n")
+	sb.WriteString("```bash\n")
+	sb.WriteString("csc plugin marketplace add https://github.com/costrict-plugins-repo/marketplace.git\n")
+	sb.WriteString(fmt.Sprintf("csc plugin install %s@costrict-plugins\n", in.PluginName))
+	sb.WriteString("```\n\n")
+
+	// Upstream source link — still useful for users who want to inspect the
+	// original repo, file issues with the plugin author, etc.
+	sb.WriteString("## Upstream Source\n\n")
+	sb.WriteString(fmt.Sprintf("[github.com/%s](https://github.com/%s)\n", in.MarketplaceRepo, in.MarketplaceRepo))
+
+	return sb.String()
+}
+
+// yamlQuote returns a double-quoted YAML scalar for a string, escaping the
+// few characters that would otherwise break the encoding. Keeps the output
+// terse for typical plugin descriptions while staying valid YAML.
+func yamlQuote(s string) string {
+	escaped := strings.ReplaceAll(s, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+	return `"` + escaped + `"`
 }
 
 func (p *ParserService) ParseAgentsMD(content []byte, sourcePath string) ([]*ParsedItem, error) {
@@ -263,6 +515,8 @@ func (p *ParserService) InferItemType(filePath string) string {
 	switch {
 	case base == ".mcp.json":
 		return "mcp"
+	case base == ".plugin.json":
+		return "plugin"
 	case strings.Contains(lower, "agents/") || strings.HasSuffix(lower, "agents.md"):
 		return "subagent"
 	case strings.Contains(lower, "commands/"):

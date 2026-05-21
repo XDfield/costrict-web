@@ -93,7 +93,7 @@ func (s *ContentHashService) hashArchiveFile(relPath string, content []byte) (st
 
 func (s *ContentHashService) normalizeTextContent(itemType string, content string) ([]byte, error) {
 	normalized := normalizeNewlines(content)
-	if itemType != "mcp" {
+	if itemType != "mcp" && itemType != "plugin" {
 		return []byte(normalized), nil
 	}
 
@@ -104,11 +104,11 @@ func (s *ContentHashService) normalizeTextContent(itemType string, content strin
 
 	var value any
 	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
-		return nil, fmt.Errorf("canonicalize mcp content: %w", err)
+		return nil, fmt.Errorf("canonicalize %s content: %w", itemType, err)
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
-		return nil, fmt.Errorf("marshal mcp content: %w", err)
+		return nil, fmt.Errorf("marshal %s content: %w", itemType, err)
 	}
 	return canonical, nil
 }
