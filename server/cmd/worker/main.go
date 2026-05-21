@@ -96,6 +96,7 @@ func runWorker() {
 		Git:            &services.GitService{TempBaseDir: tmpDir},
 		Parser:         &services.ParserService{},
 		ScanJobService: scanJobSvc,
+		TagSvc:         &services.TagService{DB: db},
 		CategorySvc:    &services.CategoryService{DB: db},
 	}
 

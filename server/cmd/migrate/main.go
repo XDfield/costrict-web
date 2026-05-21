@@ -875,28 +875,51 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 	}
 
 	var catalogItems []struct {
-		ID         string                `json:"id"`
-		Source     string                `json:"source"`
-		FinalScore float64               `json:"final_score"`
-		Security   *catalogSecurityBlock `json:"security,omitempty"`
+		ID          string                `json:"id"`
+		Source      string                `json:"source"`
+		Description string                `json:"description"`
+		Category    string                `json:"category"`
+		Tags        []string              `json:"tags"`
+		FinalScore  float64               `json:"final_score"`
+		Security    *catalogSecurityBlock `json:"security,omitempty"`
 	}
 	if err := json.Unmarshal(data, &catalogItems); err != nil {
 		return fmt.Errorf("parse catalog/index.json: %w", err)
 	}
 
 	type catalogEntry struct {
-		Source     string
-		FinalScore float64
-		Security   *catalogSecurityBlock
+		Source      string
+		Description string
+		Category    string
+		Tags        []string
+		FinalScore  float64
+		Security    *catalogSecurityBlock
 	}
 	catalogMap := make(map[string]catalogEntry, len(catalogItems))
 	for _, item := range catalogItems {
+		// Filter out empty/whitespace tags so downstream `len(.Tags) > 0`
+		// checks don't fire on noise like [""].
+		cleanTags := make([]string, 0, len(item.Tags))
+		for _, t := range item.Tags {
+			if s := strings.TrimSpace(t); s != "" {
+				cleanTags = append(cleanTags, s)
+			}
+		}
 		catalogMap[item.ID] = catalogEntry{
-			Source:     item.Source,
-			FinalScore: item.FinalScore,
-			Security:   item.Security,
+			Source:      item.Source,
+			Description: item.Description,
+			Category:    item.Category,
+			Tags:        cleanTags,
+			FinalScore:  item.FinalScore,
+			Security:    item.Security,
 		}
 	}
+
+	// TagService instance shared across the loop. The backfill only touches
+	// items in the public registry (catalog-sourced) — user-uploaded items
+	// live under other registries and are not affected by this loop, so
+	// overwriting tags here is safe.
+	tagSvc := &services.TagService{DB: db}
 
 	var items []models.CapabilityItem
 	if err := db.Where("registry_id = ?", publicRegistryID).Find(&items).Error; err != nil {
@@ -907,6 +930,7 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 	skipped := 0
 	securityWritten := 0
 	securitySkipped := 0
+	tagsSet := 0
 	for _, item := range items {
 		parts := strings.Split(filepath.ToSlash(item.SourcePath), "/")
 		if len(parts) < 2 {
@@ -919,12 +943,24 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 			skipped++
 			continue
 		}
+		// Build the column-level update payload. Policy: upstream non-empty
+		// wins; upstream empty leaves the DB value untouched. This lets
+		// per-file parsers (SKILL.md frontmatter, ParsePluginJSON synth)
+		// keep their content when upstream catalog has no value, while
+		// the canonical upstream data overrides whatever the per-file
+		// format could carry.
 		updates := map[string]any{}
 		if meta.Source != "" {
 			updates["source"] = meta.Source
 		}
 		if meta.FinalScore > 0 {
 			updates["experience_score"] = meta.FinalScore
+		}
+		if meta.Description != "" {
+			updates["description"] = meta.Description
+		}
+		if meta.Category != "" {
+			updates["category"] = meta.Category
 		}
 		didMetaUpdate := false
 		if len(updates) > 0 {
@@ -941,6 +977,30 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 				}
 			}
 		}
+
+		// Tag binding: when upstream has tags, replace the item's tag set
+		// with the upstream set. When upstream tags are empty we leave the
+		// existing tag bindings alone — preserves SKILL.md frontmatter
+		// tags AND plugin parser's synthesised bundle tags (skills /
+		// commands / mcp / etc.) which act as fallbacks when upstream
+		// has nothing.
+		if len(meta.Tags) > 0 && !dryRun {
+			tagModels, tagErr := tagSvc.EnsureTags(meta.Tags, services.TagClassCustom, "system")
+			if tagErr != nil {
+				log.Printf("Warning: failed to ensure tags for item %s: %v", item.ID, tagErr)
+			} else if len(tagModels) > 0 {
+				tagIDs := make([]string, 0, len(tagModels))
+				for _, t := range tagModels {
+					tagIDs = append(tagIDs, t.ID)
+				}
+				if setErr := tagSvc.SetItemTags(item.ID, tagIDs); setErr != nil {
+					log.Printf("Warning: failed to set tags for item %s: %v", item.ID, setErr)
+				} else {
+					tagsSet++
+				}
+			}
+		}
+
 		if !didMetaUpdate && meta.Security == nil {
 			skipped++
 			continue
@@ -961,8 +1021,8 @@ func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
 		}
 	}
 
-	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d, security_scans written=%d skipped=%d",
-		dryRun, updated, skipped, securityWritten, securitySkipped)
+	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d, security_scans written=%d skipped=%d, tags set=%d",
+		dryRun, updated, skipped, securityWritten, securitySkipped, tagsSet)
 	return nil
 }
 
