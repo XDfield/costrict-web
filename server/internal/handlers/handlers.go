@@ -16,6 +16,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -51,6 +52,7 @@ type authUserDTO struct {
 	Phone              *string        `json:"phone,omitempty"`
 	AvatarURL          string         `json:"avatarUrl"`
 	CasdoorUniversalID *string        `json:"casdoorUniversalId,omitempty"`
+	SystemRoles        []string       `json:"systemRoles,omitempty"`
 	Auth               map[string]any `json:"auth,omitempty"`
 }
 
@@ -227,6 +229,7 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 			auth["externalSubject"] = *user.CasdoorUniversalID
 		}
 	}
+	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(user.SubjectID)
 	return authUserDTO{
 		ID:                 user.SubjectID,
 		SubjectID:          user.SubjectID,
@@ -236,6 +239,7 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 		Phone:              user.Phone,
 		AvatarURL:          derefString(user.AvatarURL),
 		CasdoorUniversalID: user.CasdoorUniversalID,
+		SystemRoles:        roles,
 		Auth:               auth,
 	}
 }
@@ -253,6 +257,7 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 	if userID == "" {
 		userID = claims.ID
 	}
+	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(userID)
 	return authUserDTO{
 		ID:                 userID,
 		SubjectID:          userID,
@@ -262,6 +267,7 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 		Phone:              stringPtr(claims.Phone),
 		AvatarURL:          claims.Picture,
 		CasdoorUniversalID: stringPtr(claims.UniversalID),
+		SystemRoles:        roles,
 		Auth: gin.H{
 			"provider":        claims.Provider,
 			"providerUserId":  claims.ProviderUserID,

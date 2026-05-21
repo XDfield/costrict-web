@@ -213,6 +213,9 @@ func main() {
 		&models.ItemCategory{},
 		&models.DeviceRelease{},
 		&models.DeviceCommandResult{},
+		&models.ItemDistribution{},
+		&models.ItemDistributionReceipt{},
+		&models.Organization{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto-migrate database: %v", err)
@@ -236,6 +239,9 @@ func main() {
 	}
 	if err := backfillUserAuthIdentities(db, false); err != nil {
 		log.Fatalf("Failed to backfill user auth identities: %v", err)
+	}
+	if err := backfillOrganizations(db); err != nil {
+		log.Fatalf("Failed to backfill organizations: %v", err)
 	}
 
 	log.Println("All migrations completed successfully")
@@ -1676,4 +1682,47 @@ func deduplicateSlugs(db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+// backfillOrganizations creates Organization records from existing User.organization values.
+func backfillOrganizations(db *gorm.DB) error {
+	var orgNames []string
+	if err := db.Model(&models.User{}).
+		Where("organization IS NOT NULL AND organization != ''").
+		Distinct().
+		Pluck("organization", &orgNames).Error; err != nil {
+		return fmt.Errorf("failed to collect organization names: %w", err)
+	}
+
+	if len(orgNames) == 0 {
+		log.Println("[backfillOrganizations] no organizations to backfill")
+		return nil
+	}
+
+	created := 0
+	for _, name := range orgNames {
+		org := models.Organization{
+			ID:   uuid.New().String(),
+			Name: name,
+		}
+		if err := db.Create(&org).Error; err != nil {
+			if !isDuplicateError(err) {
+				return fmt.Errorf("failed to create organization %s: %w", name, err)
+			}
+		} else {
+			created++
+		}
+	}
+
+	log.Printf("[backfillOrganizations] created %d organizations", created)
+	return nil
+}
+
+func isDuplicateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key value violates unique constraint") ||
+		strings.Contains(msg, "UNIQUE constraint failed")
 }

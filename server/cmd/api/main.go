@@ -170,6 +170,10 @@ func main() {
 	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
 	usageHandler := handlers.NewUsageHandler(usageSvc)
 
+	// Initialize Distribution handler
+	distSvc := services.NewDistributionService(db, behaviorSvc)
+	distHandler := handlers.NewDistributionHandler(db, distSvc)
+
 	// Start background indexing (every hour)
 	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
 
@@ -346,10 +350,20 @@ func main() {
 			authed.DELETE("/items/:id", handlers.DeleteItem)
 			authed.PUT("/items/:id/move", handlers.MoveItem)
 			authed.PUT("/items/:id/transfer", handlers.TransferItemToRepo)
+			authed.POST("/items/:id/distribute", distHandler.DistributeItem)
+			authed.GET("/items/:id/distributions", distHandler.ListItemDistributions)
 			authed.POST("/items/:id/scan", handlers.TriggerItemScan)
 			authed.POST("/scan-jobs/:id/cancel", handlers.CancelScanJob)
 			authed.POST("/items/:id/favorite", recommendHandler.FavoriteItem)
 			authed.DELETE("/items/:id/favorite", recommendHandler.UnfavoriteItem)
+
+			// Distribution routes
+			authed.GET("/distributions/my/sent", distHandler.ListSentDistributions)
+			authed.GET("/distributions/my/received", distHandler.ListReceivedDistributions)
+			authed.PUT("/distributions/:id", distHandler.UpdateDistribution)
+			authed.DELETE("/distributions/:id", distHandler.RevokeDistribution)
+			authed.POST("/distributions/:id/dismiss", distHandler.DismissReceipt)
+			authed.POST("/distributions/:id/read", distHandler.MarkReceiptRead)
 
 			authed.POST("/artifacts/upload", handlers.UploadArtifact)
 			authed.DELETE("/artifacts/:id", handlers.DeleteArtifact)
@@ -482,6 +496,7 @@ func main() {
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
+	distSvc.SetNotificationService(notificationSvc)
 
 	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
 	cloudModule.NotificationService = notificationSvc

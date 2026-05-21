@@ -229,6 +229,9 @@ func (s *NotificationService) GetSupportedTriggerEvents() []string {
 		EventSessionIdle,
 		EventProjectInvitationCreated,
 		EventSystemNotification,
+		EventItemDistributed,
+		EventItemRevoked,
+		EventItemPaused,
 	}
 }
 

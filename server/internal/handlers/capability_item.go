@@ -779,7 +779,7 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 		}
 	}
 	if opts.AllowFavorited && c.Query("favorited") == "true" && opts.UserID != "" {
-		query = query.Where("EXISTS (SELECT 1 FROM item_favorites f WHERE f.item_id = capability_items.id AND f.user_id = ?)", opts.UserID)
+		query = query.Where("EXISTS (SELECT 1 FROM item_favorites f WHERE f.item_id = capability_items.id AND f.user_id = ?) OR EXISTS (SELECT 1 FROM item_distribution_receipts idr JOIN item_distributions id ON id.id = idr.distribution_id WHERE idr.user_id = ? AND idr.receipt_status != ? AND id.status = ? AND id.item_id = capability_items.id)", opts.UserID, opts.UserID, "dismissed", "active")
 	}
 
 	return applyItemTagsFilter(query, c.Query("tags"))
@@ -1785,11 +1785,31 @@ func ListAllItems(c *gin.Context) {
 	if isFavoritedQuery {
 		var favoriteItemIDs []string
 		db.Model(&models.ItemFavorite{}).Where("user_id = ?", uid).Pluck("item_id", &favoriteItemIDs)
-		if len(favoriteItemIDs) == 0 {
+
+		var distributedItemIDs []string
+		db.Model(&models.ItemDistributionReceipt{}).
+			Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
+			Where("item_distribution_receipts.user_id = ? AND item_distribution_receipts.receipt_status != ? AND item_distributions.status = ?",
+				uid, "dismissed", "active").
+			Select("item_distributions.item_id").
+			Scan(&distributedItemIDs)
+
+		itemIDSet := make(map[string]struct{}, len(favoriteItemIDs)+len(distributedItemIDs))
+		for _, id := range favoriteItemIDs {
+			itemIDSet[id] = struct{}{}
+		}
+		for _, id := range distributedItemIDs {
+			itemIDSet[id] = struct{}{}
+		}
+		if len(itemIDSet) == 0 {
 			c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
 			return
 		}
-		query = db.Where("id IN ?", favoriteItemIDs)
+		allItemIDs := make([]string, 0, len(itemIDSet))
+		for id := range itemIDSet {
+			allItemIDs = append(allItemIDs, id)
+		}
+		query = db.Where("id IN ?", allItemIDs)
 		if len(registryIDs) > 0 {
 			query = query.Where("registry_id IN ?", registryIDs)
 		}
