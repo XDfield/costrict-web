@@ -59,6 +59,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
+	"golang.org/x/text/unicode/norm"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -275,7 +276,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 		seenEntryDirs[paths.EntryDir] = true
 
 		absPath := filepath.Join(bundleDir, paths.BundlePath)
-		fileBytes, err := os.ReadFile(absPath)
+		fileBytes, err := readBundleFile(absPath)
 		if err != nil {
 			// File listed in index.json but missing on disk → bundle
 			// builder bug or supply-chain gap. Counted as Failed because
@@ -1024,6 +1025,39 @@ func mustMarshalJSON(v any) datatypes.JSON {
 		return datatypes.JSON([]byte("{}"))
 	}
 	return datatypes.JSON(b)
+}
+
+// readBundleFile reads `absPath`, with one retry on ENOENT after
+// renormalizing the path between Unicode NFC ↔ NFD. catalog/index.json
+// is written by upstream Python tooling in NFC, so primaryPathsForEntry
+// produces NFC paths. The on-disk catalog-download/ tree may be stored
+// as NFD (e.g. when the bundle was packed on a macOS HFS+/APFS host
+// without normalization). Without the fallback we get spurious ENOENT
+// for entries whose IDs contain combining characters (görsel, için,
+// sporsmaç, …). Upstream build_catalog_bundle.py also normalizes member
+// names to NFC, so this fallback is purely defensive for older bundles
+// that pre-date that fix.
+func readBundleFile(absPath string) ([]byte, error) {
+	b, err := os.ReadFile(absPath)
+	if err == nil {
+		return b, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	// Try the opposite normalization form. NFC files won't exist if the
+	// disk has NFD; NFD reads won't exist if the disk has NFC.
+	if alt := norm.NFD.String(absPath); alt != absPath {
+		if b2, err2 := os.ReadFile(alt); err2 == nil {
+			return b2, nil
+		}
+	}
+	if alt := norm.NFC.String(absPath); alt != absPath {
+		if b2, err2 := os.ReadFile(alt); err2 == nil {
+			return b2, nil
+		}
+	}
+	return nil, err
 }
 
 // ---- bundle materialization ----------------------------------------------

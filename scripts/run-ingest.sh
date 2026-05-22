@@ -135,13 +135,23 @@ kubectl -n "$NAMESPACE" cp "$BUNDLE_LOCAL" "${API_POD}:/tmp/catalog-bundle.tar.g
 # 2. Dry-run first — always.
 # ---------------------------------------------------------------------------
 log "dry-run (no DB writes) ..."
+# `2>&1` matters: the ingest summary + per-entry errors come from zap/log.Printf
+# which goes to STDERR, not STDOUT. Without merging, the grep below silently
+# missed `failed=N` lines and the prompt-for-yes appeared even when there were
+# real failures to investigate.
 kubectl -n "$NAMESPACE" exec "$API_POD" -- \
   "$MIGRATE_IN_POD" ingest-upstream \
   --source=/tmp/catalog-bundle.tar.gz --dry-run \
-  | tee /tmp/ingest-dryrun-${ENVIRONMENT}.out
+  2>&1 | tee /tmp/ingest-dryrun-${ENVIRONMENT}.out
 
 if grep -qE "failed=[1-9]" /tmp/ingest-dryrun-${ENVIRONMENT}.out; then
   die "dry-run reported failed > 0 — STOP and investigate"
+fi
+if grep -qE "incomplete=[1-9]" /tmp/ingest-dryrun-${ENVIRONMENT}.out; then
+  # Incomplete is "upstream data issue, not ingest bug" — surface it but
+  # don't abort. Operator decides.
+  log "WARN: dry-run reported incomplete > 0 (upstream data issues, not ingest bugs). Sample:"
+  grep -E '^\[incomplete\]|incomplete error|incomplete=' /tmp/ingest-dryrun-${ENVIRONMENT}.out | head -5
 fi
 
 if [[ "$DRY_RUN_ONLY" == "1" ]]; then
@@ -159,7 +169,7 @@ read -r -p "[ingest:$ENVIRONMENT] dry-run OK. Proceed with REAL ingest? (yes/no)
 log "real ingest ..."
 kubectl -n "$NAMESPACE" exec "$API_POD" -- \
   env INGEST_ERROR_LOG=/tmp/ingest-errors.log "$MIGRATE_IN_POD" ingest-upstream --source=/tmp/catalog-bundle.tar.gz \
-  | tee /tmp/ingest-real-${ENVIRONMENT}.out
+  2>&1 | tee /tmp/ingest-real-${ENVIRONMENT}.out
 
 if kubectl -n "$NAMESPACE" exec "$API_POD" -- test -f /tmp/ingest-errors.log 2>/dev/null; then
   kubectl -n "$NAMESPACE" cp "${API_POD}:/tmp/ingest-errors.log" /tmp/ingest-errors-${ENVIRONMENT}.log
