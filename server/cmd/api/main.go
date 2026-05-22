@@ -34,6 +34,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
 	"github.com/costrict/costrict-web/server/internal/cloud"
+	"github.com/costrict/costrict-web/server/internal/collaboration"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/gateway"
@@ -444,12 +445,16 @@ func main() {
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
 
+			collabModule := collaboration.New(db)
+			collabModule.RegisterRoutes(authed)
+
 			memoryModule := memory.New(db, storageBackend)
 			memoryModule.RegisterRoutes(authed)
 
 			_ = notificationModule
 			_ = systemRoleModule
 			_ = projectModule
+			_ = collabModule
 			_ = memoryModule
 			_ = kanbanModule
 		}

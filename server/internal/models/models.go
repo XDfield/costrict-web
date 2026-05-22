@@ -179,6 +179,7 @@ type Project struct {
 	Name        string         `gorm:"not null;uniqueIndex:idx_project_creator_name" json:"name"`
 	Description string         `json:"description,omitempty"`
 	CreatorID   string         `gorm:"type:text;not null;index;uniqueIndex:idx_project_creator_name" json:"creatorId"`
+	SpaceID     *string        `gorm:"type:uuid;index" json:"spaceId,omitempty"`
 	IsPinned    bool           `gorm:"column:is_pinned;->" json:"isPinned"`
 	EnabledAt   *time.Time     `gorm:"index" json:"enabledAt,omitempty"`
 	ArchivedAt  *time.Time     `gorm:"index" json:"archivedAt,omitempty"`
