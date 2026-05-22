@@ -201,12 +201,8 @@ func printMigrateHelp() {
 	fmt.Println("                                                Pull the upstream catalog bundle (built by")
 	fmt.Println("                                                costrict-skills-repo's scripts/build_catalog_bundle.py)")
 	fmt.Println("                                                and reconcile capability_items in one pass.")
-	fmt.Println("                                                Replaces import-everything-ai-coding + backfill-everything-ai-coding-metadata.")
-	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding <source-path> [--dry-run]")
-	fmt.Println("                                                [DEPRECATED] use ingest-upstream. Kept for backward compat.")
-	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
-	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata <source-path> [--dry-run]")
-	fmt.Println("                                                [DEPRECATED] use ingest-upstream. Kept for backward compat.")
+	fmt.Println("                                                Replaces the old import-everything-ai-coding +")
+	fmt.Println("                                                backfill-everything-ai-coding-metadata pair.")
 	fmt.Println("  go run ./cmd/migrate backfill-provider-aware-external-keys [--dry-run]")
 	fmt.Println("                                                Migrate external_keys from casdoor:<id> to casdoor:<provider>:<id>")
 	fmt.Println("")
@@ -215,11 +211,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate backfill-capability-content-versioning")
 	fmt.Println("  go run ./cmd/migrate user-subject-ids --dry-run")
 	fmt.Println("  go run ./cmd/migrate user-external-identities --dry-run")
-	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding /Users/linkai/code/.../everything-ai-coding --dry-run")
-	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=/Users/linkai/code/.../everything-ai-coding")
-	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata /Users/linkai/code/.../everything-ai-coding --dry-run")
-	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=/Volumes/Work/Projects/costrict-skills-repo/dist/catalog-bundle.tar.gz")
-	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=https://github.com/.../releases/download/.../catalog-bundle.tar.gz --dry-run")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=./dist/catalog-bundle.tar.gz")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=https://github.com/zgsm-ai/everything-ai-coding/releases/download/catalog-bundle-v1.0.0/catalog-bundle.tar.gz --dry-run")
 }
 
 // ingestUpstreamCatalog is the new entry point that replaces the

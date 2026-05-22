@@ -93,14 +93,14 @@ cp .env.local.example .env.local
 
 set -a; . ./.env; . ./.env.local; set +a
 
-# 本地 tarball
+# 本地 tarball（路径换成你 costrict-skills-repo checkout 的 dist/ 目录）
 go run ./cmd/migrate ingest-upstream \
-  --source=/Volumes/Work/Projects/costrict-skills-repo/dist/catalog-bundle.tar.gz
+  --source=../../costrict-skills-repo/dist/catalog-bundle.tar.gz
 
 # 本地目录（已解压的 bundle，dev 调试用）
 go run ./cmd/migrate ingest-upstream --source=/path/to/extracted-bundle/
 
-# 远端 URL（将来 release 发出后）
+# 远端 URL（release 后）
 go run ./cmd/migrate ingest-upstream \
   --source=https://github.com/zgsm-ai/everything-ai-coding/releases/download/catalog-2026-W21/catalog-bundle.tar.gz
 
