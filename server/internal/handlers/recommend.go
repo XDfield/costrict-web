@@ -101,6 +101,7 @@ func (h *RecommendHandler) GetTrending(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	ResolveItemListLocale(c, items)
 
 	offset := (page - 1) * pageSize
 	c.JSON(http.StatusOK, gin.H{
@@ -137,6 +138,7 @@ func (h *RecommendHandler) GetNewAndNoteworthy(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	ResolveItemListLocale(c, items)
 
 	offset := (page - 1) * pageSize
 	c.JSON(http.StatusOK, gin.H{

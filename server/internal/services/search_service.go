@@ -112,7 +112,7 @@ func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (
 
 	sql := `
 		SELECT * FROM (
-			SELECT id, registry_id, slug, item_type, name, description, category, version,
+			SELECT id, registry_id, slug, item_type, name, description, descriptions, category, version,
 			       content, metadata, source_path, source_sha, install_count,
 			       status, created_by, updated_by, created_at, updated_at,
 			       embedding_updated_at, experience_score,
@@ -193,7 +193,7 @@ func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*S
 
 	like := database.ILike(s.db)
 	sql := fmt.Sprintf(`
-		SELECT id, registry_id, slug, item_type, name, description, category, version,
+		SELECT id, registry_id, slug, item_type, name, description, descriptions, category, version,
 		       content, metadata, source_path, source_sha, install_count,
 		       status, created_by, updated_by, created_at, updated_at,
 		       embedding_updated_at, experience_score,
@@ -354,7 +354,7 @@ func (s *SearchService) FindSimilar(ctx context.Context, itemID string, page, pa
 	// Find similar items
 	var similarItems []SearchResultItem
 	sql := `
-		SELECT id, registry_id, slug, item_type, name, description, category, version,
+		SELECT id, registry_id, slug, item_type, name, description, descriptions, category, version,
 		       content, metadata, source_path, source_sha, install_count,
 		       status, created_by, updated_by, created_at, updated_at,
 		       embedding_updated_at, experience_score,

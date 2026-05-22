@@ -45,6 +45,7 @@ func newMigrateTestDB(t *testing.T) *gorm.DB {
 			item_type TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			descriptions TEXT NOT NULL DEFAULT '{}',
 			category TEXT,
 			version TEXT DEFAULT '1.0.0',
 			content TEXT,

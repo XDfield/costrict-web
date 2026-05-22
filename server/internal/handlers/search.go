@@ -75,6 +75,7 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	resolveSearchResultLocale(c, result)
 
 	c.JSON(http.StatusOK, result)
 }
@@ -131,6 +132,7 @@ func (h *SearchHandler) HybridSearch(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	resolveSearchResultLocale(c, result)
 
 	c.JSON(http.StatusOK, result)
 }
@@ -164,6 +166,7 @@ func (h *SearchHandler) FindSimilar(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	resolveSearchItemSliceLocale(c, items)
 
 	offset := (page - 1) * pageSize
 	c.JSON(http.StatusOK, gin.H{
@@ -173,6 +176,23 @@ func (h *SearchHandler) FindSimilar(c *gin.Context) {
 		"pageSize": pageSize,
 		"hasMore":  int64(offset+pageSize) < total,
 	})
+}
+
+func resolveSearchResultLocale(c *gin.Context, result *services.SearchResult) {
+	if result == nil {
+		return
+	}
+	resolveSearchItemSliceLocale(c, result.Items)
+}
+
+func resolveSearchItemSliceLocale(c *gin.Context, items []services.SearchResultItem) {
+	if len(items) == 0 {
+		return
+	}
+	locale := ResolveLocale(c)
+	for i := range items {
+		items[i].Description = PickDescription(items[i].Descriptions, items[i].Description, locale)
+	}
 }
 
 func intersectStrings(a, b []string) []string {

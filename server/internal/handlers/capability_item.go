@@ -482,7 +482,8 @@ type ItemResponse struct {
 	Slug                string                      `json:"slug"`
 	ItemType            string                      `json:"itemType"`
 	Name                string                      `json:"name"`
-	Description         string                      `json:"description"`
+	Description         string                      `json:"description"` // Resolved per `?lang=` query or Accept-Language header; en is the default. Use `descriptions` for raw locale map.
+	Descriptions        datatypes.JSON              `json:"descriptions" swaggertype:"object"` // Raw locale → text map, e.g. {"en":"...","zh":"..."}.
 	Category            string                      `json:"category"`
 	Version             string                      `json:"version"`
 	Content             string                      `json:"content"`
@@ -594,13 +595,14 @@ func reconcileItemCurrentRevision(db *gorm.DB, item *models.CapabilityItem) {
 		Update("current_revision", latestRevision).Error
 	}
 
-func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
+func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
 	reconcileItemCurrentRevision(db, &item)
 	if TagSvc != nil && item.ID != "" && len(item.Tags) == 0 {
 		if tagsMap, err := TagSvc.GetItemTags([]string{item.ID}); err == nil && tagsMap != nil {
 			item.Tags = tagsMap[item.ID]
 		}
 	}
+	locale := ResolveLocale(c)
 	resp := ItemResponse{
 		ID:                 item.ID,
 		RegistryID:         item.RegistryID,
@@ -608,7 +610,8 @@ func buildItemResponse(db *gorm.DB, item models.CapabilityItem, userID string) I
 		Slug:               item.Slug,
 		ItemType:           item.ItemType,
 		Name:               item.Name,
-		Description:        item.Description,
+		Description:        PickDescription(item.Descriptions, item.Description, locale),
+		Descriptions:       item.Descriptions,
 		Category:           item.Category,
 		Version:            item.Version,
 		Content:            item.Content,
@@ -837,6 +840,7 @@ func ListItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
+	ResolveItemListLocale(c, items)
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "page": page, "pageSize": pageSize, "hasMore": int64((page-1)*pageSize+pageSize) < total})
 }
 
@@ -924,7 +928,7 @@ func CreateItem(c *gin.Context) {
 		CategorySvc.EnsureCategory(req.Category, req.CreatedBy)
 	}
 
-	c.JSON(http.StatusCreated, buildItemResponse(db, *item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusCreated, buildItemResponse(c, db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // GetItem godoc
@@ -945,7 +949,7 @@ func GetItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // ListItemAssets godoc
@@ -1206,7 +1210,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // updateItemFromArchive handles multipart/form-data archive upload item update.
@@ -1336,7 +1340,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 			return
 		}
-		c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+		c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 		return
 	}
 
@@ -1516,7 +1520,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		}()
 	}
 
-	c.JSON(http.StatusOK, buildItemResponse(db, item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 }
 
 // DeleteItem godoc
@@ -1841,6 +1845,7 @@ func ListAllItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
 	}
+	ResolveItemListLocale(c, items)
 
 	// Collect unique repo IDs from preloaded registries and batch-fetch repo names
 	repoIDSet := make(map[string]bool)
@@ -2123,7 +2128,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // cleanupStorageKeys deletes uploaded objects after a later step fails.
@@ -2388,7 +2393,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	enqueueScanAsync(item.ID, 1, "create")
-	c.JSON(http.StatusCreated, buildItemResponse(h.db, *item, c.GetString(middleware.UserIDKey)))
+	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, c.GetString(middleware.UserIDKey)))
 }
 
 // MoveItem godoc

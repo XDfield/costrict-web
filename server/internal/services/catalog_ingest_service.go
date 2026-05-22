@@ -172,14 +172,15 @@ type catalogBundleManifest struct {
 // We deliberately keep this struct small — index.json carries many fields
 // (evaluation, freshness_label, weak_dims, …) that the DB does not need.
 type catalogEntry struct {
-	ID          string                `json:"id"`
-	Type        string                `json:"type"`
-	Source      string                `json:"source"`
-	Description string                `json:"description"`
-	Category    string                `json:"category"`
-	Tags        []string              `json:"tags"`
-	FinalScore  float64               `json:"final_score"`
-	Security    *catalogSecurityBlock `json:"security,omitempty"`
+	ID            string                `json:"id"`
+	Type          string                `json:"type"`
+	Source        string                `json:"source"`
+	Description   string                `json:"description"`
+	DescriptionZh string                `json:"description_zh"`
+	Category      string                `json:"category"`
+	Tags          []string              `json:"tags"`
+	FinalScore    float64               `json:"final_score"`
+	Security      *catalogSecurityBlock `json:"security,omitempty"`
 }
 
 // catalogSecurityBlock mirrors the schema written by the upstream LLM
@@ -519,6 +520,10 @@ func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem,
 	if entry.Description != "" && item.Description != entry.Description {
 		return true
 	}
+	// descriptions JSONB drift: upstream brought a new zh translation, etc.
+	if !descriptionsJSONEqual(item.Descriptions, buildDescriptionsJSON(entry)) {
+		return true
+	}
 	if entry.Category != "" && item.Category != entry.Category {
 		return true
 	}
@@ -529,6 +534,28 @@ func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem,
 	return false
 }
 
+// descriptionsJSONEqual compares two locale → text JSON maps for semantic
+// equality. Byte comparison would be incorrect because json.Marshal does
+// not guarantee key order across Go versions.
+func descriptionsJSONEqual(a, b datatypes.JSON) bool {
+	var ma, mb map[string]string
+	if len(a) > 0 {
+		_ = json.Unmarshal(a, &ma)
+	}
+	if len(b) > 0 {
+		_ = json.Unmarshal(b, &mb)
+	}
+	if len(ma) != len(mb) {
+		return false
+	}
+	for k, v := range ma {
+		if mb[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, entry catalogEntry) error {
 	updates := map[string]any{}
 	if entry.Source != "" {
@@ -536,6 +563,13 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 	}
 	if entry.Description != "" {
 		updates["description"] = entry.Description
+	}
+	// descriptions JSONB is rewritten unconditionally on each ingest pass so
+	// that a removed upstream zh translation also clears from the DB row.
+	// Spec: integral replacement, no merge with prior content.
+	newDescs := buildDescriptionsJSON(entry)
+	if !descriptionsJSONEqual(item.Descriptions, newDescs) {
+		updates["descriptions"] = newDescs
 	}
 	if entry.Category != "" {
 		updates["category"] = entry.Category
@@ -601,6 +635,7 @@ func (s *CatalogIngestService) updateItem(
 
 	existing.Name = parsed.Name
 	existing.Description = description
+	existing.Descriptions = buildDescriptionsJSON(entry)
 	existing.Category = category
 	existing.Version = parsed.Version
 	existing.Content = parsed.Content
@@ -629,13 +664,18 @@ func (s *CatalogIngestService) updateItem(
 	}
 
 	ver := &models.CapabilityVersion{
-		ID:        uuid.New().String(),
-		ItemID:    existing.ID,
-		Revision:  maxRevision + 1,
-		Content:   parsed.Content,
-		Metadata:  metadataJSON(meta),
-		CommitMsg: fmt.Sprintf("ingest: catalog %s", entry.ID),
-		CreatedBy: triggerUser,
+		ID:           uuid.New().String(),
+		ItemID:       existing.ID,
+		Revision:     maxRevision + 1,
+		Name:         parsed.Name,
+		Description:  description,
+		Descriptions: buildDescriptionsJSON(entry),
+		Category:     category,
+		Version:      parsed.Version,
+		Content:      parsed.Content,
+		Metadata:     metadataJSON(meta),
+		CommitMsg:    fmt.Sprintf("ingest: catalog %s", entry.ID),
+		CreatedBy:    triggerUser,
 	}
 	if err := s.DB.Create(ver).Error; err != nil {
 		return err
@@ -687,6 +727,7 @@ func (s *CatalogIngestService) insertItem(
 		ItemType:        parsed.ItemType,
 		Name:            parsed.Name,
 		Description:     description,
+		Descriptions:    buildDescriptionsJSON(entry),
 		Category:        category,
 		Version:         parsed.Version,
 		Content:         parsed.Content,
@@ -712,13 +753,18 @@ func (s *CatalogIngestService) insertItem(
 	}
 
 	ver := &models.CapabilityVersion{
-		ID:        uuid.New().String(),
-		ItemID:    newItem.ID,
-		Revision:  1,
-		Content:   parsed.Content,
-		Metadata:  metadataJSON(meta),
-		CommitMsg: fmt.Sprintf("ingest: initial import from catalog %s", entry.ID),
-		CreatedBy: triggerUser,
+		ID:           uuid.New().String(),
+		ItemID:       newItem.ID,
+		Revision:     1,
+		Name:         parsed.Name,
+		Description:  description,
+		Descriptions: buildDescriptionsJSON(entry),
+		Category:     category,
+		Version:      parsed.Version,
+		Content:      parsed.Content,
+		Metadata:     metadataJSON(meta),
+		CommitMsg:    fmt.Sprintf("ingest: initial import from catalog %s", entry.ID),
+		CreatedBy:    triggerUser,
 	}
 	if err := s.DB.Create(ver).Error; err != nil {
 		return nil, err
@@ -1007,6 +1053,28 @@ func entryDirFromSourcePath(sourcePath string) string {
 		return ""
 	}
 	return filepath.Join(parts[0], parts[1])
+}
+
+// buildDescriptionsJSON packs the upstream entry's per-locale descriptions
+// into a JSONB map. en/zh are written only when the corresponding upstream
+// field is non-empty; the resulting map fully replaces the column on write
+// so a removed upstream translation also disappears from the DB row.
+func buildDescriptionsJSON(entry catalogEntry) datatypes.JSON {
+	m := map[string]string{}
+	if entry.Description != "" {
+		m["en"] = entry.Description
+	}
+	if entry.DescriptionZh != "" {
+		m["zh"] = entry.DescriptionZh
+	}
+	if len(m) == 0 {
+		return datatypes.JSON([]byte("{}"))
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return datatypes.JSON([]byte("{}"))
+	}
+	return datatypes.JSON(b)
 }
 
 // chooseTags implements the precedence rule: upstream tags win when
