@@ -123,7 +123,7 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		Email:             email,
 		Picture:           picture,
 		Owner:             str(claims, "owner"),
-		Provider:          provider,
+		Provider:          normalizedProvider(provider),
 		ProviderUserID:    firstNonEmpty(providerUserID, str(claims, "id")),
 		Phone:             phone,
 		Properties:        properties,
