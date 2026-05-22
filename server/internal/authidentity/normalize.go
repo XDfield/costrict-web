@@ -47,6 +47,12 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 	if provider == "" && phone != "" {
 		provider = "phone"
 	}
+	// Fallback: detect idtrust from signupApplication when provider is not set
+	if provider == "" {
+		if signupApp := str(claims, "signupApplication"); strings.EqualFold(signupApp, "idtrust") {
+			provider = "idtrust"
+		}
+	}
 
 	properties := mapAny(claims["properties"])
 	prefix := providerPropertyPrefix(provider)
@@ -73,8 +79,8 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 	case "github":
 		username = firstNonEmpty(providerUsername, name, usernameFromEmail(email))
 	case "idtrust":
-		username = firstNonEmpty(providerUsername, providerUserID)
-		displayName = firstNonEmpty(providerDisplayName, str(claims, "displayName"), username)
+		username = firstNonEmpty(providerUserID, providerUsername)
+		displayName = firstNonEmpty(str(claims, "displayName"), providerDisplayName, username)
 		name = username
 	case "phone":
 		if phone != "" {
@@ -125,7 +131,12 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 }
 
 func normalizedProvider(provider string) string {
-	return strings.ToLower(strings.TrimSpace(provider))
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	// Handle compound provider names like "IDTrust - Sangfor"
+	if idx := strings.Index(normalized, " - "); idx > 0 {
+		normalized = strings.TrimSpace(normalized[:idx])
+	}
+	return normalized
 }
 
 func providerPropertyPrefix(provider string) string {
