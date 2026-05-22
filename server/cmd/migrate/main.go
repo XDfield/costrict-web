@@ -16,6 +16,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
+	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 )
@@ -1280,5 +1281,6 @@ func isDuplicateError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "duplicate key value violates unique constraint") ||
-		strings.Contains(msg, "UNIQUE constraint failed")
+		strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicated key not allowed")
 }
