@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -490,4 +491,17 @@ func slugify(name string) string {
 		}
 	}
 	return sb.String()
+}
+
+// ------------------------------------------------------------------
+// Projects (space-scoped)
+// ------------------------------------------------------------------
+
+func (s *CollaborationService) ListSpaceProjects(spaceID string) ([]models.Project, error) {
+	var projects []models.Project
+	err := s.db.
+		Where("space_id = ? AND deleted_at IS NULL", spaceID).
+		Order("created_at DESC").
+		Find(&projects).Error
+	return projects, err
 }

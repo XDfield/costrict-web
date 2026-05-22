@@ -147,3 +147,20 @@ func (m *Module) removeMemberHandler() gin.HandlerFunc {
 		c.JSON(http.StatusNoContent, gin.H{})
 	}
 }
+
+func (m *Module) listSpaceProjectsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		slug := c.Param("slug")
+		space, err := m.service.GetSpaceBySlug(slug)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		projects, err := m.service.ListSpaceProjects(space.ID)
+		if err != nil {
+			writeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"projects": projects})
+	}
+}

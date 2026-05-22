@@ -35,6 +35,7 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		spaces.GET("/:slug/members", m.requireSpaceMember(), m.listMembersHandler())
 		spaces.POST("/:slug/members", m.requireSpaceAdmin(), m.addMemberHandler())
 		spaces.DELETE("/:slug/members/:userId", m.requireSpaceAdmin(), m.removeMemberHandler())
+		spaces.GET("/:slug/projects", m.requireSpaceMember(), m.listSpaceProjectsHandler())
 	}
 
 	// Issues (require space context)
