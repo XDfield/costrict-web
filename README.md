@@ -139,6 +139,7 @@ podman-compose down -v
 ## 文档
 
 - [系统设计文档](./SYSTEM_DESIGN.md)
+- [Catalog Ingest 端到端链路](./docs/CATALOG_INGEST.md) —— 上游 catalog-bundle 同步到本地 capability_items 的流程
 - [开发进度](./todo.md)
 
 ## 参考项目

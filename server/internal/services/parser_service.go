@@ -524,6 +524,12 @@ func (p *ParserService) InferItemType(filePath string) string {
 	case strings.Contains(lower, "hooks/"):
 		return "hook"
 	default:
+		// PROMPT.md and RULE.md also land here. The current frontend
+		// store only renders 5 tabs (skill / subagent / command / mcp /
+		// plugin) — there is no Prompt or Rule tab — so we deliberately
+		// collapse all non-special .md files into "skill" so they show up
+		// under the Skills tab. A future change can split prompt/rule
+		// out once the frontend grows matching tabs.
 		return "skill"
 	}
 }
