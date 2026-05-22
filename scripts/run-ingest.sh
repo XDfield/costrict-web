@@ -7,13 +7,17 @@
 #   ENVIRONMENT=production              → https://zgsm.sangfor.com/cloud
 #
 # Required files in /tmp/ on the bastion (scp from your laptop first):
-#   /tmp/migrate-linux-amd64   AND/OR   /tmp/migrate-linux-arm64
 #   /tmp/catalog-bundle.tar.gz
+#
+# Optional (only used when the api pod's bundled /app/migrate doesn't
+# support `ingest-upstream` yet — e.g. running against an old image):
+#   /tmp/migrate-linux-amd64   AND/OR   /tmp/migrate-linux-arm64
 #
 # Usage:
 #   bash run-ingest.sh                              # staging, full flow
 #   ENVIRONMENT=production bash run-ingest.sh       # prod, extra confirm
 #   DRY_RUN_ONLY=1 bash run-ingest.sh               # stop after dry-run
+#   FORCE_LOCAL_MIGRATE=1 bash run-ingest.sh        # always use local binary, skip pod-side detection
 #   NAMESPACE=foo API_LABEL_NAME=bar bash …         # overrides
 
 set -euo pipefail
@@ -23,6 +27,7 @@ NAMESPACE="${NAMESPACE:-costrict-web}"
 API_LABEL_NAME="${API_LABEL_NAME:-costrict-web-api}"
 BUNDLE_LOCAL="${BUNDLE_LOCAL:-/tmp/catalog-bundle.tar.gz}"
 DRY_RUN_ONLY="${DRY_RUN_ONLY:-0}"
+FORCE_LOCAL_MIGRATE="${FORCE_LOCAL_MIGRATE:-0}"
 
 case "$ENVIRONMENT" in
   staging|prod|production) ;;
@@ -59,18 +64,6 @@ case "$ENVIRONMENT" in
     ;;
 esac
 
-# Pick the right migrate binary for the cluster's arch.
-NODE_ARCH=$(kubectl get nodes \
-  -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null || echo "")
-[[ -n "$NODE_ARCH" ]] || die "could not detect node arch — kubectl context wrong?"
-case "$NODE_ARCH" in
-  amd64|x86_64) MIGRATE_LOCAL="/tmp/migrate-linux-amd64" ;;
-  arm64|aarch64) MIGRATE_LOCAL="/tmp/migrate-linux-arm64" ;;
-  *) die "unsupported node arch: $NODE_ARCH" ;;
-esac
-[[ -f "$MIGRATE_LOCAL" ]] || die "migrate binary not found for $NODE_ARCH: $MIGRATE_LOCAL"
-log "node arch: $NODE_ARCH → $MIGRATE_LOCAL"
-
 # Pick a Running api pod.
 API_POD=$(kubectl -n "$NAMESPACE" get pod \
   -l "app.kubernetes.io/name=${API_LABEL_NAME}" \
@@ -93,19 +86,57 @@ kubectl -n "$NAMESPACE" exec "$API_POD" -- sh -c 'test -n "$DATABASE_URL"' \
 log "DATABASE_URL is set on pod"
 
 # ---------------------------------------------------------------------------
-# 1. Stage files into the pod (/tmp is emptyDir, scrubbed on pod restart)
+# 1. Decide which migrate binary to use
 # ---------------------------------------------------------------------------
-log "copying migrate + bundle into pod ..."
-kubectl -n "$NAMESPACE" cp "$MIGRATE_LOCAL"  "${API_POD}:/tmp/migrate-ingest"
-kubectl -n "$NAMESPACE" cp "$BUNDLE_LOCAL"   "${API_POD}:/tmp/catalog-bundle.tar.gz"
-kubectl -n "$NAMESPACE" exec "$API_POD" -- chmod +x /tmp/migrate-ingest
+# Preference order:
+#   1. Pod's bundled /app/migrate if it advertises `ingest-upstream` in
+#      its help output — this is the normal post-upgrade path and avoids
+#      the cross-compile + scp + cp round-trip entirely.
+#   2. Local binary from /tmp/migrate-linux-{amd64,arm64} — fallback for
+#      "the cluster image is older than this script" or when forced via
+#      FORCE_LOCAL_MIGRATE=1.
+MIGRATE_IN_POD="/app/migrate"
+if [[ "$FORCE_LOCAL_MIGRATE" == "1" ]]; then
+  POD_HAS_INGEST=0
+  log "FORCE_LOCAL_MIGRATE=1 — skipping pod migrate detection"
+elif kubectl -n "$NAMESPACE" exec "$API_POD" -- /app/migrate help 2>&1 \
+       | grep -q 'ingest-upstream'; then
+  POD_HAS_INGEST=1
+  log "pod's /app/migrate already supports ingest-upstream — using it directly"
+else
+  POD_HAS_INGEST=0
+  log "pod's /app/migrate is too old (no ingest-upstream subcommand) — will upload local binary"
+fi
+
+if [[ "$POD_HAS_INGEST" == "0" ]]; then
+  NODE_ARCH=$(kubectl get nodes \
+    -o jsonpath='{.items[0].status.nodeInfo.architecture}' 2>/dev/null || echo "")
+  [[ -n "$NODE_ARCH" ]] || die "could not detect node arch — kubectl context wrong?"
+  case "$NODE_ARCH" in
+    amd64|x86_64) MIGRATE_LOCAL="/tmp/migrate-linux-amd64" ;;
+    arm64|aarch64) MIGRATE_LOCAL="/tmp/migrate-linux-arm64" ;;
+    *) die "unsupported node arch: $NODE_ARCH" ;;
+  esac
+  [[ -f "$MIGRATE_LOCAL" ]] || die "migrate binary not found for $NODE_ARCH: $MIGRATE_LOCAL — scp it to the bastion or upgrade the api image first"
+  log "node arch: $NODE_ARCH → uploading $MIGRATE_LOCAL"
+
+  MIGRATE_IN_POD="/tmp/migrate-ingest"
+  kubectl -n "$NAMESPACE" cp "$MIGRATE_LOCAL" "${API_POD}:${MIGRATE_IN_POD}"
+  kubectl -n "$NAMESPACE" exec "$API_POD" -- chmod +x "$MIGRATE_IN_POD"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Stage the bundle into the pod (/tmp is emptyDir, scrubbed on restart)
+# ---------------------------------------------------------------------------
+log "copying bundle into pod ..."
+kubectl -n "$NAMESPACE" cp "$BUNDLE_LOCAL" "${API_POD}:/tmp/catalog-bundle.tar.gz"
 
 # ---------------------------------------------------------------------------
 # 2. Dry-run first — always.
 # ---------------------------------------------------------------------------
 log "dry-run (no DB writes) ..."
 kubectl -n "$NAMESPACE" exec "$API_POD" -- \
-  /tmp/migrate-ingest ingest-upstream \
+  "$MIGRATE_IN_POD" ingest-upstream \
   --source=/tmp/catalog-bundle.tar.gz --dry-run \
   | tee /tmp/ingest-dryrun-${ENVIRONMENT}.out
 
@@ -127,7 +158,7 @@ read -r -p "[ingest:$ENVIRONMENT] dry-run OK. Proceed with REAL ingest? (yes/no)
 # ---------------------------------------------------------------------------
 log "real ingest ..."
 kubectl -n "$NAMESPACE" exec "$API_POD" -- \
-  sh -c 'INGEST_ERROR_LOG=/tmp/ingest-errors.log /tmp/migrate-ingest ingest-upstream --source=/tmp/catalog-bundle.tar.gz' \
+  env INGEST_ERROR_LOG=/tmp/ingest-errors.log "$MIGRATE_IN_POD" ingest-upstream --source=/tmp/catalog-bundle.tar.gz \
   | tee /tmp/ingest-real-${ENVIRONMENT}.out
 
 if kubectl -n "$NAMESPACE" exec "$API_POD" -- test -f /tmp/ingest-errors.log 2>/dev/null; then
@@ -162,6 +193,8 @@ kubectl -n "$NAMESPACE" exec "$API_POD" -- sh -c '
 # 5. Cleanup pod /tmp
 # ---------------------------------------------------------------------------
 log "cleaning up files in pod ..."
+# /tmp/migrate-ingest only exists when we uploaded a local binary; rm -f is
+# a no-op when the pod ran /app/migrate directly. Safe either way.
 kubectl -n "$NAMESPACE" exec "$API_POD" -- rm -f \
   /tmp/migrate-ingest /tmp/catalog-bundle.tar.gz /tmp/ingest-errors.log || true
 
