@@ -16,6 +16,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
+	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 )
