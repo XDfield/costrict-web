@@ -400,6 +400,16 @@ func (s *CatalogIngestService) applyChangedEntry(
 		localBySlug[item.ItemType+":"+item.Slug] = item
 	}
 
+	// Items eligible for SecurityScan write at the bottom of this function.
+	// MUST include both the pre-existing rows we just updated AND the rows
+	// we freshly inserted. Pre-fix this slice was just `relatedItems`,
+	// which silently skipped SecurityScan for every newly-added entry —
+	// the symptom was 633 plugins all rendering with an empty Risk Level
+	// column on the staging frontend after the first ingest, because
+	// applySecurityScan never fired for them.
+	itemsForScan := make([]*models.CapabilityItem, 0, len(relatedItems)+len(parsedItems))
+	itemsForScan = append(itemsForScan, relatedItems...)
+
 	for _, parsed := range parsedItems {
 		key := parsed.ItemType + ":" + parsed.Slug
 		existing, exists := localBySlug[key]
@@ -443,6 +453,11 @@ func (s *CatalogIngestService) applyChangedEntry(
 			// .mcp.json that defines the same server name) treat it as an
 			// update instead of a duplicate INSERT.
 			globalBySlug[key] = newItem
+			// Also queue the new row for the SecurityScan side-channel
+			// below, otherwise its risk_level / last_scan_id would stay
+			// NULL until a future ingest cycle re-classifies it as
+			// metadata-only.
+			itemsForScan = append(itemsForScan, newItem)
 			s.syncAssetsForItem(bundleDir, paths.SourcePath, newItem.ID, &errs)
 			added++
 		}
@@ -450,7 +465,7 @@ func (s *CatalogIngestService) applyChangedEntry(
 
 	// SecurityScan row write — happens whether new or updated.
 	if !dryRun {
-		for _, item := range relatedItems {
+		for _, item := range itemsForScan {
 			s.applySecurityScan(item, entry)
 		}
 	}
