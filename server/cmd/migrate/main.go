@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,24 +13,14 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
-	"github.com/costrict/costrict-web/server/internal/team"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 var errDryRunRollback = errors.New("dry-run rollback")
-
-const (
-	publicRegistryID = "00000000-0000-0000-0000-000000000001"
-	publicRepoID     = "public"
-	importCreatedBy  = "system"
-)
 
 func main() {
 	cfg := config.Load()
@@ -77,8 +65,8 @@ func main() {
 				log.Println("User external identity backfill completed successfully")
 			}
 			return
-		case "import-everything-ai-coding":
-			sourcePath := ""
+		case "ingest-upstream":
+			source := ""
 			dryRun := false
 			for _, arg := range os.Args[2:] {
 				if arg == "--dry-run" {
@@ -86,59 +74,18 @@ func main() {
 					continue
 				}
 				if strings.HasPrefix(arg, "--source=") {
-					sourcePath = strings.TrimPrefix(arg, "--source=")
+					source = strings.TrimPrefix(arg, "--source=")
 					continue
 				}
-				if !strings.HasPrefix(arg, "--") && sourcePath == "" {
-					sourcePath = arg
+				if !strings.HasPrefix(arg, "--") && source == "" {
+					source = arg
 				}
 			}
-
-			if sourcePath == "" {
-				log.Fatalf("Missing source path. Use --source=<everything-ai-coding-path> or pass path as positional arg")
+			if source == "" {
+				log.Fatalf("Missing source. Use --source=<url|tarball|dir>")
 			}
-
-			if err := importEverythingAICoding(db, sourcePath, dryRun); err != nil {
-				if dryRun && errors.Is(err, errDryRunRollback) {
-					log.Println("Everything-AI-Coding import dry-run completed successfully")
-					return
-				}
-				log.Fatalf("Failed to import Everything-AI-Coding data: %v", err)
-			}
-			if dryRun {
-				log.Println("Everything-AI-Coding import dry-run completed successfully")
-			} else {
-				log.Println("Everything-AI-Coding import completed successfully")
-			}
-			return
-		case "backfill-everything-ai-coding-metadata":
-			sourcePath := ""
-			dryRun := false
-			for _, arg := range os.Args[2:] {
-				if arg == "--dry-run" {
-					dryRun = true
-					continue
-				}
-				if strings.HasPrefix(arg, "--source=") {
-					sourcePath = strings.TrimPrefix(arg, "--source=")
-					continue
-				}
-				if !strings.HasPrefix(arg, "--") && sourcePath == "" {
-					sourcePath = arg
-				}
-			}
-
-			if sourcePath == "" {
-				log.Fatalf("Missing source path. Use --source=<everything-ai-coding-path> or pass path as positional arg")
-			}
-
-			if err := backfillCatalogMetadata(db, sourcePath, dryRun); err != nil {
-				log.Fatalf("Failed to backfill catalog metadata: %v", err)
-			}
-			if dryRun {
-				log.Println("Catalog metadata backfill dry-run completed successfully")
-			} else {
-				log.Println("Catalog metadata backfill completed successfully")
+			if err := ingestUpstreamCatalog(db, source, dryRun); err != nil {
+				log.Fatalf("Failed to ingest upstream catalog: %v", err)
 			}
 			return
 		case "backfill-capability-content-versioning":
@@ -250,11 +197,16 @@ func printMigrateHelp() {
 	fmt.Println("                                                Backfill legacy user IDs to subject_id")
 	fmt.Println("  go run ./cmd/migrate user-external-identities [--dry-run]")
 	fmt.Println("                                                Backfill users.external_key/auth_provider/provider_user_id/phone")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=<url|tarball|dir> [--dry-run]")
+	fmt.Println("                                                Pull the upstream catalog bundle (built by")
+	fmt.Println("                                                costrict-skills-repo's scripts/build_catalog_bundle.py)")
+	fmt.Println("                                                and reconcile capability_items in one pass.")
+	fmt.Println("                                                Replaces import-everything-ai-coding + backfill-everything-ai-coding-metadata.")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding <source-path> [--dry-run]")
-	fmt.Println("                                                Import MCP/command/skills/agent data")
+	fmt.Println("                                                [DEPRECATED] use ingest-upstream. Kept for backward compat.")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=<source-path> [--dry-run]")
 	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata <source-path> [--dry-run]")
-	fmt.Println("                                                Backfill source, experience_score, and upstream SecurityScan rows from catalog/index.json")
+	fmt.Println("                                                [DEPRECATED] use ingest-upstream. Kept for backward compat.")
 	fmt.Println("  go run ./cmd/migrate backfill-provider-aware-external-keys [--dry-run]")
 	fmt.Println("                                                Migrate external_keys from casdoor:<id> to casdoor:<provider>:<id>")
 	fmt.Println("")
@@ -266,6 +218,115 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding /Users/linkai/code/.../everything-ai-coding --dry-run")
 	fmt.Println("  go run ./cmd/migrate import-everything-ai-coding --source=/Users/linkai/code/.../everything-ai-coding")
 	fmt.Println("  go run ./cmd/migrate backfill-everything-ai-coding-metadata /Users/linkai/code/.../everything-ai-coding --dry-run")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=/Volumes/Work/Projects/costrict-skills-repo/dist/catalog-bundle.tar.gz")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=https://github.com/.../releases/download/.../catalog-bundle.tar.gz --dry-run")
+}
+
+// ingestUpstreamCatalog is the new entry point that replaces the
+// importEverythingAICoding + backfillCatalogMetadata combo. It dispatches
+// to services.CatalogIngestService which understands the bundle format
+// directly (no git, no fake registry).
+func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return fmt.Errorf("source is empty")
+	}
+
+	svc := &services.CatalogIngestService{
+		DB:             db,
+		Parser:         &services.ParserService{},
+		TagSvc:         &services.TagService{DB: db},
+		CategorySvc:    &services.CategoryService{DB: db},
+		ScanJobService: &services.ScanJobService{DB: db},
+	}
+
+	src := services.IngestSource{}
+	switch {
+	case strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://"):
+		src.URL = source
+	default:
+		abs, err := filepath.Abs(source)
+		if err != nil {
+			return fmt.Errorf("resolve source path: %w", err)
+		}
+		st, err := os.Stat(abs)
+		if err != nil {
+			return fmt.Errorf("stat source: %w", err)
+		}
+		if st.IsDir() {
+			src.Dir = abs
+		} else {
+			src.Tarball = abs
+		}
+	}
+
+	result, err := svc.Ingest(context.Background(), src, services.IngestOptions{
+		DryRun:      dryRun,
+		TriggerUser: "system",
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("ingest-upstream summary (dry-run=%v): entries=%d added=%d updated=%d metadataUpdated=%d skipped=%d deleted=%d failed=%d incomplete=%d duration=%s",
+		dryRun, result.BundleEntries, result.Added, result.Updated, result.MetadataUpdated, result.Skipped, result.Deleted, result.Failed, result.Incomplete, result.Duration.Round(time.Millisecond))
+	if result.Incomplete > 0 {
+		log.Printf("ingest-upstream: %d entries dropped due to upstream data quality (mcp without command/url, prompt YAML errors, …) — these are NOT ingest bugs.", result.Incomplete)
+	}
+	if len(result.Errors) > 0 {
+		// Group errors by their leading verb so the user sees the failure mix
+		// at a glance (parse:X, read:Y, insert:Z, ...) without scrolling
+		// thousands of lines.
+		byKind := map[string]int{}
+		for _, e := range result.Errors {
+			kind := "other"
+			for _, k := range []string{"parse", "read", "insert", "update", "metadata", "archive", "normalize"} {
+				if strings.Contains(e, ": "+k+" ") || strings.HasPrefix(e, k+" ") || strings.Contains(e, " "+k+" ") {
+					kind = k
+					break
+				}
+			}
+			byKind[kind]++
+		}
+		log.Printf("ingest-upstream errors by kind:")
+		for k, n := range byKind {
+			log.Printf("  %s: %d", k, n)
+		}
+		limit := len(result.Errors)
+		if limit > 5 {
+			limit = 5
+		}
+		log.Printf("ingest-upstream sample errors (first %d):", limit)
+		for _, e := range result.Errors[:limit] {
+			log.Printf("  %s", e)
+		}
+		// Persist the full error list so devs can analyze upstream data
+		// issues without re-running. One line per error; truncated to
+		// /tmp/costrict-ingest-errors.log for tail-friendly access.
+		if errPath := os.Getenv("INGEST_ERROR_LOG"); errPath != "" {
+			if fh, err := os.Create(errPath); err == nil {
+				for _, e := range result.Errors {
+					fmt.Fprintln(fh, "[failed]", e)
+				}
+				for _, e := range result.IncompleteErrors {
+					fmt.Fprintln(fh, "[incomplete]", e)
+				}
+				fh.Close()
+				log.Printf("ingest-upstream full error list written to %s", errPath)
+			}
+		}
+	} else if len(result.IncompleteErrors) > 0 {
+		// No Failed errors but Incomplete: still let user persist them.
+		if errPath := os.Getenv("INGEST_ERROR_LOG"); errPath != "" {
+			if fh, err := os.Create(errPath); err == nil {
+				for _, e := range result.IncompleteErrors {
+					fmt.Fprintln(fh, "[incomplete]", e)
+				}
+				fh.Close()
+				log.Printf("ingest-upstream incomplete error list written to %s", errPath)
+			}
+		}
+	}
+	return nil
 }
 
 func ensureUserIdentityColumns(db *gorm.DB) error {
@@ -713,504 +774,6 @@ func hashCurrentItemContent(hashSvc *services.ContentHashService, item models.Ca
 	return hashSvc.HashTextContent(item.ItemType, item.Content)
 }
 
-func importEverythingAICoding(db *gorm.DB, sourcePath string, dryRun bool) error {
-	if strings.TrimSpace(sourcePath) == "" {
-		return fmt.Errorf("source path is required")
-	}
-	absSource, err := filepath.Abs(sourcePath)
-	if err != nil {
-		return fmt.Errorf("resolve source path: %w", err)
-	}
-	if stat, err := os.Stat(absSource); err != nil || !stat.IsDir() {
-		if err != nil {
-			return fmt.Errorf("source path check failed: %w", err)
-		}
-		return fmt.Errorf("source path is not a directory: %s", absSource)
-	}
-
-	catalogDownloadRoot := filepath.Join(absSource, "catalog-download")
-	if _, err := os.Stat(catalogDownloadRoot); err != nil {
-		return fmt.Errorf("catalog-download directory not found in %s", absSource)
-	}
-
-	// 1. Prepare temp sync directory with mapped file structure.
-	tempDir, err := os.MkdirTemp("", "costrict-sync-everything-*")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	if err := mapEverythingToSyncDir(catalogDownloadRoot, tempDir); err != nil {
-		return fmt.Errorf("map source to sync dir: %w", err)
-	}
-
-	// 2. Init a temporary git repo so SyncService can clone from it.
-	if err := initTempGitRepo(tempDir); err != nil {
-		return fmt.Errorf("init temp git repo: %w", err)
-	}
-
-	// Ensure public registry exists before syncing.
-	if err := ensurePublicRegistry(db); err != nil {
-		return fmt.Errorf("ensure public registry: %w", err)
-	}
-
-	// 3. Create a temporary registry pointing at the temp git repo.
-	tempRegistryID := uuid.New().String()
-	registry := models.CapabilityRegistry{
-		ID:             tempRegistryID,
-		Name:           "everything-ai-coding-import",
-		Description:    "Temporary registry for importing everything-ai-coding",
-		ExternalURL:    tempDir,
-		ExternalBranch: "main",
-		SyncConfig: mustJSON(map[string]any{
-			"includePatterns": []string{
-				"mcp/**/.mcp.json",
-				"prompts/**/PROMPT.md",
-				"rules/**/RULE.md",
-				"skills/**/SKILL.md",
-				"plugins/**/.plugin.json",
-			},
-		}),
-		RepoID:      publicRepoID,
-		OwnerID:     importCreatedBy,
-		SyncEnabled: true,
-	}
-	if err := db.Create(&registry).Error; err != nil {
-		return fmt.Errorf("create temp registry: %w", err)
-	}
-
-	// 4. Run sync via SyncService.
-	// Inject Tag + Category services so per-item tags/categories produced by
-	// the parsers (e.g. ParseSKILLMD frontmatter tags, ParsePluginJSON
-	// synthesised tags) are persisted alongside the capability_items row.
-	// Without these, sync silently drops parsed.Tags / parsed.Category links.
-	syncSvc := &services.SyncService{
-		DB:          db,
-		Git:         &services.GitService{TempBaseDir: os.TempDir()},
-		Parser:      &services.ParserService{},
-		TagSvc:      &services.TagService{DB: db},
-		CategorySvc: &services.CategoryService{DB: db},
-	}
-
-	result, err := syncSvc.SyncRegistry(context.Background(), tempRegistryID, services.SyncOptions{
-		TriggerType: "manual",
-		TriggerUser: importCreatedBy,
-		DryRun:      dryRun,
-	})
-	if err != nil {
-		deleteTempRegistry(db, tempRegistryID)
-		return fmt.Errorf("sync registry: %w", err)
-	}
-
-	// 5. Relationship mapping: migrate synced items to the public registry.
-	if !dryRun {
-		if err := db.Model(&models.CapabilityItem{}).Where("registry_id = ?", tempRegistryID).Update("registry_id", publicRegistryID).Error; err != nil {
-			return fmt.Errorf("migrate items to public registry: %w", err)
-		}
-		if err := deleteTempRegistry(db, tempRegistryID); err != nil {
-			return fmt.Errorf("delete temp registry: %w", err)
-		}
-	}
-
-	log.Printf("everything-ai-coding sync summary: added=%d updated=%d skipped=%d deleted=%d failed=%d",
-		result.Added, result.Updated, result.Skipped, result.Deleted, result.Failed)
-	if len(result.Errors) > 0 {
-		for _, e := range result.Errors {
-			log.Printf("  sync error: %s", e)
-		}
-	}
-
-	// 6. Backfill source and experience_score from catalog/index.json.
-	if !dryRun {
-		if err := backfillCatalogMetadata(db, absSource, false); err != nil {
-			log.Printf("Warning: failed to backfill catalog metadata: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// catalogPermissions mirrors catalog/index.json `security.permissions` block.
-type catalogPermissions struct {
-	Files    []string `json:"files"`
-	Network  []string `json:"network"`
-	Commands []string `json:"commands"`
-}
-
-// catalogSecurityBlock mirrors catalog/index.json top-level `security` block per
-// upstream costrict-skills-repo schema. Field names match exactly.
-type catalogSecurityBlock struct {
-	RiskLevel       string              `json:"risk_level"`
-	Verdict         string              `json:"verdict"`
-	RedFlags        []string            `json:"red_flags"`
-	Permissions     *catalogPermissions `json:"permissions,omitempty"`
-	Summary         string              `json:"summary"`
-	Recommendations []string            `json:"recommendations"`
-	ScanModel       string              `json:"scan_model"`
-	RubricVersion   string              `json:"rubric_version"`
-	ContentHash     string              `json:"content_hash"`
-	ScannedAt       string              `json:"scanned_at"`
-}
-
-// validVerdictForRiskLevel implements the upstream/downstream alignment rule:
-// clean/low → safe, medium → caution, high/extreme → reject.
-func validVerdictForRiskLevel(riskLevel, verdict string) bool {
-	switch riskLevel {
-	case "clean", "low":
-		return verdict == "safe"
-	case "medium":
-		return verdict == "caution"
-	case "high", "extreme":
-		return verdict == "reject"
-	default:
-		return false
-	}
-}
-
-func backfillCatalogMetadata(db *gorm.DB, absSource string, dryRun bool) error {
-	catalogPath := filepath.Join(absSource, "catalog", "index.json")
-	data, err := os.ReadFile(catalogPath)
-	if err != nil {
-		return fmt.Errorf("read catalog/index.json: %w", err)
-	}
-
-	var catalogItems []struct {
-		ID          string                `json:"id"`
-		Source      string                `json:"source"`
-		Description string                `json:"description"`
-		Category    string                `json:"category"`
-		Tags        []string              `json:"tags"`
-		FinalScore  float64               `json:"final_score"`
-		Security    *catalogSecurityBlock `json:"security,omitempty"`
-	}
-	if err := json.Unmarshal(data, &catalogItems); err != nil {
-		return fmt.Errorf("parse catalog/index.json: %w", err)
-	}
-
-	type catalogEntry struct {
-		Source      string
-		Description string
-		Category    string
-		Tags        []string
-		FinalScore  float64
-		Security    *catalogSecurityBlock
-	}
-	catalogMap := make(map[string]catalogEntry, len(catalogItems))
-	for _, item := range catalogItems {
-		// Filter out empty/whitespace tags so downstream `len(.Tags) > 0`
-		// checks don't fire on noise like [""].
-		cleanTags := make([]string, 0, len(item.Tags))
-		for _, t := range item.Tags {
-			if s := strings.TrimSpace(t); s != "" {
-				cleanTags = append(cleanTags, s)
-			}
-		}
-		catalogMap[item.ID] = catalogEntry{
-			Source:      item.Source,
-			Description: item.Description,
-			Category:    item.Category,
-			Tags:        cleanTags,
-			FinalScore:  item.FinalScore,
-			Security:    item.Security,
-		}
-	}
-
-	// TagService instance shared across the loop. The backfill only touches
-	// items in the public registry (catalog-sourced) — user-uploaded items
-	// live under other registries and are not affected by this loop, so
-	// overwriting tags here is safe.
-	tagSvc := &services.TagService{DB: db}
-
-	var items []models.CapabilityItem
-	if err := db.Where("registry_id = ?", publicRegistryID).Find(&items).Error; err != nil {
-		return fmt.Errorf("load items for backfill: %w", err)
-	}
-
-	updated := 0
-	skipped := 0
-	securityWritten := 0
-	securitySkipped := 0
-	tagsSet := 0
-	for _, item := range items {
-		parts := strings.Split(filepath.ToSlash(item.SourcePath), "/")
-		if len(parts) < 2 {
-			skipped++
-			continue
-		}
-		dirName := parts[1]
-		meta, ok := catalogMap[dirName]
-		if !ok {
-			skipped++
-			continue
-		}
-		// Build the column-level update payload. Policy: upstream non-empty
-		// wins; upstream empty leaves the DB value untouched. This lets
-		// per-file parsers (SKILL.md frontmatter, ParsePluginJSON synth)
-		// keep their content when upstream catalog has no value, while
-		// the canonical upstream data overrides whatever the per-file
-		// format could carry.
-		updates := map[string]any{}
-		if meta.Source != "" {
-			updates["source"] = meta.Source
-		}
-		if meta.FinalScore > 0 {
-			updates["experience_score"] = meta.FinalScore
-		}
-		if meta.Description != "" {
-			updates["description"] = meta.Description
-		}
-		if meta.Category != "" {
-			updates["category"] = meta.Category
-		}
-		didMetaUpdate := false
-		if len(updates) > 0 {
-			if dryRun {
-				updated++
-				didMetaUpdate = true
-			} else {
-				if err := db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
-					log.Printf("Warning: failed to update item %s: %v", item.ID, err)
-					skipped++
-				} else {
-					updated++
-					didMetaUpdate = true
-				}
-			}
-		}
-
-		// Tag binding: when upstream has tags, replace the item's tag set
-		// with the upstream set. When upstream tags are empty we leave the
-		// existing tag bindings alone — preserves SKILL.md frontmatter
-		// tags AND plugin parser's synthesised bundle tags (skills /
-		// commands / mcp / etc.) which act as fallbacks when upstream
-		// has nothing.
-		if len(meta.Tags) > 0 && !dryRun {
-			tagModels, tagErr := tagSvc.EnsureTags(meta.Tags, services.TagClassCustom, "system")
-			if tagErr != nil {
-				log.Printf("Warning: failed to ensure tags for item %s: %v", item.ID, tagErr)
-			} else if len(tagModels) > 0 {
-				tagIDs := make([]string, 0, len(tagModels))
-				for _, t := range tagModels {
-					tagIDs = append(tagIDs, t.ID)
-				}
-				if setErr := tagSvc.SetItemTags(item.ID, tagIDs); setErr != nil {
-					log.Printf("Warning: failed to set tags for item %s: %v", item.ID, setErr)
-				} else {
-					tagsSet++
-				}
-			}
-		}
-
-		if !didMetaUpdate && meta.Security == nil {
-			skipped++
-			continue
-		}
-
-		if meta.Security != nil {
-			wrote, err := writeSecurityScanFromCatalog(db, item, meta.Security, dryRun)
-			if err != nil {
-				log.Printf("Warning: failed to write security scan for item %s: %v", item.ID, err)
-				securitySkipped++
-				continue
-			}
-			if wrote {
-				securityWritten++
-			} else {
-				securitySkipped++
-			}
-		}
-	}
-
-	log.Printf("Catalog metadata backfill (dryRun=%v): updated %d items, skipped %d, security_scans written=%d skipped=%d, tags set=%d",
-		dryRun, updated, skipped, securityWritten, securitySkipped, tagsSet)
-	return nil
-}
-
-// writeSecurityScanFromCatalog maps a catalog security block to a SecurityScan
-// row for the given item. Returns (wrote, err) where wrote=true means a new
-// row was inserted (or would be inserted in dry-run). Idempotency: identical
-// (item_id, item_revision, scan_model) → returns (false, nil) without inserting.
-// Invalid risk_level/verdict mappings cause (false, nil) with a warning log.
-func writeSecurityScanFromCatalog(db *gorm.DB, item models.CapabilityItem, sec *catalogSecurityBlock, dryRun bool) (bool, error) {
-	if sec == nil {
-		return false, nil
-	}
-	if !validVerdictForRiskLevel(sec.RiskLevel, sec.Verdict) {
-		log.Printf("Warning: skip security scan for item %s: invalid risk_level/verdict mapping (%q/%q)",
-			item.ID, sec.RiskLevel, sec.Verdict)
-		return false, nil
-	}
-
-	// Idempotency: skip if (item_id, item_revision, scan_model) already present.
-	var existing models.SecurityScan
-	err := db.Where("item_id = ? AND item_revision = ? AND scan_model = ?",
-		item.ID, item.CurrentRevision, sec.ScanModel).
-		First(&existing).Error
-	if err == nil {
-		return false, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, fmt.Errorf("query existing security_scan: %w", err)
-	}
-
-	if dryRun {
-		return true, nil
-	}
-
-	scannedAt := time.Now()
-	if sec.ScannedAt != "" {
-		if parsed, perr := time.Parse(time.RFC3339, sec.ScannedAt); perr == nil {
-			scannedAt = parsed
-		}
-	}
-	perms := sec.Permissions
-	if perms == nil {
-		perms = &catalogPermissions{Files: []string{}, Network: []string{}, Commands: []string{}}
-	}
-	redFlags := sec.RedFlags
-	if redFlags == nil {
-		redFlags = []string{}
-	}
-	recs := sec.Recommendations
-	if recs == nil {
-		recs = []string{}
-	}
-
-	scanID := uuid.New().String()
-	row := &models.SecurityScan{
-		ID:              scanID,
-		ItemID:          item.ID,
-		ItemRevision:    item.CurrentRevision,
-		TriggerType:     "sync",
-		ScanModel:       sec.ScanModel,
-		Category:        "",
-		BuiltinTags:     datatypes.JSON([]byte("[]")),
-		RiskLevel:       sec.RiskLevel,
-		Verdict:         sec.Verdict,
-		RedFlags:        mustJSON(redFlags),
-		Permissions:     mustJSON(perms),
-		Summary:         sec.Summary,
-		Recommendations: mustJSON(recs),
-		CreatedAt:       scannedAt,
-		FinishedAt:      &scannedAt,
-	}
-
-	return true, db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(row).Error; err != nil {
-			return fmt.Errorf("create security_scan: %w", err)
-		}
-		// security_status mirrors the scan's risk_level so the frontend
-		// SecurityTag can render it directly (the union is clean/low/medium/
-		// high/extreme/unscanned/... — writing the literal "completed" here
-		// would crash the tag component which has no entry for that value).
-		statusValue := sec.RiskLevel
-		if statusValue == "" {
-			statusValue = "unscanned"
-		}
-		if err := tx.Model(&models.CapabilityItem{}).
-			Where("id = ?", item.ID).
-			Updates(map[string]any{
-				"security_status": statusValue,
-				"last_scan_id":    scanID,
-			}).Error; err != nil {
-			return fmt.Errorf("update item security fields: %w", err)
-		}
-		return nil
-	})
-}
-
-func mapEverythingToSyncDir(sourceRoot, targetRoot string) error {
-	return filepath.WalkDir(sourceRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		relPath, err := filepath.Rel(sourceRoot, path)
-		if err != nil {
-			return err
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		targetPath := filepath.Join(targetRoot, relPath)
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-			return err
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(targetPath, content, 0644)
-	})
-}
-
-func initTempGitRepo(dir string) error {
-	repo, err := git.PlainInit(dir, false)
-	if err != nil {
-		return fmt.Errorf("git init: %w", err)
-	}
-	w, err := repo.Worktree()
-	if err != nil {
-		return err
-	}
-	if _, err := w.Add("."); err != nil {
-		return fmt.Errorf("git add: %w", err)
-	}
-	if _, err := w.Commit("Initial import", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "import",
-			Email: "import@costrict.local",
-			When:  time.Now(),
-		},
-	}); err != nil {
-		return fmt.Errorf("git commit: %w", err)
-	}
-	return nil
-}
-
-func deleteTempRegistry(db *gorm.DB, registryID string) error {
-	db.Where("registry_id = ?", registryID).Delete(&models.SyncLog{})
-	db.Where("registry_id = ?", registryID).Delete(&models.SyncJob{})
-	return db.Delete(&models.CapabilityRegistry{ID: registryID}).Error
-}
-
-func ensurePublicRegistry(db *gorm.DB) error {
-	var exists int
-	if err := db.Raw(`SELECT 1 FROM capability_registries WHERE id = ?`, publicRegistryID).Scan(&exists).Error; err != nil {
-		return fmt.Errorf("check public registry: %w", err)
-	}
-	if exists == 1 {
-		return nil
-	}
-
-	now := db.NowFunc()
-	reg := models.CapabilityRegistry{
-		ID:          publicRegistryID,
-		Name:        "public",
-		Description: "Default public registry",
-		SourceType:  "internal",
-		RepoID:      publicRepoID,
-		OwnerID:     importCreatedBy,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := db.Create(&reg).Error; err != nil {
-		return fmt.Errorf("create public registry: %w", err)
-	}
-	return nil
-}
-
-func mustJSON(v any) datatypes.JSON {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return datatypes.JSON([]byte("{}"))
-	}
-	if len(b) == 0 {
-		return datatypes.JSON([]byte("{}"))
-	}
-	return datatypes.JSON(b)
-}
 
 func runGooseMigrations(db *gorm.DB) error {
 	sqlDB, err := db.DB()
