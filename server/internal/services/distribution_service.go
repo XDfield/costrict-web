@@ -193,7 +193,7 @@ func (s *DistributionService) ListItemDistributions(ctx context.Context, itemID 
 // ListSentDistributions lists distributions sent by a user.
 func (s *DistributionService) ListSentDistributions(ctx context.Context, distributorID string) ([]models.ItemDistribution, error) {
 	var distributions []models.ItemDistribution
-	if err := s.db.WithContext(ctx).Where("distributor_id = ?", distributorID).Order("created_at DESC").Find(&distributions).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("distributor_id = ?", distributorID).Preload("Item").Order("created_at DESC").Find(&distributions).Error; err != nil {
 		return nil, err
 	}
 	return distributions, nil
