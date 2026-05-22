@@ -140,7 +140,6 @@ podman-compose down -v
 
 - [系统设计文档](./SYSTEM_DESIGN.md)
 - [Catalog Ingest 端到端链路](./docs/CATALOG_INGEST.md) —— 上游 catalog-bundle 同步到本地 capability_items 的流程
-- [本地 Casdoor 开发环境](./docs/LOCAL_DEV_CASDOOR.md)
 - [开发进度](./todo.md)
 
 ## 参考项目
