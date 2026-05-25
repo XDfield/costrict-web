@@ -202,6 +202,30 @@ func setupTestDB(t *testing.T) func() {
 			created_at DATETIME,
 			UNIQUE(item_id, user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS item_distributions (
+			id              TEXT PRIMARY KEY,
+			item_id         TEXT NOT NULL,
+			distributor_id  TEXT NOT NULL,
+			permission_mode TEXT DEFAULT 'readonly',
+			status          TEXT DEFAULT 'active',
+			scope_type      TEXT DEFAULT 'user',
+			target_id       TEXT NOT NULL,
+			message         TEXT,
+			revoked_at      DATETIME,
+			expires_at      DATETIME,
+			created_at      DATETIME,
+			updated_at      DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS item_distribution_receipts (
+			id              TEXT PRIMARY KEY,
+			distribution_id TEXT NOT NULL,
+			user_id         TEXT NOT NULL,
+			receipt_status  TEXT DEFAULT 'unread',
+			forked_item_id  TEXT,
+			created_at      DATETIME,
+			updated_at      DATETIME,
+			UNIQUE(distribution_id, user_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS item_tag_dicts (
 			id TEXT PRIMARY KEY,
 			slug TEXT NOT NULL UNIQUE,

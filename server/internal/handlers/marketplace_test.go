@@ -655,7 +655,7 @@ func TestUnfavoriteItem_Success(t *testing.T) {
 	}
 }
 
-func TestFavoriteItem_PluginReturns409(t *testing.T) {
+func TestFavoriteItem_Plugin(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{
 		ID: "repo-plugin", Name: "repo-plugin", OwnerID: "u1", Visibility: "public",
@@ -668,27 +668,29 @@ func TestFavoriteItem_PluginReturns409(t *testing.T) {
 		Name: "Demo Plugin", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte(`{"install":{"plugin_name":"demo"}}`)),
 	})
 
+	// Plugins are favoritable just like skills/mcp (csc reconciles them into the
+	// native /plugin panel); the type-specific gate has been removed.
 	r := newMarketplaceRouter("user-plugin")
 	w := postJSON(r, "/api/items/item-plugin/favorite", map[string]interface{}{})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var item models.CapabilityItem
 	if err := database.DB.First(&item, "id = ?", "item-plugin").Error; err != nil {
 		t.Fatalf("failed to load item: %v", err)
 	}
-	if item.FavoriteCount != 0 {
-		t.Errorf("favorite_count should remain 0 after gated request, got %d", item.FavoriteCount)
+	if item.FavoriteCount != 1 {
+		t.Errorf("expected favorite_count=1, got %d", item.FavoriteCount)
 	}
 	var count int64
-	database.DB.Model(&models.ItemFavorite{}).Where("item_id = ?", "item-plugin").Count(&count)
-	if count != 0 {
-		t.Errorf("ItemFavorite row should not be written, got %d rows", count)
+	database.DB.Model(&models.ItemFavorite{}).Where("item_id = ? AND user_id = ?", "item-plugin", "user-plugin").Count(&count)
+	if count != 1 {
+		t.Errorf("expected 1 ItemFavorite row, got %d", count)
 	}
 }
 
-func TestUnfavoriteItem_PluginReturns409(t *testing.T) {
+func TestUnfavoriteItem_Plugin(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{
 		ID: "repo-plugin2", Name: "repo-plugin2", OwnerID: "u1", Visibility: "public",
@@ -701,14 +703,21 @@ func TestUnfavoriteItem_PluginReturns409(t *testing.T) {
 		Name: "Demo Plugin 2", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 		FavoriteCount: 1,
 	})
-	// Pre-existing ItemFavorite row simulates stale data that the gate must not let users clean via this endpoint.
 	database.DB.Create(&models.ItemFavorite{
 		ID: "fav-plugin", ItemID: "item-plugin2", UserID: "user-plugin2",
 	})
 
 	r := newMarketplaceRouter("user-plugin2")
 	w := deleteReq(r, "/api/items/item-plugin2/favorite")
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-plugin2").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.FavoriteCount != 0 {
+		t.Errorf("expected favorite_count=0, got %d", item.FavoriteCount)
 	}
 }
