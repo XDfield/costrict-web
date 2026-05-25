@@ -544,7 +544,7 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	if githubIdentityID == 0 {
 		t.Fatal("expected github identity to exist")
 	}
-	if err := svc.UnbindIdentity(user.SubjectID, githubIdentityID); err != nil {
+	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
 	identities, _ = svc.ListUserIdentities(user.SubjectID)
@@ -675,5 +675,141 @@ func TestGetOrCreateUserLegacyExternalKeyFallback(t *testing.T) {
 	}
 	if identities[0].ExternalKey != "casdoor:github:shared-uuid" {
 		t.Fatalf("expected identity external_key upgraded to provider-aware format, got %s", identities[0].ExternalKey)
+	}
+}
+
+func TestUnbindIdentitySetsExplicitlyUnbound(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	// Create user with github + phone identities
+	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
+
+	// Unbind github identity
+	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+		t.Fatalf("unbind github identity: %v", err)
+	}
+
+	// Verify the identity is soft-deleted and explicitly_unbound is set
+	var unboundIdentity models.UserAuthIdentity
+	if err := db.Unscoped().Where("user_subject_id = ? AND provider = ?", user.SubjectID, "github").First(&unboundIdentity).Error; err != nil {
+		t.Fatalf("find unbound identity: %v", err)
+	}
+
+	if !unboundIdentity.ExplicitlyUnbound {
+		t.Fatalf("expected explicitly_unbound to be true, got false")
+	}
+	if !unboundIdentity.DeletedAt.Valid {
+		t.Fatalf("expected deleted_at to be set (soft delete), got zero time")
+	}
+
+	// Verify unbound identity doesn't appear in ListUserIdentities
+	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	if len(identities) != 1 {
+		t.Fatalf("expected 1 identity in list (excluding unbound), got %d", len(identities))
+	}
+	if identities[0].Provider != "phone" {
+		t.Fatalf("expected remaining provider to be phone, got %s", identities[0].Provider)
+	}
+}
+
+func TestBindIdentityToUserSkipsExplicitlyUnbound(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	// Create user with github + phone identities
+	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
+
+	// Unbind github identity
+	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+		t.Fatalf("unbind github identity: %v", err)
+	}
+
+	// Simulate concurrent request with old JWT token trying to rebind github
+	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}
+	if err := svc.BindIdentityToUser(user.SubjectID, githubClaims); err != nil {
+		t.Fatalf("BindIdentityToUser should not error on explicitly unbound identity, got: %v", err)
+	}
+
+	// Verify the identity remains soft-deleted and explicitly_unbound
+	var unboundIdentity models.UserAuthIdentity
+	if err := db.Unscoped().Where("user_subject_id = ? AND provider = ?", user.SubjectID, "github").First(&unboundIdentity).Error; err != nil {
+		t.Fatalf("find unbound identity: %v", err)
+	}
+
+	if !unboundIdentity.ExplicitlyUnbound {
+		t.Fatalf("expected explicitly_unbound to remain true after re-bind attempt, got false")
+	}
+	if !unboundIdentity.DeletedAt.Valid {
+		t.Fatalf("expected deleted_at to remain set after re-bind attempt, got zero time")
+	}
+
+	// Verify identity still doesn't appear in ListUserIdentities
+	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	if len(identities) != 1 {
+		t.Fatalf("expected 1 identity in list (re-binding should be prevented), got %d", len(identities))
+	}
+	if identities[0].Provider != "phone" {
+		t.Fatalf("expected remaining provider to be phone, got %s", identities[0].Provider)
+	}
+}
+
+func TestGetOrCreateUserDoesNotRebindExplicitlyUnbound(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	// Create user with github + phone identities
+	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
+
+	// Unbind github identity
+	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+		t.Fatalf("unbind github identity: %v", err)
+	}
+
+	// Simulate login callback with old github JWT token
+	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}
+	_, err = svc.GetOrCreateUser(githubClaims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser should not error on explicitly unbound identity, got: %v", err)
+	}
+
+	// Verify the identity remains soft-deleted and explicitly_unbound
+	var unboundIdentity models.UserAuthIdentity
+	if err := db.Unscoped().Where("user_subject_id = ? AND provider = ?", user.SubjectID, "github").First(&unboundIdentity).Error; err != nil {
+		t.Fatalf("find unbound identity: %v", err)
+	}
+
+	if !unboundIdentity.ExplicitlyUnbound {
+		t.Fatalf("expected explicitly_unbound to remain true after GetOrCreateUser, got false")
+	}
+	if !unboundIdentity.DeletedAt.Valid {
+		t.Fatalf("expected deleted_at to remain set after GetOrCreateUser, got zero time")
+	}
+
+	// Verify identity still doesn't appear in ListUserIdentities
+	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	if len(identities) != 1 {
+		t.Fatalf("expected 1 identity in list (GetOrCreateUser should not rebind), got %d", len(identities))
+	}
+	if identities[0].Provider != "phone" {
+		t.Fatalf("expected remaining provider to be phone, got %s", identities[0].Provider)
 	}
 }

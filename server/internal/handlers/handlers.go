@@ -57,15 +57,12 @@ type authUserDTO struct {
 }
 
 type authIdentityDTO struct {
-	ID             uint       `json:"id"`
-	Provider       string     `json:"provider"`
-	ProviderUserID *string    `json:"providerUserId,omitempty"`
-	DisplayName    *string    `json:"displayName,omitempty"`
-	Email          *string    `json:"email,omitempty"`
-	Phone          *string    `json:"phone,omitempty"`
-	ExternalKey    string     `json:"externalKey"`
-	IsPrimary      bool       `json:"isPrimary"`
-	LastLoginAt    *time.Time `json:"lastLoginAt,omitempty"`
+	Provider    string     `json:"provider"`
+	DisplayName *string    `json:"displayName,omitempty"`
+	Email       *string    `json:"email,omitempty"`
+	Phone       *string    `json:"phone,omitempty"`
+	IsPrimary   bool       `json:"isPrimary"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 }
 
 func InitCasdoor(cfg *config.CasdoorConfig) {
@@ -279,15 +276,12 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 
 func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
 	return authIdentityDTO{
-		ID:             identity.ID,
-		Provider:       identity.Provider,
-		ProviderUserID: identity.ProviderUserID,
-		DisplayName:    identity.DisplayName,
-		Email:          identity.Email,
-		Phone:          identity.Phone,
-		ExternalKey:    identity.ExternalKey,
-		IsPrimary:      identity.IsPrimary,
-		LastLoginAt:    identity.LastLoginAt,
+		Provider:    identity.Provider,
+		DisplayName: identity.DisplayName,
+		Email:       identity.Email,
+		Phone:       identity.Phone,
+		IsPrimary:   identity.IsPrimary,
+		LastLoginAt: identity.LastLoginAt,
 	}
 }
 
@@ -490,7 +484,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusConflict, gin.H{"error": "provider_mismatch"})
 		return
 	}
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, true); err != nil {
 		if err.Error() == "identity_already_bound" {
 			c.JSON(http.StatusConflict, gin.H{"error": "identity_already_bound", "message": "该登录方式已绑定其他账号"})
 			return
@@ -645,35 +639,48 @@ func ListBoundIdentities(c *gin.Context) {
 
 // UnbindIdentity godoc
 // @Summary      Unbind auth identity
-// @Description  Unbinds an auth identity from the current user
+// @Description  Unbinds an auth identity from the current user by provider type
 // @Tags         auth
 // @Produce      json
 // @Security     BearerAuth
-// @Param        id   path  int  true  "Identity ID"
+// @Param        provider  path  string  true  "Provider type (e.g. idtrust, github, phone)"
 // @Success      200  {object}  object{message=string}
 // @Failure      400  {object}  object{error=string}
 // @Failure      401  {object}  object{error=string}
-// @Router       /auth/identities/{id}/unbind [post]
+// @Router       /auth/identities/{provider}/unbind [post]
 func UnbindIdentity(c *gin.Context) {
 	currentUserID := c.GetString(middleware.UserIDKey)
 	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	var identityID uint
-	if _, err := fmt.Sscanf(c.Param("id"), "%d", &identityID); err != nil || identityID == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid identity id"})
+	provider := strings.TrimSpace(c.Param("provider"))
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 		return
 	}
-	if err := UserModule.Service.UnbindIdentity(currentUserID, identityID); err != nil {
-		if err.Error() == "cannot unbind last identity" {
+	if err := UserModule.Service.UnbindIdentityByProvider(currentUserID, provider); err != nil {
+		if err.Error() == "cannot unbind last identity" || err.Error() == "identity not found" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unbind identity"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Identity unbound successfully"})
+
+	// Check if the current session uses the same provider that was just unbound.
+	// If so, the user must re-login with another provider.
+	authClaims, _ := c.Get(middleware.AuthClaimsKey)
+	currentProvider := ""
+	if claims, ok := authClaims.(middleware.AuthClaims); ok {
+		currentProvider = strings.ToLower(strings.TrimSpace(claims.Provider))
+	}
+	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	requireRelogin := currentProvider != "" && currentProvider == normalizedProvider
+
+	c.JSON(http.StatusOK, gin.H{
+		"requireRelogin": requireRelogin,
+	})
 }
 
 func stringPtr(v string) *string {

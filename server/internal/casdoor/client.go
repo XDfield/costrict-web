@@ -154,9 +154,17 @@ func (c *CasdoorClient) ExchangeCodeForToken(code, callbackURL string) (*Casdoor
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
 	var tokenResp CasdoorTokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token response: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal token response (body=%s): %w", string(body), err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("empty access_token in response: %s", string(body))
 	}
 
 	return &tokenResp, nil

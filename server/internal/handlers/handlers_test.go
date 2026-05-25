@@ -68,7 +68,7 @@ func newAuthRouter(userID string) *gin.Engine {
 	r.GET("/api/auth/me", injectUser, GetCurrentUser)
 	r.GET("/api/auth/identities", injectUser, ListBoundIdentities)
 	r.POST("/api/auth/bind/start", injectUser, StartBindAuth)
-	r.POST("/api/auth/identities/:id/unbind", injectUser, UnbindIdentity)
+	r.POST("/api/auth/identities/:provider/unbind", injectUser, UnbindIdentity)
 	r.GET("/api/auth/callback", injectUser, AuthCallback)
 	return r
 }
@@ -186,7 +186,7 @@ func TestUnbindIdentityRejectsLastIdentity(t *testing.T) {
 	if err := database.DB.Create(&identity).Error; err != nil {
 		t.Fatalf("seed identity: %v", err)
 	}
-	w := postJSON(newAuthRouter("usr_local_1"), "/api/auth/identities/1/unbind", map[string]any{})
+	w := postJSON(newAuthRouter("usr_local_1"), "/api/auth/identities/github/unbind", map[string]any{})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}

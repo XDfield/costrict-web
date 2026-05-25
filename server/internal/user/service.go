@@ -129,7 +129,7 @@ func (s *UserService) ListUserIdentities(userSubjectID string) ([]*models.UserAu
 	return identities, err
 }
 
-func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims) error {
+func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, forceRebind ...bool) error {
 	if strings.TrimSpace(userSubjectID) == "" {
 		return fmt.Errorf("user_subject_id is required")
 	}
@@ -141,17 +141,28 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 	if externalKey == "" {
 		return fmt.Errorf("external key is required")
 	}
+	force := len(forceRebind) > 0 && forceRebind[0]
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var existing models.UserAuthIdentity
-		err := tx.Where("external_key = ?", externalKey).Take(&existing).Error
+		err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&existing).Error
 		if err == nil {
 			if existing.UserSubjectID != userSubjectID {
 				return fmt.Errorf("identity_already_bound")
 			}
+			// Skip restoring explicitly unbound identities unless forceRebind is set
+			if existing.ExplicitlyUnbound && !force {
+				return nil
+			}
 			updates := s.buildIdentityUpdates(&existing, claims)
+			if existing.DeletedAt.Valid {
+				updates["deleted_at"] = nil
+			}
+			if existing.ExplicitlyUnbound {
+				updates["explicitly_unbound"] = false
+			}
 			if len(updates) > 0 {
-				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
 					return err
 				}
 			}
@@ -162,11 +173,20 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		}
 
 		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
-			err := tx.Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
+			err := tx.Unscoped().Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
 			if err == nil {
+				if existing.ExplicitlyUnbound && !force {
+					return nil
+				}
 				updates := s.buildIdentityUpdates(&existing, claims)
 				updates["external_key"] = externalKey
-				if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				if existing.DeletedAt.Valid {
+					updates["deleted_at"] = nil
+				}
+				if existing.ExplicitlyUnbound {
+					updates["explicitly_unbound"] = false
+				}
+				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
 					return err
 				}
 				return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
@@ -195,27 +215,46 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 	})
 }
 
-func (s *UserService) UnbindIdentity(userSubjectID string, identityID uint) error {
+func (s *UserService) UnbindIdentityByProvider(userSubjectID string, provider string) error {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var identity models.UserAuthIdentity
-		if err := tx.Where("id = ? AND user_subject_id = ?", identityID, userSubjectID).Take(&identity).Error; err != nil {
+		var matched []*models.UserAuthIdentity
+		if err := tx.Where("user_subject_id = ? AND provider = ?", userSubjectID, provider).Find(&matched).Error; err != nil {
 			return err
+		}
+		if len(matched) == 0 {
+			return fmt.Errorf("identity not found")
 		}
 
 		var count int64
 		if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Count(&count).Error; err != nil {
 			return err
 		}
-		if count <= 1 {
+		if count <= int64(len(matched)) {
 			return fmt.Errorf("cannot unbind last identity")
 		}
 
-		wasPrimary := identity.IsPrimary
-		if err := tx.Delete(&identity).Error; err != nil {
-			return err
+		hadPrimary := false
+		for _, id := range matched {
+			if id.IsPrimary {
+				hadPrimary = true
+			}
+			// Soft delete and mark as explicitly unbound to prevent auto-rebinding
+			if err := tx.Model(&models.UserAuthIdentity{}).
+				Where("id = ?", id.ID).
+				Updates(map[string]interface{}{
+					"explicitly_unbound": true,
+					"deleted_at":         time.Now(),
+				}).Error; err != nil {
+				return err
+			}
 		}
 
-		if wasPrimary {
+		if hadPrimary {
 			var remaining []*models.UserAuthIdentity
 			if err := tx.Where("user_subject_id = ?", userSubjectID).Find(&remaining).Error; err != nil {
 				return err
@@ -778,10 +817,8 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 	user.Email = validEmailPtr(primary.Email, identities)
 	user.Phone = preferredPhonePtr(primary, identities)
 	user.Organization = firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
-	if shouldUpgradeUsername(user.Username) {
-		if upgraded := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); upgraded != "" {
-			user.Username = sanitizeUsernameCandidate(upgraded, user.Username)
-		}
+	if primaryUsername := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); primaryUsername != "" {
+		user.Username = primaryUsername
 	}
 	now := time.Now()
 	user.LastSyncAt = &now
@@ -869,18 +906,6 @@ func preferredPhonePtr(primary *models.UserAuthIdentity, identities []*models.Us
 	return nil
 }
 
-func shouldUpgradeUsername(username string) bool {
-	username = strings.TrimSpace(username)
-	return username == "" || strings.HasPrefix(username, "phone_") || strings.HasPrefix(username, "user_")
-}
-
-func sanitizeUsernameCandidate(candidate, fallback string) string {
-	candidate = strings.TrimSpace(candidate)
-	if candidate == "" {
-		return fallback
-	}
-	return candidate
-}
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
 func stringPtr(s string) *string {

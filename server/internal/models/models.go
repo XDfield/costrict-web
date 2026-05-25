@@ -615,12 +615,13 @@ type UserAuthIdentity struct {
 	Email           *string        `gorm:"size:191" json:"email"`
 	Phone           *string        `gorm:"size:64" json:"phone"`
 	AvatarURL       *string        `gorm:"type:text" json:"avatar_url"`
-	Organization    *string        `gorm:"size:191" json:"organization"`
-	IsPrimary       bool           `gorm:"not null;default:false" json:"is_primary"`
-	LastLoginAt     *time.Time     `json:"last_login_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+	Organization      *string        `gorm:"size:191" json:"organization"`
+	IsPrimary         bool           `gorm:"not null;default:false" json:"is_primary"`
+	ExplicitlyUnbound bool           `gorm:"not null;default:false" json:"explicitly_unbound"`
+	LastLoginAt       *time.Time     `json:"last_login_at"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (UserAuthIdentity) TableName() string {

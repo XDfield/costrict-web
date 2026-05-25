@@ -295,7 +295,7 @@ func main() {
 			authed.GET("/auth/me", handlers.GetCurrentUser)
 			authed.GET("/auth/identities", handlers.ListBoundIdentities)
 			authed.POST("/auth/bind/start", handlers.StartBindAuth)
-			authed.POST("/auth/identities/:id/unbind", handlers.UnbindIdentity)
+			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
 
 			usage := authed.Group("/usage")
 			{
