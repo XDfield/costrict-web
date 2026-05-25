@@ -349,6 +349,7 @@ type CapabilityItem struct {
 	ItemType        string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
 	Name            string               `gorm:"not null" json:"name"`
 	Description     string               `json:"description"`
+	Descriptions    datatypes.JSON       `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."} — locale → text map; flat `description` is the en/default resolution
 	Category        string               `json:"category"`
 	Version         string               `gorm:"default:'1.0.0'" json:"version"`
 	Content         string               `gorm:"type:text" json:"content"`
@@ -426,6 +427,7 @@ type CapabilityVersion struct {
 	Revision    int                      `gorm:"not null;column:revision" json:"revision"`
 	Name        string                   `json:"name"`
 	Description string                   `json:"description"`
+	Descriptions datatypes.JSON          `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"`
 	Category    string                   `json:"category"`
 	Version     string                   `json:"version"`
 	Content     string                   `gorm:"type:text;not null" json:"content"`

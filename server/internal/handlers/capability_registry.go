@@ -464,6 +464,8 @@ func ListMyItems(c *gin.Context) {
 		repoVisibilityMap["public"] = "public"
 	}
 
+	ResolveItemListLocale(c, items)
+
 	// Build response with repo info
 	result := make([]MyItem, len(items))
 	for i, item := range items {
