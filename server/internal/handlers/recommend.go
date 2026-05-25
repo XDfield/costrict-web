@@ -224,11 +224,6 @@ func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if item.ItemType == "plugin" {
-		c.JSON(http.StatusConflict, gin.H{"error": "plugin favorite not yet supported"})
-		return
-	}
-
 	count, created, err := h.behaviorSvc.FavoriteItem(c.Request.Context(), item.ID, uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -259,11 +254,6 @@ func (h *RecommendHandler) UnfavoriteItem(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if item.ItemType == "plugin" {
-		c.JSON(http.StatusConflict, gin.H{"error": "plugin favorite not yet supported"})
-		return
-	}
-
 	count, removed, err := h.behaviorSvc.UnfavoriteItem(c.Request.Context(), item.ID, uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
