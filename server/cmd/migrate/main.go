@@ -1281,5 +1281,6 @@ func isDuplicateError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "duplicate key value violates unique constraint") ||
-		strings.Contains(msg, "UNIQUE constraint failed")
+		strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicated key not allowed")
 }
