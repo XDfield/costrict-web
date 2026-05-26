@@ -1776,6 +1776,10 @@ func ListAllItems(c *gin.Context) {
 
 	registryIDs := buildVisibleRegistryIDs(db, uid)
 	isFavoritedQuery := c.Query("favorited") == "true" && uid != ""
+	if c.Query("favorited") == "true" && uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required for favorited items"})
+		return
+	}
 	isPaginatedFavorited := isFavoritedQuery && c.Query("paginated") == "true"
 	if len(registryIDs) == 0 && !isFavoritedQuery {
 		c.JSON(http.StatusOK, gin.H{"items": []models.CapabilityItem{}, "total": 0, "page": page, "pageSize": pageSize, "hasMore": false})
