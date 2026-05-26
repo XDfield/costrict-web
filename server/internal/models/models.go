@@ -654,12 +654,12 @@ func (MemoryFile) TableName() string {
 // MemoryVersion 记忆版本表
 // 记录每个记忆文件的历史版本，实体内容存储在 storage backend 中
 type MemoryVersion struct {
-	ID         string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	MemoryFileID string  `gorm:"not null;index" json:"memoryFileId"`
-	Version    int       `gorm:"not null" json:"version"`
-	ContentMD5 string    `gorm:"size:32" json:"contentMD5"`
-	StorageKey string    `gorm:"not null" json:"storageKey"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	MemoryFileID string    `gorm:"not null;uniqueIndex:idx_memory_version_file_version,priority:1" json:"memoryFileId"`
+	Version      int       `gorm:"not null;uniqueIndex:idx_memory_version_file_version,priority:2" json:"version"`
+	ContentMD5   string    `gorm:"size:32" json:"contentMD5"`
+	StorageKey   string    `gorm:"not null" json:"storageKey"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 func (MemoryVersion) TableName() string {

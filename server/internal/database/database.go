@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,8 +47,56 @@ func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*go
 		log.Printf("Warning: Failed to enable pgvector extension: %v (continuing without vector support)", err)
 	}
 
+	if err := configureConnectionPool(db); err != nil {
+		log.Printf("Warning: Failed to configure connection pool: %v (continuing with defaults)", err)
+	}
+
 	DB = db
 	return db, nil
+}
+
+// configureConnectionPool reads optional env vars and applies connection pool
+// limits to the underlying *sql.DB.  This prevents unbounded connection growth
+// under load, which was observed to exhaust PostgreSQL max_connections when
+// the memory-reporting endpoint was hit concurrently.
+func configureConnectionPool(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+
+	maxOpen := 25
+	if v := os.Getenv("DB_MAX_OPEN_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DB_MAX_OPEN_CONNS: %s", v)
+		}
+		maxOpen = n
+	}
+	sqlDB.SetMaxOpenConns(maxOpen)
+
+	maxIdle := 5
+	if v := os.Getenv("DB_MAX_IDLE_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid DB_MAX_IDLE_CONNS: %s", v)
+		}
+		maxIdle = n
+	}
+	sqlDB.SetMaxIdleConns(maxIdle)
+
+	maxLifetime := 60 * time.Minute
+	if v := os.Getenv("DB_CONN_MAX_LIFETIME_MINUTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid DB_CONN_MAX_LIFETIME_MINUTES: %s", v)
+		}
+		maxLifetime = time.Duration(n) * time.Minute
+	}
+	sqlDB.SetConnMaxLifetime(maxLifetime)
+
+	log.Printf("Database pool configured: max_open=%d max_idle=%d max_lifetime=%s", maxOpen, maxIdle, maxLifetime)
+	return nil
 }
 
 // enablePgVector enables the pgvector extension in PostgreSQL.

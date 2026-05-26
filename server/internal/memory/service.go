@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // CreateMemoryRequest 创建/上报记忆请求
@@ -136,42 +137,82 @@ func (s *Service) UpdateMemory(ctx context.Context, userID, memoryID string, req
 
 	contentMD5 := md5Hash(req.Content)
 
+	// 检查当前版本内容是否相同
+	var currentVersion models.MemoryVersion
+	if err := s.DB.Where("memory_file_id = ? AND version = ?", memory.ID, memory.CurrentVersion).First(&currentVersion).Error; err != nil {
+		return nil, err
+	}
+
+	if currentVersion.ContentMD5 == contentMD5 {
+		// 内容未变化，仅更新元数据
+		updates["updated_at"] = time.Now()
+		if err := s.DB.Model(&memory).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		return &memory, nil
+	}
+
 	if req.BumpVersion {
-		// 创建新版本
-		memory.CurrentVersion++
-		updates["current_version"] = memory.CurrentVersion
+		// 使用事务 + 行锁防止并发版本号冲突
+		var result *models.MemoryFile
+		err := s.DB.Transaction(func(tx *gorm.DB) error {
+			var m models.MemoryFile
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ? AND deleted_at IS NULL", memoryID, userID).First(&m).Error; err != nil {
+				return err
+			}
 
-		storageKey := s.buildStorageKey(userID, memory.ID, memory.CurrentVersion)
-		if err := s.Storage.Put(ctx, storageKey, strings.NewReader(req.Content), int64(len(req.Content))); err != nil {
-			return nil, err
-		}
+			m.CurrentVersion++
 
-		version := &models.MemoryVersion{
-			MemoryFileID: memory.ID,
-			Version:      memory.CurrentVersion,
-			ContentMD5:   contentMD5,
-			StorageKey:   storageKey,
-		}
-		if err := s.DB.Create(version).Error; err != nil {
-			return nil, err
-		}
-	} else {
-		// 覆盖当前版本
-		var currentVersion models.MemoryVersion
-		if err := s.DB.Where("memory_file_id = ? AND version = ?", memory.ID, memory.CurrentVersion).First(&currentVersion).Error; err != nil {
-			return nil, err
-		}
+			storageKey := s.buildStorageKey(userID, m.ID, m.CurrentVersion)
+			if err := s.Storage.Put(ctx, storageKey, strings.NewReader(req.Content), int64(len(req.Content))); err != nil {
+				return err
+			}
 
-		storageKey := s.buildStorageKey(userID, memory.ID, memory.CurrentVersion)
-		if err := s.Storage.Put(ctx, storageKey, strings.NewReader(req.Content), int64(len(req.Content))); err != nil {
-			return nil, err
-		}
+			version := &models.MemoryVersion{
+				MemoryFileID: m.ID,
+				Version:      m.CurrentVersion,
+				ContentMD5:   contentMD5,
+				StorageKey:   storageKey,
+			}
+			if err := tx.Create(version).Error; err != nil {
+				return err
+			}
 
-		currentVersion.ContentMD5 = contentMD5
-		currentVersion.StorageKey = storageKey
-		if err := s.DB.Save(&currentVersion).Error; err != nil {
+			up := map[string]interface{}{
+				"current_version": m.CurrentVersion,
+				"updated_at":      time.Now(),
+			}
+			if req.Name != "" {
+				up["name"] = req.Name
+				m.Name = req.Name
+			}
+			if req.Description != "" {
+				up["description"] = req.Description
+				m.Description = req.Description
+			}
+			if err := tx.Model(&m).Updates(up).Error; err != nil {
+				return err
+			}
+
+			result = &m
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
+		return result, nil
+	}
+
+	// 覆盖当前版本
+	storageKey := s.buildStorageKey(userID, memory.ID, memory.CurrentVersion)
+	if err := s.Storage.Put(ctx, storageKey, strings.NewReader(req.Content), int64(len(req.Content))); err != nil {
+		return nil, err
+	}
+
+	currentVersion.ContentMD5 = contentMD5
+	currentVersion.StorageKey = storageKey
+	if err := s.DB.Save(&currentVersion).Error; err != nil {
+		return nil, err
 	}
 
 	updates["updated_at"] = time.Now()
