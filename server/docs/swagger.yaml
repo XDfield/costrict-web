@@ -185,10 +185,14 @@ definitions:
         type: string
       embeddingUpdatedAt:
         type: string
+      evaluation:
+        type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      health:
+        type: object
       id:
         type: string
       installCount:
@@ -912,10 +916,14 @@ definitions:
         type: string
       embeddingUpdatedAt:
         type: string
+      evaluation:
+        type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      health:
+        type: object
       id:
         type: string
       installCount:
@@ -1022,10 +1030,14 @@ definitions:
         type: string
       embeddingUpdatedAt:
         type: string
+      evaluation:
+        type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      health:
+        type: object
       id:
         type: string
       installCount:
@@ -1354,12 +1366,16 @@ definitions:
         type: string
       embeddingUpdatedAt:
         type: string
+      evaluation:
+        type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
       favorited:
         type: boolean
+      health:
+        type: object
       id:
         type: string
       installCount:
@@ -1433,10 +1449,14 @@ definitions:
         type: string
       embeddingUpdatedAt:
         type: string
+      evaluation:
+        type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      health:
+        type: object
       id:
         type: string
       installCount:

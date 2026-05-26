@@ -88,6 +88,8 @@ func setupTestDB(t *testing.T) func() {
 			content_md5          TEXT DEFAULT '',
 			current_revision     INTEGER NOT NULL DEFAULT 1,
 			metadata             TEXT DEFAULT '{}',
+			health               TEXT DEFAULT '{}',
+			evaluation           TEXT DEFAULT '{}',
 			source_path          TEXT,
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',

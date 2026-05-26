@@ -12962,11 +12962,17 @@ const docTemplate = `{
                 "embeddingUpdatedAt": {
                     "type": "string"
                 },
+                "evaluation": {
+                    "type": "object"
+                },
                 "experienceScore": {
                     "type": "number"
                 },
                 "favoriteCount": {
                     "type": "integer"
+                },
+                "health": {
+                    "type": "object"
                 },
                 "id": {
                     "type": "string"
@@ -14041,11 +14047,17 @@ const docTemplate = `{
                 "embeddingUpdatedAt": {
                     "type": "string"
                 },
+                "evaluation": {
+                    "type": "object"
+                },
                 "experienceScore": {
                     "type": "number"
                 },
                 "favoriteCount": {
                     "type": "integer"
+                },
+                "health": {
+                    "type": "object"
                 },
                 "id": {
                     "type": "string"
@@ -14206,11 +14218,17 @@ const docTemplate = `{
                 "embeddingUpdatedAt": {
                     "type": "string"
                 },
+                "evaluation": {
+                    "type": "object"
+                },
                 "experienceScore": {
                     "type": "number"
                 },
                 "favoriteCount": {
                     "type": "integer"
+                },
+                "health": {
+                    "type": "object"
                 },
                 "id": {
                     "type": "string"
@@ -14700,6 +14718,9 @@ const docTemplate = `{
                 "embeddingUpdatedAt": {
                     "type": "string"
                 },
+                "evaluation": {
+                    "type": "object"
+                },
                 "experienceScore": {
                     "type": "number"
                 },
@@ -14708,6 +14729,9 @@ const docTemplate = `{
                 },
                 "favorited": {
                     "type": "boolean"
+                },
+                "health": {
+                    "type": "object"
                 },
                 "id": {
                     "type": "string"
@@ -14819,11 +14843,17 @@ const docTemplate = `{
                 "embeddingUpdatedAt": {
                     "type": "string"
                 },
+                "evaluation": {
+                    "type": "object"
+                },
                 "experienceScore": {
                     "type": "number"
                 },
                 "favoriteCount": {
                     "type": "integer"
+                },
+                "health": {
+                    "type": "object"
                 },
                 "id": {
                     "type": "string"
