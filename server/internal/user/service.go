@@ -211,6 +211,15 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		if err := tx.Create(&identity).Error; err != nil {
 			return err
 		}
+
+		// IDTrust绑定时自动创建企微应用channel状态
+		if identity.Provider == "idtrust" {
+			if err := s.createWecomChannelStateOnIDTrustBind(tx, userSubjectID); err != nil {
+				// 记录错误但不影响绑定流程
+				fmt.Printf("Warning: failed to create wecom channel state: %v\n", err)
+			}
+		}
+
 		return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
 	})
 }
@@ -272,6 +281,38 @@ func (s *UserService) UnbindIdentityByProvider(userSubjectID string, provider st
 
 		return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
 	})
+}
+
+// createWecomChannelStateOnIDTrustBind 在IDTrust绑定时创建企微应用channel状态
+func (s *UserService) createWecomChannelStateOnIDTrustBind(tx *gorm.DB, userSubjectID string) error {
+	// 检查是否已存在企微应用channel
+	var existingChannel models.ChannelConfig
+	err := tx.Where("user_id = ? AND channel_type = ? AND deleted_at IS NULL", userSubjectID, "wecom").
+		First(&existingChannel).Error
+
+	if err == nil {
+		// 已存在，只更新enabled状态
+		return tx.Model(&existingChannel).Update("enabled", true).Error
+	} else if err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	// 不存在则创建新的channel状态
+	// Config字段留空，userId会从IDTrust绑定中动态获取
+	channel := models.ChannelConfig{
+		UserID:      userSubjectID,
+		ChannelType: "wecom",
+		Name:        "企微应用通知",
+		Enabled:     true,
+		Config:      nil, // 留空，由查询时动态组合
+	}
+	return tx.Create(&channel).Error
+}
+
+// deleteWecomChannelStateOnIDTrustUnbind 在IDTrust解绑时删除企微应用channel状态
+func (s *UserService) deleteWecomChannelStateOnIDTrustUnbind(tx *gorm.DB, userSubjectID string) error {
+	return tx.Where("user_id = ? AND channel_type = ?", userSubjectID, "wecom").
+		Delete(&models.ChannelConfig{}).Error
 }
 
 // SearchUsers searches users by username or email keyword

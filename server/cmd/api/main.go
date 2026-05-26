@@ -438,7 +438,7 @@ func main() {
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
-			channelModule := channel.New(db, &channel.EchoMessageHandler{}, cfg.CloudBaseURL, cfg.Channels.EnabledTypes)
+			channelModule := channel.New(db, &channel.EchoMessageHandler{}, cfg.CloudBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
