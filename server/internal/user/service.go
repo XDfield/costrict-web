@@ -111,8 +111,9 @@ func (s *UserService) GetUsersByUniversalIDs(universalIDs []string) (map[string]
 }
 
 // ResolveSubjectID resolves JWT/Casdoor claims to the stable local subject_id.
+// This is a read-only lookup and does NOT trigger user creation or identity binding.
 func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error) {
-	user, err := s.GetOrCreateUser(claims)
+	user, err := s.FindUserByClaims(claims)
 	if err != nil {
 		return "", "", err
 	}
@@ -123,13 +124,90 @@ func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error
 	return user.SubjectID, name, nil
 }
 
+// FindUserByClaims performs a read-only lookup to find an existing user by JWT claims.
+func (s *UserService) FindUserByClaims(claims *JWTClaims) (*models.User, error) {
+	if claims == nil {
+		return nil, fmt.Errorf("nil JWT claims")
+	}
+	claims = normalizeJWTClaims(claims)
+	externalKey := buildExternalKey(claims)
+
+	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
+		return nil, fmt.Errorf("no valid user identifier in JWT claims")
+	}
+
+	var user models.User
+
+	lookupKeys := []string{externalKey}
+	if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+		lookupKeys = append(lookupKeys, legacy)
+	}
+
+	// Try identities first
+	for _, key := range lookupKeys {
+		if key == "" {
+			break
+		}
+		var identity models.UserAuthIdentity
+		if err := s.db.Where("external_key = ?", key).Take(&identity).Error; err == nil {
+			if err := s.db.Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
+				return &user, nil
+			}
+		}
+	}
+	// Try user table directly by external_key
+	for _, key := range lookupKeys {
+		if key == "" {
+			break
+		}
+		if err := s.db.Where("external_key = ?", key).Take(&user).Error; err == nil {
+			return &user, nil
+		}
+	}
+	if claims.UniversalID != "" {
+		if err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error; err == nil {
+			return &user, nil
+		}
+	}
+	if claims.ID != "" {
+		if err := s.db.Where("casdoor_id = ?", claims.ID).Take(&user).Error; err == nil {
+			return &user, nil
+		}
+	}
+	if claims.Sub != "" {
+		if err := s.db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error; err == nil {
+			return &user, nil
+		}
+	}
+	if claims.Name != "" {
+		if err := s.db.Where("username = ?", claims.Name).Take(&user).Error; err == nil {
+			return &user, nil
+		}
+	}
+
+	return nil, fmt.Errorf("user not found")
+}
+
+// BindIdentityOptions controls the behavior of BindIdentityToUser.
+type BindIdentityOptions struct {
+	ForceRebind     bool
+	UpdateLastLogin bool
+}
+
+// UpdateUserLastLogin updates the last_login_at timestamp for a user.
+func (s *UserService) UpdateUserLastLogin(subjectID string) error {
+	now := time.Now()
+	return s.db.Model(&models.User{}).Where("subject_id = ?", subjectID).
+		Update("last_login_at", now).Error
+}
+
 func (s *UserService) ListUserIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error) {
 	var identities []*models.UserAuthIdentity
 	err := s.db.Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
 	return identities, err
 }
 
-func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, forceRebind ...bool) error {
+func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
 	if strings.TrimSpace(userSubjectID) == "" {
 		return fmt.Errorf("user_subject_id is required")
 	}
@@ -141,7 +219,10 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 	if externalKey == "" {
 		return fmt.Errorf("external key is required")
 	}
-	force := len(forceRebind) > 0 && forceRebind[0]
+	var opt BindIdentityOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var existing models.UserAuthIdentity
@@ -151,10 +232,13 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 				return fmt.Errorf("identity_already_bound")
 			}
 			// Skip restoring explicitly unbound identities unless forceRebind is set
-			if existing.ExplicitlyUnbound && !force {
+			if existing.ExplicitlyUnbound && !opt.ForceRebind {
 				return nil
 			}
 			updates := s.buildIdentityUpdates(&existing, claims)
+			if opt.UpdateLastLogin {
+				updates["last_login_at"] = time.Now()
+			}
 			if existing.DeletedAt.Valid {
 				updates["deleted_at"] = nil
 			}
@@ -175,11 +259,14 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
 			err := tx.Unscoped().Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
 			if err == nil {
-				if existing.ExplicitlyUnbound && !force {
+				if existing.ExplicitlyUnbound && !opt.ForceRebind {
 					return nil
 				}
 				updates := s.buildIdentityUpdates(&existing, claims)
 				updates["external_key"] = externalKey
+				if opt.UpdateLastLogin {
+					updates["last_login_at"] = time.Now()
+				}
 				if existing.DeletedAt.Valid {
 					updates["deleted_at"] = nil
 				}
@@ -485,14 +572,10 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 
 		if shouldUpdate {
-			user.LastLoginAt = &now
 			user.LastSyncAt = &now
 			if err := s.db.Save(&user).Error; err != nil {
 				return nil, fmt.Errorf("failed to update user: %w", err)
 			}
-		}
-		if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
-			return nil, err
 		}
 
 		s.notifyUserUpdated(user.SubjectID)
@@ -543,16 +626,42 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
-	if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
-		return nil, err
-	}
-	s.notifyUserUpdated(user.SubjectID)
-	if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
-		return refreshed, nil
-	}
+		if err := s.db.Create(&user).Error; err != nil {
+			if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
+				var existing models.User
+				query := s.db.Clauses(clause.Locking{Strength: "UPDATE"})
+				conditions := s.db
+				if externalKey != "" {
+					conditions = conditions.Where("external_key = ?", externalKey)
+					if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+						conditions = conditions.Or("external_key = ?", legacy)
+					}
+				} else {
+					conditions = conditions.Where("casdoor_universal_id = ?", claims.UniversalID)
+				}
+				query = conditions.Or("casdoor_universal_id = ?", claims.UniversalID).
+					Or("casdoor_id = ?", claims.ID).
+					Or("casdoor_sub = ?", claims.Sub)
+				err := query.Take(&existing).Error
+				if err == nil {
+					s.notifyUserUpdated(existing.SubjectID)
+					return &existing, nil
+				}
+			}
+			return nil, fmt.Errorf("failed to create user: %w", err)
+		}
+		// Bind identity for newly created user
+		if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+			// Log but don't fail user creation if identity binding fails
+			fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
+		}
+		s.notifyUserUpdated(user.SubjectID)
+		if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
+			return refreshed, nil
+		}
 
-	return &user, nil
-}
+		return &user, nil
+	}
 
 // ParseJWTClaimsFromMiddleware extracts JWT claims from gin.Context
 // This is a helper to convert middleware context to JWTClaims
@@ -771,7 +880,6 @@ func buildUserAuthIdentity(userSubjectID string, claims *JWTClaims) models.UserA
 
 func (s *UserService) buildIdentityUpdates(existing *models.UserAuthIdentity, claims *JWTClaims) map[string]interface{} {
 	updates := make(map[string]interface{})
-	now := time.Now()
 
 	if claims.PreferredUsername != "" && (existing.DisplayName == nil || *existing.DisplayName != claims.PreferredUsername) {
 		updates["display_name"] = claims.PreferredUsername
@@ -795,7 +903,6 @@ func (s *UserService) buildIdentityUpdates(existing *models.UserAuthIdentity, cl
 		updates["external_subject"] = claims.UniversalID
 	}
 
-	updates["last_login_at"] = now
 	return updates
 }
 
@@ -850,20 +957,59 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 		}
 	}
 
-	user.AuthProvider = stringPtr(primary.Provider)
-	user.ExternalKey = stringPtr(primary.ExternalKey)
-	user.ProviderUserID = primary.ProviderUserID
-	user.DisplayName = firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
-	user.AvatarURL = firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
-	user.Email = validEmailPtr(primary.Email, identities)
-	user.Phone = preferredPhonePtr(primary, identities)
-	user.Organization = firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
+	// Compute new values from primary identity
+	newAuthProvider := stringPtr(primary.Provider)
+	newExternalKey := stringPtr(primary.ExternalKey)
+	newProviderUserID := primary.ProviderUserID
+	newDisplayName := firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
+	newAvatarURL := firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
+	newEmail := validEmailPtr(primary.Email, identities)
+	newPhone := preferredPhonePtr(primary, identities)
+	newOrganization := firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
+	var newUsername string
 	if primaryUsername := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); primaryUsername != "" {
-		user.Username = primaryUsername
+		newUsername = primaryUsername
+	}
+
+	// Check if any field actually changed before writing
+	changed := !equalStringPtr(user.AuthProvider, newAuthProvider) ||
+		!equalStringPtr(user.ExternalKey, newExternalKey) ||
+		!equalStringPtr(user.ProviderUserID, newProviderUserID) ||
+		!equalStringPtr(user.DisplayName, newDisplayName) ||
+		!equalStringPtr(user.AvatarURL, newAvatarURL) ||
+		!equalStringPtr(user.Email, newEmail) ||
+		!equalStringPtr(user.Phone, newPhone) ||
+		!equalStringPtr(user.Organization, newOrganization) ||
+		(newUsername != "" && user.Username != newUsername)
+
+	if !changed {
+		return nil
+	}
+
+	user.AuthProvider = newAuthProvider
+	user.ExternalKey = newExternalKey
+	user.ProviderUserID = newProviderUserID
+	user.DisplayName = newDisplayName
+	user.AvatarURL = newAvatarURL
+	user.Email = newEmail
+	user.Phone = newPhone
+	user.Organization = newOrganization
+	if newUsername != "" {
+		user.Username = newUsername
 	}
 	now := time.Now()
 	user.LastSyncAt = &now
 	return tx.Save(&user).Error
+}
+
+func equalStringPtr(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 func firstNonEmptyString(values ...string) string {
