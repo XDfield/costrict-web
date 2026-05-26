@@ -490,6 +490,8 @@ type ItemResponse struct {
 	ContentMD5          string                      `json:"contentMd5"`
 	CurrentRevision     int                         `json:"currentRevision"`
 	Metadata            datatypes.JSON              `json:"metadata" swaggertype:"object"`
+	Health              datatypes.JSON              `json:"health,omitempty" swaggertype:"object"`
+	Evaluation          datatypes.JSON              `json:"evaluation,omitempty" swaggertype:"object"`
 	SourcePath          string                      `json:"sourcePath"`
 	SourceSHA           string                      `json:"sourceSha"`
 	SourceType          string                      `json:"sourceType"`
@@ -618,6 +620,8 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		ContentMD5:         item.ContentMD5,
 		CurrentRevision:    item.CurrentRevision,
 		Metadata:           item.Metadata,
+		Health:             item.Health,
+		Evaluation:         item.Evaluation,
 		SourcePath:         item.SourcePath,
 		SourceSHA:          item.SourceSHA,
 		SourceType:         item.SourceType,

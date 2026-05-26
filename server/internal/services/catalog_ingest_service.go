@@ -44,6 +44,7 @@ package services
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -53,6 +54,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -169,8 +171,14 @@ type catalogBundleManifest struct {
 }
 
 // catalogEntry is the per-entry shape we care about from index.json.
-// We deliberately keep this struct small — index.json carries many fields
-// (evaluation, freshness_label, weak_dims, …) that the DB does not need.
+// The catalog also carries health (freshness/popularity/source_trust signals)
+// and evaluation (6 rubric dimensions + final decision) blocks, which we
+// persist VERBATIM into dedicated jsonb columns. They are captured as
+// json.RawMessage rather than decoded into fixed structs so that any extra
+// upstream fields (e.g. health.signals.install_popularity,
+// evaluation.evaluation_mode) survive the ingest unmodified — see design.md
+// decision 1 ("store the whole upstream JSON shape"). Other top-level fields
+// index.json carries (e.g. weak_dims) remain intentionally unmapped.
 type catalogEntry struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -181,6 +189,8 @@ type catalogEntry struct {
 	Tags          []string              `json:"tags"`
 	FinalScore    float64               `json:"final_score"`
 	Security      *catalogSecurityBlock `json:"security,omitempty"`
+	Health        json.RawMessage       `json:"health,omitempty"`
+	Evaluation    json.RawMessage       `json:"evaluation,omitempty"`
 }
 
 // catalogSecurityBlock mirrors the schema written by the upstream LLM
@@ -530,7 +540,50 @@ func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem,
 	if entry.FinalScore > 0 && item.ExperienceScore != entry.FinalScore {
 		return true
 	}
+	// health/evaluation JSONB drift: detected so a backfill run (file SHA +
+	// other metadata unchanged) still routes through the metadata-only path.
+	if !jsonbObjectEqual(item.Health, healthJSON(entry.Health)) {
+		return true
+	}
+	if !jsonbObjectEqual(item.Evaluation, evaluationJSON(entry.Evaluation)) {
+		return true
+	}
 	// Tags: compared in applyMetadataDelta itself (need TagSvc query).
+	return false
+}
+
+// jsonbObjectEqual compares two jsonb payloads for semantic equality,
+// tolerating the pre-migration column states (empty bytes, `null`, `{}`)
+// which all count as "empty". Byte comparison alone would be wrong because
+// json.Marshal does not guarantee key order, and an empty column may be
+// stored as any of those three forms.
+func jsonbObjectEqual(a, b datatypes.JSON) bool {
+	var va, vb any
+	emptyA := len(a) == 0
+	if !emptyA {
+		_ = json.Unmarshal(a, &va)
+		emptyA = isEmptyJSONValue(va)
+	}
+	emptyB := len(b) == 0
+	if !emptyB {
+		_ = json.Unmarshal(b, &vb)
+		emptyB = isEmptyJSONValue(vb)
+	}
+	if emptyA || emptyB {
+		return emptyA && emptyB
+	}
+	return reflect.DeepEqual(va, vb)
+}
+
+// isEmptyJSONValue reports whether a decoded JSON value is "empty" for the
+// purposes of jsonb drift detection: JSON null, or an empty object.
+func isEmptyJSONValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	if m, ok := v.(map[string]any); ok {
+		return len(m) == 0
+	}
 	return false
 }
 
@@ -577,6 +630,11 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 	if entry.FinalScore > 0 {
 		updates["experience_score"] = entry.FinalScore
 	}
+	// health/evaluation are always written on this path so a metadata-only
+	// upstream change (no primary-file diff) still backfills these columns.
+	// Nil blocks normalize to an empty object, so this never clobbers with null.
+	updates["health"] = healthJSON(entry.Health)
+	updates["evaluation"] = evaluationJSON(entry.Evaluation)
 	if len(updates) > 0 {
 		if err := s.DB.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
 			return err
@@ -641,6 +699,8 @@ func (s *CatalogIngestService) updateItem(
 	existing.Content = parsed.Content
 	existing.Source = source
 	existing.ExperienceScore = experienceScore
+	existing.Health = healthJSON(entry.Health)
+	existing.Evaluation = evaluationJSON(entry.Evaluation)
 	existing.Status = "active"
 	existing.Metadata = metadataJSON(meta)
 	existing.SourcePath = primaryPath
@@ -732,6 +792,8 @@ func (s *CatalogIngestService) insertItem(
 		Version:         parsed.Version,
 		Content:         parsed.Content,
 		Metadata:        metadataJSON(meta),
+		Health:          healthJSON(entry.Health),
+		Evaluation:      evaluationJSON(entry.Evaluation),
 		SourcePath:      primaryPath,
 		SourceSHA:       fileSHA,
 		Source:          source,
@@ -1077,6 +1139,53 @@ func buildDescriptionsJSON(entry catalogEntry) datatypes.JSON {
 	return datatypes.JSON(b)
 }
 
+// healthJSON normalizes the upstream health block into a jsonb payload,
+// preserving the raw bytes verbatim (see catalogEntry doc / design.md
+// decision 1). Empty/nil/null/empty-object input collapses to "{}" so the
+// column always holds a valid, non-null JSON object.
+func healthJSON(raw json.RawMessage) datatypes.JSON {
+	return rawBlockJSON(raw)
+}
+
+// evaluationJSON mirrors healthJSON for the evaluation block. Extra upstream
+// fields (e.g. evaluation_mode) and missing rubric dimensions are preserved
+// exactly as upstream emitted them — no field is dropped or defaulted.
+func evaluationJSON(raw json.RawMessage) datatypes.JSON {
+	return rawBlockJSON(raw)
+}
+
+// rawBlockJSON passes an upstream jsonb block through unchanged (lossless),
+// only normalizing to a canonical "{}" when the payload is not a usable
+// object. It compacts whitespace so byte-identical re-ingests stay stable, but
+// never reshapes or drops keys of a real object.
+//
+// The column contract is "JSON object" (see the swagger `object` type on
+// CapabilityItem.Health/Evaluation). So anything that isn't a NON-EMPTY JSON
+// object — empty bytes, invalid JSON, null, empty object, OR a valid-but-wrong
+// scalar/array (e.g. `health: []`, `evaluation: "x"`) — collapses to "{}"
+// rather than persisting a malformed shape the frontend can't consume.
+func rawBlockJSON(raw json.RawMessage) datatypes.JSON {
+	empty := datatypes.JSON([]byte("{}"))
+	if len(raw) == 0 {
+		return empty
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return empty
+	}
+	// Enforce the object contract: only a non-empty JSON object passes through.
+	obj, ok := v.(map[string]any)
+	if !ok || len(obj) == 0 {
+		return empty
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		// Already validated above; fall back to the raw bytes rather than dropping data.
+		return datatypes.JSON([]byte(raw))
+	}
+	return datatypes.JSON(buf.Bytes())
+}
+
 // chooseTags implements the precedence rule: upstream tags win when
 // non-empty (catalog has authoritative taxonomy), otherwise fall back to
 // what the per-file parser extracted (e.g. SKILL.md frontmatter).
@@ -1322,4 +1431,3 @@ func readIndex(bundleDir string) ([]catalogEntry, error) {
 	}
 	return entries, nil
 }
-

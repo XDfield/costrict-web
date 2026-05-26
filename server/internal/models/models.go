@@ -356,6 +356,8 @@ type CapabilityItem struct {
 	ContentMD5      string               `gorm:"size:32;default:''" json:"contentMd5"`
 	CurrentRevision int                  `gorm:"not null;default:1" json:"currentRevision"`
 	Metadata        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	Health          datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
+	Evaluation      datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
 	SourcePath      string               `json:"sourcePath"`
 	SourceSHA       string               `json:"sourceSha"`
 	SourceType      string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive

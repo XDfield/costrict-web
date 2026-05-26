@@ -117,20 +117,71 @@ func main() {
 		}
 	}
 
-	if err := runPreMigrations(db); err != nil {
-		log.Fatalf("Failed to run pre-migrations: %v", err)
+	if err := prepareSchema(db); err != nil {
+		log.Fatalf("Failed to prepare schema: %v", err)
 	}
 
-	err = db.AutoMigrate(
+	if err := backfillCapabilityContentVersioning(db); err != nil {
+		log.Fatalf("Failed to backfill capability content versioning: %v", err)
+	}
+	if err := backfillUserExternalIdentities(db, false); err != nil {
+		log.Fatalf("Failed to backfill user external identities: %v", err)
+	}
+	if err := backfillUserAuthIdentities(db, false); err != nil {
+		log.Fatalf("Failed to backfill user auth identities: %v", err)
+	}
+	if err := backfillOrganizations(db); err != nil {
+		log.Fatalf("Failed to backfill organizations: %v", err)
+	}
+
+	log.Println("All migrations completed successfully")
+}
+
+// prepareSchema runs the full schema-preparation sequence in the exact order
+// the default migrate path uses: pre-migrations (bootstrap tables, column
+// reconciliation, slug dedup) → AutoMigrate → goose migrations → ensure user
+// identity columns/table. It is the single source of truth for "get the
+// schema current" so the default migrate path and any subcommand that needs
+// the schema in place (e.g. ingest-upstream) can never drift in ordering.
+//
+// Ordering matters: runPreMigrations must precede autoMigrateAll because
+// AutoMigrate touches CapabilityItem.Embedding (a pgvector `vector(1024)`
+// column) and the pre-migration bootstrap establishes the tables/columns
+// AutoMigrate reconciles against. Every step is idempotent, so re-running on
+// an already-migrated DB is a no-op. Data backfills (content versioning,
+// external identities, organizations) are intentionally NOT part of schema
+// prep — they live only in the default migrate path.
+func prepareSchema(db *gorm.DB) error {
+	if err := runPreMigrations(db); err != nil {
+		return fmt.Errorf("run pre-migrations: %w", err)
+	}
+	if err := autoMigrateAll(db); err != nil {
+		return fmt.Errorf("auto-migrate database: %w", err)
+	}
+	if err := runGooseMigrations(db); err != nil {
+		return fmt.Errorf("run goose migrations: %w", err)
+	}
+	if err := ensureUserIdentityColumns(db); err != nil {
+		return fmt.Errorf("ensure user identity columns: %w", err)
+	}
+	if err := ensureUserAuthIdentitiesTable(db); err != nil {
+		return fmt.Errorf("ensure user auth identities table: %w", err)
+	}
+	return nil
+}
+
+// autoMigrateAll runs GORM AutoMigrate over the full model set. It is the
+// single source of truth for the model list; callers go through prepareSchema
+// rather than invoking this directly so the pre-migration ordering is always
+// honored. AutoMigrate is idempotent additive DDL, so re-running it on an
+// already-migrated DB is a no-op.
+func autoMigrateAll(db *gorm.DB) error {
+	return db.AutoMigrate(
 		&team.TeamSession{},
 		&team.TeamSessionMember{},
 		&team.TeamTask{},
 		&team.TeamApprovalRequest{},
 		&team.TeamRepoAffinity{},
-		&models.UserSystemRole{},
-		&models.Repository{},
-			&models.RepoMember{},
-			&models.RepoInvitation{},
 		&models.UserSystemRole{},
 		&models.Repository{},
 		&models.RepoMember{},
@@ -165,34 +216,6 @@ func main() {
 		&models.ItemDistributionReceipt{},
 		&models.Organization{},
 	)
-	if err != nil {
-		log.Fatalf("Failed to auto-migrate database: %v", err)
-	}
-
-	if err := runGooseMigrations(db); err != nil {
-		log.Fatalf("Failed to run goose migrations: %v", err)
-	}
-	if err := ensureUserIdentityColumns(db); err != nil {
-		log.Fatalf("Failed to ensure user identity columns: %v", err)
-	}
-	if err := ensureUserAuthIdentitiesTable(db); err != nil {
-		log.Fatalf("Failed to ensure user auth identities table: %v", err)
-	}
-
-	if err := backfillCapabilityContentVersioning(db); err != nil {
-		log.Fatalf("Failed to backfill capability content versioning: %v", err)
-	}
-	if err := backfillUserExternalIdentities(db, false); err != nil {
-		log.Fatalf("Failed to backfill user external identities: %v", err)
-	}
-	if err := backfillUserAuthIdentities(db, false); err != nil {
-		log.Fatalf("Failed to backfill user auth identities: %v", err)
-	}
-	if err := backfillOrganizations(db); err != nil {
-		log.Fatalf("Failed to backfill organizations: %v", err)
-	}
-
-	log.Println("All migrations completed successfully")
 }
 
 func printMigrateHelp() {
@@ -230,6 +253,35 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		return fmt.Errorf("source is empty")
+	}
+
+	// Ensure ONLY the two columns this ingest writes exist, via targeted
+	// idempotent additive DDL. We deliberately do NOT run the full schema-prep
+	// sequence (prepareSchema/runPreMigrations/autoMigrateAll/goose) here:
+	// those mutate row data (repo_id backfill, duplicate-slug renames, goose
+	// seed/data migrations), which would violate --dry-run safety by changing
+	// production data before CatalogIngestService ever honors DryRun. The
+	// supported way to fully migrate a fresh DB is the default `migrate`
+	// command, which the deploy workflow always runs before `ingest-upstream`.
+	// Ingest itself only needs to guarantee the new health/evaluation columns
+	// are present so the item query doesn't fail with "no such column".
+	//
+	// Under --dry-run we skip the column-ensure DDL entirely to keep the
+	// command fully non-mutating (an ALTER TABLE is a persistent schema
+	// change). If the columns don't exist yet, the dry-run preview against the
+	// not-yet-migrated DB may report an error or zero counts — that's
+	// acceptable for a preview; the operator should run the normal `migrate`
+	// first.
+	if !dryRun {
+		healthEvalDDL := []string{
+			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS health jsonb DEFAULT '{}'`,
+			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS evaluation jsonb DEFAULT '{}'`,
+		}
+		for _, stmt := range healthEvalDDL {
+			if err := db.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("ensure health/evaluation columns before ingest: %w", err)
+			}
+		}
 	}
 
 	svc := &services.CatalogIngestService{
