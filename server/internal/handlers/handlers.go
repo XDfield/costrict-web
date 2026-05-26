@@ -484,7 +484,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusConflict, gin.H{"error": "provider_mismatch"})
 		return
 	}
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, true); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
 			c.JSON(http.StatusConflict, gin.H{"error": "identity_already_bound", "message": "该登录方式已绑定其他账号"})
 			return
@@ -536,7 +536,7 @@ func Login(c *gin.Context) {
 // @Router       /auth/logout [post]
 func Logout(c *gin.Context) {
 	// Clear the auth cookie (HttpOnly=false to match the cookie strategy used by credit-manager)
-	c.SetCookie("zgsmAdminToken", "", -1, "/", "", cookieSecure, false)
+	middleware.ClearAuthCookie(c)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
@@ -554,6 +554,8 @@ func Logout(c *gin.Context) {
 func GetCurrentUser(c *gin.Context) {
 	currentUserID := c.GetString(middleware.UserIDKey)
 	if currentUserID == "" {
+		// Clear invalid cookie to prevent repeated failed requests
+		middleware.ClearAuthCookie(c)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
@@ -601,7 +603,8 @@ func GetCurrentUser(c *gin.Context) {
 	}
 
 	if UserModule != nil && UserModule.Service != nil {
-		if user, userErr := UserModule.Service.GetOrCreateUser(claims); userErr == nil && user != nil {
+		// Try to find existing user only (read-only), don't create
+		if user, userErr := UserModule.Service.FindUserByClaims(claims); userErr == nil && user != nil {
 			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
 			return
 		}

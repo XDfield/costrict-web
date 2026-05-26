@@ -18,6 +18,7 @@ const UserNameKey = "userName"
 const AuthClaimsKey = "authClaims"
 const InternalSecretHeader = "X-Internal-Secret"
 const SystemTokenHeader = "X-System-Token"
+const AuthCookieName = "zgsmAdminToken"
 
 type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsername string, err error)
 
@@ -139,6 +140,8 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			// Fallback to Casdoor API verification
 			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
 			if err != nil {
+				// Clear invalid cookie to prevent repeated failed requests
+				ClearAuthCookie(c)
 				logger.Warn("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 				return
@@ -318,6 +321,14 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 // of three base64url-encoded segments separated by dots.
 func looksLikeJWT(token string) bool {
 	return strings.Count(token, ".") == 2
+}
+
+// ClearAuthCookie clears the authentication cookie to prevent the client
+// from sending invalid tokens repeatedly.
+func ClearAuthCookie(c *gin.Context) {
+	// Set cookie with expired date to effectively delete it
+	// Parameters must match the original cookie settings
+	c.SetCookie(AuthCookieName, "", -1, "/", "", false, false)
 }
 
 func strClaim(claims jwt.MapClaims, key string) string {
