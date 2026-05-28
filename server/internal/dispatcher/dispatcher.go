@@ -417,7 +417,7 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 
 		cardData := map[string]any{
 			"card_type":     "vote_interaction",
-			"main_title":    map[string]string{"title": title},
+				"main_title":    map[string]string{"title": title, "desc": q.Question},
 			"checkbox":      checkbox,
 			"submit_button": submitBtn,
 		}
@@ -484,7 +484,7 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 
 	cardData := map[string]any{
 		"card_type":     "vote_interaction",
-		"main_title":    map[string]string{"title": title},
+		"main_title":    map[string]string{"title": title, "desc": q.Question},
 		"checkbox":      checkbox,
 		"submit_button": submitBtn,
 	}
@@ -553,7 +553,7 @@ func (d *Dispatcher) sendSingleVoteCardWithToken(input DispatchInput, actionToke
 
 	cardData := map[string]any{
 		"card_type":     "vote_interaction",
-		"main_title":    map[string]string{"title": title},
+		"main_title":    map[string]string{"title": title, "desc": q.Question},
 		"checkbox":      checkbox,
 		"submit_button": submitBtn,
 	}
