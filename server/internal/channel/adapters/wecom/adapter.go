@@ -120,9 +120,9 @@ func (a *WeComAdapter) SendInteractiveCard(ctx context.Context, userID string, c
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	subTitle := card.Description
-	if card.URL != "" {
-		subTitle += fmt.Sprintf("\n\n<a href=\"%s\">在会话中查看</a>", card.URL)
+	mainTitle := map[string]string{"title": card.Title}
+	if card.Description != "" {
+		mainTitle["desc"] = card.Description
 	}
 
 	buttons := make([]WeComCardButton, len(card.Buttons))
@@ -131,16 +131,35 @@ func (a *WeComAdapter) SendInteractiveCard(ctx context.Context, userID string, c
 	}
 
 	templateCard := map[string]any{
-		"card_type":      "button_interaction",
-		"task_id":        taskid,
-		"main_title":     map[string]string{"title": card.Title},
-		"sub_title_text": subTitle,
-		"button_list":    buttons,
+		"card_type":  "button_interaction",
+		"task_id":    taskid,
+		"main_title": mainTitle,
+		"button_list": buttons,
+	}
+	if card.SubTitle != "" {
+		templateCard["sub_title_text"] = card.SubTitle
+	}
+	if len(card.HorizontalContentList) > 0 {
+		hcl := make([]map[string]any, len(card.HorizontalContentList))
+		for i, item := range card.HorizontalContentList {
+			entry := map[string]any{"keyname": item.KeyName, "value": item.Value}
+			if item.Type != 0 {
+				entry["type"] = item.Type
+			}
+			if item.URL != "" {
+				entry["url"] = item.URL
+			}
+			hcl[i] = entry
+		}
+		templateCard["horizontal_content_list"] = hcl
 	}
 	if card.URL != "" {
-		templateCard["jump_list"] = []map[string]any{
-			{"type": 1, "title": "在会话中查看", "url": card.URL},
+		linkItem := map[string]any{
+			"type": 1, "keyname": "会话链接", "value": "点击查看", "url": card.URL,
 		}
+		hcl, _ := templateCard["horizontal_content_list"].([]map[string]any)
+		hcl = append(hcl, linkItem)
+		templateCard["horizontal_content_list"] = hcl
 	}
 
 	reqBody := map[string]any{

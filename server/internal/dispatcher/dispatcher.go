@@ -101,6 +101,13 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
+	// Auto-accept permission requests when workspace has autoAccept enabled
+	if input.EventType == "permission" && d.isAutoAccept(input) {
+		slog.Info("[dispatcher] auto-accept enabled, auto-approving permission", "sessionID", input.SessionID)
+		d.autoApprovePermission(input)
+		return
+	}
+
 	channels := d.selectChannels(input.UserID)
 
 	if needsInteraction(input.EventType) && d.bufferPeriod > 0 {
@@ -270,23 +277,30 @@ func (d *Dispatcher) dispatchToWeCom(input DispatchInput, actionToken string, we
 // --- Permission Card (Button Interaction) ---
 
 func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
-	title := buildPermissionTitle(input)
+	info := extractPermissionInfo(input)
+	sessionTitle := d.fetchSessionTitle(input)
+	if sessionTitle != "" {
+		info.Description = fmt.Sprintf("会话「%s」%s", sessionTitle, info.Description)
+	}
 
 	buttons := []wecom.CardButton{
 		{Text: "批准", Key: "", Style: 1},
-		{Text: "拒绝", Key: "", Style: 0},
+		{Text: "拒绝", Key: "", Style: 3},
+		{Text: "自批准", Key: "", Style: 2},
 	}
 
 	cardData := map[string]any{
 		"card_type":  "button_interaction",
-		"main_title": map[string]string{"title": title},
+		"main_title": map[string]string{"title": info.Title, "desc": info.Description},
+		"sub_title_text": info.Command,
+		"horizontal_content_list": info.HorizontalItems,
 		"button_list": buttons,
 	}
 
 	n, err := d.store.Create(notification.CreateNotificationInput{
 		UserID:     input.UserID,
 		Type:       "permission",
-		Title:      title,
+		Title:      info.Title,
 		SessionID:  input.SessionID,
 		DeviceID:   input.DeviceID,
 		ActionType: "permission",
@@ -298,20 +312,22 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 		return
 	}
 
-	// Update card data with real action token in button keys
 	buttons[0].Key = "approve:" + n.ActionToken
 	buttons[1].Key = "reject:" + n.ActionToken
+	buttons[2].Key = "auto_approve:" + n.ActionToken
 	cardData["button_list"] = buttons
-	d.updateNotificationData(n.ActionToken, title, cardData)
+	d.updateNotificationData(n.ActionToken, info.Title, cardData)
 
 	if d.wecomAdapter != nil {
+		sessionURL := d.buildSessionURL(input)
 		taskID := fmt.Sprintf("perm_%s_%d", input.SessionID, time.Now().UnixMilli())
 		card := wecom.InteractiveCard{
-			Title:   title,
-			Buttons: buttons,
-		}
-		if input.Path != "" {
-			card.URL = fmt.Sprintf("%s%s", d.appURL, input.Path)
+			Title:               info.Title,
+			Description:         info.Description,
+			SubTitle:            info.Command,
+			URL:                 sessionURL,
+			HorizontalContentList: info.HorizontalItems,
+			Buttons:             buttons,
 		}
 		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
 			slog.Error("[dispatcher] send wecom approval card failed", "error", err)
@@ -320,29 +336,38 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 }
 
 func (d *Dispatcher) sendApprovalCardWithToken(input DispatchInput, actionToken string, wecomUserID string) {
-	title := buildPermissionTitle(input)
+	info := extractPermissionInfo(input)
+	sessionTitle := d.fetchSessionTitle(input)
+	if sessionTitle != "" {
+		info.Description = fmt.Sprintf("会话「%s」%s", sessionTitle, info.Description)
+	}
 
 	buttons := []wecom.CardButton{
 		{Text: "批准", Key: "approve:" + actionToken, Style: 1},
-		{Text: "拒绝", Key: "reject:" + actionToken, Style: 0},
+		{Text: "拒绝", Key: "reject:" + actionToken, Style: 3},
+		{Text: "自批准", Key: "auto_approve:" + actionToken, Style: 2},
 	}
 
 	cardData := map[string]any{
 		"card_type":   "button_interaction",
-		"main_title":  map[string]string{"title": title},
+		"main_title":  map[string]string{"title": info.Title, "desc": info.Description},
+		"sub_title_text": info.Command,
+		"horizontal_content_list": info.HorizontalItems,
 		"button_list": buttons,
 	}
 
-	d.updateNotificationData(actionToken, title, cardData)
+	d.updateNotificationData(actionToken, info.Title, cardData)
 
 	if d.wecomAdapter != nil {
+		sessionURL := d.buildSessionURL(input)
 		taskID := fmt.Sprintf("perm_%s_%d", input.SessionID, time.Now().UnixMilli())
 		card := wecom.InteractiveCard{
-			Title:   title,
-			Buttons: buttons,
-		}
-		if input.Path != "" {
-			card.URL = fmt.Sprintf("%s%s", d.appURL, input.Path)
+			Title:               info.Title,
+			Description:         info.Description,
+			SubTitle:            info.Command,
+			URL:                 sessionURL,
+			HorizontalContentList: info.HorizontalItems,
+			Buttons:             buttons,
 		}
 		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
 			slog.Error("[dispatcher] send wecom approval card failed", "error", err)
@@ -684,6 +709,58 @@ func (d *Dispatcher) sendGuidanceCardWithToken(input DispatchInput, actionToken 
 
 // --- Session Notice Card (text_notice with jump_list) ---
 
+func (d *Dispatcher) isAutoAccept(input DispatchInput) bool {
+	if input.Path == "" || input.DeviceID == "" {
+		return false
+	}
+	normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
+	var dev models.Device
+	if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err != nil {
+		return false
+	}
+	var ws models.Workspace
+	if err := d.db.
+		Joins("JOIN workspace_directories ON workspace_directories.workspace_id = workspaces.id").
+		Where("workspaces.user_id = ? AND workspaces.device_id = ?", input.UserID, dev.ID).
+		Where("REPLACE(workspace_directories.path, chr(92), chr(47)) = ?", normalizedPath).
+		Where("workspace_directories.deleted_at IS NULL").
+		First(&ws).Error; err != nil {
+		return false
+	}
+	var settings map[string]any
+	if ws.Settings != nil {
+		json.Unmarshal(ws.Settings, &settings)
+	}
+	if v, ok := settings["autoAccept"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func (d *Dispatcher) autoApprovePermission(input DispatchInput) {
+	if d.gwClient == nil || d.gwRegistry == nil {
+		return
+	}
+	if input.ActionData == nil {
+		return
+	}
+	id, _ := input.ActionData["id"].(string)
+	if id == "" {
+		return
+	}
+	proxyPath := fmt.Sprintf("/api/v1/permissions/%s/reply", id)
+	bodyBytes, _ := json.Marshal(map[string]any{"approved": true})
+	var result map[string]any
+	directory := input.Path
+	if err := gateway.ProxyDeviceSessionRequest(d.gwClient, d.gwRegistry, input.UserID, input.DeviceID, directory, "POST", proxyPath, bodyBytes, &result); err != nil {
+		slog.Error("[dispatcher] auto-approve permission failed", "error", err)
+		return
+	}
+	slog.Info("[dispatcher] auto-approved permission", "sessionID", input.SessionID, "permissionID", id)
+}
+
 func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 	if input.SessionURL != "" {
 		return input.SessionURL
@@ -783,14 +860,60 @@ func (d *Dispatcher) updateNotificationData(actionToken string, title string, ca
 		Updates(updates)
 }
 
-func buildPermissionTitle(input DispatchInput) string {
-	title := "权限请求"
-	if input.ActionData != nil {
-		if toolName, ok := input.ActionData["toolName"].(string); ok {
-			title = fmt.Sprintf("权限请求: %s", toolName)
+type permissionInfo struct {
+	Title           string
+	Description     string
+	Command         string
+	HorizontalItems []wecom.HorizontalContentItem
+}
+
+func extractPermissionInfo(input DispatchInput) permissionInfo {
+	info := permissionInfo{Title: "权限请求"}
+	if input.ActionData == nil {
+		return info
+	}
+
+	// Extract permission type (e.g. "bash")
+	permType, _ := input.ActionData["permission"].(string)
+	if permType != "" {
+		info.Title = fmt.Sprintf("权限请求: %s", permType)
+		info.Description = fmt.Sprintf("请求使用 %s 权限", permType)
+	}
+
+	// Extract command from patterns or metadata
+	if patterns, ok := input.ActionData["patterns"].([]any); ok && len(patterns) > 0 {
+		if cmd, ok := patterns[0].(string); ok {
+			info.Command = cmd
 		}
 	}
-	return title
+	if metadata, ok := input.ActionData["metadata"].(map[string]any); ok {
+		if inputField, ok := metadata["input"].(map[string]any); ok {
+			if cmd, ok := inputField["command"].(string); ok && cmd != "" {
+				info.Command = cmd
+			}
+		}
+	}
+
+	// Build horizontal content items
+	info.HorizontalItems = []wecom.HorizontalContentItem{
+		{KeyName: "权限类型", Value: permType},
+	}
+	if info.Command != "" {
+		// Truncate long commands for display
+		cmdDisplay := info.Command
+		if len([]rune(cmdDisplay)) > 40 {
+			cmdDisplay = string([]rune(cmdDisplay)[:40]) + "..."
+		}
+		info.HorizontalItems = append(info.HorizontalItems, wecom.HorizontalContentItem{
+			KeyName: "执行命令", Value: cmdDisplay,
+		})
+	}
+
+	return info
+}
+
+func buildPermissionTitle(input DispatchInput) string {
+	return extractPermissionInfo(input).Title
 }
 
 func hasMultipleSelect(questions []questionInfo) bool {

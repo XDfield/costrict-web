@@ -78,16 +78,25 @@ func ParseUserConfig(raw json.RawMessage) (*WeComUserConfig, error) {
 // --- Interactive Card Types ---
 
 type InteractiveCard struct {
-	Title       string
-	Description string
-	URL         string
-	Buttons     []CardButton
+	Title               string
+	Description         string
+	SubTitle            string
+	URL                 string
+	HorizontalContentList []HorizontalContentItem
+	Buttons             []CardButton
 }
 
 type CardButton struct {
 	Text  string
 	Key   string
 	Style int
+}
+
+type HorizontalContentItem struct {
+	KeyName string
+	Value   string
+	Type    int    // 0=text, 1=url link, 2=download, 3=member detail
+	URL     string
 }
 
 type WeComTemplateCard struct {
