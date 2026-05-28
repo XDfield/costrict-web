@@ -694,6 +694,7 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 		return
 	}
 	sessionURL := d.buildSessionURL(input)
+	slog.Info("[dispatcher] session notice card", "sessionURL", sessionURL, "input.SessionURL", input.SessionURL, "input.Path", input.Path, "appURL", d.appURL)
 	if sessionURL == "" {
 		return
 	}
@@ -702,7 +703,7 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 		Title:    title,
 		SubTitle: subTitle,
 		JumpList: []wecom.TextNoticeJump{
-			{Title: "在会话中查看", URL: sessionURL},
+			{Title: "点击跳转到会话页面查看", URL: sessionURL},
 		},
 	}
 	if err := d.wecomAdapter.SendTextNoticeCard(nil, wecomUserID, card, taskID); err != nil {
