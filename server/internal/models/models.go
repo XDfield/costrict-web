@@ -697,6 +697,31 @@ type ItemDistributionReceipt struct {
 	Distribution *ItemDistribution `gorm:"foreignKey:DistributionID" json:"distribution,omitempty"`
 }
 
+// SystemNotification 系统通知记录
+type SystemNotification struct {
+	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID       string         `gorm:"not null;index:idx_system_notifications_user_status,priority:1;index:idx_system_notifications_user_type,priority:1" json:"userId"`
+	Type         string         `gorm:"not null;type:varchar(64);index:idx_system_notifications_user_type,priority:2" json:"type"`
+	Status       string         `gorm:"not null;type:varchar(32);default:'pending';index:idx_system_notifications_user_status,priority:2" json:"status"`
+	Title        string         `gorm:"not null" json:"title"`
+	Content      string         `json:"content,omitempty"`
+	SessionID    string         `gorm:"index:idx_system_notifications_session" json:"sessionId,omitempty"`
+	DeviceID     string         `json:"deviceId,omitempty"`
+	WorkspaceID  *string        `gorm:"type:uuid" json:"workspaceId,omitempty"`
+	ActionType   string         `gorm:"type:varchar(64)" json:"actionType,omitempty"`
+	ActionData   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"actionData" swaggertype:"object"`
+	ActionToken  string         `gorm:"type:varchar(128);uniqueIndex:idx_system_notifications_action_token,where:action_token IS NOT NULL AND deleted_at IS NULL" json:"actionToken,omitempty"`
+	ActionResult datatypes.JSON `gorm:"type:jsonb" json:"actionResult" swaggertype:"object"`
+	CardData     datatypes.JSON `gorm:"type:jsonb" json:"cardData,omitempty" swaggertype:"object"`
+	ActedAt      *time.Time     `json:"actedAt,omitempty"`
+	ExpiresAt    *time.Time     `json:"expiresAt,omitempty"`
+	CreatedAt    time.Time      `gorm:"index:idx_system_notifications_user_status,priority:3,sort:desc;index:idx_system_notifications_user_type,priority:3,sort:desc" json:"createdAt"`
+	ReadAt       *time.Time     `json:"readAt,omitempty"`
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+func (SystemNotification) TableName() string { return "system_notifications" }
+
 // Organization represents a business organization/tenant, compatible with Casdoor owner field.
 type Organization struct {
 	ID          string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`

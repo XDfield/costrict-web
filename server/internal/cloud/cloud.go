@@ -12,6 +12,8 @@ type Module struct {
 	Manager             *ConnectionManager
 	Router              *EventRouter
 	NotificationService *notification.NotificationService
+	NotificationStore   *notification.Store
+	Dispatcher          Notifier
 	DB                  *gorm.DB
 }
 
@@ -36,6 +38,7 @@ func (m *Module) RegisterRoutes(cloudGroup *gin.RouterGroup, deviceSvc *services
 }
 
 func (m *Module) RegisterDeviceRoutes(cloudGroup *gin.RouterGroup, deviceSvc *services.DeviceService) {
-	cloudGroup.POST("/device/notify", DeviceNotifyHandler(m.Manager, deviceSvc, m.NotificationService))
+	cloudGroup.POST("/device/notify", DeviceNotifyHandler(m.Manager, deviceSvc, m.NotificationService, m.NotificationStore, m.Dispatcher))
+	cloudGroup.POST("/device/notify/responded", NotifyRespondedHandler(m.NotificationStore))
 	cloudGroup.POST("/devices/:deviceID/commands/:commandID/result", DeviceCommandResultHandler(m.Manager, deviceSvc, m.DB))
 }

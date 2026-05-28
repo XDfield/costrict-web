@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -36,6 +37,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
@@ -227,6 +229,8 @@ func main() {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
 
+	var channelModule *channel.Module
+	var cloudModule *cloud.Module
 	api := r.Group("/api")
 	{
 		auth := api.Group("/auth")
@@ -424,7 +428,7 @@ func main() {
 
 			authzModule.RegisterAPIRoutes(authed)
 
-			notificationModule := notification.New(db, cfg.CloudBaseURL)
+			notificationModule := notification.New(db, cfg.AppURL)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
@@ -438,7 +442,7 @@ func main() {
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
-			channelModule := channel.New(db, &channel.EchoMessageHandler{}, cfg.CloudBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
+			channelModule = channel.New(db, &channel.EchoMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
@@ -454,6 +458,7 @@ func main() {
 			_ = kanbanModule
 		}
 	}
+
 
 	var redisClient *redis.Client
 	var store gateway.Store
@@ -498,9 +503,63 @@ func main() {
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
 	distSvc.SetNotificationService(notificationSvc)
 
-	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
+	notificationStore := notification.NewStore(db)
+
+	// Use the same WeComAdapter instance that was registered earlier for channel module
+	var wecomAdapterForDispatcher *wecom.WeComAdapter
+	if a, ok := channel.GetAdapter("wecom"); ok {
+		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
+	}
+
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, wecomAdapterForDispatcher)
+
+	// Create cloud module before action handlers so closures can reference it
+	cloudModule = cloud.New(gatewayRegistry, gatewayClient)
 	cloudModule.NotificationService = notificationSvc
+	cloudModule.NotificationStore = notificationStore
 	cloudModule.DB = db
+	cloudModule.Dispatcher = disp
+
+	// Wire the action handler into channel service for interactive card callbacks
+	channelModule.Service.SetActionHandler(func(ctx context.Context, action, token, responseCode string) error {
+		n, err := notificationStore.ExecuteAction(token, map[string]any{"action": action})
+		if err != nil {
+			logger.Error("[action-callback] token invalid or expired: %v", err)
+			return err
+		}
+
+		disp.OnInterventionResponse(token)
+		// Update card status using stored card data
+		if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {
+			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", n.CardData)
+		}
+
+		result := map[string]any{
+			"sessionID": n.SessionID,
+			"type":      n.Type,
+			"action":    action,
+			"token":     token,
+		}
+
+		if n.ActionData != nil {
+			var data map[string]any
+			if json.Unmarshal(n.ActionData, &data) == nil {
+				if idx, ok := data["questionIndex"]; ok {
+					result["questionIndex"] = idx
+				}
+			}
+		}
+
+		if err := cloudModule.Router.RouteUserCommand(n.DeviceID, cloud.Event{
+			Type:       "intervention.response",
+			Properties: result,
+		}); err != nil {
+			logger.Error("[action-callback] route user command failed: %v", err)
+		}
+
+		return nil
+	})
+
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)

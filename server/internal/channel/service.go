@@ -13,6 +13,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// CardStatusUpdater updates interactive card status after user action.
+// Implemented by adapters that support interactive cards (e.g., WeComAdapter).
+type CardStatusUpdater interface {
+	UpdateCardStatus(responseCode, statusText string, cardData []byte) error
+}
+
 type ChannelService struct {
 	db             *gorm.DB
 	adapters       map[string]ChannelAdapter
@@ -24,6 +30,13 @@ type ChannelService struct {
 	weComEnabled        bool
 	weComWebhookEnabled bool
 	weChatEnabled       bool
+	actionHandler       ActionCallbackHandler
+}
+
+type ActionCallbackHandler func(ctx context.Context, action, token, responseCode string) error
+
+func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
+	s.actionHandler = h
 }
 
 func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *ChannelService {
@@ -95,6 +108,23 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 	}
 
 	log.Printf("ChannelService: received inbound message: chatID=%s, userID=%s, content=%q, contentType=%s", msg.ExternalChatID, msg.ExternalUserID, msg.Content, msg.ContentType)
+
+	// Handle interactive card callbacks
+	if msg.ContentType == "action_callback" {
+		action := msg.Content
+		token, _ := msg.Metadata["actionToken"].(string)
+		respCode, _ := msg.Metadata["responseCode"].(string)
+		log.Printf("[channel] interactive card callback: action=%q, token=%q, responseCode=%q, fromUser=%s", action, token, respCode, msg.ExternalUserID)
+
+		if s.actionHandler != nil {
+			if err := s.actionHandler(r.Context(), action, token, respCode); err != nil {
+				log.Printf("[channel] action callback error: %v", err)
+			}
+		}
+
+
+		return "success", http.StatusOK, nil
+	}
 
 	for _, cfg := range configs {
 		rc := ReplyContext{
@@ -398,4 +428,15 @@ func getConfigWithMask(ch models.ChannelConfig) models.ChannelConfig {
 		ch.Config = maskConfig(ch.Config, []string{"token"})
 	}
 	return ch
+}
+
+func (s *ChannelService) UpdateInteractiveCard(channelType, responseCode, statusText string, cardData []byte) {
+	updater, ok := s.adapters[channelType].(CardStatusUpdater)
+	if !ok {
+		log.Printf("[channel] adapter %s does not support card status update", channelType)
+		return
+	}
+	if err := updater.UpdateCardStatus(responseCode, statusText, cardData); err != nil {
+		log.Printf("[channel] update card status failed: %v", err)
+	}
 }

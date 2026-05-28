@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -16,6 +17,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+type Notifier interface {
+	Dispatch(input dispatcher.DispatchInput)
+}
 
 func UserSSEHandler(manager *ConnectionManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -206,7 +211,7 @@ func isNotifiableEvent(eventType string) bool {
 	return false
 }
 
-func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceService, notificationSvc *notification.NotificationService) gin.HandlerFunc {
+func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceService, notificationSvc *notification.NotificationService, notificationStore *notification.Store, disp Notifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ""
 		auth := c.GetHeader("Authorization")
@@ -257,11 +262,60 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 
 		manager.RouteEvent(event, connIDs)
 
-		if notificationSvc != nil && isNotifiableEvent(body.Type) {
-			notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path)
+		if isNotifiableEvent(body.Type) {
+			// Interactive dispatcher: checks channel_configs for interactive channels
+			if disp != nil {
+				actionData := normalizeActionData(body.Data)
+				logger.Info("[notify] dispatch input", "eventType", body.Type, "sessionID", body.SessionID, "actionData", actionData)
+
+				go disp.Dispatch(dispatcher.DispatchInput{
+					UserID:     device.UserID,
+					EventType:  body.Type,
+					SessionID:  body.SessionID,
+					DeviceID:   device.DeviceID,
+					Path:       body.Path,
+					ActionData: actionData,
+				})
+			}
+
+			// One-way notification fallback: checks user_notification_channels
+			if notificationSvc != nil {
+				notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path)
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true, "routedTo": len(connIDs)})
+	}
+}
+
+func NotifyRespondedHandler(store *notification.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := ""
+		auth := c.GetHeader("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			token = auth[7:]
+		}
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
+			return
+		}
+
+		var body struct {
+			SessionID string `json:"sessionID" binding:"required"`
+			Type      string `json:"type"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		if store != nil {
+			if err := store.MarkRespondedBySession(body.SessionID); err != nil {
+				logger.Error("[notify-responded] mark failed", "sessionID", body.SessionID, "error", err)
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
 }
 
@@ -389,4 +443,17 @@ func DeviceCommandResultHandler(manager *ConnectionManager, deviceSvc *services.
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
+}
+
+// normalizeActionData unwraps nested data structures from cs-cloud notifications.
+// cs-cloud sends event data inside a "data" wrapper, but the dispatcher expects
+// fields like "questions" and "tool" at the top level.
+func normalizeActionData(raw any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]any); ok {
+		return m
+	}
+	return nil
 }

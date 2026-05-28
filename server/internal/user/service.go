@@ -555,8 +555,15 @@ func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			shouldUpdate = true
 		}
 		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
-			user.DisplayName = &claims.PreferredUsername
-			shouldUpdate = true
+			// Only overwrite DisplayName if no value exists yet, or the current
+			// login provider ranks >= the stored AuthProvider. This prevents a
+			// lower-ranked provider (e.g. phone) from clobbering a name set by
+			// a higher-ranked one (e.g. IDTrust).
+			currentRank := providerRank(ptrString(user.AuthProvider))
+			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= currentRank {
+				user.DisplayName = &claims.PreferredUsername
+				shouldUpdate = true
+			}
 		}
 		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
 			user.Email = &claims.Email

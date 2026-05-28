@@ -24,6 +24,8 @@ type Config struct {
 	UsageESInsecureSkipVerify bool
 	RedisURL                  string
 	CloudBaseURL              string
+	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
+	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
 	ReleaseDownloadBaseURL    string
 	SystemToken               string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -36,6 +38,7 @@ type Config struct {
 	Embedding                 EmbeddingConfig
 	Search                    SearchConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	NotificationBufferSeconds int // Notification buffer duration for interactive events, default 60
 }
 
 type ChannelSystemConfig struct {
@@ -119,6 +122,8 @@ func Load() *Config {
 		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
+		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
+		AppURL:                    getEnv("APP_URL", cloudBaseURL),
 		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
 		FrontendURLs:              frontendURLs,
@@ -153,6 +158,7 @@ func Load() *Config {
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		NotificationBufferSeconds: getEnvInt("NOTIFICATION_BUFFER_SECONDS", 60),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
