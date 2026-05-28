@@ -26,6 +26,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,60 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
+
+// getMapKeys extracts keys from a map for debugging
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// resolveQuestionAnswer parses the action string (e.g. "select:opt_0") and
+// actionData to produce the answers field that cs-cloud expects: string[][].
+// Each inner array contains the selected option label strings for one question.
+func resolveQuestionAnswer(action string, actionData map[string]any) [][]string {
+	// Parse option index from action string like "select:opt_0"
+	optIdx := -1
+	if strings.HasPrefix(action, "select:opt_") {
+		if n, err := strconv.Atoi(action[len("select:opt_"):]); err == nil {
+			optIdx = n
+		}
+	}
+	log.Printf("[action-callback] resolveQuestionAnswer: action=%q optIdx=%d", action, optIdx)
+
+	questionsRaw, _ := actionData["questions"].([]any)
+	if len(questionsRaw) == 0 {
+		log.Printf("[action-callback] resolveQuestionAnswer: no questions in actionData")
+		return [][]string{}
+	}
+
+	answers := make([][]string, len(questionsRaw))
+	for qi, qRaw := range questionsRaw {
+		q, _ := qRaw.(map[string]any)
+		optionsRaw, _ := q["options"].([]any)
+
+		var labels []string
+		if qi == 0 && optIdx >= 0 && optIdx < len(optionsRaw) {
+			// First question: use the selected option index
+			opt, _ := optionsRaw[optIdx].(map[string]any)
+			if label, ok := opt["label"].(string); ok {
+				labels = []string{label}
+			}
+		}
+		if len(labels) == 0 && len(optionsRaw) > 0 {
+			// Fallback: first option
+			opt, _ := optionsRaw[0].(map[string]any)
+			if label, ok := opt["label"].(string); ok {
+				labels = []string{label}
+			}
+		}
+		answers[qi] = labels
+	}
+	log.Printf("[action-callback] resolveQuestionAnswer: resolved answers=%v", answers)
+	return answers
+}
 
 func main() {
 	// Initialise structured logging with daily rotation and 7-day retention.
@@ -521,7 +576,7 @@ func main() {
 	cloudModule.Dispatcher = disp
 
 	// Wire the action handler into channel service for interactive card callbacks
-	channelModule.Service.SetActionHandler(func(ctx context.Context, action, token, responseCode string) error {
+	channelModule.Service.SetActionHandler(func(ctx context.Context, action, token, responseCode, externalUserID string) error {
 		n, err := notificationStore.ExecuteAction(token, map[string]any{"action": action})
 		if err != nil {
 			logger.Error("[action-callback] token invalid or expired: %v", err)
@@ -531,30 +586,80 @@ func main() {
 		disp.OnInterventionResponse(token)
 		// Update card status using stored card data
 		if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {
-			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", n.CardData)
+			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", "", n.CardData, externalUserID)
 		}
 
-		result := map[string]any{
-			"sessionID": n.SessionID,
-			"type":      n.Type,
-			"action":    action,
-			"token":     token,
-		}
-
-		if n.ActionData != nil {
-			var data map[string]any
-			if json.Unmarshal(n.ActionData, &data) == nil {
-				if idx, ok := data["questionIndex"]; ok {
-					result["questionIndex"] = idx
-				}
+		// Parse action data for the response
+		var actionData map[string]any
+		if n.ActionData != nil && len(n.ActionData) > 0 {
+			if err := json.Unmarshal(n.ActionData, &actionData); err != nil {
+				logger.Error("[action-callback] failed to unmarshal action data: %v", err)
+			} else {
+				logger.Info("[action-callback] parsed actionData: %+v", actionData)
 			}
 		}
 
-		if err := cloudModule.Router.RouteUserCommand(n.DeviceID, cloud.Event{
-			Type:       "intervention.response",
-			Properties: result,
-		}); err != nil {
-			logger.Error("[action-callback] route user command failed: %v", err)
+		// Extract id from action data (unified field for both permission and question)
+		var id string
+		if actionData != nil {
+			if val, ok := actionData["id"].(string); ok {
+				id = val
+			}
+		}
+		logger.Info("[action-callback] type=%s, action=%s, id=%s, sessionID=%s", n.Type, action, id, n.SessionID)
+
+		// Route to appropriate cs-cloud endpoint based on type
+		if id != "" && n.DeviceID != "" {
+			var proxyPath string
+			var requestBody map[string]any
+
+			switch n.Type {
+			case "permission":
+				proxyPath = fmt.Sprintf("/api/v1/permissions/%s/reply", id)
+				requestBody = map[string]any{"approved": (action == "approve")}
+				logger.Info("[action-callback] proxying to cs-cloud: %s, approved=%v", proxyPath, requestBody["approved"])
+
+			case "question":
+				proxyPath = fmt.Sprintf("/api/v1/questions/%s/reply", id)
+				// cs-cloud expects answers: string[][] - one string array per question,
+				// each containing the selected option labels.
+				// The action string is "select:opt_N" where N is the option index.
+				answers := resolveQuestionAnswer(action, actionData)
+				requestBody = map[string]any{"answers": answers}
+				logger.Info("[action-callback] proxying to cs-cloud: %s, answers=%v", proxyPath, answers)
+			default:
+				logger.Error("[action-callback] unknown type: %s", n.Type)
+				return nil
+			}
+
+			// Proxy the request to cs-cloud through gateway
+			userID := ""
+			// Try to extract userID from notification's session context
+			if n.UserID != "" {
+				userID = n.UserID
+			} else {
+				// Fallback: extract from context if available (from auth middleware)
+				if u, ok := ctx.Value("user_id").(string); ok {
+					userID = u
+				} else {
+					logger.Error("[action-callback] no userID available for proxy request")
+					return fmt.Errorf("no userID available")
+				}
+			}
+
+			// Marshal request body
+			bodyBytes, _ := json.Marshal(requestBody)
+			logger.Info("[action-callback] proxying with userID=%s, deviceID=%s, sessionID=%s, path=%s", userID, n.DeviceID, n.SessionID, proxyPath)
+
+			// Proxy through gateway to cs-cloud
+			var result map[string]any
+			if err := gateway.ProxyDeviceSessionRequest(gatewayClient, gatewayRegistry, userID, n.DeviceID, "", "POST", proxyPath, bodyBytes, &result); err != nil {
+				logger.Error("[action-callback] proxy request failed: %v", err)
+				return err
+			}
+			logger.Info("[action-callback] proxy response successful: %+v", result)
+		} else {
+			logger.Error("[action-callback] missing id or deviceID: id=%q, deviceID=%q", id, n.DeviceID)
 		}
 
 		return nil

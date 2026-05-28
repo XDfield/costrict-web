@@ -16,7 +16,7 @@ import (
 // CardStatusUpdater updates interactive card status after user action.
 // Implemented by adapters that support interactive cards (e.g., WeComAdapter).
 type CardStatusUpdater interface {
-	UpdateCardStatus(responseCode, statusText string, cardData []byte) error
+	UpdateCardStatus(responseCode, statusText, action string, cardData []byte, externalUserID string) error
 }
 
 type ChannelService struct {
@@ -33,7 +33,7 @@ type ChannelService struct {
 	actionHandler       ActionCallbackHandler
 }
 
-type ActionCallbackHandler func(ctx context.Context, action, token, responseCode string) error
+type ActionCallbackHandler func(ctx context.Context, action, token, responseCode, externalUserID string) error
 
 func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
 	s.actionHandler = h
@@ -117,7 +117,7 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		log.Printf("[channel] interactive card callback: action=%q, token=%q, responseCode=%q, fromUser=%s", action, token, respCode, msg.ExternalUserID)
 
 		if s.actionHandler != nil {
-			if err := s.actionHandler(r.Context(), action, token, respCode); err != nil {
+			if err := s.actionHandler(r.Context(), action, token, respCode, msg.ExternalUserID); err != nil {
 				log.Printf("[channel] action callback error: %v", err)
 			}
 		}
@@ -430,13 +430,13 @@ func getConfigWithMask(ch models.ChannelConfig) models.ChannelConfig {
 	return ch
 }
 
-func (s *ChannelService) UpdateInteractiveCard(channelType, responseCode, statusText string, cardData []byte) {
+func (s *ChannelService) UpdateInteractiveCard(channelType, responseCode, statusText, action string, cardData []byte, externalUserID string) {
 	updater, ok := s.adapters[channelType].(CardStatusUpdater)
 	if !ok {
 		log.Printf("[channel] adapter %s does not support card status update", channelType)
 		return
 	}
-	if err := updater.UpdateCardStatus(responseCode, statusText, cardData); err != nil {
+	if err := updater.UpdateCardStatus(responseCode, statusText, action, cardData, externalUserID); err != nil {
 		log.Printf("[channel] update card status failed: %v", err)
 	}
 }

@@ -34,7 +34,7 @@ func ProxyDeviceSessionRequest(client *Client, registry *GatewayRegistry, userID
 	}
 
 	// Build the target path for the internal gateway proxy endpoint
-	targetPath := fmt.Sprintf("/device/%s/proxy%s", deviceID, path)
+	targetPath := path
 
 	// Create HTTP request to the gateway's internal endpoint
 	req, err := http.NewRequest(method, "http://placeholder"+targetPath, bytes.NewReader(body))
@@ -87,7 +87,7 @@ func ProxyDeviceSessionRequestRaw(client *Client, registry *GatewayRegistry, use
 		return nil, fmt.Errorf("device not connected")
 	}
 
-	targetPath := fmt.Sprintf("/device/%s/proxy%s", deviceID, path)
+	targetPath := path
 
 	req, err := http.NewRequest(method, "http://placeholder"+targetPath, bytes.NewReader(body))
 	if err != nil {
