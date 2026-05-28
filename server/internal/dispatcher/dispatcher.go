@@ -697,7 +697,17 @@ func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 			return url
 		}
 		slog.Warn("[dispatcher] could not find workspace directory by path", "path", input.Path, "normalized", normalizedPath)
-		// Fallback: find workspace by user (most recently used or default)
+		// Fallback: resolve device internal UUID from device_id hash, then find workspace
+		var dev models.Device
+		if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err == nil {
+			var ws models.Workspace
+			if err := d.db.Where("device_id = ? AND user_id = ?", dev.ID, input.UserID).Order("is_default DESC, updated_at DESC").First(&ws).Error; err == nil {
+				url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
+				slog.Info("[dispatcher] built session URL from device->workspace", "deviceUUID", dev.ID, "workspaceID", ws.ID, "url", url)
+				return url
+			}
+		}
+		// Last fallback: find any workspace for this user
 		var ws models.Workspace
 		if err := d.db.Where("user_id = ?", input.UserID).Order("is_default DESC, updated_at DESC").First(&ws).Error; err == nil {
 			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
