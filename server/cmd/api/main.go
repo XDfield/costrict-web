@@ -586,7 +586,7 @@ func main() {
 		disp.OnInterventionResponse(token)
 		// Update card status using stored card data
 		if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {
-			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", "", n.CardData, externalUserID)
+			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", action, n.CardData, externalUserID)
 		}
 
 		// Parse action data for the response
