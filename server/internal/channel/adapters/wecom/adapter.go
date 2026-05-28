@@ -130,17 +130,24 @@ func (a *WeComAdapter) SendInteractiveCard(ctx context.Context, userID string, c
 		buttons[i] = WeComCardButton{Text: b.Text, Style: b.Style, Key: b.Key}
 	}
 
+	templateCard := map[string]any{
+		"card_type":      "button_interaction",
+		"task_id":        taskid,
+		"main_title":     map[string]string{"title": card.Title},
+		"sub_title_text": subTitle,
+		"button_list":    buttons,
+	}
+	if card.URL != "" {
+		templateCard["jump_list"] = []map[string]any{
+			{"type": 1, "title": "在会话中查看", "url": card.URL},
+		}
+	}
+
 	reqBody := map[string]any{
 		"touser":  userID,
 		"msgtype": "template_card",
 		"agentid": cfg.AgentID,
-		"template_card": map[string]any{
-			"card_type":      "button_interaction",
-			"task_id":        taskid,
-			"main_title":     map[string]string{"title": card.Title},
-			"sub_title_text": subTitle,
-			"button_list":    buttons,
-		},
+		"template_card": templateCard,
 	}
 
 	body, _ := json.Marshal(reqBody)
@@ -184,6 +191,11 @@ func (a *WeComAdapter) SendVoteCard(ctx context.Context, userID string, card Vot
 		"task_id":    taskid,
 		"main_title": mainTitle,
 		"checkbox":   card.Checkbox,
+	}
+	if card.URL != "" {
+		templateCard["jump_list"] = []map[string]any{
+			{"type": 1, "title": "在会话中查看", "url": card.URL},
+		}
 	}
 
 	// Add submit button

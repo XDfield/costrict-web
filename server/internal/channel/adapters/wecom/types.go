@@ -112,6 +112,7 @@ type WeComCardButton struct {
 type VoteCard struct {
 	Title        string
 	SubTitle     string
+	URL          string
 	Checkbox     WeComCheckbox
 	SubmitButton WeComSubmitButton
 	ReplaceText  string // Text to show after submission (e.g., "已提交")

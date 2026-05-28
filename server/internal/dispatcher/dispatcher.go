@@ -436,9 +436,14 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 
 		if d.wecomAdapter != nil {
 			taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), i)
+			sessionURL := input.SessionURL
+			if sessionURL == "" && input.Path != "" {
+				sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
+			}
 			voteCard := wecom.VoteCard{
 				Title:        title,
 				SubTitle:     q.Question,
+				URL:          sessionURL,
 				Checkbox:     checkbox,
 				SubmitButton: submitBtn,
 				ReplaceText:  "已提交",
@@ -503,9 +508,14 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 
 	if d.wecomAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
+		sessionURL := input.SessionURL
+		if sessionURL == "" && input.Path != "" {
+			sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
+		}
 		voteCard := wecom.VoteCard{
 			Title:        title,
 			SubTitle:     q.Question,
+			URL:          sessionURL,
 			Checkbox:     checkbox,
 			SubmitButton: submitBtn,
 			ReplaceText:  "已提交",
@@ -549,9 +559,14 @@ func (d *Dispatcher) sendSingleVoteCardWithToken(input DispatchInput, actionToke
 
 	if d.wecomAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
+		sessionURL := input.SessionURL
+		if sessionURL == "" && input.Path != "" {
+			sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
+		}
 		voteCard := wecom.VoteCard{
 			Title:        title,
 			SubTitle:     q.Question,
+			URL:          sessionURL,
 			Checkbox:     checkbox,
 			SubmitButton: submitBtn,
 			ReplaceText:  "已提交",
