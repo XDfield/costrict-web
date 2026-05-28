@@ -683,8 +683,24 @@ func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 	if input.SessionURL != "" {
 		return input.SessionURL
 	}
-	if input.Path != "" {
-		return fmt.Sprintf("%s%s", d.appURL, input.Path)
+	// input.Path is a local filesystem path (e.g. D:\DEV\测试), not a URL path.
+	// Look up workspaceID via WorkspaceDirectory.Path -> WorkspaceDirectory.WorkspaceID,
+	// then build the frontend URL: {appURL}/m/workspace/{workspaceID}/?session={sessionID}
+	if input.Path != "" && input.DeviceID != "" {
+		var dir models.WorkspaceDirectory
+		if err := d.db.Where("path = ?", input.Path).First(&dir).Error; err == nil {
+			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, dir.WorkspaceID, input.SessionID)
+			slog.Info("[dispatcher] built session URL from workspace directory", "path", input.Path, "workspaceID", dir.WorkspaceID, "url", url)
+			return url
+		}
+		// Fallback: try to find workspace by deviceID
+		var ws models.Workspace
+		if err := d.db.Where("device_id = ? AND user_id = ?", input.DeviceID, input.UserID).Order("is_default DESC").First(&ws).Error; err == nil {
+			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
+			slog.Info("[dispatcher] built session URL from workspace", "workspaceID", ws.ID, "url", url)
+			return url
+		}
+		slog.Warn("[dispatcher] could not find workspace for session URL", "path", input.Path, "deviceID", input.DeviceID)
 	}
 	return ""
 }
