@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"log/slog"
 	"sync"
 	"time"
@@ -687,20 +688,23 @@ func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 	// Look up workspaceID via WorkspaceDirectory.Path -> WorkspaceDirectory.WorkspaceID,
 	// then build the frontend URL: {appURL}/m/workspace/{workspaceID}/?session={sessionID}
 	if input.Path != "" && input.DeviceID != "" {
+		// Normalize path: backslashes to forward slashes for comparison
+		normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
 		var dir models.WorkspaceDirectory
-		if err := d.db.Where("path = ?", input.Path).First(&dir).Error; err == nil {
+		if err := d.db.Where("REPLACE(path, chr(92), chr(47)) = ?", normalizedPath).First(&dir).Error; err == nil {
 			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, dir.WorkspaceID, input.SessionID)
-			slog.Info("[dispatcher] built session URL from workspace directory", "path", input.Path, "workspaceID", dir.WorkspaceID, "url", url)
+			slog.Info("[dispatcher] built session URL from workspace directory", "path", input.Path, "normalized", normalizedPath, "workspaceID", dir.WorkspaceID, "url", url)
 			return url
 		}
-		// Fallback: try to find workspace by deviceID
+		slog.Warn("[dispatcher] could not find workspace directory by path", "path", input.Path, "normalized", normalizedPath)
+		// Fallback: find workspace by user (most recently used or default)
 		var ws models.Workspace
-		if err := d.db.Where("device_id = ? AND user_id = ?", input.DeviceID, input.UserID).Order("is_default DESC").First(&ws).Error; err == nil {
+		if err := d.db.Where("user_id = ?", input.UserID).Order("is_default DESC, updated_at DESC").First(&ws).Error; err == nil {
 			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
-			slog.Info("[dispatcher] built session URL from workspace", "workspaceID", ws.ID, "url", url)
+			slog.Info("[dispatcher] built session URL from user workspace fallback", "workspaceID", ws.ID, "url", url)
 			return url
 		}
-		slog.Warn("[dispatcher] could not find workspace for session URL", "path", input.Path, "deviceID", input.DeviceID)
+		slog.Warn("[dispatcher] could not find workspace for session URL", "path", input.Path, "deviceID", input.DeviceID, "userID", input.UserID)
 	}
 	return ""
 }
