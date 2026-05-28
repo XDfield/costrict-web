@@ -51,6 +51,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
+	"gorm.io/gorm"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
@@ -68,6 +69,61 @@ func getMapKeys(m map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// enableAutoAccept marks the workspace as autoAccept=true using JSONB merge operator
+func enableAutoAccept(db *gorm.DB, userID, deviceID string, actionData map[string]any) {
+	log.Printf("[auto-accept] called with userID=%s deviceID=%s", userID, deviceID)
+	var dev models.Device
+	if err := db.Where("device_id = ?", deviceID).First(&dev).Error; err != nil {
+		log.Printf("[auto-accept] device not found: %v", err)
+		return
+	}
+	log.Printf("[auto-accept] found dev.ID=%s", dev.ID)
+	// Use JSONB merge operator || to combine existing settings with autoAccept=true
+	sql := `UPDATE workspaces SET settings = COALESCE(settings, '{}'::jsonb) || '{"autoAccept": true}'::jsonb WHERE user_id = ? AND device_id = ? AND deleted_at IS NULL`
+
+	result := db.Exec(sql, userID, dev.ID)
+	if result.Error != nil {
+		log.Printf("[auto-accept] failed to update workspace settings: %v", result.Error)
+	} else {
+		log.Printf("[auto-accept] enabled autoAccept for user=%s deviceUUID=%s workspaces=%d", userID, dev.ID, result.RowsAffected)
+	}
+}
+
+// batchApproveSessionPermissions approves all pending permissions for a session
+func batchApproveSessionPermissions(store *notification.Store, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, db *gorm.DB, userID, deviceID, sessionID, excludeID string) {
+	var pending []models.SystemNotification
+	if err := db.Where("session_id = ? AND type = 'permission' AND status = 'pending' AND deleted_at IS NULL", sessionID).
+		Find(&pending).Error; err != nil {
+		log.Printf("[auto-accept] failed to query pending permissions: %v", err)
+		return
+	}
+	for _, p := range pending {
+		// Mark as acted
+		if p.ID == excludeID {
+			continue // already handled by the current callback
+		}
+		store.ExecuteAction(p.ActionToken, map[string]any{"action": "auto_approve"})
+
+		// Proxy approve to cs-cloud
+		var ad map[string]any
+		if p.ActionData != nil {
+			json.Unmarshal(p.ActionData, &ad)
+		}
+		id, _ := ad["id"].(string)
+		if id == "" {
+			continue
+		}
+		proxyPath := fmt.Sprintf("/api/v1/permissions/%s/reply", id)
+		bodyBytes, _ := json.Marshal(map[string]any{"approved": true})
+		var result map[string]any
+		if err := gateway.ProxyDeviceSessionRequest(gwClient, gwRegistry, userID, deviceID, "", "POST", proxyPath, bodyBytes, &result); err != nil {
+			log.Printf("[auto-accept] failed to approve permission %s: %v", id, err)
+		} else {
+			log.Printf("[auto-accept] approved pending permission %s", id)
+		}
+	}
 }
 
 // resolveQuestionAnswer parses the action string (e.g. "select:opt_0") and
@@ -591,7 +647,15 @@ func main() {
 		disp.OnInterventionResponse(token)
 		// Update card status using stored card data
 		if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {
-			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, "已处理", action, n.CardData, externalUserID)
+			statusText := "已处理"
+			if action == "approve" {
+				statusText = "已批准"
+			} else if action == "reject" {
+				statusText = "已拒绝"
+			} else if action == "auto_approve" {
+				statusText = "已启用自批准"
+			}
+			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, statusText, action, n.CardData, externalUserID)
 		}
 
 		// Parse action data for the response
@@ -621,8 +685,14 @@ func main() {
 			switch n.Type {
 			case "permission":
 				proxyPath = fmt.Sprintf("/api/v1/permissions/%s/reply", id)
-				requestBody = map[string]any{"approved": (action == "approve")}
+				isApproved := action == "approve" || action == "auto_approve"
+				requestBody = map[string]any{"approved": isApproved}
 				logger.Info("[action-callback] proxying to cs-cloud: %s, approved=%v", proxyPath, requestBody["approved"])
+
+				if action == "auto_approve" {
+					enableAutoAccept(db, n.UserID, n.DeviceID, actionData)
+					go batchApproveSessionPermissions(notificationStore, gatewayClient, gatewayRegistry, db, n.UserID, n.DeviceID, n.SessionID, n.ID)
+				}
 
 			case "question":
 				proxyPath = fmt.Sprintf("/api/v1/questions/%s/reply", id)
