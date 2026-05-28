@@ -86,7 +86,7 @@ func ParseInboundMessage(r *http.Request, cfg *config.WeComSystemConfig) (*chann
 				if optionID == "approve" || optionID == "reject" {
 					action = optionID
 				} else {
-					action = "select:" + optionID
+					action = "select:" + strings.Join(selected.OptionIds, ",")
 				}
 			}
 			metadata["selectedOptions"] = selected.OptionIds

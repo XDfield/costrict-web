@@ -353,7 +353,6 @@ func (d *Dispatcher) sendApprovalCardWithToken(input DispatchInput, actionToken 
 // --- Question Vote Cards ---
 
 // sendVoteCards creates new notifications and sends vote_interaction cards (direct path)
-// 多选问卷视为复杂场景，走引导卡片
 func (d *Dispatcher) sendVoteCards(input DispatchInput, wecomUserID string) {
 	questions := extractQuestionInfos(input.ActionData)
 	if len(questions) == 0 {
@@ -361,22 +360,20 @@ func (d *Dispatcher) sendVoteCards(input DispatchInput, wecomUserID string) {
 		return
 	}
 
-	if hasMultipleSelect(questions) {
-		// Complex survey: only send notice card with session link
-		d.sendSessionNoticeCard(input, wecomUserID, "需要你的操作", "有复杂问题需要回答，请点击下方会话地址跳转查看")
+	// 多题问卷走文本通知卡片
+	if len(questions) > 1 {
+		slog.Info("[dispatcher] multi-question questionnaire, using text notice card", "questionCount", len(questions))
+		d.sendSessionNoticeCard(input, wecomUserID, "会话通知", fmt.Sprintf("有 %d 道问题需要回答，请点击下方链接前往会话操作", len(questions)))
 		return
 	}
 
-	// Simple questions: send notice card first, then vote cards
+	// Send notice card first, then vote card for single question
 	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
-
-	for i, q := range questions {
-		d.sendSingleVoteCard(input, wecomUserID, q, i)
-	}
+	d.sendSingleVoteCard(input, wecomUserID, questions[0], 0)
 }
 
 // sendVoteCardsWithToken uses existing action token for first question, creates new tokens for rest (buffered/stale path)
-// 多选问卷视为复杂场景，走引导卡片
+// 多题问卷视为复杂场景，走引导卡片
 func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken string, wecomUserID string) {
 	questions := extractQuestionInfos(input.ActionData)
 	if len(questions) == 0 {
@@ -384,15 +381,17 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 		return
 	}
 
-	if hasMultipleSelect(questions) {
-		d.sendSessionNoticeCard(input, wecomUserID, "需要你的操作", "有复杂问题需要回答，请点击下方会话地址跳转查看")
+	// 多题问卷走文本通知卡片
+	if len(questions) > 1 {
+		slog.Info("[dispatcher] multi-question questionnaire, using text notice card", "questionCount", len(questions))
+		d.sendSessionNoticeCard(input, wecomUserID, "会话通知", fmt.Sprintf("有 %d 道问题需要回答，请点击下方链接前往会话操作", len(questions)))
 		return
 	}
 
-	// Simple questions: send notice card first, then vote cards
+	// Send notice card first, then vote card for single question
 	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
 
-	// First question reuses the existing action token
+	// Single question reuses the existing action token
 	d.sendSingleVoteCardWithToken(input, actionToken, wecomUserID, questions[0], 0)
 
 	// Remaining questions need their own tokens
@@ -756,7 +755,7 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 	sessionTitle := d.fetchSessionTitle(input)
 	cardSubTitle := subTitle
 	if sessionTitle != "" {
-		cardSubTitle = fmt.Sprintf("会话「%s」有问题需要回答", sessionTitle)
+		cardSubTitle = fmt.Sprintf("会话「%s」%s", sessionTitle, subTitle)
 	}
 
 	taskID := fmt.Sprintf("notice_%s_%d", input.SessionID, time.Now().UnixMilli())
@@ -806,9 +805,13 @@ func hasMultipleSelect(questions []questionInfo) bool {
 func buildVoteOptions(opts []questionOption) []wecom.WeComVoteOption {
 	options := make([]wecom.WeComVoteOption, len(opts))
 	for i, opt := range opts {
+		text := opt.Label
+		if opt.Description != "" {
+			text = fmt.Sprintf("%s. %s", opt.Label, opt.Description)
+		}
 		options[i] = wecom.WeComVoteOption{
 			ID:   fmt.Sprintf("opt_%d", i),
-			Text: opt.Label,
+			Text: text,
 		}
 	}
 	return options

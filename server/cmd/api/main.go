@@ -74,14 +74,17 @@ func getMapKeys(m map[string]any) []string {
 // actionData to produce the answers field that cs-cloud expects: string[][].
 // Each inner array contains the selected option label strings for one question.
 func resolveQuestionAnswer(action string, actionData map[string]any) [][]string {
-	// Parse option index from action string like "select:opt_0"
-	optIdx := -1
+	// Parse option indices from action string like "select:opt_0" or "select:opt_0,opt_2"
+	var optIndices []int
 	if strings.HasPrefix(action, "select:opt_") {
-		if n, err := strconv.Atoi(action[len("select:opt_"):]); err == nil {
-			optIdx = n
+		idxStr := action[len("select:opt_"):]
+		for _, part := range strings.Split(idxStr, ",") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(part, "opt_")); err == nil {
+				optIndices = append(optIndices, n)
+			}
 		}
 	}
-	log.Printf("[action-callback] resolveQuestionAnswer: action=%q optIdx=%d", action, optIdx)
+	log.Printf("[action-callback] resolveQuestionAnswer: action=%q optIndices=%v", action, optIndices)
 
 	questionsRaw, _ := actionData["questions"].([]any)
 	if len(questionsRaw) == 0 {
@@ -95,15 +98,17 @@ func resolveQuestionAnswer(action string, actionData map[string]any) [][]string 
 		optionsRaw, _ := q["options"].([]any)
 
 		var labels []string
-		if qi == 0 && optIdx >= 0 && optIdx < len(optionsRaw) {
-			// First question: use the selected option index
-			opt, _ := optionsRaw[optIdx].(map[string]any)
-			if label, ok := opt["label"].(string); ok {
-				labels = []string{label}
+		if qi == 0 && len(optIndices) > 0 {
+			for _, idx := range optIndices {
+				if idx >= 0 && idx < len(optionsRaw) {
+					opt, _ := optionsRaw[idx].(map[string]any)
+					if label, ok := opt["label"].(string); ok {
+						labels = append(labels, label)
+					}
+				}
 			}
 		}
 		if len(labels) == 0 && len(optionsRaw) > 0 {
-			// Fallback: first option
 			opt, _ := optionsRaw[0].(map[string]any)
 			if label, ok := opt["label"].(string); ok {
 				labels = []string{label}

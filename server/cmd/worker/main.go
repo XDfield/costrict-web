@@ -166,7 +166,7 @@ func runWorker() {
 	// Notification sweep: expired token cleanup + stale notification fallback
 	notificationStore := notification.NewStore(db)
 	notificationSvc := notification.NewNotificationService(db, cfg.AppURL)
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, nil)
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, nil, nil, nil)
 	go notificationStore.StartSweep(ctx, disp)
 	log.Println("Notification sweep started (5min interval: expiry cleanup + stale fallback)")
 

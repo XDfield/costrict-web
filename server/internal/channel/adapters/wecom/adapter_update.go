@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/channel"
@@ -80,21 +81,21 @@ func (a *WeComAdapter) buildVoteUpdateRequest(responseCode, statusText, action s
 		mainDesc, _ = mt["desc"].(string)
 	}
 
-	// Extract selected option text from action string (e.g. "select:opt_0")
-	selectedText := ""
-	optIdx := -1
+	// Extract selected option texts from action string (e.g. "select:opt_0" or "select:opt_0,opt_2")
+	var selectedTexts []string
 	if strings.HasPrefix(action, "select:opt_") {
-		idx := 0
-		if _, err := fmt.Sscanf(action, "select:opt_%d", &idx); err == nil {
-			optIdx = idx
-		}
-	}
-
-	if optIdx >= 0 {
-		if checkbox, ok := cardData["checkbox"].(map[string]any); ok {
-			if options, ok := checkbox["option_list"].([]any); ok && optIdx < len(options) {
-				if opt, ok := options[optIdx].(map[string]any); ok {
-					selectedText, _ = opt["text"].(string)
+		idxStr := action[len("select:opt_"):]
+		for _, part := range strings.Split(idxStr, ",") {
+			part = strings.TrimPrefix(part, "opt_")
+			if idx, err := strconv.Atoi(part); err == nil {
+				if checkbox, ok := cardData["checkbox"].(map[string]any); ok {
+					if options, ok := checkbox["option_list"].([]any); ok && idx < len(options) {
+						if opt, ok := options[idx].(map[string]any); ok {
+							if t, _ := opt["text"].(string); t != "" {
+								selectedTexts = append(selectedTexts, t)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -116,9 +117,9 @@ func (a *WeComAdapter) buildVoteUpdateRequest(responseCode, statusText, action s
 		templateCard["main_title"] = mt
 	}
 
-	// sub_title_text: show selected result
-	if selectedText != "" {
-		templateCard["sub_title_text"] = fmt.Sprintf("已选择：%s", selectedText)
+	// sub_title_text: show selected result(s)
+	if len(selectedTexts) > 0 {
+		templateCard["sub_title_text"] = fmt.Sprintf("已选择：%s", strings.Join(selectedTexts, "、"))
 	}
 
 	// card_action is required for text_notice; use type 1 with empty url as no-op
