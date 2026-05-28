@@ -263,6 +263,8 @@ func (a *WeComAdapter) SendTextNoticeCard(ctx context.Context, userID string, ca
 			jumps[i] = map[string]any{"type": 1, "title": j.Title, "url": j.URL}
 		}
 		templateCard["jump_list"] = jumps
+		// text_notice requires card_action; use first jump URL as click target
+		templateCard["card_action"] = map[string]any{"type": 1, "url": card.JumpList[0].URL}
 	}
 
 	reqBody := map[string]any{
