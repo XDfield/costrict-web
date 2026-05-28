@@ -752,19 +752,17 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 		return
 	}
 
-	// Fetch session title and build descriptive card title
+	// Fetch session title for the subtitle
 	sessionTitle := d.fetchSessionTitle(input)
-	cardTitle := title
+	cardSubTitle := subTitle
 	if sessionTitle != "" {
-		cardTitle = fmt.Sprintf("会话「%s」有问题需要回答", sessionTitle)
-	} else {
-		cardTitle = subTitle
+		cardSubTitle = fmt.Sprintf("会话「%s」有问题需要回答", sessionTitle)
 	}
 
 	taskID := fmt.Sprintf("notice_%s_%d", input.SessionID, time.Now().UnixMilli())
 	card := wecom.TextNoticeCard{
-		Title:    cardTitle,
-		SubTitle: subTitle,
+		Title:    title,
+		SubTitle: cardSubTitle,
 		JumpList: []wecom.TextNoticeJump{
 			{Title: "点击跳转到会话页面查看", URL: sessionURL},
 		},
