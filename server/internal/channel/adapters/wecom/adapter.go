@@ -175,16 +175,15 @@ func (a *WeComAdapter) SendVoteCard(ctx context.Context, userID string, card Vot
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
 
+	mainTitle := map[string]string{"title": card.Title}
+	if card.SubTitle != "" {
+		mainTitle["desc"] = card.SubTitle
+	}
 	templateCard := map[string]any{
 		"card_type":  "vote_interaction",
 		"task_id":    taskid,
-		"main_title": map[string]string{"title": card.Title},
+		"main_title": mainTitle,
 		"checkbox":   card.Checkbox,
-	}
-
-	// Add subtitle if provided
-	if card.SubTitle != "" {
-		templateCard["sub_title_text"] = card.SubTitle
 	}
 
 	// Add submit button
@@ -217,4 +216,3 @@ func (a *WeComAdapter) SendVoteCard(ctx context.Context, userID string, card Vot
 
 	return nil
 }
-
