@@ -566,7 +566,7 @@ func main() {
 		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, wecomAdapterForDispatcher)
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
 
 	// Create cloud module before action handlers so closures can reference it
 	cloudModule = cloud.New(gatewayRegistry, gatewayClient)

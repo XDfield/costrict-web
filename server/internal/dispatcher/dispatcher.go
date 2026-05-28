@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"gorm.io/gorm"
@@ -30,18 +31,22 @@ type Dispatcher struct {
 	store           *notification.Store
 	notificationSvc *notification.NotificationService
 	wecomAdapter    *wecom.WeComAdapter
+	gwClient        *gateway.Client
+	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
 	bufferPeriod    time.Duration
 	pendingMap      sync.Map
 }
 
-func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, bufferSeconds int, wecomAdapter *wecom.WeComAdapter) *Dispatcher {
+func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, bufferSeconds int, wecomAdapter *wecom.WeComAdapter, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
 	bufferPeriod := time.Duration(bufferSeconds) * time.Second
 	return &Dispatcher{
 		db:              db,
 		store:           store,
 		notificationSvc: notificationSvc,
 		wecomAdapter:    wecomAdapter,
+		gwClient:        gwClient,
+		gwRegistry:      gwRegistry,
 		appURL:          appURL,
 		bufferPeriod:    bufferPeriod,
 	}
@@ -716,6 +721,27 @@ func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 }
 
 
+func (d *Dispatcher) fetchSessionTitle(input DispatchInput) string {
+	if d.gwClient == nil || d.gwRegistry == nil {
+		return ""
+	}
+	if input.DeviceID == "" || input.SessionID == "" {
+		return ""
+	}
+	directory := input.Path
+	proxyPath := fmt.Sprintf("/api/v1/conversations/%s", input.SessionID)
+	var result map[string]any
+	if err := gateway.ProxyDeviceSessionRequest(d.gwClient, d.gwRegistry, input.UserID, input.DeviceID, directory, "GET", proxyPath, nil, &result); err != nil {
+		slog.Warn("[dispatcher] failed to fetch session title", "sessionID", input.SessionID, "error", err)
+		return ""
+	}
+	if title, ok := result["title"].(string); ok && title != "" {
+		slog.Info("[dispatcher] fetched session title", "sessionID", input.SessionID, "title", title)
+		return title
+	}
+	return ""
+}
+
 func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID string, title string, subTitle string) {
 	if d.wecomAdapter == nil {
 		return
@@ -725,9 +751,19 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 	if sessionURL == "" {
 		return
 	}
+
+	// Fetch session title and build descriptive card title
+	sessionTitle := d.fetchSessionTitle(input)
+	cardTitle := title
+	if sessionTitle != "" {
+		cardTitle = fmt.Sprintf("会话「%s」有问题需要回答", sessionTitle)
+	} else {
+		cardTitle = subTitle
+	}
+
 	taskID := fmt.Sprintf("notice_%s_%d", input.SessionID, time.Now().UnixMilli())
 	card := wecom.TextNoticeCard{
-		Title:    title,
+		Title:    cardTitle,
 		SubTitle: subTitle,
 		JumpList: []wecom.TextNoticeJump{
 			{Title: "点击跳转到会话页面查看", URL: sessionURL},
