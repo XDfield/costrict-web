@@ -684,40 +684,37 @@ func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
 	if input.SessionURL != "" {
 		return input.SessionURL
 	}
-	// input.Path is a local filesystem path (e.g. D:\DEV\测试), not a URL path.
-	// Look up workspaceID via WorkspaceDirectory.Path -> WorkspaceDirectory.WorkspaceID,
-	// then build the frontend URL: {appURL}/m/workspace/{workspaceID}/?session={sessionID}
-	if input.Path != "" && input.DeviceID != "" {
-		// Normalize path: backslashes to forward slashes for comparison
-		normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
-		var dir models.WorkspaceDirectory
-		if err := d.db.Where("REPLACE(path, chr(92), chr(47)) = ?", normalizedPath).First(&dir).Error; err == nil {
-			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, dir.WorkspaceID, input.SessionID)
-			slog.Info("[dispatcher] built session URL from workspace directory", "path", input.Path, "normalized", normalizedPath, "workspaceID", dir.WorkspaceID, "url", url)
-			return url
-		}
-		slog.Warn("[dispatcher] could not find workspace directory by path", "path", input.Path, "normalized", normalizedPath)
-		// Fallback: resolve device internal UUID from device_id hash, then find workspace
-		var dev models.Device
-		if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err == nil {
-			var ws models.Workspace
-			if err := d.db.Where("device_id = ? AND user_id = ?", dev.ID, input.UserID).Order("is_default DESC, updated_at DESC").First(&ws).Error; err == nil {
-				url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
-				slog.Info("[dispatcher] built session URL from device->workspace", "deviceUUID", dev.ID, "workspaceID", ws.ID, "url", url)
-				return url
-			}
-		}
-		// Last fallback: find any workspace for this user
-		var ws models.Workspace
-		if err := d.db.Where("user_id = ?", input.UserID).Order("is_default DESC, updated_at DESC").First(&ws).Error; err == nil {
-			url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
-			slog.Info("[dispatcher] built session URL from user workspace fallback", "workspaceID", ws.ID, "url", url)
-			return url
-		}
-		slog.Warn("[dispatcher] could not find workspace for session URL", "path", input.Path, "deviceID", input.DeviceID, "userID", input.UserID)
+	if input.Path == "" || input.DeviceID == "" {
+		return ""
 	}
+
+	// Normalize path: backslashes to forward slashes for comparison
+		normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
+
+	// Resolve device internal UUID from hardware hash, then join workspace + directory
+	// to uniquely locate workspace by (userID + deviceUUID + path).
+	var dev models.Device
+	if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err != nil {
+		slog.Warn("[dispatcher] device not found for session URL", "deviceID", input.DeviceID, "error", err)
+		return ""
+	}
+
+	var ws models.Workspace
+	if err := d.db.
+		Joins("JOIN workspace_directories ON workspace_directories.workspace_id = workspaces.id").
+		Where("workspaces.user_id = ? AND workspaces.device_id = ?", input.UserID, dev.ID).
+		Where("REPLACE(workspace_directories.path, chr(92), chr(47)) = ?", normalizedPath).
+		Where("workspace_directories.deleted_at IS NULL").
+		First(&ws).Error; err == nil {
+		url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
+		slog.Info("[dispatcher] built session URL", "workspaceID", ws.ID, "url", url)
+		return url
+	}
+
+	slog.Warn("[dispatcher] could not find workspace", "path", input.Path, "normalized", normalizedPath, "deviceUUID", dev.ID, "userID", input.UserID)
 	return ""
 }
+
 
 func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID string, title string, subTitle string) {
 	if d.wecomAdapter == nil {
