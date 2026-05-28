@@ -356,9 +356,13 @@ func (d *Dispatcher) sendVoteCards(input DispatchInput, wecomUserID string) {
 	}
 
 	if hasMultipleSelect(questions) {
-		d.sendGuidanceCard(input, wecomUserID, true)
+		// Complex survey: only send notice card with session link
+		d.sendSessionNoticeCard(input, wecomUserID, "需要你的操作", "有复杂问题需要回答，请点击下方会话地址跳转查看")
 		return
 	}
+
+	// Simple questions: send notice card first, then vote cards
+	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
 
 	for i, q := range questions {
 		d.sendSingleVoteCard(input, wecomUserID, q, i)
@@ -375,9 +379,12 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 	}
 
 	if hasMultipleSelect(questions) {
-		d.sendGuidanceCardWithToken(input, actionToken, wecomUserID, true)
+		d.sendSessionNoticeCard(input, wecomUserID, "需要你的操作", "有复杂问题需要回答，请点击下方会话地址跳转查看")
 		return
 	}
+
+	// Simple questions: send notice card first, then vote cards
+	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
 
 	// First question reuses the existing action token
 	d.sendSingleVoteCardWithToken(input, actionToken, wecomUserID, questions[0], 0)
@@ -436,14 +443,9 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 
 		if d.wecomAdapter != nil {
 			taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), i)
-			sessionURL := input.SessionURL
-			if sessionURL == "" && input.Path != "" {
-				sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
-			}
 			voteCard := wecom.VoteCard{
 				Title:        title,
 				SubTitle:     q.Question,
-				URL:          sessionURL,
 				Checkbox:     checkbox,
 				SubmitButton: submitBtn,
 				ReplaceText:  "已提交",
@@ -508,14 +510,9 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 
 	if d.wecomAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
-		sessionURL := input.SessionURL
-		if sessionURL == "" && input.Path != "" {
-			sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
-		}
 		voteCard := wecom.VoteCard{
 			Title:        title,
 			SubTitle:     q.Question,
-			URL:          sessionURL,
 			Checkbox:     checkbox,
 			SubmitButton: submitBtn,
 			ReplaceText:  "已提交",
@@ -559,14 +556,9 @@ func (d *Dispatcher) sendSingleVoteCardWithToken(input DispatchInput, actionToke
 
 	if d.wecomAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
-		sessionURL := input.SessionURL
-		if sessionURL == "" && input.Path != "" {
-			sessionURL = fmt.Sprintf("%s%s", d.appURL, input.Path)
-		}
-		voteCard := wecom.VoteCard{
+			voteCard := wecom.VoteCard{
 			Title:        title,
 			SubTitle:     q.Question,
-			URL:          sessionURL,
 			Checkbox:     checkbox,
 			SubmitButton: submitBtn,
 			ReplaceText:  "已提交",
@@ -681,6 +673,40 @@ func (d *Dispatcher) sendGuidanceCardWithToken(input DispatchInput, actionToken 
 		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
 			slog.Error("[dispatcher] send wecom guidance card failed", "error", err)
 		}
+	}
+}
+
+
+// --- Session Notice Card (text_notice with jump_list) ---
+
+func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
+	if input.SessionURL != "" {
+		return input.SessionURL
+	}
+	if input.Path != "" {
+		return fmt.Sprintf("%s%s", d.appURL, input.Path)
+	}
+	return ""
+}
+
+func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID string, title string, subTitle string) {
+	if d.wecomAdapter == nil {
+		return
+	}
+	sessionURL := d.buildSessionURL(input)
+	if sessionURL == "" {
+		return
+	}
+	taskID := fmt.Sprintf("notice_%s_%d", input.SessionID, time.Now().UnixMilli())
+	card := wecom.TextNoticeCard{
+		Title:    title,
+		SubTitle: subTitle,
+		JumpList: []wecom.TextNoticeJump{
+			{Title: "在会话中查看", URL: sessionURL},
+		},
+	}
+	if err := d.wecomAdapter.SendTextNoticeCard(nil, wecomUserID, card, taskID); err != nil {
+		slog.Error("[dispatcher] send wecom session notice card failed", "error", err)
 	}
 }
 

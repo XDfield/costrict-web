@@ -144,9 +144,9 @@ func (a *WeComAdapter) SendInteractiveCard(ctx context.Context, userID string, c
 	}
 
 	reqBody := map[string]any{
-		"touser":  userID,
-		"msgtype": "template_card",
-		"agentid": cfg.AgentID,
+		"touser":        userID,
+		"msgtype":       "template_card",
+		"agentid":       cfg.AgentID,
 		"template_card": templateCard,
 	}
 
@@ -186,20 +186,14 @@ func (a *WeComAdapter) SendVoteCard(ctx context.Context, userID string, card Vot
 	if card.SubTitle != "" {
 		mainTitle["desc"] = card.SubTitle
 	}
-	templateCard := map[string]any{
-		"card_type":  "vote_interaction",
-		"task_id":    taskid,
-		"main_title": mainTitle,
-		"checkbox":   card.Checkbox,
-	}
-	if card.URL != "" {
-		templateCard["jump_list"] = []map[string]any{
-			{"type": 1, "title": "在会话中查看", "url": card.URL},
-		}
-	}
 
-	// Add submit button
-	templateCard["submit_button"] = card.SubmitButton
+	templateCard := map[string]any{
+		"card_type":     "vote_interaction",
+		"task_id":       taskid,
+		"main_title":    mainTitle,
+		"checkbox":      card.Checkbox,
+		"submit_button": card.SubmitButton,
+	}
 
 	reqBody := map[string]any{
 		"touser":        userID,
@@ -224,6 +218,76 @@ func (a *WeComAdapter) SendVoteCard(ctx context.Context, userID string, card Vot
 	}
 	if result.ErrCode != 0 {
 		return fmt.Errorf("wecom send vote card error: %d %s", result.ErrCode, result.ErrMsg)
+	}
+
+	return nil
+}
+
+// TextNoticeCard is a text_notice template card with jump_list for session links.
+type TextNoticeCard struct {
+	Title    string
+	SubTitle string
+	JumpList []TextNoticeJump
+}
+
+type TextNoticeJump struct {
+	Title string
+	URL   string
+}
+
+func (a *WeComAdapter) SendTextNoticeCard(ctx context.Context, userID string, card TextNoticeCard, taskid string) error {
+	cfg := &a.sysConfig
+
+	cacheKey := fmt.Sprintf("%s:%d", cfg.CorpID, cfg.AgentID)
+	cacheVal, _ := a.tokenCache.LoadOrStore(cacheKey, &tokenCacheEntry{})
+	cache := cacheVal.(*tokenCacheEntry)
+
+	accessToken, err := getAccessToken(cfg, a.client, cache)
+	if err != nil {
+		return fmt.Errorf("failed to get access token: %w", err)
+	}
+
+	templateCard := map[string]any{
+		"card_type": "text_notice",
+		"task_id":   taskid,
+		"main_title": map[string]string{
+			"title": card.Title,
+		},
+	}
+	if card.SubTitle != "" {
+		templateCard["sub_title_text"] = card.SubTitle
+	}
+	if len(card.JumpList) > 0 {
+		jumps := make([]map[string]any, len(card.JumpList))
+		for i, j := range card.JumpList {
+			jumps[i] = map[string]any{"type": 1, "title": j.Title, "url": j.URL}
+		}
+		templateCard["jump_list"] = jumps
+	}
+
+	reqBody := map[string]any{
+		"touser":        userID,
+		"msgtype":       "template_card",
+		"agentid":       cfg.AgentID,
+		"template_card": templateCard,
+	}
+
+	body, _ := json.Marshal(reqBody)
+	slog.Info("[wecom] sending text notice card", "userID", userID, "taskid", taskid, "cardTitle", card.Title, "body", string(body))
+
+	url := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=%s", accessToken)
+	resp, err := a.client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result WeComMessageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if result.ErrCode != 0 {
+		return fmt.Errorf("wecom send text notice card error: %d %s", result.ErrCode, result.ErrMsg)
 	}
 
 	return nil
