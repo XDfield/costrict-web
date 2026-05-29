@@ -17,7 +17,7 @@ import (
 
 type DispatchInput struct {
 	UserID      string
-	WorkspaceID string
+			WorkspaceID string
 	EventType   string
 	SessionID   string
 	DeviceID    string
@@ -150,6 +150,7 @@ func (d *Dispatcher) bufferDispatch(input DispatchInput, channels *SelectedChann
 		Title:      mapEventTypeToTitle(input.EventType),
 		SessionID:  input.SessionID,
 		DeviceID:   input.DeviceID,
+		WorkspaceID: d.resolveWorkspaceID(input),
 		ActionType: input.EventType,
 		ActionData: mustMarshal(input.ActionData),
 	})
@@ -303,6 +304,7 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 		Title:      info.Title,
 		SessionID:  input.SessionID,
 		DeviceID:   input.DeviceID,
+		WorkspaceID: d.resolveWorkspaceID(input),
 		ActionType: "permission",
 		ActionData: mustMarshal(input.ActionData),
 		CardData:   mustMarshal(cardData),
@@ -458,7 +460,8 @@ func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken str
 			Title:      title,
 			SessionID:  input.SessionID,
 			DeviceID:   input.DeviceID,
-			ActionType: "question",
+		WorkspaceID: d.resolveWorkspaceID(input),
+		ActionType: "question",
 			ActionData: mustMarshal(actionData),
 			CardData:   mustMarshal(cardData),
 		})
@@ -525,6 +528,7 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 		Title:      title,
 		SessionID:  input.SessionID,
 		DeviceID:   input.DeviceID,
+		WorkspaceID: d.resolveWorkspaceID(input),
 		ActionType: "question",
 		ActionData: mustMarshal(actionData),
 		CardData:   mustMarshal(cardData),
@@ -632,6 +636,7 @@ func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, i
 		Title:      title,
 		SessionID:  input.SessionID,
 		DeviceID:   input.DeviceID,
+		WorkspaceID: d.resolveWorkspaceID(input),
 		ActionType: input.EventType,
 		ActionData: mustMarshal(input.ActionData),
 		CardData:   mustMarshal(cardData),
@@ -761,41 +766,39 @@ func (d *Dispatcher) autoApprovePermission(input DispatchInput) {
 	slog.Info("[dispatcher] auto-approved permission", "sessionID", input.SessionID, "permissionID", id)
 }
 
-func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
-	if input.SessionURL != "" {
-		return input.SessionURL
-	}
+// resolveWorkspaceID returns the workspace ID for the given input by looking up
+// userID + deviceUUID + path. Returns empty string if not found.
+func (d *Dispatcher) resolveWorkspaceID(input DispatchInput) string {
 	if input.Path == "" || input.DeviceID == "" {
 		return ""
 	}
-
-	// Normalize path: backslashes to forward slashes for comparison
-		normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
-
-	// Resolve device internal UUID from hardware hash, then join workspace + directory
-	// to uniquely locate workspace by (userID + deviceUUID + path).
+	normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
 	var dev models.Device
 	if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err != nil {
-		slog.Warn("[dispatcher] device not found for session URL", "deviceID", input.DeviceID, "error", err)
 		return ""
 	}
-
 	var ws models.Workspace
 	if err := d.db.
 		Joins("JOIN workspace_directories ON workspace_directories.workspace_id = workspaces.id").
 		Where("workspaces.user_id = ? AND workspaces.device_id = ?", input.UserID, dev.ID).
 		Where("REPLACE(workspace_directories.path, chr(92), chr(47)) = ?", normalizedPath).
 		Where("workspace_directories.deleted_at IS NULL").
-		First(&ws).Error; err == nil {
-		url := fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, ws.ID, input.SessionID)
-		slog.Info("[dispatcher] built session URL", "workspaceID", ws.ID, "url", url)
-		return url
+		First(&ws).Error; err != nil {
+		return ""
 	}
-
-	slog.Warn("[dispatcher] could not find workspace", "path", input.Path, "normalized", normalizedPath, "deviceUUID", dev.ID, "userID", input.UserID)
-	return ""
+	return ws.ID
 }
 
+func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
+	if input.SessionURL != "" {
+		return input.SessionURL
+	}
+	wsID := d.resolveWorkspaceID(input)
+	if wsID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, wsID, input.SessionID)
+}
 
 func (d *Dispatcher) fetchSessionTitle(input DispatchInput) string {
 	if d.gwClient == nil || d.gwRegistry == nil {

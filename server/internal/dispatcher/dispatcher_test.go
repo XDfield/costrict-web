@@ -89,7 +89,7 @@ func insertIDTrustIdentity(t *testing.T, db *gorm.DB, userSubjectID, providerUse
 
 func TestNewDispatcher(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
 	if d == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
@@ -100,7 +100,7 @@ func TestNewDispatcher(t *testing.T) {
 
 func TestNewDispatcher_ZeroBuffer(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 0, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 0, nil, nil, nil)
 	if d.bufferPeriod != 0 {
 		t.Fatalf("expected bufferPeriod 0, got %v", d.bufferPeriod)
 	}
@@ -108,7 +108,7 @@ func TestNewDispatcher_ZeroBuffer(t *testing.T) {
 
 func TestDispatcher_Dispatch_UnsupportedEvent(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -123,7 +123,7 @@ func TestDispatcher_Dispatch_Permission_Buffered(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -150,7 +150,7 @@ func TestDispatcher_Dispatch_SameSessionMultipleEvents(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -187,7 +187,7 @@ func TestDispatcher_Dispatch_Question_Buffered(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-2",
@@ -223,7 +223,7 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -247,7 +247,7 @@ func TestDispatcher_OnInterventionResponse(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -286,7 +286,7 @@ func TestDispatcher_OnInterventionResponse_WrongToken(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -309,7 +309,7 @@ func TestDispatcher_OnInterventionResponse_WrongToken(t *testing.T) {
 
 func TestResolveWeComUserID(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
 
 	// No identity → empty
 	if got := d.resolveWeComUserID("user-none"); got != "" {
@@ -339,7 +339,7 @@ func TestResolveWeComUserID(t *testing.T) {
 func TestDispatcher_DispatchStaleNotification(t *testing.T) {
 	db := setupTestDB(t)
 
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
 
 	// Should not panic with nil adapter and no IDTrust identity
 	d.DispatchStaleNotification(models.SystemNotification{

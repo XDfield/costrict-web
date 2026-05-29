@@ -21,12 +21,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +48,6 @@ import (
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
-	"gorm.io/gorm"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
@@ -61,120 +57,6 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
-
-// getMapKeys extracts keys from a map for debugging
-func getMapKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// enableAutoAccept marks the workspace as autoAccept=true using JSONB merge operator
-func enableAutoAccept(db *gorm.DB, userID, deviceID string, actionData map[string]any) {
-	log.Printf("[auto-accept] called with userID=%s deviceID=%s", userID, deviceID)
-	var dev models.Device
-	if err := db.Where("device_id = ?", deviceID).First(&dev).Error; err != nil {
-		log.Printf("[auto-accept] device not found: %v", err)
-		return
-	}
-	log.Printf("[auto-accept] found dev.ID=%s", dev.ID)
-	// Use JSONB merge operator || to combine existing settings with autoAccept=true
-	sql := `UPDATE workspaces SET settings = COALESCE(settings, '{}'::jsonb) || '{"autoAccept": true}'::jsonb WHERE user_id = ? AND device_id = ? AND deleted_at IS NULL`
-
-	result := db.Exec(sql, userID, dev.ID)
-	if result.Error != nil {
-		log.Printf("[auto-accept] failed to update workspace settings: %v", result.Error)
-	} else {
-		log.Printf("[auto-accept] enabled autoAccept for user=%s deviceUUID=%s workspaces=%d", userID, dev.ID, result.RowsAffected)
-	}
-}
-
-// batchApproveSessionPermissions approves all pending permissions for a session
-func batchApproveSessionPermissions(store *notification.Store, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, db *gorm.DB, userID, deviceID, sessionID, excludeID string) {
-	var pending []models.SystemNotification
-	if err := db.Where("session_id = ? AND type = 'permission' AND status = 'pending' AND deleted_at IS NULL", sessionID).
-		Find(&pending).Error; err != nil {
-		log.Printf("[auto-accept] failed to query pending permissions: %v", err)
-		return
-	}
-	for _, p := range pending {
-		// Mark as acted
-		if p.ID == excludeID {
-			continue // already handled by the current callback
-		}
-		store.ExecuteAction(p.ActionToken, map[string]any{"action": "auto_approve"})
-
-		// Proxy approve to cs-cloud
-		var ad map[string]any
-		if p.ActionData != nil {
-			json.Unmarshal(p.ActionData, &ad)
-		}
-		id, _ := ad["id"].(string)
-		if id == "" {
-			continue
-		}
-		proxyPath := fmt.Sprintf("/api/v1/permissions/%s/reply", id)
-		bodyBytes, _ := json.Marshal(map[string]any{"approved": true})
-		var result map[string]any
-		if err := gateway.ProxyDeviceSessionRequest(gwClient, gwRegistry, userID, deviceID, "", "POST", proxyPath, bodyBytes, &result); err != nil {
-			log.Printf("[auto-accept] failed to approve permission %s: %v", id, err)
-		} else {
-			log.Printf("[auto-accept] approved pending permission %s", id)
-		}
-	}
-}
-
-// resolveQuestionAnswer parses the action string (e.g. "select:opt_0") and
-// actionData to produce the answers field that cs-cloud expects: string[][].
-// Each inner array contains the selected option label strings for one question.
-func resolveQuestionAnswer(action string, actionData map[string]any) [][]string {
-	// Parse option indices from action string like "select:opt_0" or "select:opt_0,opt_2"
-	var optIndices []int
-	if strings.HasPrefix(action, "select:opt_") {
-		idxStr := action[len("select:opt_"):]
-		for _, part := range strings.Split(idxStr, ",") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(part, "opt_")); err == nil {
-				optIndices = append(optIndices, n)
-			}
-		}
-	}
-	log.Printf("[action-callback] resolveQuestionAnswer: action=%q optIndices=%v", action, optIndices)
-
-	questionsRaw, _ := actionData["questions"].([]any)
-	if len(questionsRaw) == 0 {
-		log.Printf("[action-callback] resolveQuestionAnswer: no questions in actionData")
-		return [][]string{}
-	}
-
-	answers := make([][]string, len(questionsRaw))
-	for qi, qRaw := range questionsRaw {
-		q, _ := qRaw.(map[string]any)
-		optionsRaw, _ := q["options"].([]any)
-
-		var labels []string
-		if qi == 0 && len(optIndices) > 0 {
-			for _, idx := range optIndices {
-				if idx >= 0 && idx < len(optionsRaw) {
-					opt, _ := optionsRaw[idx].(map[string]any)
-					if label, ok := opt["label"].(string); ok {
-						labels = append(labels, label)
-					}
-				}
-			}
-		}
-		if len(labels) == 0 && len(optionsRaw) > 0 {
-			opt, _ := optionsRaw[0].(map[string]any)
-			if label, ok := opt["label"].(string); ok {
-				labels = []string{label}
-			}
-		}
-		answers[qi] = labels
-	}
-	log.Printf("[action-callback] resolveQuestionAnswer: resolved answers=%v", answers)
-	return answers
-}
 
 func main() {
 	// Initialise structured logging with daily rotation and 7-day retention.
@@ -233,7 +115,7 @@ func main() {
 			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
 		})
 	default:
-		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%s", fmt.Sprintf("%q", cfg.UsageProvider))
+		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%q", cfg.UsageProvider)
 	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
@@ -637,108 +519,8 @@ func main() {
 	cloudModule.Dispatcher = disp
 
 	// Wire the action handler into channel service for interactive card callbacks
-	channelModule.Service.SetActionHandler(func(ctx context.Context, action, token, responseCode, externalUserID string) error {
-		n, err := notificationStore.ExecuteAction(token, map[string]any{"action": action})
-		if err != nil {
-			logger.Error("[action-callback] token invalid or expired: %v", err)
-			return err
-		}
-
-		disp.OnInterventionResponse(token)
-		// Update card status using stored card data
-		if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {
-			statusText := "已处理"
-			if action == "approve" {
-				statusText = "已批准"
-			} else if action == "reject" {
-				statusText = "已拒绝"
-			} else if action == "auto_approve" {
-				statusText = "已启用自批准"
-			}
-			go channelModule.Service.UpdateInteractiveCard("wecom", responseCode, statusText, action, n.CardData, externalUserID)
-		}
-
-		// Parse action data for the response
-		var actionData map[string]any
-		if n.ActionData != nil && len(n.ActionData) > 0 {
-			if err := json.Unmarshal(n.ActionData, &actionData); err != nil {
-				logger.Error("[action-callback] failed to unmarshal action data: %v", err)
-			} else {
-				logger.Info("[action-callback] parsed actionData: %+v", actionData)
-			}
-		}
-
-		// Extract id from action data (unified field for both permission and question)
-		var id string
-		if actionData != nil {
-			if val, ok := actionData["id"].(string); ok {
-				id = val
-			}
-		}
-		logger.Info("[action-callback] type=%s, action=%s, id=%s, sessionID=%s", n.Type, action, id, n.SessionID)
-
-		// Route to appropriate cs-cloud endpoint based on type
-		if id != "" && n.DeviceID != "" {
-			var proxyPath string
-			var requestBody map[string]any
-
-			switch n.Type {
-			case "permission":
-				proxyPath = fmt.Sprintf("/api/v1/permissions/%s/reply", id)
-				isApproved := action == "approve" || action == "auto_approve"
-				requestBody = map[string]any{"approved": isApproved}
-				logger.Info("[action-callback] proxying to cs-cloud: %s, approved=%v", proxyPath, requestBody["approved"])
-
-				if action == "auto_approve" {
-					enableAutoAccept(db, n.UserID, n.DeviceID, actionData)
-					go batchApproveSessionPermissions(notificationStore, gatewayClient, gatewayRegistry, db, n.UserID, n.DeviceID, n.SessionID, n.ID)
-				}
-
-			case "question":
-				proxyPath = fmt.Sprintf("/api/v1/questions/%s/reply", id)
-				// cs-cloud expects answers: string[][] - one string array per question,
-				// each containing the selected option labels.
-				// The action string is "select:opt_N" where N is the option index.
-				answers := resolveQuestionAnswer(action, actionData)
-				requestBody = map[string]any{"answers": answers}
-				logger.Info("[action-callback] proxying to cs-cloud: %s, answers=%v", proxyPath, answers)
-			default:
-				logger.Error("[action-callback] unknown type: %s", n.Type)
-				return nil
-			}
-
-			// Proxy the request to cs-cloud through gateway
-			userID := ""
-			// Try to extract userID from notification's session context
-			if n.UserID != "" {
-				userID = n.UserID
-			} else {
-				// Fallback: extract from context if available (from auth middleware)
-				if u, ok := ctx.Value("user_id").(string); ok {
-					userID = u
-				} else {
-					logger.Error("[action-callback] no userID available for proxy request")
-					return fmt.Errorf("no userID available")
-				}
-			}
-
-			// Marshal request body
-			bodyBytes, _ := json.Marshal(requestBody)
-			logger.Info("[action-callback] proxying with userID=%s, deviceID=%s, sessionID=%s, path=%s", userID, n.DeviceID, n.SessionID, proxyPath)
-
-			// Proxy through gateway to cs-cloud
-			var result map[string]any
-			if err := gateway.ProxyDeviceSessionRequest(gatewayClient, gatewayRegistry, userID, n.DeviceID, "", "POST", proxyPath, bodyBytes, &result); err != nil {
-				logger.Error("[action-callback] proxy request failed: %v", err)
-				return err
-			}
-			logger.Info("[action-callback] proxy response successful: %+v", result)
-		} else {
-			logger.Error("[action-callback] missing id or deviceID: id=%q, deviceID=%q", id, n.DeviceID)
-		}
-
-		return nil
-	})
+	actionHandler := notification.NewActionHandler(notificationStore, db, disp, gatewayClient, gatewayRegistry, channelModule.Service)
+	channelModule.Service.SetActionHandler(actionHandler.Callback())
 
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))

@@ -21,15 +21,16 @@ func NewStore(db *gorm.DB) *Store {
 }
 
 type CreateNotificationInput struct {
-	UserID     string
-	Type       string
-	Title      string
-	Content    string
-	SessionID  string
-	DeviceID   string
-	ActionType string
-	ActionData []byte
-	CardData   []byte
+	UserID      string
+	Type        string
+	Title       string
+	Content     string
+	SessionID   string
+	DeviceID    string
+	WorkspaceID string
+	ActionType  string
+	ActionData  []byte
+	CardData    []byte
 }
 
 func (s *Store) Create(input CreateNotificationInput) (*models.SystemNotification, error) {
@@ -51,6 +52,9 @@ func (s *Store) Create(input CreateNotificationInput) (*models.SystemNotificatio
 		ActionType:  input.ActionType,
 		ActionToken: token,
 		ExpiresAt:   &expiresAt,
+	}
+	if input.WorkspaceID != "" {
+		n.WorkspaceID = &input.WorkspaceID
 	}
 
 	if input.ActionData != nil {
