@@ -49,6 +49,12 @@ func (h *ActionHandler) HandleCallback(ctx context.Context, action, token, respo
 	n, err := h.store.ExecuteAction(token, map[string]any{"action": action})
 	if err != nil {
 		logger.Error("[action-callback] token invalid or expired: %v", err)
+		// 尝试查找已过期/已处理的通知，更新卡片显示过期状态
+		if responseCode != "" {
+			if found, fErr := h.store.GetByToken(token); fErr == nil && found.CardData != nil && len(found.CardData) > 0 {
+				go h.cardUpdater.UpdateInteractiveCard("wecom", responseCode, "已过期", action, found.CardData, externalUserID)
+			}
+		}
 		return err
 	}
 
