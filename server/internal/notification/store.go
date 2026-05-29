@@ -148,17 +148,6 @@ func (s *Store) MarkExpired() {
 	}
 }
 
-// SweepStaleNotifications 扫描超过 staleThreshold 的 pending 记录，供 worker 兜底补发用
-func (s *Store) SweepStaleNotifications(staleThreshold time.Duration) ([]models.SystemNotification, error) {
-	cutoff := time.Now().Add(-staleThreshold)
-	var stale []models.SystemNotification
-	if err := s.db.Where(
-		"status = 'pending' AND created_at < ? AND deleted_at IS NULL", cutoff,
-	).Find(&stale).Error; err != nil {
-		return nil, err
-	}
-	return stale, nil
-}
 
 // StartSweep 定时清理过期通知
 func (s *Store) StartSweep(ctx context.Context) {
