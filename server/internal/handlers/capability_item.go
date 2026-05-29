@@ -744,6 +744,29 @@ type itemListFilterOptions struct {
 	UserID              string
 }
 
+// applyItemSearchFilter applies a keyword search over name and description. On
+// PostgreSQL it also searches every value of the descriptions jsonb (locale ->
+// localized text) so non-English queries (e.g. Chinese) match the text users see.
+func applyItemSearchFilter(query *gorm.DB, db *gorm.DB, search string) *gorm.DB {
+	if search == "" {
+		return query
+	}
+	like := database.ILike(db)
+	isPostgres := db.Dialector.Name() == "postgres"
+	for _, kw := range database.SplitSearchKeywords(search) {
+		pattern := "%" + kw + "%"
+		if isPostgres {
+			query = query.Where(
+				fmt.Sprintf("name %s ? OR description %s ? OR EXISTS (SELECT 1 FROM jsonb_each_text(capability_items.descriptions) je WHERE je.value %s ?)", like, like, like),
+				pattern, pattern, pattern,
+			)
+		} else {
+			query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), pattern, pattern)
+		}
+	}
+	return query
+}
+
 func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opts itemListFilterOptions) *gorm.DB {
 	if itemType := c.Query("type"); itemType != "" {
 		query = query.Where("item_type = ?", itemType)
@@ -753,13 +776,7 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 	} else if opts.DefaultActiveStatus {
 		query = query.Where("status = 'active'")
 	}
-	if search := c.Query("search"); search != "" {
-		like := database.ILike(db)
-		for _, kw := range database.SplitSearchKeywords(search) {
-			pattern := "%" + kw + "%"
-			query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), pattern, pattern)
-		}
-	}
+	query = applyItemSearchFilter(query, db, c.Query("search"))
 	if categoriesRaw := c.Query("categories"); categoriesRaw != "" {
 		categories := parseCSVQueryValues(categoriesRaw)
 		if len(categories) > 0 {
@@ -819,13 +836,7 @@ func ListItems(c *gin.Context) {
 	if status := c.Query("status"); status != "" {
 		query = query.Where("status = ?", status)
 	}
-	if search := c.Query("search"); search != "" {
-		like := database.ILike(db)
-		for _, kw := range database.SplitSearchKeywords(search) {
-			pattern := "%" + kw + "%"
-			query = query.Where(fmt.Sprintf("name %s ? OR description %s ?", like, like), pattern, pattern)
-		}
-	}
+	query = applyItemSearchFilter(query, db, c.Query("search"))
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
