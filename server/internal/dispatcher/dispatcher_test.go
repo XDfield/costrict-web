@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"testing"
 
-	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -89,26 +88,15 @@ func insertIDTrustIdentity(t *testing.T, db *gorm.DB, userSubjectID, providerUse
 
 func TestNewDispatcher(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
 	if d == nil {
 		t.Fatal("expected non-nil dispatcher")
-	}
-	if d.bufferPeriod != 60*1e9 {
-		t.Fatalf("expected bufferPeriod 60s, got %v", d.bufferPeriod)
-	}
-}
-
-func TestNewDispatcher_ZeroBuffer(t *testing.T) {
-	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 0, nil, nil, nil)
-	if d.bufferPeriod != 0 {
-		t.Fatalf("expected bufferPeriod 0, got %v", d.bufferPeriod)
 	}
 }
 
 func TestDispatcher_Dispatch_UnsupportedEvent(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", 60, nil, nil, nil)
+	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -118,112 +106,12 @@ func TestDispatcher_Dispatch_UnsupportedEvent(t *testing.T) {
 	})
 }
 
-func TestDispatcher_Dispatch_Permission_Buffered(t *testing.T) {
-	db := setupTestDB(t)
-	setupNotificationTable(t, db)
-
-	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-1",
-		EventType: "permission",
-		SessionID: "session-1",
-		DeviceID:  "device-1",
-		ActionData: map[string]any{
-			"toolName": "bash",
-		},
-	})
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 1 {
-		t.Fatalf("expected 1 pending entry, got %d", count)
-	}
-}
-
-func TestDispatcher_Dispatch_SameSessionMultipleEvents(t *testing.T) {
-	db := setupTestDB(t)
-	setupNotificationTable(t, db)
-
-	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-1",
-		EventType: "permission",
-		SessionID: "session-1",
-		DeviceID:  "device-1",
-		ActionData: map[string]any{
-			"toolName": "bash",
-		},
-	})
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-1",
-		EventType: "permission",
-		SessionID: "session-1",
-		DeviceID:  "device-1",
-		ActionData: map[string]any{
-			"toolName": "read_file",
-		},
-	})
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 2 {
-		t.Fatalf("expected 2 pending entries for same session, got %d", count)
-	}
-}
-
-func TestDispatcher_Dispatch_Question_Buffered(t *testing.T) {
-	db := setupTestDB(t)
-	setupNotificationTable(t, db)
-
-	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-2",
-		EventType: "question",
-		SessionID: "session-2",
-		DeviceID:  "device-2",
-		ActionData: map[string]any{
-			"questions": []any{
-				map[string]any{
-					"question": "继续吗？",
-					"header":   "确认",
-					"options": []any{
-						map[string]any{"label": "是", "description": "继续执行"},
-						map[string]any{"label": "否", "description": "取消执行"},
-					},
-				},
-			},
-		},
-	})
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 1 {
-		t.Fatalf("expected 1 pending entry, got %d", count)
-	}
-}
-
 func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 	db := setupTestDB(t)
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -231,85 +119,11 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 		SessionID: "session-3",
 		DeviceID:  "device-1",
 	})
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 0 {
-		t.Fatalf("expected 0 pending entries, got %d", count)
-	}
-}
-
-func TestDispatcher_OnInterventionResponse(t *testing.T) {
-	db := setupTestDB(t)
-	setupNotificationTable(t, db)
-
-	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-1",
-		EventType: "permission",
-		SessionID: "session-4",
-		DeviceID:  "device-1",
-		ActionData: map[string]any{
-			"toolName": "bash",
-		},
-	})
-
-	var actionToken string
-	d.pendingMap.Range(func(key, _ any) bool {
-		actionToken = key.(string)
-		return false
-	})
-
-	if actionToken == "" {
-		t.Fatal("expected to find action token in pending map")
-	}
-
-	d.OnInterventionResponse(actionToken)
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 0 {
-		t.Fatal("expected pending entry to be removed after response")
-	}
-}
-
-func TestDispatcher_OnInterventionResponse_WrongToken(t *testing.T) {
-	db := setupTestDB(t)
-	setupNotificationTable(t, db)
-
-	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", 60, nil, nil, nil)
-
-	d.Dispatch(DispatchInput{
-		UserID:    "user-1",
-		EventType: "permission",
-		SessionID: "session-5",
-		DeviceID:  "device-1",
-	})
-
-	d.OnInterventionResponse("wrong-token")
-
-	count := 0
-	d.pendingMap.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count != 1 {
-		t.Fatal("expected pending entry to remain with wrong token")
-	}
 }
 
 func TestResolveWeComUserID(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
 
 	// No identity → empty
 	if got := d.resolveWeComUserID("user-none"); got != "" {
@@ -334,21 +148,6 @@ func TestResolveWeComUserID(t *testing.T) {
 	if got != "zhangsan" {
 		t.Fatalf("expected 'zhangsan' with multiple providers, got %q", got)
 	}
-}
-
-func TestDispatcher_DispatchStaleNotification(t *testing.T) {
-	db := setupTestDB(t)
-
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", 60, nil, nil, nil)
-
-	// Should not panic with nil adapter and no IDTrust identity
-	d.DispatchStaleNotification(models.SystemNotification{
-		UserID:      "user-1",
-		Type:        "permission",
-		SessionID:   "session-stale",
-		DeviceID:    "device-1",
-		ActionToken: "stale-token-123",
-	})
 }
 
 func TestExtractQuestionInfos(t *testing.T) {
@@ -431,4 +230,51 @@ func TestExtractQuestionInfos(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMapEventTypeToTitle(t *testing.T) {
+	tests := []struct {
+		eventType string
+		want      string
+	}{
+		{"session.completed", "会话已完成"},
+		{"session.failed", "会话失败"},
+		{"session.aborted", "会话已中断"},
+		{"permission", "权限请求"},
+		{"question", "问题"},
+		{"idle", "空闲超时"},
+		{"unknown", "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.eventType, func(t *testing.T) {
+			if got := mapEventTypeToTitle(tt.eventType); got != tt.want {
+				t.Errorf("mapEventTypeToTitle(%q) = %q, want %q", tt.eventType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNeedsInteraction(t *testing.T) {
+	if !needsInteraction("permission") {
+		t.Error("expected permission to need interaction")
+	}
+	if !needsInteraction("question") {
+		t.Error("expected question to need interaction")
+	}
+	if needsInteraction("session.completed") {
+		t.Error("expected session.completed to not need interaction")
+	}
+}
+
+func TestDispatcher_NilStore(t *testing.T) {
+	db := setupTestDB(t)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
+
+	// Should not panic with nil store
+	d.Dispatch(DispatchInput{
+		UserID:    "user-1",
+		EventType: "permission",
+		SessionID: "session-1",
+		DeviceID:  "device-1",
+	})
 }

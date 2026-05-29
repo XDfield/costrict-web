@@ -16,17 +16,11 @@ type CardStatusUpdater interface {
 	UpdateInteractiveCard(channelType, responseCode, statusText, action string, cardData []byte, externalUserID string)
 }
 
-// InterventionResponder abstracts dispatcher.Dispatcher.OnInterventionResponse for decoupling.
-type InterventionResponder interface {
-	OnInterventionResponse(actionToken string)
-}
-
 // ActionHandler processes interactive card callbacks (approve/reject/auto_approve/select)
 // and routes them to the appropriate cs-cloud endpoint via gateway proxy.
 type ActionHandler struct {
 	store       *Store
 	db          *gorm.DB
-	responder   InterventionResponder
 	gwClient    *gateway.Client
 	gwRegistry  *gateway.GatewayRegistry
 	cardUpdater CardStatusUpdater
@@ -36,7 +30,6 @@ type ActionHandler struct {
 func NewActionHandler(
 	store *Store,
 	db *gorm.DB,
-	responder InterventionResponder,
 	gwClient *gateway.Client,
 	gwRegistry *gateway.GatewayRegistry,
 	cardUpdater CardStatusUpdater,
@@ -44,7 +37,6 @@ func NewActionHandler(
 	return &ActionHandler{
 		store:       store,
 		db:          db,
-		responder:   responder,
 		gwClient:    gwClient,
 		gwRegistry:  gwRegistry,
 		cardUpdater: cardUpdater,
@@ -59,8 +51,6 @@ func (h *ActionHandler) HandleCallback(ctx context.Context, action, token, respo
 		logger.Error("[action-callback] token invalid or expired: %v", err)
 		return err
 	}
-
-	h.responder.OnInterventionResponse(token)
 
 	// Update card status using stored card data
 	if responseCode != "" && n.CardData != nil && len(n.CardData) > 0 {

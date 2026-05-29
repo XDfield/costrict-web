@@ -38,7 +38,6 @@ type Config struct {
 	Embedding                 EmbeddingConfig
 	Search                    SearchConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
-	NotificationBufferSeconds int // Notification buffer duration for interactive events, default 60
 }
 
 type ChannelSystemConfig struct {
@@ -158,7 +157,6 @@ func Load() *Config {
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
-		NotificationBufferSeconds: getEnvInt("NOTIFICATION_BUFFER_SECONDS", 60),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),

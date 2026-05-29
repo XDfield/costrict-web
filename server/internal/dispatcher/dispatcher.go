@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
@@ -17,7 +16,7 @@ import (
 
 type DispatchInput struct {
 	UserID      string
-			WorkspaceID string
+	WorkspaceID string
 	EventType   string
 	SessionID   string
 	DeviceID    string
@@ -34,12 +33,9 @@ type Dispatcher struct {
 	gwClient        *gateway.Client
 	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
-	bufferPeriod    time.Duration
-	pendingMap      sync.Map
 }
 
-func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, bufferSeconds int, wecomAdapter *wecom.WeComAdapter, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
-	bufferPeriod := time.Duration(bufferSeconds) * time.Second
+func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
 	return &Dispatcher{
 		db:              db,
 		store:           store,
@@ -48,7 +44,6 @@ func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationServic
 		gwClient:        gwClient,
 		gwRegistry:      gwRegistry,
 		appURL:          appURL,
-		bufferPeriod:    bufferPeriod,
 	}
 }
 
@@ -70,32 +65,6 @@ func (d *Dispatcher) resolveWeComUserID(appUserID string) string {
 
 // --- Public Interface ---
 
-// DispatchStaleNotification implements notification.StaleDispatcher interface
-func (d *Dispatcher) DispatchStaleNotification(n models.SystemNotification) {
-	if d.wecomAdapter == nil {
-		return
-	}
-	slog.Info("[dispatcher] stale notification dispatching", "sessionID", n.SessionID, "type", n.Type, "userID", n.UserID)
-
-	wecomUserID := d.resolveWeComUserID(n.UserID)
-	if wecomUserID == "" {
-		slog.Error("[dispatcher] cannot resolve wecom user id for stale notification", "appUserID", n.UserID)
-		return
-	}
-
-	input := DispatchInput{
-		UserID:    n.UserID,
-		EventType: n.Type,
-		SessionID: n.SessionID,
-		DeviceID:  n.DeviceID,
-	}
-	if n.ActionData != nil {
-		json.Unmarshal(n.ActionData, &input.ActionData)
-	}
-
-	d.dispatchToWeCom(input, n.ActionToken, wecomUserID)
-}
-
 func (d *Dispatcher) Dispatch(input DispatchInput) {
 	if d.store == nil {
 		return
@@ -108,99 +77,20 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
+	// Permission batch: multiple permissions collected in a window
+	if input.EventType == "permission_batch" {
+		d.dispatchPermissionBatch(input)
+		return
+	}
+
 	channels := d.selectChannels(input.UserID)
-
-	if needsInteraction(input.EventType) && d.bufferPeriod > 0 {
-		d.bufferDispatch(input, channels)
-		return
-	}
-
 	d.dispatchNow(input, channels)
-}
-
-func (d *Dispatcher) OnInterventionResponse(actionToken string) {
-	val, ok := d.pendingMap.LoadAndDelete(actionToken)
-	if !ok {
-		return
-	}
-	pending := val.(*pendingNotification)
-	pending.Timer.Stop()
-	slog.Info("[dispatcher] buffer cancelled by intervention response", "actionToken", actionToken)
 }
 
 // --- Event Classification ---
 
 func needsInteraction(eventType string) bool {
 	return eventType == "permission" || eventType == "question"
-}
-
-// --- Buffer Mechanism ---
-
-type pendingNotification struct {
-	Input       DispatchInput
-	ActionToken string
-	CreatedAt   time.Time
-	Timer       *time.Timer
-}
-
-func (d *Dispatcher) bufferDispatch(input DispatchInput, channels *SelectedChannels) {
-	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:     input.UserID,
-		Type:       input.EventType,
-		Title:      mapEventTypeToTitle(input.EventType),
-		SessionID:  input.SessionID,
-		DeviceID:   input.DeviceID,
-		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType: input.EventType,
-		ActionData: mustMarshal(input.ActionData),
-	})
-	if err != nil {
-		slog.Error("[dispatcher] create buffered notification failed", "error", err)
-		d.dispatchNow(input, channels)
-		return
-	}
-
-	pending := &pendingNotification{
-		Input:       input,
-		ActionToken: n.ActionToken,
-		CreatedAt:   time.Now(),
-	}
-
-	d.pendingMap.Store(n.ActionToken, pending)
-
-	pending.Timer = time.AfterFunc(d.bufferPeriod, func() {
-		d.handleBufferTimeout(n.ActionToken)
-	})
-}
-
-func (d *Dispatcher) handleBufferTimeout(actionToken string) {
-	val, ok := d.pendingMap.LoadAndDelete(actionToken)
-	if !ok {
-		return
-	}
-
-	pending := val.(*pendingNotification)
-
-	if d.isTokenHandled(actionToken) {
-		slog.Info("[dispatcher] buffer timeout but already handled", "actionToken", actionToken)
-		return
-	}
-
-	wecomUserID := d.resolveWeComUserID(pending.Input.UserID)
-	if wecomUserID == "" {
-		slog.Error("[dispatcher] cannot resolve wecom user id for buffered notification", "appUserID", pending.Input.UserID)
-		return
-	}
-
-	d.dispatchToWeCom(pending.Input, actionToken, wecomUserID)
-}
-
-func (d *Dispatcher) isTokenHandled(actionToken string) bool {
-	var count int64
-	d.db.Model(&models.SystemNotification{}).
-		Where("action_token = ? AND status = ?", actionToken, "acted").
-		Count(&count)
-	return count > 0
 }
 
 // --- Channel Selection ---
@@ -263,18 +153,6 @@ func (d *Dispatcher) dispatchToWeComNew(input DispatchInput, wecomUserID string)
 	}
 }
 
-// dispatchToWeCom is the buffered/stale dispatch path: uses existing action token
-func (d *Dispatcher) dispatchToWeCom(input DispatchInput, actionToken string, wecomUserID string) {
-	switch input.EventType {
-	case "permission":
-		d.sendApprovalCardWithToken(input, actionToken, wecomUserID)
-	case "question":
-		d.sendVoteCardsWithToken(input, actionToken, wecomUserID)
-	default:
-		d.sendGuidanceCardWithToken(input, actionToken, wecomUserID, false)
-	}
-}
-
 // --- Permission Card (Button Interaction) ---
 
 func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
@@ -299,15 +177,15 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 	}
 
 	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:     input.UserID,
-		Type:       "permission",
-		Title:      info.Title,
-		SessionID:  input.SessionID,
-		DeviceID:   input.DeviceID,
+		UserID:      input.UserID,
+		Type:        "permission",
+		Title:       info.Title,
+		SessionID:   input.SessionID,
+		DeviceID:    input.DeviceID,
 		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType: "permission",
-		ActionData: mustMarshal(input.ActionData),
-		CardData:   mustMarshal(cardData),
+		ActionType:  "permission",
+		ActionData:  mustMarshal(input.ActionData),
+		CardData:    mustMarshal(cardData),
 	})
 	if err != nil {
 		slog.Error("[dispatcher] create permission notification failed", "error", err)
@@ -319,46 +197,6 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 	buttons[2].Key = "auto_approve:" + n.ActionToken
 	cardData["button_list"] = buttons
 	d.updateNotificationData(n.ActionToken, info.Title, cardData)
-
-	if d.wecomAdapter != nil {
-		sessionURL := d.buildSessionURL(input)
-		taskID := fmt.Sprintf("perm_%s_%d", input.SessionID, time.Now().UnixMilli())
-		card := wecom.InteractiveCard{
-			Title:               info.Title,
-			Description:         info.Description,
-			SubTitle:            info.Command,
-			URL:                 sessionURL,
-			HorizontalContentList: info.HorizontalItems,
-			Buttons:             buttons,
-		}
-		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
-			slog.Error("[dispatcher] send wecom approval card failed", "error", err)
-		}
-	}
-}
-
-func (d *Dispatcher) sendApprovalCardWithToken(input DispatchInput, actionToken string, wecomUserID string) {
-	info := extractPermissionInfo(input)
-	sessionTitle := d.fetchSessionTitle(input)
-	if sessionTitle != "" {
-		info.Description = fmt.Sprintf("会话「%s」%s", sessionTitle, info.Description)
-	}
-
-	buttons := []wecom.CardButton{
-		{Text: "批准", Key: "approve:" + actionToken, Style: 1},
-		{Text: "拒绝", Key: "reject:" + actionToken, Style: 3},
-		{Text: "自批准", Key: "auto_approve:" + actionToken, Style: 2},
-	}
-
-	cardData := map[string]any{
-		"card_type":   "button_interaction",
-		"main_title":  map[string]string{"title": info.Title, "desc": info.Description},
-		"sub_title_text": info.Command,
-		"horizontal_content_list": info.HorizontalItems,
-		"button_list": buttons,
-	}
-
-	d.updateNotificationData(actionToken, info.Title, cardData)
 
 	if d.wecomAdapter != nil {
 		sessionURL := d.buildSessionURL(input)
@@ -395,99 +233,8 @@ func (d *Dispatcher) sendVoteCards(input DispatchInput, wecomUserID string) {
 	}
 
 	// Send notice card first, then vote card for single question
-	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
+	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有问题需要回答")
 	d.sendSingleVoteCard(input, wecomUserID, questions[0], 0)
-}
-
-// sendVoteCardsWithToken uses existing action token for first question, creates new tokens for rest (buffered/stale path)
-// 多题问卷视为复杂场景，走引导卡片
-func (d *Dispatcher) sendVoteCardsWithToken(input DispatchInput, actionToken string, wecomUserID string) {
-	questions := extractQuestionInfos(input.ActionData)
-	if len(questions) == 0 {
-		d.sendGuidanceCardWithToken(input, actionToken, wecomUserID, false)
-		return
-	}
-
-	// 多题问卷走文本通知卡片
-	if len(questions) > 1 {
-		slog.Info("[dispatcher] multi-question questionnaire, using text notice card", "questionCount", len(questions))
-		d.sendSessionNoticeCard(input, wecomUserID, "会话通知", fmt.Sprintf("有 %d 道问题需要回答，请点击下方链接前往会话操作", len(questions)))
-		return
-	}
-
-	// Send notice card first, then vote card for single question
-	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有以下问题需要回答")
-
-	// Single question reuses the existing action token
-	d.sendSingleVoteCardWithToken(input, actionToken, wecomUserID, questions[0], 0)
-
-	// Remaining questions need their own tokens
-	for i := 1; i < len(questions); i++ {
-		q := questions[i]
-		title := q.Header
-		if title == "" {
-			title = q.Question
-		}
-
-		mode := 0
-		if q.Multiple {
-			mode = 1
-		}
-		options := buildVoteOptions(q.Options)
-		checkbox := wecom.WeComCheckbox{
-			QuestionKey: fmt.Sprintf("q_%d", i),
-			OptionList:  options,
-			Mode:        mode,
-		}
-		submitBtn := wecom.WeComSubmitButton{Text: "提交", Key: ""}
-
-		cardData := map[string]any{
-			"card_type":     "vote_interaction",
-				"main_title":    map[string]string{"title": title, "desc": q.Question},
-			"checkbox":      checkbox,
-			"submit_button": submitBtn,
-		}
-
-		actionData := make(map[string]any)
-		for k, v := range input.ActionData {
-			actionData[k] = v
-		}
-		actionData["questionIndex"] = i
-
-		n, err := d.store.Create(notification.CreateNotificationInput{
-			UserID:     input.UserID,
-			Type:       "question",
-			Title:      title,
-			SessionID:  input.SessionID,
-			DeviceID:   input.DeviceID,
-		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType: "question",
-			ActionData: mustMarshal(actionData),
-			CardData:   mustMarshal(cardData),
-		})
-		if err != nil {
-			slog.Error("[dispatcher] create question notification failed", "index", i, "error", err)
-			continue
-		}
-
-		submitBtn.Key = "submit:" + n.ActionToken
-		cardData["submit_button"] = submitBtn
-		d.updateNotificationData(n.ActionToken, title, cardData)
-
-		if d.wecomAdapter != nil {
-			taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), i)
-			voteCard := wecom.VoteCard{
-				Title:        title,
-				SubTitle:     q.Question,
-				Checkbox:     checkbox,
-				SubmitButton: submitBtn,
-				ReplaceText:  "已提交",
-			}
-			if err := d.wecomAdapter.SendVoteCard(nil, wecomUserID, voteCard, taskID); err != nil {
-				slog.Error("[dispatcher] send wecom question card failed", "index", i, "error", err)
-			}
-		}
-	}
 }
 
 // sendSingleVoteCard creates a new notification and sends one vote_interaction card (direct path)
@@ -523,15 +270,15 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 	actionData["questionIndex"] = questionIndex
 
 	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:     input.UserID,
-		Type:       "question",
-		Title:      title,
-		SessionID:  input.SessionID,
-		DeviceID:   input.DeviceID,
+		UserID:      input.UserID,
+		Type:        "question",
+		Title:       title,
+		SessionID:   input.SessionID,
+		DeviceID:    input.DeviceID,
 		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType: "question",
-		ActionData: mustMarshal(actionData),
-		CardData:   mustMarshal(cardData),
+		ActionType:  "question",
+		ActionData:  mustMarshal(actionData),
+		CardData:    mustMarshal(cardData),
 	})
 	if err != nil {
 		slog.Error("[dispatcher] create question notification failed", "index", questionIndex, "error", err)
@@ -545,52 +292,6 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 	if d.wecomAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
 		voteCard := wecom.VoteCard{
-			Title:        title,
-			SubTitle:     q.Question,
-			Checkbox:     checkbox,
-			SubmitButton: submitBtn,
-			ReplaceText:  "已提交",
-		}
-		if err := d.wecomAdapter.SendVoteCard(nil, wecomUserID, voteCard, taskID); err != nil {
-			slog.Error("[dispatcher] send wecom question card failed", "index", questionIndex, "error", err)
-		}
-	}
-}
-
-// sendSingleVoteCardWithToken sends one vote_interaction card using existing action token (buffered/stale path)
-func (d *Dispatcher) sendSingleVoteCardWithToken(input DispatchInput, actionToken string, wecomUserID string, q questionInfo, questionIndex int) {
-	title := q.Header
-	if title == "" {
-		title = q.Question
-	}
-
-	mode := 0
-	if q.Multiple {
-		mode = 1
-	}
-	options := buildVoteOptions(q.Options)
-	checkbox := wecom.WeComCheckbox{
-		QuestionKey: fmt.Sprintf("q_%d", questionIndex),
-		OptionList:  options,
-		Mode:        mode,
-	}
-	submitBtn := wecom.WeComSubmitButton{
-		Text: "提交",
-		Key:  "submit:" + actionToken,
-	}
-
-	cardData := map[string]any{
-		"card_type":     "vote_interaction",
-		"main_title":    map[string]string{"title": title, "desc": q.Question},
-		"checkbox":      checkbox,
-		"submit_button": submitBtn,
-	}
-
-	d.updateNotificationData(actionToken, title, cardData)
-
-	if d.wecomAdapter != nil {
-		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
-			voteCard := wecom.VoteCard{
 			Title:        title,
 			SubTitle:     q.Question,
 			Checkbox:     checkbox,
@@ -631,15 +332,15 @@ func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, i
 	}
 
 	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:     input.UserID,
-		Type:       input.EventType,
-		Title:      title,
-		SessionID:  input.SessionID,
-		DeviceID:   input.DeviceID,
+		UserID:      input.UserID,
+		Type:        input.EventType,
+		Title:       title,
+		SessionID:   input.SessionID,
+		DeviceID:    input.DeviceID,
 		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType: input.EventType,
-		ActionData: mustMarshal(input.ActionData),
-		CardData:   mustMarshal(cardData),
+		ActionType:  input.EventType,
+		ActionData:  mustMarshal(input.ActionData),
+		CardData:    mustMarshal(cardData),
 	})
 	if err != nil {
 		slog.Error("[dispatcher] create guidance notification failed", "error", err)
@@ -665,52 +366,6 @@ func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, i
 		}
 	}
 }
-
-func (d *Dispatcher) sendGuidanceCardWithToken(input DispatchInput, actionToken string, wecomUserID string, isMultiselect bool) {
-	title := "需要你的操作"
-	subTitle := "请点击下方链接在会话中查看详情"
-
-	if isMultiselect {
-		subTitle = "由于企业微信控件限制，无法在卡片中完成多选操作，请点击下方链接操作"
-	}
-
-	url := input.SessionURL
-	if url == "" && input.Path != "" {
-		url = fmt.Sprintf("%s%s", d.appURL, input.Path)
-	}
-
-	var buttons []wecom.CardButton
-	if url != "" {
-		buttons = append(buttons, wecom.CardButton{
-			Text:  "在会话中查看",
-			Key:   "navigate:" + actionToken,
-			Style: 1,
-		})
-	}
-
-	cardData := map[string]any{
-		"card_type":      "button_interaction",
-		"main_title":     map[string]string{"title": title},
-		"sub_title_text": subTitle,
-		"button_list":    buttons,
-	}
-
-	d.updateNotificationData(actionToken, title, cardData)
-
-	if d.wecomAdapter != nil {
-		taskID := fmt.Sprintf("guide_%s_%d", input.SessionID, time.Now().UnixMilli())
-		card := wecom.InteractiveCard{
-			Title:       title,
-			Description: subTitle,
-			URL:         url,
-			Buttons:     buttons,
-		}
-		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
-			slog.Error("[dispatcher] send wecom guidance card failed", "error", err)
-		}
-	}
-}
-
 
 // --- Session Notice Card (text_notice with jump_list) ---
 
@@ -766,6 +421,64 @@ func (d *Dispatcher) autoApprovePermission(input DispatchInput) {
 	slog.Info("[dispatcher] auto-approved permission", "sessionID", input.SessionID, "permissionID", id)
 }
 
+
+// dispatchPermissionBatch handles a batch of permission requests collected by cs-cloud.
+// If autoAccept is enabled: approve all permissions via gateway proxy.
+// If autoAccept is disabled: send a single guidance card (text_notice).
+func (d *Dispatcher) dispatchPermissionBatch(input DispatchInput) {
+	if d.isAutoAccept(input) {
+		slog.Info("[dispatcher] auto-accept enabled, batch-approving permissions", "sessionID", input.SessionID)
+		d.batchApprovePermissions(input)
+		return
+	}
+
+	wecomUserID := d.resolveWeComUserID(input.UserID)
+	if wecomUserID == "" {
+		slog.Error("[dispatcher] cannot resolve wecom user id for permission batch", "appUserID", input.UserID)
+		return
+	}
+
+	count := 0
+	if perms, ok := input.ActionData["permissions"].([]any); ok {
+		count = len(perms)
+	}
+	subTitle := fmt.Sprintf("有 %d 个权限请求待处理，请点击下方链接前往会话操作", count)
+	d.sendSessionNoticeCard(input, wecomUserID, "权限请求", subTitle)
+}
+
+// batchApprovePermissions approves all permissions in a batch via gateway proxy.
+func (d *Dispatcher) batchApprovePermissions(input DispatchInput) {
+	if d.gwClient == nil || d.gwRegistry == nil {
+		return
+	}
+	if input.ActionData == nil {
+		return
+	}
+	perms, ok := input.ActionData["permissions"].([]any)
+	if !ok {
+		return
+	}
+	approved := 0
+	for _, p := range perms {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		if id == "" {
+			continue
+		}
+		proxyPath := fmt.Sprintf("/api/v1/permissions/%s/reply", id)
+		bodyBytes, _ := json.Marshal(map[string]any{"approved": true})
+		var result map[string]any
+		if err := gateway.ProxyDeviceSessionRequest(d.gwClient, d.gwRegistry, input.UserID, input.DeviceID, input.Path, "POST", proxyPath, bodyBytes, &result); err != nil {
+			slog.Error("[dispatcher] batch auto-approve permission failed", "permissionID", id, "error", err)
+			continue
+		}
+		approved++
+	}
+	slog.Info("[dispatcher] batch auto-approved permissions", "sessionID", input.SessionID, "total", len(perms), "approved", approved)
+}
 // resolveWorkspaceID returns the workspace ID for the given input by looking up
 // userID + deviceUUID + path. Returns empty string if not found.
 func (d *Dispatcher) resolveWorkspaceID(input DispatchInput) string {

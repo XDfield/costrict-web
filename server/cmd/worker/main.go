@@ -14,7 +14,6 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
-	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -163,12 +162,10 @@ func runWorker() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Notification sweep: expired token cleanup + stale notification fallback
+	// Notification sweep: expired token cleanup
 	notificationStore := notification.NewStore(db)
-	notificationSvc := notification.NewNotificationService(db, cfg.AppURL)
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, nil, nil, nil)
-	go notificationStore.StartSweep(ctx, disp)
-	log.Println("Notification sweep started (5min interval: expiry cleanup + stale fallback)")
+	go notificationStore.StartSweep(ctx)
+	log.Println("Notification sweep started (5min interval: expiry cleanup)")
 
 	pool.Start()
 	log.Printf("Worker pool started with %d workers, polling every %s", concurrency, pollInterval)

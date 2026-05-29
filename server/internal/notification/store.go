@@ -160,13 +160,8 @@ func (s *Store) SweepStaleNotifications(staleThreshold time.Duration) ([]models.
 	return stale, nil
 }
 
-// StaleDispatcher 兜底分发接口，避免 notification → dispatcher 循环依赖
-type StaleDispatcher interface {
-	DispatchStaleNotification(n models.SystemNotification)
-}
-
-// StartSweep 定时清理入口：合并过期清理 + 缓冲兜底
-func (s *Store) StartSweep(ctx context.Context, disp StaleDispatcher) {
+// StartSweep 定时清理过期通知
+func (s *Store) StartSweep(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -176,17 +171,6 @@ func (s *Store) StartSweep(ctx context.Context, disp StaleDispatcher) {
 			return
 		case <-ticker.C:
 			s.MarkExpired()
-
-			if disp != nil {
-				stale, err := s.SweepStaleNotifications(120 * time.Second)
-				if err != nil {
-					slog.Error("[notification-sweep] sweep stale failed", "error", err)
-					continue
-				}
-				for _, n := range stale {
-					disp.DispatchStaleNotification(n)
-				}
-			}
 		}
 	}
 }

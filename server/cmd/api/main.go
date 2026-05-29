@@ -509,7 +509,7 @@ func main() {
 		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, cfg.NotificationBufferSeconds, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
 
 	// Create cloud module before action handlers so closures can reference it
 	cloudModule = cloud.New(gatewayRegistry, gatewayClient)
@@ -519,7 +519,7 @@ func main() {
 	cloudModule.Dispatcher = disp
 
 	// Wire the action handler into channel service for interactive card callbacks
-	actionHandler := notification.NewActionHandler(notificationStore, db, disp, gatewayClient, gatewayRegistry, channelModule.Service)
+	actionHandler := notification.NewActionHandler(notificationStore, db, gatewayClient, gatewayRegistry, channelModule.Service)
 	channelModule.Service.SetActionHandler(actionHandler.Callback())
 
 	cloudGroup := r.Group("/cloud")
