@@ -71,15 +71,8 @@ func TestUsageReportHandler(t *testing.T) {
 	if err := db.Model(&models.SessionUsageReport{}).Count(&count).Error; err != nil {
 		t.Fatalf("count usage: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected 1 usage row, got %d", count)
-	}
-	var row models.SessionUsageReport
-	if err := db.First(&row).Error; err != nil {
-		t.Fatalf("load usage row: %v", err)
-	}
-	if got := row.RequestTime.UTC().Format(time.RFC3339); got != "2026-04-01T09:59:59Z" {
-		t.Fatalf("unexpected request time: %s", got)
+	if count != 0 {
+		t.Fatalf("expected 0 usage rows (reporting deprecated), got %d", count)
 	}
 }
 

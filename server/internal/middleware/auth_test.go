@@ -849,7 +849,7 @@ func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer some-opaque-token")
+	req.Header.Set("Authorization", "Bearer invalid.jwt.token")
 	w := performRequest(router, req)
 
 	if w.Code != http.StatusOK {

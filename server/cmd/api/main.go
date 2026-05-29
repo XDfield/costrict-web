@@ -21,7 +21,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -36,6 +35,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
@@ -115,7 +115,7 @@ func main() {
 			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
 		})
 	default:
-		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%s", fmt.Sprintf("%q", cfg.UsageProvider))
+		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%q", cfg.UsageProvider)
 	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
@@ -227,6 +227,8 @@ func main() {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
 
+	var channelModule *channel.Module
+	var cloudModule *cloud.Module
 	api := r.Group("/api")
 	{
 		auth := api.Group("/auth")
@@ -424,7 +426,7 @@ func main() {
 
 			authzModule.RegisterAPIRoutes(authed)
 
-			notificationModule := notification.New(db, cfg.CloudBaseURL)
+			notificationModule := notification.New(db, cfg.AppURL)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
@@ -438,7 +440,7 @@ func main() {
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
-			channelModule := channel.New(db, &channel.EchoMessageHandler{}, cfg.CloudBaseURL, cfg.Channels.EnabledTypes)
+			channelModule = channel.New(db, &channel.EchoMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
@@ -454,6 +456,7 @@ func main() {
 			_ = kanbanModule
 		}
 	}
+
 
 	var redisClient *redis.Client
 	var store gateway.Store
@@ -498,9 +501,27 @@ func main() {
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
 	distSvc.SetNotificationService(notificationSvc)
 
-	cloudModule := cloud.New(gatewayRegistry, gatewayClient)
+	notificationStore := notification.NewStore(db)
+
+	// Use the same WeComAdapter instance that was registered earlier for channel module
+	var wecomAdapterForDispatcher *wecom.WeComAdapter
+	if a, ok := channel.GetAdapter("wecom"); ok {
+		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
+	}
+
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
+
+	// Create cloud module before action handlers so closures can reference it
+	cloudModule = cloud.New(gatewayRegistry, gatewayClient)
 	cloudModule.NotificationService = notificationSvc
+	cloudModule.NotificationStore = notificationStore
 	cloudModule.DB = db
+	cloudModule.Dispatcher = disp
+
+	// Wire the action handler into channel service for interactive card callbacks
+	actionHandler := notification.NewActionHandler(notificationStore, db, gatewayClient, gatewayRegistry, channelModule.Service)
+	channelModule.Service.SetActionHandler(actionHandler.Callback())
+
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)

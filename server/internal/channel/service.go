@@ -13,6 +13,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// CardStatusUpdater updates interactive card status after user action.
+// Implemented by adapters that support interactive cards (e.g., WeComAdapter).
+type CardStatusUpdater interface {
+	UpdateCardStatus(responseCode, statusText, action string, cardData []byte, externalUserID string) error
+}
+
 type ChannelService struct {
 	db             *gorm.DB
 	adapters       map[string]ChannelAdapter
@@ -20,28 +26,57 @@ type ChannelService struct {
 	cloudBaseURL   string
 	sessionStore   *ReplyContextStore
 	enabledTypes   map[string]bool
+	// System-level availability controls (platform admin configuration)
+	weComEnabled        bool
+	weComWebhookEnabled bool
+	weChatEnabled       bool
+	actionHandler       ActionCallbackHandler
 }
 
-func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string) *ChannelService {
-	enabled := make(map[string]bool)
-	if len(enabledTypes) > 0 {
-		for _, t := range enabledTypes {
-			enabled[t] = true
-		}
-	}
+type ActionCallbackHandler func(ctx context.Context, action, token, responseCode, externalUserID string) error
+
+func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
+	s.actionHandler = h
+}
+
+func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *ChannelService {
 	adapters := make(map[string]ChannelAdapter)
+	// 只注册系统级别启用的适配器
 	for k, a := range adapterRegistry {
-		if len(enabled) == 0 || enabled[k] {
-			adapters[k] = a
+		// 根据系统配置过滤适配器
+		switch k {
+		case "wecom":
+			if !weComEnabled {
+				continue
+			}
+		case "wecom-webhook":
+			if !weComWebhookEnabled {
+				continue
+			}
+		case "wechat":
+			if !weChatEnabled {
+				continue
+			}
 		}
+		adapters[k] = a
 	}
+
+	// 构建 enabledTypes map（保留向后兼容）
+	enabledMap := make(map[string]bool)
+	for _, t := range enabledTypes {
+		enabledMap[t] = true
+	}
+
 	return &ChannelService{
-		db:             db,
-		adapters:       adapters,
-		messageHandler: handler,
-		cloudBaseURL:   cloudBaseURL,
-		sessionStore:   NewReplyContextStore(),
-		enabledTypes:   enabled,
+		db:                  db,
+		adapters:            adapters,
+		messageHandler:      handler,
+		cloudBaseURL:        cloudBaseURL,
+		sessionStore:        NewReplyContextStore(),
+		enabledTypes:        enabledMap,
+		weComEnabled:        weComEnabled,
+		weComWebhookEnabled: weComWebhookEnabled,
+		weChatEnabled:       weChatEnabled,
 	}
 }
 
@@ -73,6 +108,23 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 	}
 
 	log.Printf("ChannelService: received inbound message: chatID=%s, userID=%s, content=%q, contentType=%s", msg.ExternalChatID, msg.ExternalUserID, msg.Content, msg.ContentType)
+
+	// Handle interactive card callbacks
+	if msg.ContentType == "action_callback" {
+		action := msg.Content
+		token, _ := msg.Metadata["actionToken"].(string)
+		respCode, _ := msg.Metadata["responseCode"].(string)
+		log.Printf("[channel] interactive card callback: action=%q, token=%q, responseCode=%q, fromUser=%s", action, token, respCode, msg.ExternalUserID)
+
+		if s.actionHandler != nil {
+			if err := s.actionHandler(r.Context(), action, token, respCode, msg.ExternalUserID); err != nil {
+				log.Printf("[channel] action callback error: %v", err)
+			}
+		}
+
+
+		return "success", http.StatusOK, nil
+	}
 
 	for _, cfg := range configs {
 		rc := ReplyContext{
@@ -164,6 +216,12 @@ func (s *ChannelService) GetConfig(userID, configID string) (*models.ChannelConf
 		First(&ch).Error; err != nil {
 		return nil, fmt.Errorf("channel config not found")
 	}
+
+	// 对企微应用渠道，动态组合IDTrust绑定信息
+	if ch.ChannelType == "wecom" {
+		ch = s.enrichWecomChannelConfig(userID, ch)
+	}
+
 	return &ch, nil
 }
 
@@ -173,7 +231,70 @@ func (s *ChannelService) ListConfigs(userID string) ([]models.ChannelConfig, err
 		Order("created_at DESC").Find(&configs).Error; err != nil {
 		return nil, err
 	}
+
+	// 检查用户是否有IDTrust绑定但没有企微应用channel，如果有则自动创建
+	hasIDTrust := false
+	var idtrustIdentity models.UserAuthIdentity
+	if err := s.db.Where("user_subject_id = ? AND provider = ? AND deleted_at IS NULL", userID, "idtrust").
+		First(&idtrustIdentity).Error; err == nil {
+		hasIDTrust = true
+	}
+
+	hasWecomChannel := false
+	for _, cfg := range configs {
+		if cfg.ChannelType == "wecom" {
+			hasWecomChannel = true
+			break
+		}
+	}
+
+	// 如果有IDTrust绑定但没有企微channel，自动创建
+	if hasIDTrust && !hasWecomChannel {
+		autoCreatedChannel := models.ChannelConfig{
+			UserID:      userID,
+			ChannelType: "wecom",
+			Name:        "企微应用通知",
+			Enabled:     true,
+			Config:      nil, // 留空，由查询时动态组合
+		}
+		if err := s.db.Create(&autoCreatedChannel).Error; err == nil {
+			configs = append([]models.ChannelConfig{autoCreatedChannel}, configs...)
+		}
+	}
+
+	// 对企微应用渠道，动态组合IDTrust绑定信息
+	for i := range configs {
+		if configs[i].ChannelType == "wecom" {
+			configs[i] = s.enrichWecomChannelConfig(userID, configs[i])
+		}
+	}
+
 	return configs, nil
+}
+
+// enrichWecomChannelConfig 为企微应用渠道动态组合IDTrust绑定信息
+func (s *ChannelService) enrichWecomChannelConfig(userID string, config models.ChannelConfig) models.ChannelConfig {
+	// 从IDTrust绑定中获取userId
+	var idtrustIdentity models.UserAuthIdentity
+	if err := s.db.Where("user_subject_id = ? AND provider = ? AND deleted_at IS NULL", userID, "idtrust").
+		First(&idtrustIdentity).Error; err != nil {
+		// 无IDTrust绑定，标记为不可用
+		config.Enabled = false
+		return config
+	}
+
+	// 动态组合userId到config中
+	configData := map[string]interface{}{}
+	if len(config.Config) > 0 {
+		if err := json.Unmarshal(config.Config, &configData); err != nil {
+			configData = make(map[string]interface{})
+		}
+	}
+	configData["userId"] = idtrustIdentity.ProviderUserID
+
+	updatedConfig, _ := json.Marshal(configData)
+	config.Config = datatypes.JSON(updatedConfig)
+	return config
 }
 
 func (s *ChannelService) GetAvailableChannelTypes() []map[string]any {
@@ -307,4 +428,15 @@ func getConfigWithMask(ch models.ChannelConfig) models.ChannelConfig {
 		ch.Config = maskConfig(ch.Config, []string{"token"})
 	}
 	return ch
+}
+
+func (s *ChannelService) UpdateInteractiveCard(channelType, responseCode, statusText, action string, cardData []byte, externalUserID string) {
+	updater, ok := s.adapters[channelType].(CardStatusUpdater)
+	if !ok {
+		log.Printf("[channel] adapter %s does not support card status update", channelType)
+		return
+	}
+	if err := updater.UpdateCardStatus(responseCode, statusText, action, cardData, externalUserID); err != nil {
+		log.Printf("[channel] update card status failed: %v", err)
+	}
 }

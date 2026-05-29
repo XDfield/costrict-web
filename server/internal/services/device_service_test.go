@@ -319,15 +319,34 @@ func TestRegisterDevice_LegacyMigration_DifferentActiveUser(t *testing.T) {
 		Version:     "1.0.0",
 	})
 
-	_, _, err := svc.RegisterDevice("user-2", RegisterDeviceRequest{
+	device, token, err := svc.RegisterDevice("user-2", RegisterDeviceRequest{
 		DeviceID:       "new-id-003",
 		LegacyDeviceID: "legacy-id-003",
-		DisplayName:    "Hijack",
+		DisplayName:    "Cloned Machine",
 		Platform:       "linux",
 		Version:        "1.1.0",
 	})
-	if err != ErrDeviceAlreadyRegistered {
-		t.Fatalf("expected ErrDeviceAlreadyRegistered, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected error for legacy conflict with different user: %v", err)
+	}
+	if device.DeviceID != "new-id-003" {
+		t.Fatalf("expected device_id new-id-003, got %q", device.DeviceID)
+	}
+	if device.UserID != "user-2" {
+		t.Fatalf("expected user_id user-2, got %q", device.UserID)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+
+	var count int64
+	db.Where("device_id = ?", "legacy-id-003").Model(&models.Device{}).Count(&count)
+	if count != 1 {
+		t.Fatal("original device (legacy-id-003) should still exist for user-1")
+	}
+	db.Where("device_id = ?", "new-id-003").Model(&models.Device{}).Count(&count)
+	if count != 1 {
+		t.Fatal("new device (new-id-003) should exist for user-2")
 	}
 }
 
@@ -372,5 +391,32 @@ func TestRegisterDevice_LegacyMigration_SameIDSkipsLookup(t *testing.T) {
 	}
 	if token == "" {
 		t.Fatal("expected non-empty token")
+	}
+}
+
+func TestRegisterDevice_NonLegacyConflict_StillRejected(t *testing.T) {
+	db := setupDeviceServiceDB(t)
+	svc := &DeviceService{DB: db}
+
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u1", "user-1", "User One", time.Now(), time.Now())
+	db.Exec("INSERT INTO users (id, subject_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"u2", "user-2", "User Two", time.Now(), time.Now())
+
+	svc.RegisterDevice("user-1", RegisterDeviceRequest{
+		DeviceID:    "dev-unique",
+		DisplayName: "Owned",
+		Platform:    "windows",
+		Version:     "1.0.0",
+	})
+
+	_, _, err := svc.RegisterDevice("user-2", RegisterDeviceRequest{
+		DeviceID:    "dev-unique",
+		DisplayName: "Hijack",
+		Platform:    "linux",
+		Version:     "1.1.0",
+	})
+	if err != ErrDeviceAlreadyRegistered {
+		t.Fatalf("non-legacy conflict should still return ErrDeviceAlreadyRegistered, got %v", err)
 	}
 }

@@ -282,6 +282,7 @@ func setupTestDB(t *testing.T) func() {
 			avatar_url TEXT,
 			organization TEXT,
 			is_primary INTEGER DEFAULT 0,
+			explicitly_unbound INTEGER DEFAULT 0,
 			last_login_at DATETIME,
 			created_at DATETIME,
 			updated_at DATETIME,

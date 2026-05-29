@@ -282,6 +282,10 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 			Owner:             u.Owner,
 		}
 		claims = userpkg.MergeJWTClaims(claims, nil)
-		_, _ = UserModule.Service.GetOrCreateUser(claims)
+		// Only update existing users, don't create new ones (read-only lookup)
+		if user, err := UserModule.Service.FindUserByClaims(claims); err == nil && user != nil {
+			// User exists, sync if needed
+			_, _ = UserModule.Service.GetOrCreateUser(claims)
+		}
 	}
 }

@@ -38,7 +38,7 @@ func main() {
 	channel.RegisterAdapter(wechat.NewWeChatAdapter())
 	channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
 
-	worker := channel.NewChannelWorker(db, &channel.EchoMessageHandler{}, cfg.Channels.EnabledTypes)
+	worker := channel.NewChannelWorker(db, &channel.EchoMessageHandler{}, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

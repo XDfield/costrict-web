@@ -130,6 +130,9 @@ func (s *DeviceService) handleExistingDevice(existing models.Device, userID stri
 	if !s.userExists(existing.UserID) {
 		return s.rebindDevice(existing, userID, req, isLegacyMigration)
 	}
+	if isLegacyMigration && req.DeviceID != existing.DeviceID {
+		return s.createDeviceFromLegacyConflict(userID, req)
+	}
 	return nil, "", ErrDeviceAlreadyRegistered
 }
 
@@ -182,6 +185,26 @@ func (s *DeviceService) migrateDeviceID(existing models.Device, userID string, r
 	s.ownershipCache.Delete(req.LegacyDeviceID + ":" + userID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	return &existing, token, nil
+}
+
+func (s *DeviceService) createDeviceFromLegacyConflict(userID string, req RegisterDeviceRequest) (*models.Device, string, error) {
+	token, err := generateDeviceToken()
+	if err != nil {
+		return nil, "", err
+	}
+	device := &models.Device{
+		DeviceID:    req.DeviceID,
+		DisplayName: req.DisplayName,
+		Platform:    req.Platform,
+		Version:     req.Version,
+		UserID:      userID,
+		Status:      "offline",
+		Token:       token,
+	}
+	if err := s.DB.Create(device).Error; err != nil {
+		return nil, "", err
+	}
+	return device, token, nil
 }
 
 func (s *DeviceService) rebindDevice(existing models.Device, userID string, req RegisterDeviceRequest, isLegacyMigration bool) (*models.Device, string, error) {

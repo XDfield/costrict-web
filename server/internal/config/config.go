@@ -24,6 +24,8 @@ type Config struct {
 	UsageESInsecureSkipVerify bool
 	RedisURL                  string
 	CloudBaseURL              string
+	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
+	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
 	ReleaseDownloadBaseURL    string
 	SystemToken               string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -39,8 +41,12 @@ type Config struct {
 }
 
 type ChannelSystemConfig struct {
-	EnabledTypes []string // Channel types available for user configuration; empty means all enabled
+	EnabledTypes []string // Deprecated; use individual enabled flags below
 	WeCom        WeComSystemConfig
+	// Individual channel enable flags (system-level availability)
+	WeComEnabled        bool `mapstructure:"CHANNEL_WECOM_ENABLED"`
+	WeComWebhookEnabled bool `mapstructure:"CHANNEL_WECOM_WEBHOOK_ENABLED"`
+	WeChatEnabled       bool `mapstructure:"CHANNEL_WECHAT_ENABLED"`
 }
 
 type WeComSystemConfig struct {
@@ -115,6 +121,8 @@ func Load() *Config {
 		UsageESInsecureSkipVerify: getEnvBool("USAGE_ES_INSECURE_SKIP_VERIFY", false),
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
+		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
+		AppURL:                    getEnv("APP_URL", cloudBaseURL),
 		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
 		FrontendURLs:              frontendURLs,
@@ -150,7 +158,10 @@ func Load() *Config {
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
 		Channels: ChannelSystemConfig{
-			EnabledTypes: getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
+			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
+			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
+			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", true),
+			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", true),
 			WeCom: WeComSystemConfig{
 				CorpID:         getEnv("WECOM_CORP_ID", ""),
 				AgentID:        getEnvInt("WECOM_AGENT_ID", 0),
@@ -207,15 +218,24 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 }
 
 func getEnvBool(key string, defaultValue bool) bool {
-	if value := viper.GetString(key); value != "" {
-		if b, err := strconv.ParseBool(value); err == nil {
-			return b
+	// Check if environment variable is explicitly set (even if empty)
+	viperValue := viper.GetString(key)
+	if viper.IsSet(key) {
+		// Variable is set, check its value
+		if viperValue != "" {
+			if b, err := strconv.ParseBool(viperValue); err == nil {
+				return b
+			}
 		}
+		// Variable is set but empty or invalid, return false
+		return false
 	}
-	if value := os.Getenv(key); value != "" {
-		if b, err := strconv.ParseBool(value); err == nil {
+	// Check system environment variable
+	if envValue := os.Getenv(key); envValue != "" {
+		if b, err := strconv.ParseBool(envValue); err == nil {
 			return b
 		}
+		return false
 	}
 	return defaultValue
 }

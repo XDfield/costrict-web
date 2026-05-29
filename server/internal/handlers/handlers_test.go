@@ -301,6 +301,10 @@ func TestBindCallbackSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
+	// Explicitly bind phone identity since GetOrCreateUser might not auto-bind
+	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"}); err != nil {
+		t.Fatalf("bind phone identity: %v", err)
+	}
 
 	r := gin.New()
 	r.GET("/api/auth/callback", func(c *gin.Context) {

@@ -151,6 +151,19 @@ func UpdateConfigHandler(svc *ChannelService) gin.HandlerFunc {
 			return
 		}
 
+		// 对于企微应用的启禁用操作，只返回简单的成功状态
+		if ch.ChannelType == "wecom" && req.Enabled != nil {
+			status := "disabled"
+			if *req.Enabled {
+				status = "enabled"
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"status":  status,
+			})
+			return
+		}
+
 		c.JSON(http.StatusOK, channelResponse(svc, *ch))
 	}
 }

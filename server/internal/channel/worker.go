@@ -20,9 +20,13 @@ type ChannelWorker struct {
 	pollers        map[string]context.CancelFunc
 	configHashes   map[string]string
 	mu             sync.Mutex
+	// System-level availability controls
+	weComEnabled        bool
+	weComWebhookEnabled bool
+	weChatEnabled       bool
 }
 
-func NewChannelWorker(db *gorm.DB, handler MessageHandler, enabledTypes []string) *ChannelWorker {
+func NewChannelWorker(db *gorm.DB, handler MessageHandler, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *ChannelWorker {
 	enabled := make(map[string]bool)
 	if len(enabledTypes) > 0 {
 		for _, t := range enabledTypes {
@@ -31,17 +35,31 @@ func NewChannelWorker(db *gorm.DB, handler MessageHandler, enabledTypes []string
 	}
 	adapters := make(map[string]ChannelAdapter)
 	for k, a := range adapterRegistry {
-		if len(enabled) == 0 || enabled[k] {
+		// Check both legacy enabledTypes and new system-level flags
+		legacyEnabled := len(enabled) == 0 || enabled[k]
+		systemEnabled := true
+		switch k {
+		case "wecom":
+			systemEnabled = weComEnabled
+		case "wecom-webhook":
+			systemEnabled = weComWebhookEnabled
+		case "wechat":
+			systemEnabled = weChatEnabled
+		}
+		if legacyEnabled && systemEnabled {
 			adapters[k] = a
 		}
 	}
 	return &ChannelWorker{
-		db:             db,
-		adapters:       adapters,
-		messageHandler: handler,
-		sessionStore:   NewReplyContextStore(),
-		pollers:        make(map[string]context.CancelFunc),
-		configHashes:   make(map[string]string),
+		db:                  db,
+		adapters:            adapters,
+		messageHandler:      handler,
+		sessionStore:        NewReplyContextStore(),
+		pollers:             make(map[string]context.CancelFunc),
+		configHashes:        make(map[string]string),
+		weComEnabled:        weComEnabled,
+		weComWebhookEnabled: weComWebhookEnabled,
+		weChatEnabled:       weChatEnabled,
 	}
 }
 
