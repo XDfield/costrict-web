@@ -344,6 +344,7 @@ type MyItem struct {
 	RepoID         string `json:"repoId"`
 	RepoName       string `json:"repoName"`
 	RepoVisibility string `json:"repoVisibility"`
+	Favorited      bool   `json:"favorited"`
 }
 
 // ListMyItems godoc
@@ -466,6 +467,21 @@ func ListMyItems(c *gin.Context) {
 
 	ResolveItemListLocale(c, items)
 
+	// Batch-fetch favorited status for the current user so the manager list
+	// icons reflect favorite state on load and survive a post-toggle refresh.
+	favoritedSet := make(map[string]bool)
+	if len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		var favs []models.ItemFavorite
+		db.Where("user_id = ? AND item_id IN ?", ownerID, itemIDs).Find(&favs)
+		for _, fav := range favs {
+			favoritedSet[fav.ItemID] = true
+		}
+	}
+
 	// Build response with repo info
 	result := make([]MyItem, len(items))
 	for i, item := range items {
@@ -475,6 +491,7 @@ func ListMyItems(c *gin.Context) {
 			RepoID:         reg.RepoID,
 			RepoName:       repoNameMap[reg.RepoID],
 			RepoVisibility: repoVisibilityMap[reg.RepoID],
+			Favorited:      favoritedSet[item.ID],
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
