@@ -359,6 +359,7 @@ func main() {
 			authed.POST("/scan-jobs/:id/cancel", handlers.CancelScanJob)
 			authed.POST("/items/:id/favorite", recommendHandler.FavoriteItem)
 			authed.DELETE("/items/:id/favorite", recommendHandler.UnfavoriteItem)
+			authed.PUT("/items/:id/mcp-config", handlers.UpsertMCPUserConfig)
 
 			// Distribution routes
 			authed.GET("/distributions/my/sent", distHandler.ListSentDistributions)

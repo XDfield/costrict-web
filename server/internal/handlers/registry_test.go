@@ -333,6 +333,15 @@ func setupTestDB(t *testing.T) func() {
 			metadata_after  TEXT DEFAULT '{}',
 			created_at      DATETIME
 		)`,
+		`CREATE TABLE IF NOT EXISTS mcp_user_configs (
+			id           TEXT PRIMARY KEY,
+			user_id      TEXT NOT NULL,
+			item_id      TEXT NOT NULL,
+			field_values TEXT NOT NULL DEFAULT '{}',
+			created_at   DATETIME,
+			updated_at   DATETIME,
+			UNIQUE(user_id, item_id)
+		)`,
 	}
 
 	for _, s := range stmts {

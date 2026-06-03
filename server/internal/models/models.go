@@ -50,6 +50,23 @@ type UserConfig struct {
 	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
+// MCPUserConfig 用户对某个 MCP 资源填写的占位参数值（per-user）。
+// field_values 为明文 jsonb（与 ChannelConfig.Config 一致）；json:"-" 确保永不随响应序列化外泄，
+// 对外仅经 buildMCPConfigStatus 输出掩码状态。结构：map[key]{"v":string,"secret":bool}，
+// key 形如 "env:NAME" / "args:INDEX"（与前端启发式共享的 key scheme）。
+type MCPUserConfig struct {
+	ID          string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	UserID      string         `gorm:"type:varchar(191);not null;uniqueIndex:idx_mcp_user_config" json:"userId"`
+	ItemID      string         `gorm:"type:uuid;not null;uniqueIndex:idx_mcp_user_config;index"    json:"itemId"`
+	FieldValues datatypes.JSON `gorm:"column:field_values;type:jsonb;not null;default:'{}'"        json:"-"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+}
+
+// TableName pins the table name: GORM's default snake_case of the acronym-prefixed
+// "MCPUserConfig" yields "m_cpuser_configs", which would diverge from the migration.
+func (MCPUserConfig) TableName() string { return "mcp_user_configs" }
+
 // NotificationLog 通知发送记录
 type NotificationLog struct {
 	ID            string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
