@@ -524,6 +524,7 @@ type ItemResponse struct {
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
 	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
 	MyForkItemID        *string                     `json:"myForkItemId,omitempty"` // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
+	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`    // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
 }
 
 type ItemAssetsResponse struct {
@@ -681,6 +682,14 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 				forkID := myFork.ID
 				resp.MyForkItemID = &forkID
 			}
+		}
+	}
+	if item.ItemType == "mcp" && userID != "" {
+		if fields := loadMCPUserFields(db, userID, item.ID); len(fields) > 0 {
+			// Per-user resolve: overlay filled values onto a copy of Content for
+			// this caller only. Never mutate the shared row / Metadata / ContentMD5.
+			resp.Content = resolveMCPContent(item.Content, fields)
+			resp.MCPConfig = buildMCPConfigStatus(fields)
 		}
 	}
 	return resp
