@@ -345,6 +345,7 @@ type MyItem struct {
 	RepoName       string `json:"repoName"`
 	RepoVisibility string `json:"repoVisibility"`
 	Favorited      bool   `json:"favorited"`
+	ForkCount      int    `json:"forkCount"`
 }
 
 // ListMyItems godoc
@@ -467,6 +468,16 @@ func ListMyItems(c *gin.Context) {
 
 	ResolveItemListLocale(c, items)
 
+	// Batch-fetch fork counts (avoid N+1)
+	var forkCountMap map[string]int
+	if len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		forkCountMap = fetchForkCounts(db, itemIDs)
+	}
+
 	// Batch-fetch favorited status for the current user so the manager list
 	// icons reflect favorite state on load and survive a post-toggle refresh.
 	favoritedSet := make(map[string]bool)
@@ -492,6 +503,7 @@ func ListMyItems(c *gin.Context) {
 			RepoName:       repoNameMap[reg.RepoID],
 			RepoVisibility: repoVisibilityMap[reg.RepoID],
 			Favorited:      favoritedSet[item.ID],
+			ForkCount:      forkCountMap[item.ID],
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
