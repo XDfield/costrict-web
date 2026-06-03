@@ -45,7 +45,7 @@ func newIngestTestDB(t *testing.T) *gorm.DB {
 			current_revision INTEGER NOT NULL DEFAULT 1, metadata TEXT DEFAULT '{}',
 			health TEXT DEFAULT '{}', evaluation TEXT DEFAULT '{}',
 			source_path TEXT, source_sha TEXT, source_type TEXT DEFAULT 'direct',
-			source TEXT DEFAULT '', preview_count INTEGER DEFAULT 0,
+			source TEXT DEFAULT '', forked_from_item_id TEXT, forked_from_owner_id TEXT, preview_count INTEGER DEFAULT 0,
 			install_count INTEGER DEFAULT 0, favorite_count INTEGER DEFAULT 0,
 			status TEXT DEFAULT 'active', security_status TEXT DEFAULT 'unscanned',
 			last_scan_id TEXT, created_by TEXT NOT NULL, updated_by TEXT,

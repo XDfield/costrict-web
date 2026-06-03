@@ -186,6 +186,9 @@ type createItemRequest struct {
 	SourceType  string
 	Source      string
 	CreatedBy   string
+	// Fork provenance (optional)
+	ForkedFromItemID  *string
+	ForkedFromOwnerID *string
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -383,25 +386,27 @@ func isUniqueConstraintError(err error) bool {
 // in a single DB transaction. No storage I/O or async work happens here.
 func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
 	item := models.CapabilityItem{
-		ID:              req.ID,
-		RegistryID:      req.RegistryID,
-		RepoID:          req.RepoID,
-		Slug:            req.Slug,
-		ItemType:        req.ItemType,
-		Name:            req.Name,
-		Description:     req.Description,
-		Category:        req.Category,
-		Version:         req.Version,
-		Content:         req.Content,
-		ContentMD5:      req.ContentMD5,
-		CurrentRevision: 1,
-		Metadata:        req.Metadata,
-		SourcePath:      req.SourcePath,
-		SourceSHA:       req.SourceSHA,
-		SourceType:      req.SourceType,
-		Source:          req.Source,
-		Status:          "active",
-		CreatedBy:       req.CreatedBy,
+		ID:                req.ID,
+		RegistryID:        req.RegistryID,
+		RepoID:            req.RepoID,
+		Slug:              req.Slug,
+		ItemType:          req.ItemType,
+		Name:              req.Name,
+		Description:       req.Description,
+		Category:          req.Category,
+		Version:           req.Version,
+		Content:           req.Content,
+		ContentMD5:        req.ContentMD5,
+		CurrentRevision:   1,
+		Metadata:          req.Metadata,
+		SourcePath:        req.SourcePath,
+		SourceSHA:         req.SourceSHA,
+		SourceType:        req.SourceType,
+		Source:            req.Source,
+		ForkedFromItemID:  req.ForkedFromItemID,
+		ForkedFromOwnerID: req.ForkedFromOwnerID,
+		Status:            "active",
+		CreatedBy:         req.CreatedBy,
 	}
 
 	if item.Metadata == nil || len(item.Metadata) == 0 {
@@ -482,7 +487,7 @@ type ItemResponse struct {
 	Slug                string                      `json:"slug"`
 	ItemType            string                      `json:"itemType"`
 	Name                string                      `json:"name"`
-	Description         string                      `json:"description"` // Resolved per `?lang=` query or Accept-Language header; en is the default. Use `descriptions` for raw locale map.
+	Description         string                      `json:"description"`                       // Resolved per `?lang=` query or Accept-Language header; en is the default. Use `descriptions` for raw locale map.
 	Descriptions        datatypes.JSON              `json:"descriptions" swaggertype:"object"` // Raw locale → text map, e.g. {"en":"...","zh":"..."}.
 	Category            string                      `json:"category"`
 	Version             string                      `json:"version"`
@@ -496,6 +501,8 @@ type ItemResponse struct {
 	SourceSHA           string                      `json:"sourceSha"`
 	SourceType          string                      `json:"sourceType"`
 	Source              string                      `json:"source"`
+	ForkedFromItemID    *string                     `json:"forkedFromItemId,omitempty"`
+	ForkedFromOwnerID   *string                     `json:"forkedFromOwnerId,omitempty"`
 	PreviewCount        int                         `json:"previewCount"`
 	InstallCount        int                         `json:"installCount"`
 	FavoriteCount       int                         `json:"favoriteCount"`
@@ -515,6 +522,8 @@ type ItemResponse struct {
 	RepoName            string                      `json:"repoName,omitempty"`
 	Favorited           bool                        `json:"favorited"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
+	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
+	MyForkItemID        *string                     `json:"myForkItemId,omitempty"` // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
 }
 
 type ItemAssetsResponse struct {
@@ -606,40 +615,42 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 	}
 	locale := ResolveLocale(c)
 	resp := ItemResponse{
-		ID:                 item.ID,
-		RegistryID:         item.RegistryID,
-		RepoID:             item.RepoID,
-		Slug:               item.Slug,
-		ItemType:           item.ItemType,
-		Name:               item.Name,
-		Description:        PickDescription(item.Descriptions, item.Description, locale),
-		Descriptions:       item.Descriptions,
-		Category:           item.Category,
-		Version:            item.Version,
-		Content:            item.Content,
-		ContentMD5:         item.ContentMD5,
-		CurrentRevision:    item.CurrentRevision,
-		Metadata:           item.Metadata,
-		Health:             item.Health,
-		Evaluation:         item.Evaluation,
-		SourcePath:         item.SourcePath,
-		SourceSHA:          item.SourceSHA,
-		SourceType:         item.SourceType,
-		Source:             item.Source,
-		PreviewCount:       item.PreviewCount,
-		InstallCount:       item.InstallCount,
-		FavoriteCount:      item.FavoriteCount,
-		Status:             item.Status,
-		SecurityStatus:     item.SecurityStatus,
-		LastScanID:         item.LastScanID,
-		CreatedBy:          item.CreatedBy,
-		UpdatedBy:          item.UpdatedBy,
-		Registry:           item.Registry,
-		Artifacts:          item.Artifacts,
-		CreatedAt:          item.CreatedAt,
-		UpdatedAt:          item.UpdatedAt,
-		ExperienceScore:    item.ExperienceScore,
-		EmbeddingUpdatedAt: item.EmbeddingUpdatedAt,
+		ID:                  item.ID,
+		RegistryID:          item.RegistryID,
+		RepoID:              item.RepoID,
+		Slug:                item.Slug,
+		ItemType:            item.ItemType,
+		Name:                item.Name,
+		Description:         PickDescription(item.Descriptions, item.Description, locale),
+		Descriptions:        item.Descriptions,
+		Category:            item.Category,
+		Version:             item.Version,
+		Content:             item.Content,
+		ContentMD5:          item.ContentMD5,
+		CurrentRevision:     item.CurrentRevision,
+		Metadata:            item.Metadata,
+		Health:              item.Health,
+		Evaluation:          item.Evaluation,
+		SourcePath:          item.SourcePath,
+		SourceSHA:           item.SourceSHA,
+		SourceType:          item.SourceType,
+		Source:              item.Source,
+		ForkedFromItemID:    item.ForkedFromItemID,
+		ForkedFromOwnerID:   item.ForkedFromOwnerID,
+		PreviewCount:        item.PreviewCount,
+		InstallCount:        item.InstallCount,
+		FavoriteCount:       item.FavoriteCount,
+		Status:              item.Status,
+		SecurityStatus:      item.SecurityStatus,
+		LastScanID:          item.LastScanID,
+		CreatedBy:           item.CreatedBy,
+		UpdatedBy:           item.UpdatedBy,
+		Registry:            item.Registry,
+		Artifacts:           item.Artifacts,
+		CreatedAt:           item.CreatedAt,
+		UpdatedAt:           item.UpdatedAt,
+		ExperienceScore:     item.ExperienceScore,
+		EmbeddingUpdatedAt:  item.EmbeddingUpdatedAt,
 		Tags:                item.Tags,
 		CurrentVersionLabel: services.NewContentHashService().BuildVersionLabel(item.CurrentRevision),
 	}
@@ -655,17 +666,56 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 			resp.Favorited = count > 0
 		}
 	}
+	if item.ID != "" {
+		var forkCount int64
+		if err := db.Model(&models.CapabilityItem{}).
+			Where("forked_from_item_id = ?", item.ID).
+			Count(&forkCount).Error; err == nil {
+			resp.ForkCount = int(forkCount)
+		}
+		if userID != "" {
+			var myFork models.CapabilityItem
+			if err := db.Select("id").
+				Where("forked_from_item_id = ? AND created_by = ?", item.ID, userID).
+				First(&myFork).Error; err == nil && myFork.ID != "" {
+				forkID := myFork.ID
+				resp.MyForkItemID = &forkID
+			}
+		}
+	}
 	return resp
+}
+
+// fetchForkCounts 批量统计 itemIDs 各自被 fork 的次数（GROUP BY），避免列表逐条查询的 N+1。
+func fetchForkCounts(db *gorm.DB, itemIDs []string) map[string]int {
+	counts := make(map[string]int, len(itemIDs))
+	if len(itemIDs) == 0 {
+		return counts
+	}
+	type forkAgg struct {
+		ForkedFromItemID string
+		Cnt              int64
+	}
+	var aggs []forkAgg
+	db.Model(&models.CapabilityItem{}).
+		Select("forked_from_item_id, COUNT(*) AS cnt").
+		Where("forked_from_item_id IN ?", itemIDs).
+		Group("forked_from_item_id").
+		Scan(&aggs)
+	for _, a := range aggs {
+		counts[a.ForkedFromItemID] = int(a.Cnt)
+	}
+	return counts
 }
 
 func itemListSortOrder(sortBy, sortOrder string) string {
 	column := map[string]string{
-		"":              "updated_at",
-		"createdAt":     "created_at",
-		"updatedAt":     "updated_at",
-		"previewCount":  "preview_count",
-		"installCount":  "install_count",
-		"favoriteCount": "favorite_count",
+		"":                "updated_at",
+		"createdAt":       "created_at",
+		"updatedAt":       "updated_at",
+		"previewCount":    "preview_count",
+		"installCount":    "install_count",
+		"favoriteCount":   "favorite_count",
 		"experienceScore": "experience_score",
 	}[sortBy]
 	if column == "" {
@@ -1850,6 +1900,10 @@ func ListAllItems(c *gin.Context) {
 			AllowFavorited:      true,
 			UserID:              uid,
 		})
+		// Public browse hides forked copies by default (GitHub-style); opt in with includeForks=true.
+		if c.Query("includeForks") != "true" {
+			query = query.Where("forked_from_item_id IS NULL")
+		}
 		query.Model(&models.CapabilityItem{}).Count(&total)
 	}
 
@@ -1914,15 +1968,26 @@ func ListAllItems(c *gin.Context) {
 		tagsMap, _ = TagSvc.GetItemTags(itemIDs)
 	}
 
+	// Batch-fetch fork counts for items (avoid N+1)
+	var forkCountMap map[string]int
+	if len(items) > 0 {
+		itemIDs := make([]string, len(items))
+		for i, item := range items {
+			itemIDs[i] = item.ID
+		}
+		forkCountMap = fetchForkCounts(db, itemIDs)
+	}
+
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
 		RepoName  string `json:"repoName,omitempty"`
 		Favorited bool   `json:"favorited"`
+		ForkCount int    `json:"forkCount"`
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
-		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID]}
+		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID], ForkCount: forkCountMap[item.ID]}
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]
 		}
@@ -2148,6 +2213,195 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, c.GetString(middleware.UserIDKey)))
+}
+
+// ForkItem godoc
+// @Summary      Fork an item
+// @Description  Create a personal copy of a public capability item under the current user, placed in the public registry, recording fork provenance (forkedFromItemId/ownerId). Only public, non-archive items not owned by the caller can be forked; each user may fork a given source item once.
+// @Tags         items
+// @Produce      json
+// @Param        id   path      string  true  "Source item ID"
+// @Success      201  {object}  ItemResponse
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      409  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /items/{id}/fork [post]
+func (h *ItemHandler) ForkItem(c *gin.Context) {
+	userID := c.GetString(middleware.UserIDKey)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	srcID := c.Param("id")
+
+	var src models.CapabilityItem
+	if err := h.db.Preload("Registry").First(&src, "id = ?", srcID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load item"})
+		return
+	}
+
+	// Inactive/archived items are hidden from listings; forking must not republish them
+	// as a fresh active public copy. Treat as not found to avoid leaking hidden items.
+	if src.Status != "active" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	// Only public items can be forked (forks land in the public registry; forking a
+	// private item would leak its content).
+	repoID := src.RepoID
+	if src.Registry != nil {
+		repoID = src.Registry.RepoID
+	}
+	if getRepoVisibility(repoID) != "public" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only public items can be forked"})
+		return
+	}
+
+	// Cannot fork your own item.
+	if src.CreatedBy == userID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot fork your own item", "code": "fork_self"})
+		return
+	}
+
+	// Archive (binary bundle) items are not forkable in MVP — persistNewItem does no storage I/O.
+	if src.SourceType == "archive" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Forking packaged (archive) capabilities is not supported yet", "code": "fork_archive_unsupported"})
+		return
+	}
+
+	// One fork per user per source item: if already forked, return the existing fork.
+	var existing models.CapabilityItem
+	if err := h.db.Where("forked_from_item_id = ? AND created_by = ?", src.ID, userID).First(&existing).Error; err == nil && existing.ID != "" {
+		c.JSON(http.StatusOK, buildItemResponse(c, h.db, existing, userID))
+		return
+	}
+
+	// Read source text assets to copy (IDs/ItemID re-assigned by persistNewItem).
+	var srcAssets []models.CapabilityAsset
+	h.db.Where("item_id = ?", src.ID).Order("rel_path asc").Find(&srcAssets)
+	forkedAssets := make([]models.CapabilityAsset, 0, len(srcAssets))
+	for _, a := range srcAssets {
+		forkedAssets = append(forkedAssets, models.CapabilityAsset{
+			RelPath:        a.RelPath,
+			TextContent:    a.TextContent,
+			StorageBackend: a.StorageBackend,
+			StorageKey:     a.StorageKey,
+			MimeType:       a.MimeType,
+			FileSize:       a.FileSize,
+			ContentSHA:     a.ContentSHA,
+		})
+	}
+
+	// Read source tags to carry over.
+	var tagIDs []string
+	if h.tagSvc != nil {
+		if tagsMap, err := h.tagSvc.GetItemTags([]string{src.ID}); err == nil && tagsMap != nil {
+			for _, t := range tagsMap[src.ID] {
+				tagIDs = append(tagIDs, t.ID)
+			}
+		}
+	}
+
+	publicRepoID := registryRepoID(h.db, PublicRegistryID)
+	srcItemID := src.ID
+	srcOwnerID := src.CreatedBy
+
+	// Fork slug: srcSlug-fork-<hash8>, with -N suffix retry on collision.
+	// Hash the FULL user ID (not userID[:8]) so distinct users forking the same
+	// source never collide on the base slug and exhaust the small retry range.
+	uidSum := sha256.Sum256([]byte(userID))
+	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
+
+	var item *models.CapabilityItem
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		slug := baseSlug
+		if attempt > 0 {
+			slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
+		}
+		// Fresh copy of asset records each attempt (persistNewItem mutates ID/ItemID).
+		records := make([]models.CapabilityAsset, len(forkedAssets))
+		copy(records, forkedAssets)
+		item, err = persistNewItem(h.db, createItemRequest{
+			ID:                uuid.New().String(),
+			RegistryID:        PublicRegistryID,
+			RepoID:            publicRepoID,
+			Slug:              slug,
+			ItemType:          src.ItemType,
+			Name:              src.Name,
+			Description:       src.Description,
+			Category:          src.Category,
+			Version:           src.Version,
+			Content:           src.Content,
+			ContentMD5:        src.ContentMD5,
+			Metadata:          src.Metadata,
+			SourcePath:        src.SourcePath,
+			SourceSHA:         src.SourceSHA,
+			SourceType:        "fork",
+			Source:            srcItemID,
+			CreatedBy:         userID,
+			ForkedFromItemID:  &srcItemID,
+			ForkedFromOwnerID: &srcOwnerID,
+		}, createItemAssets{Records: records})
+		if err == nil {
+			break
+		}
+		if errors.Is(err, ErrSlugConflict) {
+			// A unique-constraint violation here is either a slug collision OR the
+			// (forked_from_item_id, created_by) uniqueness from a concurrent fork by
+			// the same user. If a fork now exists for this user+source, return it
+			// (the concurrent winner) instead of retrying — enforces "fork once".
+			var raced models.CapabilityItem
+			if e := h.db.Where("forked_from_item_id = ? AND created_by = ?", src.ID, userID).First(&raced).Error; e == nil && raced.ID != "" {
+				c.JSON(http.StatusOK, buildItemResponse(c, h.db, raced, userID))
+				return
+			}
+			continue
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fork item"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Could not allocate a unique slug for fork"})
+		return
+	}
+
+	// Copy multilingual descriptions (persistNewItem doesn't carry Descriptions).
+	if len(src.Descriptions) > 0 && string(src.Descriptions) != "{}" {
+		h.db.Model(&models.CapabilityItem{}).Where("id = ?", item.ID).Update("descriptions", src.Descriptions)
+		h.db.Model(&models.CapabilityVersion{}).Where("item_id = ? AND revision = ?", item.ID, 1).Update("descriptions", src.Descriptions)
+		// Keep the in-memory copy in sync so the 201 response carries localized descriptions.
+		item.Descriptions = src.Descriptions
+	}
+
+	// Async index + security scan for the new copy.
+	if h.indexerSvc != nil {
+		forked := item
+		go func() {
+			ctx := context.Background()
+			if err := h.indexerSvc.IndexItem(ctx, forked); err != nil {
+				log.Printf("Failed to index forked item %s: %v", forked.ID, err)
+			}
+		}()
+	}
+	enqueueScanAsync(item.ID, 1, "fork")
+
+	// Carry over tags.
+	if h.tagSvc != nil && len(tagIDs) > 0 {
+		if err := assignTagsForItem(h.tagSvc, item.ID, tagIDs); err != nil {
+			log.Printf("Failed to assign tags to forked item %s: %v", item.ID, err)
+		}
+	}
+
+	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, userID))
 }
 
 // cleanupStorageKeys deletes uploaded objects after a later step fails.

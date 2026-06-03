@@ -342,40 +342,42 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID              string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID      string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
-	RepoID          string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
-	Slug            string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
-	ItemType        string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
-	Name            string               `gorm:"not null" json:"name"`
-	Description     string               `json:"description"`
-	Descriptions    datatypes.JSON       `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."} — locale → text map; flat `description` is the en/default resolution
-	Category        string               `json:"category"`
-	Version         string               `gorm:"default:'1.0.0'" json:"version"`
-	Content         string               `gorm:"type:text" json:"content"`
-	ContentMD5      string               `gorm:"size:32;default:''" json:"contentMd5"`
-	CurrentRevision int                  `gorm:"not null;default:1" json:"currentRevision"`
-	Metadata        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	Health          datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
-	Evaluation      datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
-	SourcePath      string               `json:"sourcePath"`
-	SourceSHA       string               `json:"sourceSha"`
-	SourceType      string               `gorm:"not null;default:'direct'" json:"sourceType"` // direct | archive
-	Source          string               `json:"source"`                                      // 导入来源，如 anthropic/claude-code, superpower, github
-	PreviewCount    int                  `gorm:"default:0" json:"previewCount"`
-	InstallCount    int                  `gorm:"default:0" json:"installCount"`
-	FavoriteCount   int                  `gorm:"default:0" json:"favoriteCount"`
-	Status          string               `gorm:"default:'active'" json:"status"`
-	SecurityStatus  string               `gorm:"default:'unscanned'" json:"securityStatus"`
-	LastScanID      *string              `json:"lastScanId,omitempty"`
-	CreatedBy       string               `gorm:"not null" json:"createdBy"`
-	UpdatedBy       string               `json:"updatedBy"`
-	Registry        *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions        []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
-	Assets          []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
-	Artifacts       []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
-	CreatedAt       time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
-	UpdatedAt       time.Time            `json:"updatedAt"`
+	ID                string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID        string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
+	RepoID            string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
+	Slug              string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
+	ItemType          string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
+	Name              string               `gorm:"not null" json:"name"`
+	Description       string               `json:"description"`
+	Descriptions      datatypes.JSON       `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."} — locale → text map; flat `description` is the en/default resolution
+	Category          string               `json:"category"`
+	Version           string               `gorm:"default:'1.0.0'" json:"version"`
+	Content           string               `gorm:"type:text" json:"content"`
+	ContentMD5        string               `gorm:"size:32;default:''" json:"contentMd5"`
+	CurrentRevision   int                  `gorm:"not null;default:1" json:"currentRevision"`
+	Metadata          datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	Health            datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
+	Evaluation        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
+	SourcePath        string               `json:"sourcePath"`
+	SourceSHA         string               `json:"sourceSha"`
+	SourceType        string               `gorm:"not null;default:'direct'" json:"sourceType"`                                  // direct | archive | fork
+	Source            string               `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
+	ForkedFromItemID  *string              `gorm:"type:uuid;index:idx_items_forked_from_item" json:"forkedFromItemId,omitempty"` // Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）
+	ForkedFromOwnerID *string              `json:"forkedFromOwnerId,omitempty"`                                                  // 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+	PreviewCount      int                  `gorm:"default:0" json:"previewCount"`
+	InstallCount      int                  `gorm:"default:0" json:"installCount"`
+	FavoriteCount     int                  `gorm:"default:0" json:"favoriteCount"`
+	Status            string               `gorm:"default:'active'" json:"status"`
+	SecurityStatus    string               `gorm:"default:'unscanned'" json:"securityStatus"`
+	LastScanID        *string              `json:"lastScanId,omitempty"`
+	CreatedBy         string               `gorm:"not null" json:"createdBy"`
+	UpdatedBy         string               `json:"updatedBy"`
+	Registry          *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions          []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	Assets            []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
+	Artifacts         []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	CreatedAt         time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
+	UpdatedAt         time.Time            `json:"updatedAt"`
 
 	// Vector embedding for semantic search
 	Embedding          *string    `gorm:"type:vector(1024)" json:"-"`

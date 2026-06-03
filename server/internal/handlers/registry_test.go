@@ -94,6 +94,8 @@ func setupTestDB(t *testing.T) func() {
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
 			source               TEXT NOT NULL DEFAULT '',
+			forked_from_item_id  TEXT,
+			forked_from_owner_id TEXT,
 			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
 			favorite_count       INTEGER DEFAULT 0,
@@ -109,6 +111,9 @@ func setupTestDB(t *testing.T) func() {
 			updated_at           DATETIME,
 			UNIQUE(repo_id, item_type, slug)
 		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_items_unique_user_fork
+			ON capability_items (forked_from_item_id, created_by)
+			WHERE forked_from_item_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS capability_versions (
 			id         TEXT PRIMARY KEY,
 			item_id    TEXT NOT NULL,
