@@ -95,6 +95,13 @@ func InitCookieConfig(cfg *config.Config) {
 	}
 }
 
+// FrontendBaseURL returns the public frontend base URL (first FRONTEND_URLS entry
+// or CloudBaseURL fallback). Use this for share links and other public URLs instead
+// of deriving from the request Host, which may be an internal service address.
+func FrontendBaseURL() string {
+	return defaultFrontendURL
+}
+
 // isAllowedOrigin checks whether the given full URL's origin is in the
 // FRONTEND_URLS whitelist.
 func isAllowedOrigin(rawURL string) bool {
