@@ -24,6 +24,7 @@ POST /api/plugins/upload
 |---|---|---|---|
 | `repo_id` | string | 是 | 目标仓库 ID |
 | `file` | file | 是 | Plugin 压缩包（.zip），最大 50MB |
+| `is_builtin` | string | 否 | 是否标记为内置 Plugin，传 `"true"` 表示内置 |
 
 ### 请求示例
 
@@ -31,7 +32,8 @@ POST /api/plugins/upload
 curl -X POST http://localhost:3000/api/plugins/upload \
   -H "Cookie: session=xxx" \
   -F "repo_id=your-repo-id" \
-  -F "file=@cospowers-solution-design-plugin.zip"
+  -F "file=@cospowers-solution-design-plugin.zip" \
+  -F "is_builtin=true"
 ```
 
 ### 响应示例
@@ -98,7 +100,50 @@ cospowers-solution-design-plugin.zip
 
 ---
 
-## 2. 查询 Plugin 列表
+## 2. 查询内置 Plugin 列表
+
+### 接口
+
+```http
+GET /api/plugins/builtin?page=1&pageSize=20
+```
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `page` | number | 否 | 页码，默认 1 |
+| `pageSize` | number | 否 | 每页数量，默认 20，最大 100 |
+
+### 响应示例
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "name": "cospowers-solution-design",
+      "slug": "cospowers-solution-design",
+      "itemType": "plugin",
+      "isBuiltIn": true,
+      "description": "...",
+      "content": "# ...",
+      "metadata": { ... },
+      "registryId": "uuid",
+      "createdAt": "2026-06-04T10:00:00Z",
+      "updatedAt": "2026-06-04T10:00:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "hasMore": false
+}
+```
+
+---
+
+## 3. 查询 Plugin 列表
 
 ### 接口
 

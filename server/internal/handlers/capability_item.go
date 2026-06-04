@@ -189,6 +189,7 @@ type createItemRequest struct {
 	// Fork provenance (optional)
 	ForkedFromItemID  *string
 	ForkedFromOwnerID *string
+	IsBuiltIn         bool
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -405,6 +406,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		Source:            req.Source,
 		ForkedFromItemID:  req.ForkedFromItemID,
 		ForkedFromOwnerID: req.ForkedFromOwnerID,
+		IsBuiltIn:         req.IsBuiltIn,
 		Status:            "active",
 		CreatedBy:         req.CreatedBy,
 	}
@@ -2453,6 +2455,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	category := c.PostForm("category")
 	version := c.PostForm("version")
 	createdByForm := c.PostForm("createdBy")
+	isBuiltin := c.PostForm("is_builtin") == "true"
 
 	if itemType == "" || name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType and name are required"})
@@ -2650,6 +2653,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		SourceSHA:   result.MainSHA,
 		CreatedBy:   createdBy,
 		SourceType:  "archive",
+		IsBuiltIn:   isBuiltin,
 	}, createItemAssets{
 		Records: assetRecords,
 		Artifact: &models.CapabilityArtifact{

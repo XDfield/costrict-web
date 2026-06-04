@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"net/http"
+	"strconv"
+
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -24,7 +27,52 @@ import (
 // @Router       /plugins/upload [post]
 func (h *ItemHandler) UploadPlugin(c *gin.Context) {
 	c.Request.PostForm.Set("itemType", "plugin")
+	if c.PostForm("is_builtin") == "true" {
+		c.Request.PostForm.Set("is_builtin", "true")
+	}
 	h.createItemFromArchive(c)
+}
+
+// ListBuiltinPlugins godoc
+// @Summary      List built-in plugins
+// @Description  Get all plugins marked as built-in (is_builtin = true).
+// @Tags         plugins
+// @Produce      json
+// @Param        page      query  int  false  "Page number"
+// @Param        pageSize  query  int  false  "Page size"
+// @Success      200  {object}  object{items=[]models.CapabilityItem,total=int}
+// @Router       /plugins/builtin [get]
+func ListBuiltinPlugins(c *gin.Context) {
+	db := database.GetDB()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	var total int64
+	db.Model(&models.CapabilityItem{}).Where("item_type = ? AND is_built_in = ?", "plugin", true).Count(&total)
+
+	var items []models.CapabilityItem
+	offset := (page - 1) * pageSize
+	db.Preload("Registry").Preload("Assets").Where("item_type = ? AND is_built_in = ?", "plugin", true).
+		Order("created_at DESC").
+		Limit(pageSize).Offset(offset).
+		Find(&items)
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":    items,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+		"hasMore":  int64(offset+pageSize) < total,
+	})
 }
 
 // canUploadToRepo checks if a user can upload items to a repository.
