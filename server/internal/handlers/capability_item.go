@@ -2474,6 +2474,9 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	itemType := c.PostForm("itemType")
+	if itemType == "" {
+		itemType = c.GetString("defaultItemType")
+	}
 	name := c.PostForm("name")
 	slug := c.PostForm("slug")
 	registryID := c.PostForm("registryId")

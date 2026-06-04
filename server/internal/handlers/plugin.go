@@ -33,10 +33,7 @@ import (
 // @Failure      409      {object}  object{error=string}
 // @Router       /plugins/upload [post]
 func (h *ItemHandler) UploadPlugin(c *gin.Context) {
-	c.Request.PostForm.Set("itemType", "plugin")
-	if c.PostForm("is_builtin") == "true" {
-		c.Request.PostForm.Set("is_builtin", "true")
-	}
+	c.Set("defaultItemType", "plugin")
 	h.createItemFromArchive(c)
 }
 
