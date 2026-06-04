@@ -2460,9 +2460,9 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	switch itemType {
-	case "skill", "mcp":
+	case "skill", "mcp", "plugin":
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType must be either skill or mcp"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType must be skill, mcp or plugin"})
 		return
 	}
 
@@ -2520,6 +2520,24 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	if metadataMap == nil {
 		metadataMap = map[string]any{}
 	}
+
+	// For plugin type, extract cospowers.config.json from assets as metadata
+	if itemType == "plugin" {
+		for _, asset := range result.Assets {
+			if asset.Path == "cospowers.config.json" && !asset.Binary {
+				var config map[string]any
+				if err := json.Unmarshal(asset.Content, &config); err == nil {
+					metadataMap = config
+				}
+				break
+			}
+		}
+		// Extract description from CLAUDE.md if empty
+		if description == "" && result.MainContent != "" {
+			description = extractFirstParagraph(result.MainContent)
+		}
+	}
+
 	metadataJSON, err := json.Marshal(metadataMap)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode metadata"})
@@ -2981,4 +2999,16 @@ func GetPublicRegistry(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, registry)
+}
+
+// extractFirstParagraph extracts the first non-empty, non-heading paragraph from markdown content.
+func extractFirstParagraph(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
 }
