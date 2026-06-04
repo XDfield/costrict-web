@@ -148,6 +148,13 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 			parsed = items[0]
 			normalizedMeta, err = NormalizeMCPMetadata(parsed.Metadata)
 		}
+	case "plugin":
+		parsed = &ParsedItem{
+			Content:    string(mainContent),
+			SourcePath: mainFile,
+			ItemType:   "plugin",
+			Version:    "1.0.0",
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -415,6 +422,8 @@ func resolveMainFile(itemType string) string {
 		return "SKILL.md"
 	case "mcp":
 		return ".mcp.json"
+	case "plugin":
+		return "CLAUDE.md"
 	default:
 		return ""
 	}

@@ -247,6 +247,8 @@ func main() {
 		api.GET("/registry/:repo/access", handlers.RegistryAccess)
 		api.GET("/registry/:repo/index.json", handlers.RegistryIndex)
 		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
+		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
+		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
 		api.POST("/releases", middleware.SystemTokenAuth(cfg.SystemToken), handlers.CreateReleaseHandler(updateSvc))
@@ -347,6 +349,8 @@ func main() {
 
 			authed.GET("/items/my", handlers.ListMyItems)
 			authed.POST("/items", itemHandler.CreateItemDirect)
+			authed.POST("/plugins/upload", itemHandler.UploadPlugin)
+			authed.GET("/plugins/builtin", handlers.ListBuiltinPlugins)
 			authed.PUT("/items/:id", itemHandler.UpdateItem)
 			authed.POST("/items/:id/check-consistency", itemHandler.CheckItemConsistency)
 			authed.POST("/items/:id/fork", itemHandler.ForkItem)

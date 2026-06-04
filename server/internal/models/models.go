@@ -389,6 +389,7 @@ type CapabilityItem struct {
 	LastScanID        *string              `json:"lastScanId,omitempty"`
 	CreatedBy         string               `gorm:"not null" json:"createdBy"`
 	UpdatedBy         string               `json:"updatedBy"`
+	IsBuiltIn         bool                 `gorm:"default:false;index" json:"isBuiltIn"`
 	Registry          *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
 	Versions          []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
 	Assets            []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`

@@ -189,6 +189,7 @@ type createItemRequest struct {
 	// Fork provenance (optional)
 	ForkedFromItemID  *string
 	ForkedFromOwnerID *string
+	IsBuiltIn         bool
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -405,6 +406,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		Source:            req.Source,
 		ForkedFromItemID:  req.ForkedFromItemID,
 		ForkedFromOwnerID: req.ForkedFromOwnerID,
+		IsBuiltIn:         req.IsBuiltIn,
 		Status:            "active",
 		CreatedBy:         req.CreatedBy,
 	}
@@ -615,6 +617,32 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		}
 	}
 	locale := ResolveLocale(c)
+
+	// For plugin items without an existing install metadata, inject a zip_download
+	// install guide so the frontend can show local installation instructions.
+	metadata := item.Metadata
+	if item.ItemType == "plugin" && len(metadata) > 0 {
+		var metaMap map[string]any
+		if err := json.Unmarshal(metadata, &metaMap); err == nil && metaMap != nil {
+			if _, hasInstall := metaMap["install"]; !hasInstall {
+				slug := item.Slug
+				host := origin(c)
+				metaMap["install"] = map[string]any{
+					"method": "zip_download",
+					"url":    fmt.Sprintf("%s/api/plugins/%s/download", host, slug),
+					"commands": []string{
+						fmt.Sprintf("curl -L -o %s.zip %s/api/plugins/%s/download", slug, host, slug),
+						fmt.Sprintf("unzip %s.zip -d ./%s", slug, slug),
+						fmt.Sprintf("csc --plugin-dir ./%s", slug),
+					},
+				}
+				if b, err := json.Marshal(metaMap); err == nil {
+					metadata = datatypes.JSON(b)
+				}
+			}
+		}
+	}
+
 	resp := ItemResponse{
 		ID:                  item.ID,
 		RegistryID:          item.RegistryID,
@@ -629,7 +657,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		Content:             item.Content,
 		ContentMD5:          item.ContentMD5,
 		CurrentRevision:     item.CurrentRevision,
-		Metadata:            item.Metadata,
+		Metadata:            metadata,
 		Health:              item.Health,
 		Evaluation:          item.Evaluation,
 		SourcePath:          item.SourcePath,
@@ -2446,13 +2474,20 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	itemType := c.PostForm("itemType")
+	if itemType == "" {
+		itemType = c.GetString("defaultItemType")
+	}
 	name := c.PostForm("name")
+	if name == "" && header != nil {
+		name = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+	}
 	slug := c.PostForm("slug")
 	registryID := c.PostForm("registryId")
 	description := c.PostForm("description")
 	category := c.PostForm("category")
 	version := c.PostForm("version")
 	createdByForm := c.PostForm("createdBy")
+	isBuiltin := c.PostForm("is_builtin") == "true"
 
 	if itemType == "" || name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType and name are required"})
@@ -2460,9 +2495,9 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	switch itemType {
-	case "skill", "mcp":
+	case "skill", "mcp", "plugin":
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType must be either skill or mcp"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType must be skill, mcp or plugin"})
 		return
 	}
 
@@ -2520,6 +2555,24 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	if metadataMap == nil {
 		metadataMap = map[string]any{}
 	}
+
+	// For plugin type, extract cospowers.config.json from assets as metadata
+	if itemType == "plugin" {
+		for _, asset := range result.Assets {
+			if asset.Path == "cospowers.config.json" && !asset.Binary {
+				var config map[string]any
+				if err := json.Unmarshal(asset.Content, &config); err == nil {
+					metadataMap = config
+				}
+				break
+			}
+		}
+		// Extract description from CLAUDE.md if empty
+		if description == "" && result.MainContent != "" {
+			description = extractFirstParagraph(result.MainContent)
+		}
+	}
+
 	metadataJSON, err := json.Marshal(metadataMap)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode metadata"})
@@ -2632,6 +2685,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		SourceSHA:   result.MainSHA,
 		CreatedBy:   createdBy,
 		SourceType:  "archive",
+		IsBuiltIn:   isBuiltin,
 	}, createItemAssets{
 		Records: assetRecords,
 		Artifact: &models.CapabilityArtifact{
@@ -2981,4 +3035,16 @@ func GetPublicRegistry(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, registry)
+}
+
+// extractFirstParagraph extracts the first non-empty, non-heading paragraph from markdown content.
+func extractFirstParagraph(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
 }

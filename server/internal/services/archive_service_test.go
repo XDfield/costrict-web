@@ -805,3 +805,40 @@ func TestNormalizeMCPMetadata_CannotDetermine(t *testing.T) {
 		t.Fatal("NormalizeMCPMetadata() error = nil, want error")
 	}
 }
+
+func TestParseArchive_Zip_PluginHappyPath(t *testing.T) {
+	t.Parallel()
+
+	claudeMd := []byte("# cospowers Solution Design\n\nThis plugin helps with design.\n")
+	configJson := []byte(`{"templates":{"system-design":"templates/system-design-template.md"},"rules":{"design-review":"rules/design-review/"}}`)
+	skillMd := []byte("---\nname: solution-design\n---\n# Solution Design\n")
+
+	data := createTestZip(t, map[string][]byte{
+		"CLAUDE.md":                        claudeMd,
+		"cospowers.config.json":            configJson,
+		"skills/solution-design/SKILL.md":  skillMd,
+		"rules/design-review/checklist.md": []byte("- Check architecture\n"),
+	})
+
+	svc := ArchiveService{Parser: &ParserService{}}
+	result, err := svc.ParseArchive(bytes.NewReader(data), int64(len(data)), "test.zip", "plugin")
+	if err != nil {
+		t.Fatalf("ParseArchive() error = %v", err)
+	}
+
+	if result.MainPath != "CLAUDE.md" {
+		t.Fatalf("MainPath = %q, want %q", result.MainPath, "CLAUDE.md")
+	}
+	if result.MainContent != string(claudeMd) {
+		t.Fatalf("MainContent mismatch")
+	}
+	if result.Parsed == nil {
+		t.Fatal("Parsed = nil")
+	}
+	if result.Parsed.ItemType != "plugin" {
+		t.Fatalf("ItemType = %q, want %q", result.Parsed.ItemType, "plugin")
+	}
+	if len(result.Assets) != 3 {
+		t.Fatalf("len(Assets) = %d, want 3", len(result.Assets))
+	}
+}
