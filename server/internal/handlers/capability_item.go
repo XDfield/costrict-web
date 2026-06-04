@@ -617,6 +617,32 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		}
 	}
 	locale := ResolveLocale(c)
+
+	// For plugin items without an existing install metadata, inject a zip_download
+	// install guide so the frontend can show local installation instructions.
+	metadata := item.Metadata
+	if item.ItemType == "plugin" && len(metadata) > 0 {
+		var metaMap map[string]any
+		if err := json.Unmarshal(metadata, &metaMap); err == nil && metaMap != nil {
+			if _, hasInstall := metaMap["install"]; !hasInstall {
+				slug := item.Slug
+				host := origin(c)
+				metaMap["install"] = map[string]any{
+					"method": "zip_download",
+					"url":    fmt.Sprintf("%s/api/plugins/%s/download", host, slug),
+					"commands": []string{
+						fmt.Sprintf("curl -L -o %s.zip %s/api/plugins/%s/download", slug, host, slug),
+						fmt.Sprintf("unzip %s.zip -d ./%s", slug, slug),
+						fmt.Sprintf("csc --plugin-dir ./%s", slug),
+					},
+				}
+				if b, err := json.Marshal(metaMap); err == nil {
+					metadata = datatypes.JSON(b)
+				}
+			}
+		}
+	}
+
 	resp := ItemResponse{
 		ID:                  item.ID,
 		RegistryID:          item.RegistryID,
@@ -631,7 +657,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		Content:             item.Content,
 		ContentMD5:          item.ContentMD5,
 		CurrentRevision:     item.CurrentRevision,
-		Metadata:            item.Metadata,
+		Metadata:            metadata,
 		Health:              item.Health,
 		Evaluation:          item.Evaluation,
 		SourcePath:          item.SourcePath,
