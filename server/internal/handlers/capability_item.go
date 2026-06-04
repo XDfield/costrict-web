@@ -334,7 +334,8 @@ func resolveMetadata(itemType string, raw json.RawMessage, content string) (data
 		}
 		var m map[string]any
 		if err := json.Unmarshal(src, &m); err != nil {
-			return nil, fmt.Errorf("invalid plugin metadata JSON: %w", err)
+			// content may be Markdown rather than JSON metadata — tolerate and return empty metadata.
+			return datatypes.JSON([]byte("{}")), nil
 		}
 		b, err := json.Marshal(m)
 		if err != nil {
@@ -523,6 +524,7 @@ type ItemResponse struct {
 	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
 	RepoName            string                      `json:"repoName,omitempty"`
 	Favorited           bool                        `json:"favorited"`
+	IsBuiltIn           bool                        `json:"isBuiltIn"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
 	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
 	MyForkItemID        *string                     `json:"myForkItemId,omitempty"` // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
@@ -674,6 +676,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		LastScanID:          item.LastScanID,
 		CreatedBy:           item.CreatedBy,
 		UpdatedBy:           item.UpdatedBy,
+		IsBuiltIn:           item.IsBuiltIn,
 		Registry:            item.Registry,
 		Artifacts:           item.Artifacts,
 		CreatedAt:           item.CreatedAt,

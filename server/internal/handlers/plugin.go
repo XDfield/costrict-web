@@ -191,7 +191,7 @@ func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemRe
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.UpdatedAt,
 		Tags:              item.Tags,
-		ShareURL:          fmt.Sprintf("/store/%s", item.ID),
+		ShareURL:          fmt.Sprintf("/m/store/%s", item.ID),
 	}
 }
 
