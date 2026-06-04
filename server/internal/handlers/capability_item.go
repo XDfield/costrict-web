@@ -1131,6 +1131,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		Status      string             `json:"status"`
 		UpdatedBy   string             `json:"updatedBy"`
 		CommitMsg   string             `json:"commitMsg"`
+		IsBuiltIn   *bool              `json:"isBuiltIn"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1243,6 +1244,13 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	}
 	if req.UpdatedBy != "" {
 		item.UpdatedBy = req.UpdatedBy
+	}
+	if req.IsBuiltIn != nil {
+		if !callerIsPlatformAdmin(c, db) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only platform admins can change built-in status"})
+			return
+		}
+		item.IsBuiltIn = *req.IsBuiltIn
 	}
 	metadataChanged := item.Name != originalName || item.Description != originalDescription || item.Category != originalCategory || item.Version != originalVersion
 	versionedChanged := contentChanged || metadataChanged
@@ -2487,7 +2495,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	category := c.PostForm("category")
 	version := c.PostForm("version")
 	createdByForm := c.PostForm("createdBy")
-	isBuiltin := c.PostForm("is_builtin") == "true"
 
 	if itemType == "" || name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType and name are required"})
@@ -2685,7 +2692,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		SourceSHA:   result.MainSHA,
 		CreatedBy:   createdBy,
 		SourceType:  "archive",
-		IsBuiltIn:   isBuiltin,
 	}, createItemAssets{
 		Records: assetRecords,
 		Artifact: &models.CapabilityArtifact{
