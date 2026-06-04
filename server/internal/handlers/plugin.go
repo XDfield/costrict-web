@@ -122,6 +122,7 @@ type builtinPluginItemResponse struct {
 	CreatedAt         time.Time                    `json:"createdAt"`
 	UpdatedAt         time.Time                    `json:"updatedAt"`
 	Tags              []models.ItemTagDict         `json:"tags,omitempty"`
+	ShareURL          string                       `json:"shareUrl"`
 }
 
 // builtinPluginAssetResponse is a lightweight asset response that omits TextContent.
@@ -190,6 +191,7 @@ func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemRe
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.UpdatedAt,
 		Tags:              item.Tags,
+		ShareURL:          fmt.Sprintf("/store/%s", item.ID),
 	}
 }
 
