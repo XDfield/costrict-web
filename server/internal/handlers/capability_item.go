@@ -2478,6 +2478,9 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		itemType = c.GetString("defaultItemType")
 	}
 	name := c.PostForm("name")
+	if name == "" && header != nil {
+		name = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+	}
 	slug := c.PostForm("slug")
 	registryID := c.PostForm("registryId")
 	description := c.PostForm("description")
