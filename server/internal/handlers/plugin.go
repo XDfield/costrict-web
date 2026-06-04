@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -70,7 +71,7 @@ func ListBuiltinPlugins(c *gin.Context) {
 		Limit(pageSize).Offset(offset).
 		Find(&items)
 
-	baseURL := origin(c)
+	baseURL := strings.TrimRight(FrontendBaseURL(), "/")
 	respItems := make([]builtinPluginItemResponse, 0, len(items))
 	for _, item := range items {
 		respItems = append(respItems, toBuiltinPluginItemResponse(item, fmt.Sprintf("%s/m/store/%s", baseURL, item.ID)))
