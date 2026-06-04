@@ -232,6 +232,8 @@ func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
 			if len(assetPaths) > 0 {
 				entry.Files = append([]string{".mcp.json"}, assetPaths...)
 			}
+		case "plugin":
+			entry.Files = append([]string{"CLAUDE.md"}, assetPaths...)
 		}
 
 		items = append(items, entry)
@@ -294,6 +296,8 @@ func contentFilename(itemType, slug string) string {
 		return slug + ".md"
 	case "command":
 		return slug + ".md"
+	case "plugin":
+		return "CLAUDE.md"
 	default:
 		return slug + ".md"
 	}
