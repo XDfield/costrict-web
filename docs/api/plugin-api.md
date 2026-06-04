@@ -42,25 +42,107 @@ curl -X POST http://localhost:3000/api/plugins/upload \
 
 ```json
 {
-  "id": "uuid",
-  "registryId": "uuid",
-  "repoId": "your-repo-id",
+  "id": "9dc7adde-9e0f-43fc-83c4-0a6dfbedea05",
+  "registryId": "00000000-0000-0000-0000-000000000001",
+  "repoId": "public",
   "slug": "cospowers-solution-design",
   "itemType": "plugin",
   "name": "cospowers-solution-design",
-  "description": "This plugin helps with design...",
-  "content": "# cospowers Solution Design...",
-  "metadata": {
-    "templates": { "system-design": "templates/system-design-template.md" },
-    "rules": { "design-review": "rules/design-review/" }
+  "description": "一个 Claude Code 插件，教授 TDD、调试和子代理驱动开发等结构化编码工作流。",
+  "descriptions": {
+    "en": "A Claude Code plugin that teaches structured coding workflows like TDD, debugging, and subagent-driven development.",
+    "zh": "一个 Claude Code 插件，教授 TDD、调试和子代理驱动开发等结构化编码工作流。"
   },
+  "category": "testing",
+  "version": "1.0.0",
+  "content": "# cospowers Solution Design...",
+  "contentMd5": "",
+  "currentRevision": 1,
+  "metadata": {
+    "name": "cospowers-solution-design",
+    "tags": [],
+    "bundle": {
+      "hook_events": ["SessionStart"],
+      "hooks_count": 1,
+      "agents_count": 0,
+      "skills_count": 14,
+      "commands_count": 0,
+      "mcp_server_names": [],
+      "mcp_servers_count": 0,
+      "skills_namespaces": ["superpowers:brainstorming"],
+      "is_marketplace_repo": false
+    },
+    "install": {
+      "method": "plugin_marketplace",
+      "marketplace": "anthropics/claude-plugins-official",
+      "plugin_name": "cospowers-solution-design",
+      "marketplace_name": "claude-plugins-official",
+      "marketplace_repo": "anthropics/claude-plugins-official",
+      "marketplace_verified": true
+    },
+    "category": "testing",
+    "description": "This plugin helps with design..."
+  },
+  "health": {
+    "score": 100,
+    "signals": {
+      "freshness": 100,
+      "popularity": 100,
+      "source_trust": 100,
+      "install_popularity": 0
+    },
+    "last_commit": "2026-05-08T02:47:44Z",
+    "freshness_label": "active"
+  },
+  "evaluation": {
+    "decision": "accept",
+    "model_id": "mimo-v2.5-pro",
+    "final_score": 94,
+    "specificity": 5,
+    "evaluated_at": "2026-05-09T07:31:09.076593Z",
+    "desc_accuracy": 5,
+    "rubric_version": "2.85974ec3",
+    "writing_quality": 5,
+    "coding_relevance": 5,
+    "doc_completeness": 4
+  },
+  "sourcePath": "CLAUDE.md",
+  "sourceSha": "b76ecaa7fc5daed4d57acbb45e838a8ced1acbafc632c5eaca34c9f37b95d46f",
   "sourceType": "archive",
+  "source": "upload",
+  "isBuiltIn": true,
+  "previewCount": 24,
+  "installCount": 0,
+  "favoriteCount": 4,
+  "status": "active",
+  "securityStatus": "clean",
+  "lastScanId": "72f85dac-eef6-4420-be43-bde40e84c972",
+  "createdBy": "user-id",
+  "updatedBy": "user-id",
+  "registry": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "public",
+    "description": "Default public registry — anyone can browse and contribute",
+    "sourceType": "internal",
+    "repoId": "public",
+    "ownerId": "system",
+    "createdAt": "2026-03-26T02:50:16.42816Z",
+    "updatedAt": "2026-05-26T09:36:56.070603Z"
+  },
   "assets": [
-    { "relPath": "skills/solution-design/SKILL.md", ... },
-    { "relPath": "cospowers.config.json", ... }
+    { "relPath": "skills/solution-design/SKILL.md", "textContent": "...", "mimeType": "text/markdown", "fileSize": 1234 },
+    { "relPath": "cospowers.config.json", "textContent": "...", "mimeType": "application/json", "fileSize": 567 }
   ],
   "createdAt": "2026-06-04T10:00:00Z",
-  "updatedAt": "2026-06-04T10:00:00Z"
+  "updatedAt": "2026-06-04T10:00:00Z",
+  "experienceScore": 94,
+  "embeddingUpdatedAt": null,
+  "tags": [
+    { "id": "32898659-3189-48fc-8e0c-931579d3a24c", "slug": "hooks", "tagClass": "custom", "createdBy": "system" },
+    { "id": "b2bfe84f-4cf3-4d3e-be8d-d95c6c150968", "slug": "testing", "tagClass": "builtin", "createdBy": "system" }
+  ],
+  "favorited": true,
+  "forkCount": 0
 }
 ```
 
@@ -121,17 +203,133 @@ GET /api/plugins/builtin?page=1&pageSize=20
 {
   "items": [
     {
-      "id": "uuid",
-      "name": "cospowers-solution-design",
-      "slug": "cospowers-solution-design",
+      "id": "9dc7adde-9e0f-43fc-83c4-0a6dfbedea05",
+      "registryId": "00000000-0000-0000-0000-000000000001",
+      "repoId": "public",
+      "slug": "anthropic-superpowers",
       "itemType": "plugin",
+      "name": "superpowers",
+      "description": "一个 Claude Code 插件，教授 TDD、调试和子代理驱动开发等结构化编码工作流。",
+      "descriptions": {
+        "en": "A Claude Code plugin that teaches structured coding workflows like TDD, debugging, and subagent-driven development.",
+        "zh": "一个 Claude Code 插件，教授 TDD、调试和子代理驱动开发等结构化编码工作流。"
+      },
+      "category": "testing",
+      "version": "1.0.0",
+      "content": "---\nname: \"superpowers\"\nplugin_name: \"superpowers\"\n...",
+      "contentMd5": "",
+      "currentRevision": 1,
+      "metadata": {
+        "name": "superpowers",
+        "tags": [],
+        "bundle": {
+          "hook_events": ["SessionStart"],
+          "hooks_count": 1,
+          "agents_count": 0,
+          "skills_count": 14,
+          "commands_count": 0,
+          "mcp_server_names": [],
+          "mcp_servers_count": 0,
+          "skills_namespaces": [
+            "superpowers:brainstorming",
+            "superpowers:dispatching-parallel-agents",
+            "superpowers:executing-plans",
+            "superpowers:finishing-a-development-branch",
+            "superpowers:receiving-code-review",
+            "superpowers:requesting-code-review",
+            "superpowers:subagent-driven-development",
+            "superpowers:systematic-debugging",
+            "superpowers:test-driven-development",
+            "superpowers:using-git-worktrees",
+            "superpowers:using-superpowers",
+            "superpowers:verification-before-completion",
+            "superpowers:writing-plans",
+            "superpowers:writing-skills"
+          ],
+          "is_marketplace_repo": false
+        },
+        "install": {
+          "method": "plugin_marketplace",
+          "marketplace": "anthropics/claude-plugins-official",
+          "plugin_name": "superpowers",
+          "marketplace_name": "claude-plugins-official",
+          "marketplace_repo": "anthropics/claude-plugins-official",
+          "marketplace_verified": true
+        },
+        "category": "testing",
+        "description": "Superpowers teaches Claude brainstorming, subagent driven development with built in code review, systematic debugging, and red/green TDD. Additionally, it teaches Claude how to author and test new skills."
+      },
+      "health": {
+        "score": 100,
+        "signals": {
+          "freshness": 100,
+          "popularity": 100,
+          "source_trust": 100,
+          "install_popularity": 0
+        },
+        "last_commit": "2026-05-08T02:47:44Z",
+        "freshness_label": "active"
+      },
+      "evaluation": {
+        "decision": "accept",
+        "model_id": "mimo-v2.5-pro",
+        "final_score": 94,
+        "specificity": 5,
+        "evaluated_at": "2026-05-09T07:31:09.076593Z",
+        "desc_accuracy": 5,
+        "rubric_version": "2.85974ec3",
+        "writing_quality": 5,
+        "coding_relevance": 5,
+        "doc_completeness": 4
+      },
+      "sourcePath": "plugins/anthropic-superpowers/.plugin.json",
+      "sourceSha": "b76ecaa7fc5daed4d57acbb45e838a8ced1acbafc632c5eaca34c9f37b95d46f",
+      "sourceType": "direct",
+      "source": "claude-plugins-official",
       "isBuiltIn": true,
-      "description": "...",
-      "content": "# ...",
-      "metadata": { ... },
-      "registryId": "uuid",
-      "createdAt": "2026-06-04T10:00:00Z",
-      "updatedAt": "2026-06-04T10:00:00Z"
+      "previewCount": 24,
+      "installCount": 0,
+      "favoriteCount": 4,
+      "status": "active",
+      "securityStatus": "clean",
+      "lastScanId": "72f85dac-eef6-4420-be43-bde40e84c972",
+      "createdBy": "system",
+      "updatedBy": "system",
+      "registry": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "public",
+        "description": "Default public registry — anyone can browse and contribute",
+        "sourceType": "internal",
+        "externalUrl": "",
+        "externalBranch": "main",
+        "syncEnabled": false,
+        "syncInterval": 3600,
+        "lastSyncedAt": "2026-05-26T09:36:56.070422Z",
+        "lastSyncSha": "",
+        "syncStatus": "idle",
+        "syncConfig": {},
+        "lastSyncLogId": null,
+        "repoId": "public",
+        "ownerId": "system",
+        "createdAt": "2026-03-26T02:50:16.42816Z",
+        "updatedAt": "2026-05-26T09:36:56.070603Z"
+      },
+      "assets": [
+        { "relPath": "CLAUDE.md", "textContent": "...", "mimeType": "text/markdown", "fileSize": 1234 },
+        { "relPath": "cospowers.config.json", "textContent": "...", "mimeType": "application/json", "fileSize": 567 }
+      ],
+      "createdAt": "2026-05-25T03:39:39.611093Z",
+      "updatedAt": "2026-05-26T09:36:37.203529Z",
+      "experienceScore": 94,
+      "embeddingUpdatedAt": null,
+      "tags": [
+        { "id": "32898659-3189-48fc-8e0c-931579d3a24c", "slug": "hooks", "tagClass": "custom", "createdBy": "system", "createdAt": "2026-05-25T03:39:39.619296Z" },
+        { "id": "b2bfe84f-4cf3-4d3e-be8d-d95c6c150968", "slug": "testing", "tagClass": "builtin", "createdBy": "system", "createdAt": "2026-04-23T23:51:08.322503Z" },
+        { "id": "cd6d842e-1359-4c9e-824e-d09cbf12fd4f", "slug": "skills", "tagClass": "custom", "createdBy": "system", "createdAt": "2026-05-25T03:39:39.618134Z" },
+        { "id": "7d46ae07-cf1c-4456-a849-a36c0b369fb2", "slug": "development", "tagClass": "builtin", "createdBy": "system", "createdAt": "2026-04-23T23:51:08.322503Z" }
+      ],
+      "favorited": true,
+      "forkCount": 0
     }
   ],
   "total": 1,
