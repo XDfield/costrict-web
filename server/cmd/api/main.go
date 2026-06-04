@@ -347,6 +347,7 @@ func main() {
 
 			authed.GET("/items/my", handlers.ListMyItems)
 			authed.POST("/items", itemHandler.CreateItemDirect)
+			authed.POST("/plugins/upload", itemHandler.UploadPlugin)
 			authed.PUT("/items/:id", itemHandler.UpdateItem)
 			authed.POST("/items/:id/check-consistency", itemHandler.CheckItemConsistency)
 			authed.POST("/items/:id/fork", itemHandler.ForkItem)
