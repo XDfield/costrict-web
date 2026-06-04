@@ -805,6 +805,15 @@ func CreateRepository(c *gin.Context) {
 		visibility = "private"
 	}
 
+	db := database.GetDB()
+
+	// Check for duplicate name
+	var existing models.Repository
+	if err := db.Where("name = ?", req.Name).First(&existing).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Repository name already exists"})
+		return
+	}
+
 	repo := models.Repository{
 		ID:          uuid.New().String(),
 		Name:        req.Name,
@@ -815,7 +824,6 @@ func CreateRepository(c *gin.Context) {
 		OwnerID:     ownerID,
 	}
 
-	db := database.GetDB()
 	if result := db.Create(&repo); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create repository"})
 		return
