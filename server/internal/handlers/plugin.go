@@ -44,7 +44,7 @@ func (h *ItemHandler) UploadPlugin(c *gin.Context) {
 // @Produce      json
 // @Param        page      query  int  false  "Page number"
 // @Param        pageSize  query  int  false  "Page size"
-// @Success      200  {object}  object{items=[]models.CapabilityItem,total=int}
+// @Success      200  {object}  object{items=[]builtinPluginItemResponse,total=int}
 // @Router       /plugins/builtin [get]
 func ListBuiltinPlugins(c *gin.Context) {
 	db := database.GetDB()
@@ -70,13 +70,127 @@ func ListBuiltinPlugins(c *gin.Context) {
 		Limit(pageSize).Offset(offset).
 		Find(&items)
 
+	respItems := make([]builtinPluginItemResponse, 0, len(items))
+	for _, item := range items {
+		respItems = append(respItems, toBuiltinPluginItemResponse(item))
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"items":    items,
+		"items":    respItems,
 		"total":    total,
 		"page":     page,
 		"pageSize": pageSize,
 		"hasMore":  int64(offset+pageSize) < total,
 	})
+}
+
+// builtinPluginItemResponse is a lightweight response for ListBuiltinPlugins
+// that omits the large content/textContent fields.
+type builtinPluginItemResponse struct {
+	ID                string                       `json:"id"`
+	RegistryID        string                       `json:"registryId"`
+	RepoID            string                       `json:"repoId"`
+	Slug              string                       `json:"slug"`
+	ItemType          string                       `json:"itemType"`
+	Name              string                       `json:"name"`
+	Description       string                       `json:"description"`
+	Descriptions      any                          `json:"descriptions"`
+	Category          string                       `json:"category"`
+	Version           string                       `json:"version"`
+	ContentMD5        string                       `json:"contentMd5"`
+	CurrentRevision   int                          `json:"currentRevision"`
+	Metadata          any                          `json:"metadata"`
+	Health            any                          `json:"health"`
+	Evaluation        any                          `json:"evaluation"`
+	SourcePath        string                       `json:"sourcePath"`
+	SourceSHA         string                       `json:"sourceSha"`
+	SourceType        string                       `json:"sourceType"`
+	Source            string                       `json:"source"`
+	ForkedFromItemID  *string                      `json:"forkedFromItemId,omitempty"`
+	ForkedFromOwnerID *string                      `json:"forkedFromOwnerId,omitempty"`
+	PreviewCount      int                          `json:"previewCount"`
+	InstallCount      int                          `json:"installCount"`
+	FavoriteCount     int                          `json:"favoriteCount"`
+	Status            string                       `json:"status"`
+	SecurityStatus    string                       `json:"securityStatus"`
+	LastScanID        *string                      `json:"lastScanId,omitempty"`
+	CreatedBy         string                       `json:"createdBy"`
+	UpdatedBy         string                       `json:"updatedBy"`
+	IsBuiltIn         bool                         `json:"isBuiltIn"`
+	Registry          *models.CapabilityRegistry   `json:"registry,omitempty"`
+	Assets            []builtinPluginAssetResponse `json:"assets,omitempty"`
+	CreatedAt         time.Time                    `json:"createdAt"`
+	UpdatedAt         time.Time                    `json:"updatedAt"`
+	Tags              []models.ItemTagDict         `json:"tags,omitempty"`
+}
+
+// builtinPluginAssetResponse is a lightweight asset response that omits TextContent.
+type builtinPluginAssetResponse struct {
+	ID             string    `json:"id"`
+	ItemID         string    `json:"itemId"`
+	RelPath        string    `json:"relPath"`
+	StorageBackend string    `json:"storageBackend"`
+	StorageKey     string    `json:"storageKey,omitempty"`
+	MimeType       string    `json:"mimeType"`
+	FileSize       int64     `json:"fileSize"`
+	ContentSHA     string    `json:"contentSha"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemResponse {
+	assets := make([]builtinPluginAssetResponse, 0, len(item.Assets))
+	for _, a := range item.Assets {
+		assets = append(assets, builtinPluginAssetResponse{
+			ID:             a.ID,
+			ItemID:         a.ItemID,
+			RelPath:        a.RelPath,
+			StorageBackend: a.StorageBackend,
+			StorageKey:     a.StorageKey,
+			MimeType:       a.MimeType,
+			FileSize:       a.FileSize,
+			ContentSHA:     a.ContentSHA,
+			CreatedAt:      a.CreatedAt,
+			UpdatedAt:      a.UpdatedAt,
+		})
+	}
+	return builtinPluginItemResponse{
+		ID:                item.ID,
+		RegistryID:        item.RegistryID,
+		RepoID:            item.RepoID,
+		Slug:              item.Slug,
+		ItemType:          item.ItemType,
+		Name:              item.Name,
+		Description:       item.Description,
+		Descriptions:      item.Descriptions,
+		Category:          item.Category,
+		Version:           item.Version,
+		ContentMD5:        item.ContentMD5,
+		CurrentRevision:   item.CurrentRevision,
+		Metadata:          item.Metadata,
+		Health:            item.Health,
+		Evaluation:        item.Evaluation,
+		SourcePath:        item.SourcePath,
+		SourceSHA:         item.SourceSHA,
+		SourceType:        item.SourceType,
+		Source:            item.Source,
+		ForkedFromItemID:  item.ForkedFromItemID,
+		ForkedFromOwnerID: item.ForkedFromOwnerID,
+		PreviewCount:      item.PreviewCount,
+		InstallCount:      item.InstallCount,
+		FavoriteCount:     item.FavoriteCount,
+		Status:            item.Status,
+		SecurityStatus:    item.SecurityStatus,
+		LastScanID:        item.LastScanID,
+		CreatedBy:         item.CreatedBy,
+		UpdatedBy:         item.UpdatedBy,
+		IsBuiltIn:         item.IsBuiltIn,
+		Registry:          item.Registry,
+		Assets:            assets,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+		Tags:              item.Tags,
+	}
 }
 
 // DownloadPluginZip streams a plugin and all its assets as a zip archive.
