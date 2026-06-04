@@ -70,9 +70,10 @@ func ListBuiltinPlugins(c *gin.Context) {
 		Limit(pageSize).Offset(offset).
 		Find(&items)
 
+	baseURL := origin(c)
 	respItems := make([]builtinPluginItemResponse, 0, len(items))
 	for _, item := range items {
-		respItems = append(respItems, toBuiltinPluginItemResponse(item))
+		respItems = append(respItems, toBuiltinPluginItemResponse(item, fmt.Sprintf("%s/m/store/%s", baseURL, item.ID)))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -97,6 +98,7 @@ type builtinPluginItemResponse struct {
 	Descriptions      any                          `json:"descriptions"`
 	Category          string                       `json:"category"`
 	Version           string                       `json:"version"`
+	Content           string                       `json:"content"`
 	ContentMD5        string                       `json:"contentMd5"`
 	CurrentRevision   int                          `json:"currentRevision"`
 	Metadata          any                          `json:"metadata"`
@@ -139,7 +141,7 @@ type builtinPluginAssetResponse struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
-func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemResponse {
+func toBuiltinPluginItemResponse(item models.CapabilityItem, shareURL string) builtinPluginItemResponse {
 	assets := make([]builtinPluginAssetResponse, 0, len(item.Assets))
 	for _, a := range item.Assets {
 		assets = append(assets, builtinPluginAssetResponse{
@@ -166,6 +168,7 @@ func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemRe
 		Descriptions:      item.Descriptions,
 		Category:          item.Category,
 		Version:           item.Version,
+		Content:           item.Content,
 		ContentMD5:        item.ContentMD5,
 		CurrentRevision:   item.CurrentRevision,
 		Metadata:          item.Metadata,
@@ -191,7 +194,7 @@ func toBuiltinPluginItemResponse(item models.CapabilityItem) builtinPluginItemRe
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.UpdatedAt,
 		Tags:              item.Tags,
-		ShareURL:          fmt.Sprintf("/m/store/%s", item.ID),
+		ShareURL:          shareURL,
 	}
 }
 
