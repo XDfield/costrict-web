@@ -247,6 +247,8 @@ func main() {
 		api.GET("/registry/:repo/access", handlers.RegistryAccess)
 		api.GET("/registry/:repo/index.json", handlers.RegistryIndex)
 		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
+		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
+		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
 		api.POST("/releases", middleware.SystemTokenAuth(cfg.SystemToken), handlers.CreateReleaseHandler(updateSvc))

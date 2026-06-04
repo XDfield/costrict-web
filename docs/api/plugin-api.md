@@ -534,3 +534,96 @@ POST /api/repositories
 |---|---|
 | 409 | 仓库名称已存在 |
 
+---
+
+## 8. 下载 Plugin ZIP
+
+### 接口
+
+```http
+GET /api/plugins/:slug/download
+```
+
+将指定 Plugin 的所有文件（含 assets）打包为 `.zip` 流式返回。
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `:slug` | string | 是 | Plugin slug |
+
+### 响应
+
+**200 OK** — `Content-Type: application/zip`
+
+返回的 zip 包结构与原上传包一致：
+
+```
+my-plugin.zip
+├── CLAUDE.md
+├── cospowers.config.json
+├── skills/
+│   └── ...
+└── ...
+```
+
+**404 Not Found** — Plugin 不存在
+
+**401 Unauthorized** / **403 Forbidden** — 私有仓库需认证/权限
+
+---
+
+## 9. 获取 csc 兼容的 Marketplace 索引
+
+### 接口
+
+```http
+GET /api/marketplace/:repo/marketplace.json
+```
+
+返回 csc CLI 可直接消费的 `marketplace.json` 格式，每个 Plugin 的 `source` 字段指向 zip 下载地址。
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `:repo` | string | 是 | 仓库名称，如 `public` 或自定义仓库名 |
+
+### 响应示例
+
+```json
+{
+  "name": "public",
+  "owner": {
+    "name": "costrict",
+    "email": "support@costrict.com"
+  },
+  "plugins": [
+    {
+      "name": "cospowers-solution-design",
+      "description": "一个 Claude Code 插件...",
+      "version": "1.0.0",
+      "category": "testing",
+      "source": {
+        "source": "zip",
+        "url": "https://api.costrict.com/api/plugins/cospowers-solution-design/download"
+      },
+      "strict": true,
+      "tags": ["testing", "skills"]
+    }
+  ]
+}
+```
+
+### csc CLI 使用方式
+
+```bash
+# 添加 marketplace
+csc plugin marketplace add https://api.costrict.com/api/marketplace/public/marketplace.json
+
+# 安装 marketplace 中的 plugin
+csc plugin install cospowers-solution-design@public
+```
+
+**注意**：csc CLI 需支持 `source: "zip"` 的插件源类型，用于从 HTTP 地址下载 zip 并自动解压。
+
