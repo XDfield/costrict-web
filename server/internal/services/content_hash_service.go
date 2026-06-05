@@ -104,7 +104,7 @@ func (s *ContentHashService) normalizeTextContent(itemType string, content strin
 
 	var value any
 	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
-		return nil, fmt.Errorf("canonicalize %s content: %w", itemType, err)
+		return []byte(normalized), nil
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {

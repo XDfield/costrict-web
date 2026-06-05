@@ -1231,7 +1231,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		item.Content = *req.Content
 		item.ContentMD5 = newContentMD5
 		if item.ItemType == "mcp" || item.ItemType == "plugin" {
-			meta, err := resolveMetadata(item.ItemType, nil, *req.Content)
+			meta, err := resolveMetadata(item.ItemType, json.RawMessage(item.Metadata), *req.Content)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
