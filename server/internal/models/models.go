@@ -114,6 +114,22 @@ type DeviceRelease struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+type MulticaRelease struct {
+	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Version      string    `gorm:"not null;uniqueIndex:idx_multica_release_version_platform" json:"version"`
+	Platform     string    `gorm:"not null;uniqueIndex:idx_multica_release_version_platform;index:idx_multica_release_platform_channel_created,priority:1" json:"platform"`
+	Changelog    string    `gorm:"type:text" json:"changelog"`
+	DownloadURL  string    `gorm:"not null" json:"downloadUrl"`
+	SHA256       string    `gorm:"not null" json:"sha256"`
+	BinarySize   int64     `gorm:"not null" json:"binarySize"`
+	Force        bool      `gorm:"not null;default:false" json:"force"`
+	MinClientVer string    `json:"minClientVersion,omitempty"`
+	Channel      string    `gorm:"not null;default:'stable';index:idx_multica_release_platform_channel_created,priority:2" json:"channel"`
+	CreatedBy    string    `gorm:"not null" json:"createdBy"`
+	CreatedAt    time.Time `gorm:"index:idx_multica_release_platform_channel_created,sort:desc" json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 type Device struct {
 	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	DeviceID        string         `gorm:"uniqueIndex;not null;index:idx_device_id_deleted_at" json:"deviceId"`
