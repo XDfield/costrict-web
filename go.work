@@ -5,4 +5,5 @@ use ./server
 use (
 	./client/go
 	./gateway
+	./proxy
 )

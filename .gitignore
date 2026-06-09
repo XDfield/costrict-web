@@ -30,6 +30,7 @@ yarn-error.log*
 .env
 server/.env
 gateway/.env
+proxy/.env
 
 # vercel
 .vercel
@@ -65,6 +66,13 @@ gateway/bin/
 gateway/*.exe
 gateway/*.exe~
 gateway/logs/
+
+# Proxy
+proxy/*.exe
+proxy/*.exe~
+proxy/debug_*.json
+proxy/logs/
+proxy/bin/
 
 # Submodule
 web/
