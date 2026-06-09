@@ -11,7 +11,7 @@ on:
         required: true
         default: "v0.0.1"
       services:
-        description: "Services to build (comma-separated: gateway,api,worker,portal,dashboard,all)"
+        description: "Services to build (comma-separated: gateway,api,worker,portal,proxy,all)"
         required: false
         default: "all"
       portal_branch:
@@ -69,7 +69,7 @@ jobs:
           SERVICES_INPUT=$(echo "$SERVICES_INPUT" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
 
           if [ "$SERVICES_INPUT" = "all" ]; then
-            echo 'services=["gateway","api","worker","portal"]' >> $GITHUB_OUTPUT
+            echo 'services=["gateway","api","worker","portal","proxy"]' >> $GITHUB_OUTPUT
             echo 'build_efficiency_dashboard=false' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array, filtering out dashboard
@@ -159,6 +159,11 @@ jobs:
               CONTEXT="./portal"
               DOCKERFILE="./portal/packages/app-ai-native/Dockerfile"
               IMAGE_NAME="costrict-web-portal"
+              ;;
+            proxy)
+              CONTEXT="./proxy"
+              DOCKERFILE="./proxy/Dockerfile"
+              IMAGE_NAME="costrict-web-proxy"
               ;;
           esac
 
@@ -269,6 +274,7 @@ jobs:
               api) IMAGE="costrict-web-api" ;;
               worker) IMAGE="costrict-web-worker" ;;
               portal) IMAGE="costrict-web-portal" ;;
+              proxy) IMAGE="costrict-web-proxy" ;;
             esac
             echo "- \`${{ env.REGISTRY }}/${IMAGE}:${{ needs.prepare.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           done
@@ -283,6 +289,7 @@ jobs:
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-api:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-worker:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.REGISTRY }}/costrict-web-portal:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/costrict-web-proxy:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.prepare.outputs.build_efficiency_dashboard }}" = "true" ]; then
             echo "docker pull ${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           fi

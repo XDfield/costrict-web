@@ -1,0 +1,37 @@
+default_strategy: redact
+
+part_strategies:
+  text:
+    default_strategy: redact
+  tool:
+    default_strategy: redact
+    tool_overrides:
+      list_directory: redact
+      bash: redact
+  runtime:
+    file_content:
+      default_strategy: redact
+    diff_content:
+      default_strategy: redact
+
+allowed_languages:
+  - json
+  - yaml
+  - toml
+  - markdown
+  - plaintext
+
+allowed_tools: []
+
+shell_char_threshold: 120
+
+reasoning_threshold: -1
+
+content_length_threshold: -1
+
+preserve_language_hint: true
+preserve_file_paths: true
+
+redact_placeholder: "[code filtered]"
+
+audit_passthrough: false
