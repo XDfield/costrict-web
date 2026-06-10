@@ -842,3 +842,88 @@ func TestParseArchive_Zip_PluginHappyPath(t *testing.T) {
 		t.Fatalf("len(Assets) = %d, want 3", len(result.Assets))
 	}
 }
+
+func TestParseArchive_Zip_PluginManifestFallback(t *testing.T) {
+	t.Parallel()
+
+	manifest := []byte(`{"name":"ruflo-core","description":"Foundation plugin","version":"0.2.2"}`)
+	skillMd := []byte("---\nname: core\n---\n# Core\n")
+	data := createTestZip(t, map[string][]byte{
+		".claude-plugin/plugin.json": manifest,
+		"skills/core/SKILL.md":       skillMd,
+	})
+
+	svc := ArchiveService{Parser: &ParserService{}}
+	result, err := svc.ParseArchive(bytes.NewReader(data), int64(len(data)), "test.zip", "plugin")
+	if err != nil {
+		t.Fatalf("ParseArchive() error = %v", err)
+	}
+
+	if result.MainPath != ".claude-plugin/plugin.json" {
+		t.Fatalf("MainPath = %q, want manifest path", result.MainPath)
+	}
+	if result.Parsed.Name != "ruflo-core" || result.Parsed.Description != "Foundation plugin" || result.Parsed.Version != "0.2.2" {
+		t.Fatalf("manifest fields not parsed: %+v", result.Parsed)
+	}
+	if len(result.Assets) != 1 || result.Assets[0].Path != "skills/core/SKILL.md" {
+		t.Fatalf("unexpected assets: %+v", result.Assets)
+	}
+}
+
+// TestParseArchive_Zip_PluginManifestWithClaudeMd guards the standard layout
+// (CLAUDE.md + .claude-plugin/plugin.json BOTH present): CLAUDE.md wins the
+// main-file pick for content, but the manifest stays authoritative for
+// version/name/description — previously the manifest branch was skipped
+// entirely and every re-upload reset the version to 1.0.0.
+func TestParseArchive_Zip_PluginManifestWithClaudeMd(t *testing.T) {
+	t.Parallel()
+
+	claudeMd := []byte("# Ruflo Core\n\nFoundation plugin docs.\n")
+	manifest := []byte(`{"name":"ruflo-core","description":"Foundation plugin","version":"0.3.1"}`)
+	data := createTestZip(t, map[string][]byte{
+		"CLAUDE.md":                  claudeMd,
+		".claude-plugin/plugin.json": manifest,
+		"skills/core/SKILL.md":       []byte("---\nname: core\n---\n# Core\n"),
+	})
+
+	svc := ArchiveService{Parser: &ParserService{}}
+	result, err := svc.ParseArchive(bytes.NewReader(data), int64(len(data)), "test.zip", "plugin")
+	if err != nil {
+		t.Fatalf("ParseArchive() error = %v", err)
+	}
+	if result.MainPath != "CLAUDE.md" {
+		t.Fatalf("MainPath = %q, want CLAUDE.md", result.MainPath)
+	}
+	if result.Parsed.Version != "0.3.1" {
+		t.Fatalf("Version = %q, want manifest version 0.3.1", result.Parsed.Version)
+	}
+	if result.Parsed.Name != "ruflo-core" || result.Parsed.Description != "Foundation plugin" {
+		t.Fatalf("manifest name/description not recovered: %+v", result.Parsed)
+	}
+}
+
+// TestParseArchive_Zip_PluginManifestBlankName: whitespace-only manifest name
+// must not bypass the caller's required-name check (TrimSpace normalizes to "").
+func TestParseArchive_Zip_PluginManifestBlankName(t *testing.T) {
+	t.Parallel()
+
+	manifest := []byte(`{"name":"   ","description":"  x  ","version":"1.2.3"}`)
+	data := createTestZip(t, map[string][]byte{
+		".claude-plugin/plugin.json": manifest,
+	})
+
+	svc := ArchiveService{Parser: &ParserService{}}
+	result, err := svc.ParseArchive(bytes.NewReader(data), int64(len(data)), "test.zip", "plugin")
+	if err != nil {
+		t.Fatalf("ParseArchive() error = %v", err)
+	}
+	if result.Parsed.Name != "" {
+		t.Fatalf("blank manifest name must trim to empty, got %q", result.Parsed.Name)
+	}
+	if result.Parsed.Description != "x" {
+		t.Fatalf("description must be trimmed, got %q", result.Parsed.Description)
+	}
+	if result.Parsed.Version != "1.2.3" {
+		t.Fatalf("version = %q, want 1.2.3", result.Parsed.Version)
+	}
+}

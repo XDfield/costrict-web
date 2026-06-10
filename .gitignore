@@ -85,3 +85,7 @@ casdoor/app.conf
 # Docker / Podman
 .docker/
 .worktrees/
+
+# AI tooling artifacts (local-only, never pushed to remote)
+AGENTS.md
+.trellis/

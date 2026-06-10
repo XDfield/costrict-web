@@ -277,10 +277,12 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
 		healthEvalDDL := []string{
 			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS health jsonb DEFAULT '{}'`,
 			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS evaluation jsonb DEFAULT '{}'`,
+			// Sub-skill provenance: ingest links bundled sub-skills back to their parent plugin.
+			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS parent_plugin_id uuid`,
 		}
 		for _, stmt := range healthEvalDDL {
 			if err := db.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("ensure health/evaluation columns before ingest: %w", err)
+				return fmt.Errorf("ensure health/evaluation/parent_plugin_id columns before ingest: %w", err)
 			}
 		}
 	}
