@@ -241,6 +241,7 @@ func main() {
 
 		// === Public read-only endpoints (OptionalAuth, no login required) ===
 		api.GET("/updates/check", handlers.UpdateCheckHandler(updateSvc))
+		api.GET("/multica/updates/check", handlers.MulticaUpdateCheckHandler(&services.MulticaUpdateService{DB: db}))
 		api.GET("/registries/public", handlers.GetPublicRegistry)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)

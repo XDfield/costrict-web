@@ -114,6 +114,15 @@ type DeviceRelease struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+type MulticaSource struct {
+	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name      string    `gorm:"not null;uniqueIndex" json:"name"`
+	RepoURL   string    `gorm:"not null" json:"repoUrl"`
+	Provider  string    `gorm:"not null" json:"provider"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 type Device struct {
 	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	DeviceID        string         `gorm:"uniqueIndex;not null;index:idx_device_id_deleted_at" json:"deviceId"`
