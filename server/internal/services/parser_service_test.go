@@ -61,8 +61,8 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	if !strings.Contains(it.Content, "## Installation") {
 		t.Errorf("Content missing Installation section")
 	}
-	if !strings.Contains(it.Content, "csc plugin marketplace add https://github.com/costrict-plugins-repo/marketplace.git") {
-		t.Errorf("Content missing aggregated marketplace add command")
+	if strings.Contains(it.Content, "csc plugin marketplace add") {
+		t.Errorf("Install copy must not include a marketplace add step: the unified costrict-plugins marketplace ships preconfigured in the csc client")
 	}
 	if !strings.Contains(it.Content, "csc plugin install gitnexus@costrict-plugins") {
 		t.Errorf("Content missing csc plugin install command targeting costrict-plugins")

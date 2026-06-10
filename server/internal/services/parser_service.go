@@ -401,15 +401,13 @@ func synthesizePluginContent(in pluginContentInput) string {
 		sb.WriteString("\n")
 	}
 
-	// Installation — use the costrict-plugins aggregated marketplace so users
-	// get a single source for ~700 verified plugins regardless of which
-	// upstream registry the plugin originally came from. The marketplace add
-	// step only needs to happen once across the whole catalog; the per-plugin
-	// install uses `<plugin_name>@costrict-plugins`.
+	// Installation — every plugin is distributed through the unified
+	// costrict-plugins marketplace, which the csc client ships preconfigured;
+	// no per-user `marketplace add` step is needed, so the copy is a single
+	// `csc plugin install <plugin_name>@costrict-plugins` line.
 	sb.WriteString("## Installation\n\n")
-	sb.WriteString("Install via the csc client (one-time marketplace setup, then per-plugin install):\n\n")
+	sb.WriteString("Install via the csc client:\n\n")
 	sb.WriteString("```bash\n")
-	sb.WriteString("csc plugin marketplace add https://github.com/costrict-plugins-repo/marketplace.git\n")
 	sb.WriteString(fmt.Sprintf("csc plugin install %s@costrict-plugins\n", in.PluginName))
 	sb.WriteString("```\n\n")
 

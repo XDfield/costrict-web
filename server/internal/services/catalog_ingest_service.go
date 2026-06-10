@@ -107,6 +107,12 @@ type IngestOptions struct {
 	// TriggerUser: subject_id recorded on inserted/updated rows.
 	// Defaults to "system" when empty.
 	TriggerUser string
+	// Reparse: route every entry through the full parse/update path even when
+	// the primary file SHA is unchanged. Needed when the PARSER's derived
+	// output changes (e.g. the plugin install-copy template) — content is
+	// generated at parse time, so a template change otherwise never reaches
+	// rows whose upstream file didn't move.
+	Reparse bool
 }
 
 // IngestResult is the summary returned from Ingest.
@@ -331,7 +337,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 
 		relatedItems := itemsByEntryDir[paths.EntryDir]
 
-		anyContentChanged := false
+		anyContentChanged := opts.Reparse
 		for _, item := range relatedItems {
 			if item.SourceSHA != fileSHA {
 				anyContentChanged = true
