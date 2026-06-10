@@ -1,0 +1,81 @@
+# Default values for costrict-web-proxy
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/xdfield/costrict-web-proxy
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: NodePort
+  port: 8090
+  nodePort: 30290
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+config:
+  listenAddr: ":8090"
+  serverUrl: "http://costrict-web-api:8080"
+  databaseUrl: ""
+  filterRulesPath: "./filter_rules.yaml"
+  logLevel: "info"
+  filterFailureMode: "block"
+  auditRetentionDays: 90
+
+env: []
+envFrom: []
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8090
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health/ready
+    port: 8090
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
