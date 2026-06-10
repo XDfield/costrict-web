@@ -55,7 +55,7 @@ jobs:
             echo 'charts=["gateway","api","worker","portal","proxy","postgres"]' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array
-            CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -R . | jq -s .)
+            CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -Rc 'split("\n") | map(select(. != ""))')
             echo "charts=$CHARTS_JSON" >> $GITHUB_OUTPUT
           fi
 
