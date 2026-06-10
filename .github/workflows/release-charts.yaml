@@ -10,6 +10,10 @@ on:
         description: 'Charts to release (comma-separated: gateway,api,worker,portal,proxy,postgres,all)'
         required: false
         default: 'all'
+      version:
+        description: 'Version for workflow_dispatch (e.g., 0.1.0). Ignored for tag triggers.'
+        required: false
+        default: ''
 
 env:
   HELM_VERSION: '3.14.0'
@@ -31,11 +35,13 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-            # Remove 'v' prefix if present
-            VERSION="${VERSION#v}"
+            VERSION="${{ github.event.inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              VERSION="${GITHUB_REF#refs/tags/}"
+              VERSION="${VERSION#v}"
+              VERSION="${VERSION#refs/heads/}"
+            fi
           else
-            # Extract version from tag (v1.0.0 or v1.0.0-debug)
             TAG="${GITHUB_REF#refs/tags/}"
             VERSION="${TAG#v}"
           fi
