@@ -2557,7 +2557,147 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		}
 	}
 
+	// Plugins bundle their sub-skills/MCPs as first-class child items
+	// (parent_plugin_id). Fork those too so the user gets their own editable
+	// copies, re-linked to the new plugin fork. Best-effort: per-child failures
+	// are logged and skipped — the plugin fork itself already succeeded.
+	if src.ItemType == "plugin" {
+		h.forkPluginChildren(srcItemID, item.ID, userID)
+	}
+
 	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, userID))
+}
+
+// forkPluginChildren forks each active sub-skill/MCP bundled under the source
+// plugin (parent_plugin_id = srcPluginID) into the new plugin fork, re-linking
+// them via parent_plugin_id = newPluginID. Idempotent per (child, user); a child
+// that fails to fork is logged and skipped.
+func (h *ItemHandler) forkPluginChildren(srcPluginID, newPluginID, userID string) {
+	var children []models.CapabilityItem
+	if err := h.db.Where("parent_plugin_id = ? AND status = ?", srcPluginID, "active").
+		Order("slug asc").Find(&children).Error; err != nil {
+		log.Printf("fork: load sub-skills of plugin %s failed: %v", srcPluginID, err)
+		return
+	}
+	if len(children) == 0 {
+		return
+	}
+
+	publicRepoID := registryRepoID(h.db, PublicRegistryID)
+	uidSum := sha256.Sum256([]byte(userID))
+
+	for i := range children {
+		child := children[i]
+
+		// One fork per user per source child.
+		var existing models.CapabilityItem
+		if err := h.db.Where("forked_from_item_id = ? AND created_by = ?", child.ID, userID).
+			First(&existing).Error; err == nil && existing.ID != "" {
+			continue
+		}
+
+		var childAssets []models.CapabilityAsset
+		h.db.Where("item_id = ?", child.ID).Order("rel_path asc").Find(&childAssets)
+		assetTpl := make([]models.CapabilityAsset, 0, len(childAssets))
+		for _, a := range childAssets {
+			assetTpl = append(assetTpl, models.CapabilityAsset{
+				RelPath:        a.RelPath,
+				TextContent:    a.TextContent,
+				StorageBackend: a.StorageBackend,
+				StorageKey:     a.StorageKey,
+				MimeType:       a.MimeType,
+				FileSize:       a.FileSize,
+				ContentSHA:     a.ContentSHA,
+			})
+		}
+
+		childSrcID := child.ID
+		childOwnerID := child.CreatedBy
+		parentID := newPluginID
+		baseSlug := fmt.Sprintf("%s-fork-%x", child.Slug, uidSum[:4])
+
+		var forked *models.CapabilityItem
+		var ferr error
+		for attempt := 0; attempt < 10; attempt++ {
+			slug := baseSlug
+			if attempt > 0 {
+				slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
+			}
+			records := make([]models.CapabilityAsset, len(assetTpl))
+			copy(records, assetTpl)
+			forked, ferr = persistNewItem(h.db, createItemRequest{
+				ID:                uuid.New().String(),
+				RegistryID:        PublicRegistryID,
+				RepoID:            publicRepoID,
+				Slug:              slug,
+				ItemType:          child.ItemType,
+				Name:              child.Name,
+				Description:       child.Description,
+				Category:          child.Category,
+				Version:           child.Version,
+				Content:           child.Content,
+				ContentMD5:        child.ContentMD5,
+				Metadata:          child.Metadata,
+				SourcePath:        child.SourcePath,
+				SourceSHA:         child.SourceSHA,
+				SourceType:        "fork",
+				Source:            childSrcID,
+				CreatedBy:         userID,
+				ForkedFromItemID:  &childSrcID,
+				ForkedFromOwnerID: &childOwnerID,
+				ParentPluginID:    &parentID,
+			}, createItemAssets{Records: records})
+			if ferr == nil {
+				break
+			}
+			if errors.Is(ferr, ErrSlugConflict) {
+				// Concurrent fork by the same user won the race — treat as done.
+				var raced models.CapabilityItem
+				if e := h.db.Where("forked_from_item_id = ? AND created_by = ?", childSrcID, userID).
+					First(&raced).Error; e == nil && raced.ID != "" {
+					ferr, forked = nil, nil
+					break
+				}
+				continue
+			}
+			break
+		}
+		if ferr != nil {
+			log.Printf("fork: sub-skill %s of plugin %s failed: %v", child.ID, srcPluginID, ferr)
+			continue
+		}
+		if forked == nil {
+			continue // a concurrent fork already created it
+		}
+
+		// Carry localized descriptions (persistNewItem doesn't).
+		if len(child.Descriptions) > 0 && string(child.Descriptions) != "{}" {
+			h.db.Model(&models.CapabilityItem{}).Where("id = ?", forked.ID).Update("descriptions", child.Descriptions)
+			h.db.Model(&models.CapabilityVersion{}).Where("item_id = ? AND revision = ?", forked.ID, 1).Update("descriptions", child.Descriptions)
+		}
+
+		if h.indexerSvc != nil {
+			f := forked
+			go func() {
+				if err := h.indexerSvc.IndexItem(context.Background(), f); err != nil {
+					log.Printf("Failed to index sub-skill fork %s: %v", f.ID, err)
+				}
+			}()
+		}
+		enqueueScanAsync(forked.ID, 1, "fork")
+
+		if h.tagSvc != nil {
+			if tagsMap, err := h.tagSvc.GetItemTags([]string{child.ID}); err == nil {
+				var tids []string
+				for _, t := range tagsMap[child.ID] {
+					tids = append(tids, t.ID)
+				}
+				if len(tids) > 0 {
+					_ = assignTagsForItem(h.tagSvc, forked.ID, tids)
+				}
+			}
+		}
+	}
 }
 
 // cleanupStorageKeys deletes uploaded objects after a later step fails.
