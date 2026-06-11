@@ -20,10 +20,13 @@ import (
 )
 
 // mcpFieldKeyRe constrains the shared key scheme exchanged with the frontend
-// heuristic: "env:<NAME>" or "args:<INDEX>". The backend only applies values by
-// key (mechanical substitution); placeholder *detection* lives solely in the
-// frontend, so the key scheme is the only cross-layer contract.
-var mcpFieldKeyRe = regexp.MustCompile(`^(env:.+|args:\d+)$`)
+// heuristic: "env:<NAME>", "args:<INDEX>" or "headers:<NAME>". The backend only
+// applies values by key (mechanical substitution); placeholder *detection* lives
+// solely in the frontend, so the key scheme is the only cross-layer contract.
+var mcpFieldKeyRe = regexp.MustCompile(`^(env:.+|args:\d+|headers:.+)$`)
+
+// mcpVarRefRe matches a ${NAME} / {{NAME}} span inside a template value.
+var mcpVarRefRe = regexp.MustCompile(`\$\{[^}]*\}|\{\{[^}]*\}\}`)
 
 // mcpFieldEntry is one user-filled value. Stored plaintext in
 // MCPUserConfig.FieldValues; `secret` drives display masking only.
@@ -72,8 +75,8 @@ func loadMCPUserFields(db *gorm.DB, userID, itemID string) map[string]mcpFieldEn
 
 // resolveMCPContent overlays the user's filled values onto the raw .mcp.json
 // content, only at placeholder positions that already exist in the template
-// (env keys present / args indices in range). Structure-preserving. On any
-// parse failure it returns the original content (fail-safe → template served).
+// (env/headers keys present / args indices in range). Structure-preserving. On
+// any parse failure it returns the original content (fail-safe → template served).
 func resolveMCPContent(rawContent string, fields map[string]mcpFieldEntry) string {
 	if len(fields) == 0 || strings.TrimSpace(rawContent) == "" {
 		return rawContent
@@ -100,9 +103,25 @@ func resolveMCPContent(rawContent string, fields map[string]mcpFieldEntry) strin
 	return string(out)
 }
 
-// applyMCPFieldsToServer fills env/args placeholders in a single server object.
-// Only positions present in the template are touched (no spurious creation, no
-// multi-server cross-contamination).
+// fillHeaderTemplate resolves a header template with the user's value. Header
+// values commonly mix literals with a placeholder ("Bearer ${KEY}"), so when the
+// template contains ${}/{{}} spans the value substitutes IN PLACE of each span,
+// preserving literal prefixes/suffixes; a template without spans (e.g. a bare
+// "YOUR_API_KEY" placeholder) is replaced wholesale.
+func fillHeaderTemplate(tmpl any, value string) any {
+	s, ok := tmpl.(string)
+	if !ok {
+		return value
+	}
+	if mcpVarRefRe.MatchString(s) {
+		return mcpVarRefRe.ReplaceAllLiteralString(s, value)
+	}
+	return value
+}
+
+// applyMCPFieldsToServer fills env/args/headers placeholders in a single server
+// object. Only positions present in the template are touched (no spurious
+// creation, no multi-server cross-contamination).
 func applyMCPFieldsToServer(server map[string]any, fields map[string]mcpFieldEntry) {
 	for key, entry := range fields {
 		switch {
@@ -126,6 +145,17 @@ func applyMCPFieldsToServer(server map[string]any, fields map[string]mcpFieldEnt
 				continue
 			}
 			args[idx] = entry.V
+		case strings.HasPrefix(key, "headers:"):
+			name := strings.TrimPrefix(key, "headers:")
+			headers, ok := server["headers"].(map[string]any)
+			if !ok {
+				continue
+			}
+			tmpl, exists := headers[name]
+			if !exists {
+				continue
+			}
+			headers[name] = fillHeaderTemplate(tmpl, entry.V)
 		}
 	}
 }

@@ -151,6 +151,47 @@ func TestResolveMCPContent(t *testing.T) {
 	}
 }
 
+func TestResolveMCPContent_Headers(t *testing.T) {
+	greptile := `{"mcpServers":{"greptile":{"type":"http","url":"https://api.greptile.com/mcp","headers":{"Authorization":"Bearer ${GREPTILE_API_KEY}","X-Plain":"YOUR_API_KEY","X-Real":"already-set"}}}}`
+
+	resolved := resolveMCPContent(greptile, map[string]mcpFieldEntry{
+		"headers:Authorization": {V: "gk-123", Secret: true},
+		"headers:X-Plain":       {V: "pk-456"},
+		"headers:X-Missing":     {V: "nope"},
+	})
+	if !strings.Contains(resolved, `"Bearer gk-123"`) {
+		t.Errorf("placeholder span substitution must preserve the literal prefix: %s", resolved)
+	}
+	if !strings.Contains(resolved, `"pk-456"`) || strings.Contains(resolved, "YOUR_API_KEY") {
+		t.Errorf("span-less placeholder template must be replaced wholesale: %s", resolved)
+	}
+	if strings.Contains(resolved, "X-Missing") {
+		t.Errorf("must not create absent header key: %s", resolved)
+	}
+	if !strings.Contains(resolved, `"already-set"`) {
+		t.Errorf("untouched header must keep template value: %s", resolved)
+	}
+
+	// Regex-special characters in the user value must be inserted literally.
+	resolved2 := resolveMCPContent(greptile, map[string]mcpFieldEntry{"headers:Authorization": {V: "a$1b"}})
+	if !strings.Contains(resolved2, `"Bearer a$1b"`) {
+		t.Errorf("user value must be inserted literally: %s", resolved2)
+	}
+}
+
+func TestMCPFieldKeyScheme(t *testing.T) {
+	for _, key := range []string{"env:API_KEY", "args:3", "headers:Authorization"} {
+		if !mcpFieldKeyRe.MatchString(key) {
+			t.Errorf("key %q must be accepted", key)
+		}
+	}
+	for _, key := range []string{"headers:", "env:", "args:x", "command:x", "url:0"} {
+		if mcpFieldKeyRe.MatchString(key) {
+			t.Errorf("key %q must be rejected", key)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // buildMCPConfigStatus (masking)
 // ---------------------------------------------------------------------------

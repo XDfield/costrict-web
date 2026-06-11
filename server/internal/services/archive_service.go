@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path"
@@ -59,8 +60,8 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 		return nil, fmt.Errorf("archive upload exceeds maximum size of %d bytes", MaxArchiveUploadSize)
 	}
 
-	mainFile := resolveMainFile(itemType)
-	if mainFile == "" {
+	mainFiles := resolveMainFiles(itemType)
+	if len(mainFiles) == 0 {
 		return nil, fmt.Errorf("unsupported item type: %s", itemType)
 	}
 
@@ -114,14 +115,21 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 	}
 
 	var mainEntry *archiveEntry
-	for i := range entries {
-		if entries[i].path == mainFile {
-			mainEntry = &entries[i]
+	mainFile := ""
+	for _, candidate := range mainFiles {
+		for i := range entries {
+			if entries[i].path == candidate {
+				mainEntry = &entries[i]
+				mainFile = candidate
+				break
+			}
+		}
+		if mainEntry != nil {
 			break
 		}
 	}
 	if mainEntry == nil {
-		return nil, fmt.Errorf("archive must include %s", mainFile)
+		return nil, fmt.Errorf("archive must include %s", strings.Join(mainFiles, " or "))
 	}
 
 	mainContent, err := mainEntry.read(MaxSingleFileSize)
@@ -149,11 +157,52 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 			normalizedMeta, err = NormalizeMCPMetadata(parsed.Metadata)
 		}
 	case "plugin":
+		version := "1.0.0"
+		name := ""
+		description := ""
+		// The manifest is authoritative for version/name/description even when
+		// CLAUDE.md won the main-file pick (standard plugin layout ships BOTH):
+		// without this re-read, Parsed.Version stayed "1.0.0" forever and every
+		// re-upload overwrote the item's real version back to 1.0.0.
+		manifestContent := mainContent
+		if mainFile != ".claude-plugin/plugin.json" {
+			manifestContent = nil
+			for i := range entries {
+				if entries[i].path == ".claude-plugin/plugin.json" {
+					if data, readErr := entries[i].read(MaxSingleFileSize); readErr == nil {
+						manifestContent = data
+					}
+					break
+				}
+			}
+		}
+		if len(manifestContent) > 0 {
+			var manifest map[string]any
+			if err := json.Unmarshal(manifestContent, &manifest); err != nil {
+				// The manifest as MAIN file must parse; as a sidecar it degrades
+				// gracefully (CLAUDE.md content still works without metadata).
+				if mainFile == ".claude-plugin/plugin.json" {
+					return nil, fmt.Errorf("failed to parse .claude-plugin/plugin.json: %w", err)
+				}
+			} else {
+				if v, ok := manifest["version"].(string); ok && strings.TrimSpace(v) != "" {
+					version = v
+				}
+				if v, ok := manifest["name"].(string); ok {
+					name = strings.TrimSpace(v)
+				}
+				if v, ok := manifest["description"].(string); ok {
+					description = strings.TrimSpace(v)
+				}
+			}
+		}
 		parsed = &ParsedItem{
-			Content:    string(mainContent),
-			SourcePath: mainFile,
-			ItemType:   "plugin",
-			Version:    "1.0.0",
+			Name:        name,
+			Description: description,
+			Content:     string(mainContent),
+			SourcePath:  mainFile,
+			ItemType:    "plugin",
+			Version:     version,
 		}
 	}
 	if err != nil {
@@ -170,7 +219,7 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 		if entry.path == mainFile {
 			continue
 		}
-		if shouldSkipAsset(entry.path) {
+		if shouldSkipAsset(entry.path) && !(itemType == "plugin" && (entry.path == ".mcp.json" || entry.path == ".claude-plugin/plugin.json")) {
 			continue
 		}
 
@@ -332,9 +381,10 @@ func enumerateTarGzEntries(r io.ReaderAt, size int64) ([]archiveEntry, error) {
 // standard MCP configuration format (Claude / MCP protocol).
 //
 // Standard format:
-//   stdio: {"command": "npx", "args": ["-y", "@foo/bar"], "env": {...}}
-//   http:  {"type": "http", "url": "https://...", "headers": {...}}
-//   sse:   {"type": "sse",  "url": "https://...", "headers": {...}}
+//
+//	stdio: {"command": "npx", "args": ["-y", "@foo/bar"], "env": {...}}
+//	http:  {"type": "http", "url": "https://...", "headers": {...}}
+//	sse:   {"type": "sse",  "url": "https://...", "headers": {...}}
 //
 // Accepted proprietary inputs:
 //   - {"type":"local",  "command":["npx","-y","@foo"]}  → stdio
@@ -416,16 +466,16 @@ func NormalizeMCPMetadata(meta map[string]any) (map[string]any, error) {
 	return nil, fmt.Errorf("unable to determine MCP server type: need command or url")
 }
 
-func resolveMainFile(itemType string) string {
+func resolveMainFiles(itemType string) []string {
 	switch itemType {
 	case "skill":
-		return "SKILL.md"
+		return []string{"SKILL.md"}
 	case "mcp":
-		return ".mcp.json"
+		return []string{".mcp.json"}
 	case "plugin":
-		return "CLAUDE.md"
+		return []string{"CLAUDE.md", ".claude-plugin/plugin.json"}
 	default:
-		return ""
+		return nil
 	}
 }
 

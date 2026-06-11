@@ -1909,9 +1909,9 @@ func TestCreateItemDirect_Zip_MissingRequiredFields(t *testing.T) {
 		"SKILL.md": []byte("# Skill\n"),
 	})
 
-	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
-		"itemType": "skill",
-	}, zipBytes)
+	// Omit itemType entirely: the /api/items path sets no defaultItemType, and name
+	// defaults from the upload filename, so a missing itemType is the required-field gap.
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{}, zipBytes)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}

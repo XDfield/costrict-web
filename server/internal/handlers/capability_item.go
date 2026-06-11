@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -55,10 +56,10 @@ type SourceOption struct {
 }
 
 type ItemFilterOptionsResponse struct {
-	Categories         []models.ItemCategory        `json:"categories"`
-	SecurityStatuses   []SecurityStatusOption       `json:"securityStatuses"`
-	SecurityRiskGroups []SecurityRiskGroupOption    `json:"securityRiskGroups"`
-	Sources            []SourceOption               `json:"sources"`
+	Categories         []models.ItemCategory     `json:"categories"`
+	SecurityStatuses   []SecurityStatusOption    `json:"securityStatuses"`
+	SecurityRiskGroups []SecurityRiskGroupOption `json:"securityRiskGroups"`
+	Sources            []SourceOption            `json:"sources"`
 }
 
 var securityStatusGroups = map[string][]string{
@@ -189,7 +190,9 @@ type createItemRequest struct {
 	// Fork provenance (optional)
 	ForkedFromItemID  *string
 	ForkedFromOwnerID *string
-	IsBuiltIn         bool
+	// ParentPluginID links a promoted sub-skill back to its parent plugin item (optional).
+	ParentPluginID *string
+	IsBuiltIn      bool
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -407,6 +410,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		Source:            req.Source,
 		ForkedFromItemID:  req.ForkedFromItemID,
 		ForkedFromOwnerID: req.ForkedFromOwnerID,
+		ParentPluginID:    req.ParentPluginID,
 		IsBuiltIn:         req.IsBuiltIn,
 		Status:            "active",
 		CreatedBy:         req.CreatedBy,
@@ -506,6 +510,9 @@ type ItemResponse struct {
 	Source              string                      `json:"source"`
 	ForkedFromItemID    *string                     `json:"forkedFromItemId,omitempty"`
 	ForkedFromOwnerID   *string                     `json:"forkedFromOwnerId,omitempty"`
+	ParentPluginID      *string                     `json:"parentPluginId,omitempty"`   // sub-skill: 所属父 plugin item ID
+	ParentPluginName    string                      `json:"parentPluginName,omitempty"` // 父 plugin 展示名（供「来自插件 X」徽章）
+	ParentPluginSlug    string                      `json:"parentPluginSlug,omitempty"` // 父 plugin slug（供跳转）
 	PreviewCount        int                         `json:"previewCount"`
 	InstallCount        int                         `json:"installCount"`
 	FavoriteCount       int                         `json:"favoriteCount"`
@@ -609,7 +616,7 @@ func reconcileItemCurrentRevision(db *gorm.DB, item *models.CapabilityItem) {
 	_ = db.Model(&models.CapabilityItem{}).
 		Where("id = ?", item.ID).
 		Update("current_revision", latestRevision).Error
-	}
+}
 
 func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
 	reconcileItemCurrentRevision(db, &item)
@@ -668,6 +675,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		Source:              item.Source,
 		ForkedFromItemID:    item.ForkedFromItemID,
 		ForkedFromOwnerID:   item.ForkedFromOwnerID,
+		ParentPluginID:      item.ParentPluginID,
 		PreviewCount:        item.PreviewCount,
 		InstallCount:        item.InstallCount,
 		FavoriteCount:       item.FavoriteCount,
@@ -723,6 +731,15 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 			resp.MCPConfig = buildMCPConfigStatus(fields)
 		}
 	}
+	// Sub-skill: resolve the parent plugin's display name/slug for the badge.
+	// Single-item path only — list handlers MUST batch this (see ListAllItems).
+	if item.ParentPluginID != nil && *item.ParentPluginID != "" {
+		var parent models.CapabilityItem
+		if err := db.Select("name, slug").First(&parent, "id = ?", *item.ParentPluginID).Error; err == nil {
+			resp.ParentPluginName = parent.Name
+			resp.ParentPluginSlug = parent.Slug
+		}
+	}
 	return resp
 }
 
@@ -746,6 +763,37 @@ func fetchForkCounts(db *gorm.DB, itemIDs []string) map[string]int {
 		counts[a.ForkedFromItemID] = int(a.Cnt)
 	}
 	return counts
+}
+
+// parentPluginInfo carries a parent plugin's display fields for sub-skill badges.
+type parentPluginInfo struct {
+	Name string
+	Slug string
+}
+
+// fetchParentPluginInfo batch-loads parent plugin name/slug for the given sub-skill
+// rows in ONE query (keyed by parent_plugin_id), avoiding per-row N+1 lookups in list endpoints.
+func fetchParentPluginInfo(db *gorm.DB, items []models.CapabilityItem) map[string]parentPluginInfo {
+	info := make(map[string]parentPluginInfo)
+	parentIDSet := make(map[string]struct{})
+	for _, item := range items {
+		if item.ParentPluginID != nil && *item.ParentPluginID != "" {
+			parentIDSet[*item.ParentPluginID] = struct{}{}
+		}
+	}
+	if len(parentIDSet) == 0 {
+		return info
+	}
+	parentIDs := make([]string, 0, len(parentIDSet))
+	for id := range parentIDSet {
+		parentIDs = append(parentIDs, id)
+	}
+	var parents []models.CapabilityItem
+	db.Select("id, name, slug").Where("id IN ?", parentIDs).Find(&parents)
+	for _, p := range parents {
+		info[p.ID] = parentPluginInfo{Name: p.Name, Slug: p.Slug}
+	}
+	return info
 }
 
 func itemListSortOrder(sortBy, sortOrder string) string {
@@ -894,6 +942,13 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 	}
 	if opts.AllowFavorited && c.Query("favorited") == "true" && opts.UserID != "" {
 		query = query.Where("EXISTS (SELECT 1 FROM item_favorites f WHERE f.item_id = capability_items.id AND f.user_id = ?) OR EXISTS (SELECT 1 FROM item_distribution_receipts idr JOIN item_distributions id ON id.id = idr.distribution_id WHERE idr.user_id = ? AND idr.receipt_status != ? AND id.status = ? AND id.item_id = capability_items.id)", opts.UserID, opts.UserID, "dismissed", "active")
+	}
+	// sub-skill filters: list a plugin's bundled sub-skills, or hide all sub-skills.
+	if parentPluginID := c.Query("parentPluginId"); parentPluginID != "" {
+		query = query.Where("parent_plugin_id = ?", parentPluginID)
+	}
+	if v := c.Query("excludeSubSkills"); v == "true" || v == "1" {
+		query = query.Where("parent_plugin_id IS NULL")
 	}
 
 	return applyItemTagsFilter(query, c.Query("tags"))
@@ -1453,6 +1508,13 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 			return
 		}
+		// The contentChanged short-circuit only hashes the plugin main content, so the
+		// bundled skills/ set may have changed even when the parent is byte-identical.
+		// Reconcile sub-skills unconditionally for plugins (idempotent).
+		if item.ItemType == "plugin" {
+			childSkills := reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
+			indexSubSkillsAsync(h, childSkills)
+		}
 		c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 		return
 	}
@@ -1621,8 +1683,16 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return
 	}
 
-	// Cleanup old storage keys only after successful commit.
-	cleanupStorageKeys(oldStorageKeys)
+	// Cleanup old storage keys only after successful commit. Binary assets keep
+	// stable storage keys across replacement, so do not delete keys reused by the
+	// new asset records.
+	cleanupStorageKeys(staleStorageKeys(oldStorageKeys, assetRecords))
+
+	// Reconcile bundled sub-skills (create/update/archive) for plugin updates.
+	if item.ItemType == "plugin" {
+		childSkills := reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
+		indexSubSkillsAsync(h, childSkills)
+	}
 
 	if h.indexerSvc != nil {
 		go func() {
@@ -1634,6 +1704,22 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
+}
+
+// indexSubSkillsAsync fires async indexing for newly created sub-skill items.
+func indexSubSkillsAsync(h *ItemHandler, children []*models.CapabilityItem) {
+	if h.indexerSvc == nil {
+		return
+	}
+	for _, child := range children {
+		ch := child
+		go func() {
+			bgCtx := context.Background()
+			if err := h.indexerSvc.IndexItem(bgCtx, ch); err != nil {
+				log.Printf("Failed to index sub-skill %s: %v", ch.ID, err)
+			}
+		}()
+	}
 }
 
 // DeleteItem godoc
@@ -1658,7 +1744,7 @@ func DeleteItem(c *gin.Context) {
 		}{
 			{model: &models.BehaviorLog{}, name: "behavior logs"},
 			{model: &models.ItemFavorite{}, name: "item favorites"},
-				{model: &models.ItemTag{}, name: "item tags"},
+			{model: &models.ItemTag{}, name: "item tags"},
 			{model: &models.ScanJob{}, name: "scan jobs"},
 			{model: &models.SecurityScan{}, name: "security scans"},
 			{model: &models.CapabilityVersionAsset{}, name: "capability version assets"},
@@ -1678,6 +1764,15 @@ func DeleteItem(c *gin.Context) {
 			if err := query.Delete(d.model).Error; err != nil {
 				return fmt.Errorf("failed to delete %s: %w", d.name, err)
 			}
+		}
+
+		// Cascade to bundled sub-skills: archive (not hard-delete) so the promoted
+		// skill rows stay auditable and download links don't 500 mid-flight. This
+		// mirrors the catalog "orphan follows parent → soft archive" semantics.
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("parent_plugin_id = ?", id).
+			Update("status", "archived").Error; err != nil {
+			return fmt.Errorf("failed to archive sub-skills: %w", err)
 		}
 
 		if err := tx.Delete(&models.CapabilityItem{}, "id = ?", id).Error; err != nil {
@@ -1866,6 +1961,8 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        source      query     string   false  "Filter by sources (comma-separated, OR logic)"
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
+// @Param        parentPluginId query   string   false  "Filter to sub-skills bundled by the given parent plugin item ID"
+// @Param        excludeSubSkills query string   false  "Hide bundled sub-skills from the result when true"
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
 // @Param        sortBy      query     string   false  "Sort by updatedAt, createdAt, previewCount, installCount, or favoriteCount"
@@ -2026,12 +2123,17 @@ func ListAllItems(c *gin.Context) {
 		forkCountMap = fetchForkCounts(db, itemIDs)
 	}
 
+	// Batch-fetch parent plugin name/slug for sub-skill rows (avoid N+1)
+	parentPluginMap := fetchParentPluginInfo(db, items)
+
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
-		RepoName  string `json:"repoName,omitempty"`
-		Favorited bool   `json:"favorited"`
-		ForkCount int    `json:"forkCount"`
+		RepoName         string `json:"repoName,omitempty"`
+		Favorited        bool   `json:"favorited"`
+		ForkCount        int    `json:"forkCount"`
+		ParentPluginName string `json:"parentPluginName,omitempty"`
+		ParentPluginSlug string `json:"parentPluginSlug,omitempty"`
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
@@ -2041,6 +2143,12 @@ func ListAllItems(c *gin.Context) {
 		}
 		if tagsMap != nil {
 			out[i].Tags = tagsMap[item.ID]
+		}
+		if item.ParentPluginID != nil {
+			if pp, ok := parentPluginMap[*item.ParentPluginID]; ok {
+				out[i].ParentPluginName = pp.Name
+				out[i].ParentPluginSlug = pp.Slug
+			}
 		}
 	}
 
@@ -2463,6 +2571,632 @@ func cleanupStorageKeys(keys []string) {
 	}
 }
 
+// pluginChildAsset is a skill or MCP item extracted from a plugin archive and
+// promoted into a normal capability_items row.
+type pluginChildAsset struct {
+	ItemType    string
+	Name        string
+	SlugSuffix  string
+	Description string
+	Version     string
+	SourcePath  string
+	Content     string
+	Metadata    datatypes.JSON
+	Assets      []services.ArchiveAsset // files under the child directory, with paths relative to that directory
+}
+
+// extractSubSkillAssets returns the sub-skills bundled inside a plugin archive.
+// A sub-skill is a non-binary text asset whose path is "skills/<name>/SKILL.md".
+// For deeper nesting (e.g. "skills/a/b/SKILL.md") the directory immediately above
+// SKILL.md ("b") is used as the skill name, matching how the device installs it.
+func extractSubSkillAssets(assets []services.ArchiveAsset) []pluginChildAsset {
+	out := make([]pluginChildAsset, 0)
+	seen := make(map[string]struct{})
+	for _, asset := range assets {
+		if asset.Binary {
+			continue
+		}
+		p := asset.Path
+		if !strings.HasPrefix(p, "skills/") || !strings.HasSuffix(p, "/SKILL.md") {
+			continue
+		}
+		dir := path.Dir(p) // "skills/<...>/<name>"
+		name := path.Base(dir)
+		if name == "" || name == "skills" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		prefix := dir + "/"
+		childAssets := make([]services.ArchiveAsset, 0)
+		for _, candidate := range assets {
+			if candidate.Path == p || !strings.HasPrefix(candidate.Path, prefix) {
+				continue
+			}
+			relPath := strings.TrimPrefix(candidate.Path, prefix)
+			if relPath == "" || relPath == "SKILL.md" {
+				continue
+			}
+			copied := candidate
+			copied.Path = relPath
+			childAssets = append(childAssets, copied)
+		}
+		out = append(out, pluginChildAsset{
+			ItemType:   "skill",
+			Name:       name,
+			SlugSuffix: name,
+			Version:    "1.0.0",
+			SourcePath: p,
+			Content:    string(asset.Content),
+			Metadata:   datatypes.JSON([]byte("{}")),
+			Assets:     childAssets,
+		})
+	}
+	return out
+}
+
+func hasObjectMCPServers(content []byte) bool {
+	var data map[string]any
+	if err := json.Unmarshal(content, &data); err != nil {
+		return false
+	}
+	_, ok := data["mcpServers"].(map[string]any)
+	return ok
+}
+
+func singleMCPContent(parsed *services.ParsedItem, fallback []byte) string {
+	key, _ := parsed.Metadata["key"].(string)
+	if key == "" {
+		return string(fallback)
+	}
+	server := make(map[string]any, len(parsed.Metadata))
+	for k, v := range parsed.Metadata {
+		if k == "key" {
+			continue
+		}
+		server[k] = v
+	}
+	content := map[string]any{
+		"mcpServers": map[string]any{
+			key: server,
+		},
+	}
+	b, err := json.Marshal(content)
+	if err != nil {
+		return string(fallback)
+	}
+	return string(b)
+}
+
+func buildPluginMCPChildrenFromContent(parser *services.ParserService, sourcePath string, content []byte) ([]pluginChildAsset, error) {
+	parsedItems, err := parser.ParseMCPJSON(content, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	children := make([]pluginChildAsset, 0, len(parsedItems))
+	for _, parsed := range parsedItems {
+		normalized, err := services.NormalizeMCPMetadata(parsed.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		metaBytes, err := json.Marshal(normalized)
+		if err != nil {
+			return nil, err
+		}
+		name := parsed.Name
+		if strings.TrimSpace(name) == "" {
+			name = "MCP Config"
+		}
+		slugSuffix := parsed.Slug
+		if strings.TrimSpace(slugSuffix) == "" {
+			slugSuffix = name
+		}
+		version := parsed.Version
+		if version == "" {
+			version = "1.0.0"
+		}
+		childSourcePath := sourcePath + "#" + slugSuffix
+		childContent := singleMCPContent(parsed, content)
+		children = append(children, pluginChildAsset{
+			ItemType:    "mcp",
+			Name:        name,
+			SlugSuffix:  slugSuffix,
+			Description: parsed.Description,
+			Version:     version,
+			SourcePath:  childSourcePath,
+			Content:     childContent,
+			Metadata:    datatypes.JSON(metaBytes),
+		})
+	}
+	return children, nil
+}
+
+func extractPluginMCPAssets(parser *services.ParserService, pluginItem *models.CapabilityItem, assets []services.ArchiveAsset) ([]pluginChildAsset, error) {
+	manifestChildren := make([]pluginChildAsset, 0)
+	rootChildren := make([]pluginChildAsset, 0)
+	if pluginItem.SourcePath == ".claude-plugin/plugin.json" && hasObjectMCPServers([]byte(pluginItem.Content)) {
+		children, err := buildPluginMCPChildrenFromContent(parser, pluginItem.SourcePath, []byte(pluginItem.Content))
+		if err != nil {
+			return nil, err
+		}
+		manifestChildren = append(manifestChildren, children...)
+	}
+	for _, asset := range assets {
+		if asset.Binary || (asset.Path != ".mcp.json" && asset.Path != ".claude-plugin/plugin.json") {
+			continue
+		}
+		if asset.Path == ".claude-plugin/plugin.json" && !hasObjectMCPServers(asset.Content) {
+			continue
+		}
+		children, err := buildPluginMCPChildrenFromContent(parser, asset.Path, asset.Content)
+		if err != nil {
+			return nil, err
+		}
+		if asset.Path == ".mcp.json" {
+			rootChildren = append(rootChildren, children...)
+		} else {
+			manifestChildren = append(manifestChildren, children...)
+		}
+	}
+	return mergePluginMCPChildren(manifestChildren, rootChildren), nil
+}
+
+func mergePluginMCPChildren(manifestChildren, rootChildren []pluginChildAsset) []pluginChildAsset {
+	out := make([]pluginChildAsset, 0, len(manifestChildren)+len(rootChildren))
+	bySlug := make(map[string]int, len(manifestChildren)+len(rootChildren))
+	appendOrReplace := func(child pluginChildAsset) {
+		key := child.ItemType + ":" + child.SlugSuffix
+		if idx, ok := bySlug[key]; ok {
+			out[idx] = child
+			return
+		}
+		bySlug[key] = len(out)
+		out = append(out, child)
+	}
+	for _, child := range manifestChildren {
+		appendOrReplace(child)
+	}
+	// A root .mcp.json is the executable MCP config. When the manifest also
+	// repeats mcpServers, prefer the root config and avoid duplicate children.
+	for _, child := range rootChildren {
+		appendOrReplace(child)
+	}
+	return out
+}
+
+func archiveAssetContentSHA(asset services.ArchiveAsset) string {
+	if asset.ContentSHA != "" {
+		return asset.ContentSHA
+	}
+	sum := sha256.Sum256(asset.Content)
+	return hex.EncodeToString(sum[:])
+}
+
+// buildSubSkillAssetRecords uploads the child's binary assets under a
+// revision-scoped key prefix. The prefix is what makes the UPDATE path safe:
+// keys never collide with the previous revision's live objects, so a Put
+// failure can neither truncate them (LocalBackend.Put = os.Create) nor can the
+// failure-path cleanupStorageKeys(uploadedKeys) delete objects still
+// referenced by the current asset rows. Old-revision objects are removed only
+// on the success path via staleStorageKeys.
+func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset) ([]models.CapabilityAsset, []string, error) {
+	records := make([]models.CapabilityAsset, 0, len(ss.Assets))
+	uploadedKeys := make([]string, 0)
+	for _, asset := range ss.Assets {
+		relPath := strings.TrimSpace(asset.Path)
+		if relPath == "" || relPath == "SKILL.md" || strings.Contains(relPath, "..") {
+			continue
+		}
+		record := models.CapabilityAsset{
+			RelPath:    relPath,
+			MimeType:   asset.MimeType,
+			FileSize:   asset.Size,
+			ContentSHA: archiveAssetContentSHA(asset),
+		}
+		if record.MimeType == "" {
+			record.MimeType = services.InferMimeType(relPath)
+		}
+		if record.FileSize <= 0 {
+			record.FileSize = int64(len(asset.Content))
+		}
+		if asset.Binary {
+			if StorageBackend == nil {
+				return records, uploadedKeys, fmt.Errorf("storage backend is not configured")
+			}
+			storageKey := fmt.Sprintf("%s/assets/r%d/%s", childID, revision, relPath)
+			if err := StorageBackend.Put(context.Background(), storageKey, bytes.NewReader(asset.Content), record.FileSize); err != nil {
+				return records, uploadedKeys, err
+			}
+			uploadedKeys = append(uploadedKeys, storageKey)
+			record.StorageBackend = "local"
+			record.StorageKey = storageKey
+		} else {
+			text := string(asset.Content)
+			record.TextContent = &text
+		}
+		records = append(records, record)
+	}
+	return records, uploadedKeys, nil
+}
+
+func subSkillAssetsMatch(db *gorm.DB, childID string, expected []services.ArchiveAsset) bool {
+	var current []models.CapabilityAsset
+	if err := db.Where("item_id = ?", childID).Find(&current).Error; err != nil {
+		return false
+	}
+	if len(current) != len(expected) {
+		return false
+	}
+	currentByPath := make(map[string]models.CapabilityAsset, len(current))
+	for _, asset := range current {
+		currentByPath[asset.RelPath] = asset
+	}
+	for _, expectedAsset := range expected {
+		relPath := strings.TrimSpace(expectedAsset.Path)
+		cur, ok := currentByPath[relPath]
+		if !ok {
+			return false
+		}
+		if cur.ContentSHA != archiveAssetContentSHA(expectedAsset) || cur.FileSize != expectedAsset.Size {
+			return false
+		}
+		if expectedAsset.Binary && cur.StorageKey == "" {
+			return false
+		}
+		if !expectedAsset.Binary && cur.TextContent == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func replaceSubSkillAssets(tx *gorm.DB, childID string, records []models.CapabilityAsset) error {
+	if err := tx.Where("item_id = ?", childID).Delete(&models.CapabilityAsset{}).Error; err != nil {
+		return err
+	}
+	for i := range records {
+		records[i].ID = uuid.New().String()
+		records[i].ItemID = childID
+		if err := tx.Create(&records[i]).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func existingAssetStorageKeys(db *gorm.DB, childID string) []string {
+	var assets []models.CapabilityAsset
+	db.Select("storage_key").Where("item_id = ? AND storage_key <> ''", childID).Find(&assets)
+	keys := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		if asset.StorageKey != "" {
+			keys = append(keys, asset.StorageKey)
+		}
+	}
+	return keys
+}
+
+func staleStorageKeys(oldKeys []string, records []models.CapabilityAsset) []string {
+	current := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if record.StorageKey != "" {
+			current[record.StorageKey] = struct{}{}
+		}
+	}
+	stale := make([]string, 0, len(oldKeys))
+	for _, key := range oldKeys {
+		if _, ok := current[key]; !ok {
+			stale = append(stale, key)
+		}
+	}
+	return stale
+}
+
+func reconcileExistingPluginSubSkill(h *ItemHandler, pluginItem *models.CapabilityItem, child models.CapabilityItem, ss pluginChildAsset, contentMD5 string, createdBy string) (*models.CapabilityItem, bool) {
+	parentID := pluginItem.ID
+	updates := map[string]any{}
+	newRevision := child.CurrentRevision
+	contentChanged := child.ContentMD5 != contentMD5
+	assetsChanged := !subSkillAssetsMatch(h.db, child.ID, ss.Assets)
+	sourcePathChanged := child.SourcePath != ss.SourcePath
+	if contentChanged || assetsChanged {
+		newRevision = child.CurrentRevision + 1
+		updates["content"] = ss.Content
+		updates["content_md5"] = contentMD5
+		updates["current_revision"] = newRevision
+		updates["updated_by"] = createdBy
+	}
+	if sourcePathChanged {
+		updates["source_path"] = ss.SourcePath
+	}
+	if len(ss.Metadata) > 0 && string(child.Metadata) != string(ss.Metadata) {
+		updates["metadata"] = ss.Metadata
+	}
+	if child.Status != "active" {
+		updates["status"] = "active"
+	}
+	if child.ParentPluginID == nil || *child.ParentPluginID != parentID {
+		updates["parent_plugin_id"] = parentID
+	}
+	if child.RegistryID != pluginItem.RegistryID {
+		updates["registry_id"] = pluginItem.RegistryID
+	}
+	if child.RepoID != pluginItem.RepoID {
+		updates["repo_id"] = pluginItem.RepoID
+	}
+	if len(updates) == 0 {
+		return nil, false
+	}
+
+	oldStorageKeys := existingAssetStorageKeys(h.db, child.ID)
+	var records []models.CapabilityAsset
+	var uploadedKeys []string
+	if contentChanged || assetsChanged {
+		var err error
+		// Revision-scoped keys: failure cleanup below only ever touches the
+		// new revision's objects, never the live ones (see buildSubSkillAssetRecords).
+		records, uploadedKeys, err = buildSubSkillAssetRecords(child.ID, newRevision, ss)
+		if err != nil {
+			cleanupStorageKeys(uploadedKeys)
+			log.Printf("sub-skill reconcile: asset build failed for %s: %v", child.ID, err)
+			return nil, false
+		}
+	}
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.CapabilityItem{}).Where("id = ?", child.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if contentChanged || assetsChanged {
+			if err := replaceSubSkillAssets(tx, child.ID, records); err != nil {
+				return err
+			}
+			version := models.CapabilityVersion{
+				ID:          uuid.New().String(),
+				ItemID:      child.ID,
+				Revision:    newRevision,
+				Name:        child.Name,
+				Description: child.Description,
+				Category:    child.Category,
+				Version:     child.Version,
+				Content:     ss.Content,
+				ContentMD5:  contentMD5,
+				Metadata:    ss.Metadata,
+				SourcePath:  ss.SourcePath,
+				CommitMsg:   "Sub-skill content updated",
+				CreatedBy:   createdBy,
+			}
+			if err := tx.Create(&version).Error; err != nil {
+				return err
+			}
+			for _, snapshotAsset := range cloneItemAssetsToVersionAssets(version.ID, records) {
+				asset := snapshotAsset
+				if err := tx.Create(&asset).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		cleanupStorageKeys(uploadedKeys)
+		log.Printf("sub-skill reconcile: update failed for %s: %v", child.ID, err)
+		return nil, false
+	}
+	if contentChanged || assetsChanged {
+		cleanupStorageKeys(staleStorageKeys(oldStorageKeys, records))
+		enqueueScanAsync(child.ID, newRevision, "update")
+	}
+
+	child.Content = ss.Content
+	child.ContentMD5 = contentMD5
+	child.Metadata = ss.Metadata
+	child.CurrentRevision = newRevision
+	child.SourcePath = ss.SourcePath
+	child.Status = "active"
+	child.ParentPluginID = &parentID
+	child.RegistryID = pluginItem.RegistryID
+	child.RepoID = pluginItem.RepoID
+	return &child, true
+}
+
+func legacySingleMCPSourcePath(sourcePath string) string {
+	if !strings.HasPrefix(sourcePath, ".mcp.json#") {
+		return ""
+	}
+	return ".mcp.json"
+}
+
+func pluginChildBaseSlug(pluginSlug string, child pluginChildAsset) string {
+	baseSlug := slugify(pluginSlug + "-" + child.SlugSuffix)
+	if baseSlug == "" {
+		baseSlug = slugify(child.Name)
+	}
+	return baseSlug
+}
+
+// reconcilePluginSubSkills promotes each sub-skill bundled in a plugin archive into
+// a first-class item_type=skill row linked back via parent_plugin_id, reusing the
+// existing skill download/install pipeline. It is idempotent: re-running with the
+// same archive neither duplicates rows nor needlessly bumps revisions.
+//
+//   - new sub-skill (source_path not yet present)      -> create a child skill item
+//   - existing sub-skill, content changed              -> update Content/ContentMD5 (bump revision)
+//   - existing sub-skill, content unchanged            -> no-op (idempotent)
+//   - existing sub-skill, previously archived          -> re-activate
+//   - existing child whose source_path is gone in zip  -> archive (status='archived')
+//
+// It returns the child items that were created so callers can trigger async indexing.
+// Child failures never roll back the parent plugin; they are logged and skipped so a
+// subsequent re-upload can reconcile them.
+func reconcilePluginSubSkills(h *ItemHandler, pluginItem *models.CapabilityItem, assets []services.ArchiveAsset, createdBy string) []*models.CapabilityItem {
+	subSkills := extractSubSkillAssets(assets)
+	if h.parserSvc != nil {
+		mcpChildren, err := extractPluginMCPAssets(h.parserSvc, pluginItem, assets)
+		if err != nil {
+			log.Printf("plugin child promote: parse MCP config failed for plugin %s: %v", pluginItem.ID, err)
+		} else {
+			subSkills = append(subSkills, mcpChildren...)
+		}
+	}
+
+	// Existing children of this plugin, keyed by source_path and by slug.
+	var existing []models.CapabilityItem
+	h.db.Where("parent_plugin_id = ?", pluginItem.ID).Find(&existing)
+	existingByPath := make(map[string]models.CapabilityItem, len(existing))
+	existingBySlug := make(map[string]models.CapabilityItem, len(existing))
+	for _, ch := range existing {
+		existingByPath[ch.SourcePath] = ch
+		existingBySlug[ch.Slug] = ch
+	}
+
+	// Full path set up-front: the slug-adoption fallback below must only treat
+	// a row as "migrated" when its old path is truly absent from THIS archive
+	// (otherwise a later iteration would path-match the same row).
+	newPaths := make(map[string]struct{}, len(subSkills))
+	for _, ss := range subSkills {
+		newPaths[ss.SourcePath] = struct{}{}
+	}
+	reconciledIDs := make(map[string]struct{}, len(subSkills))
+	created := make([]*models.CapabilityItem, 0, len(subSkills))
+	hashSvc := services.NewContentHashService()
+
+	for _, ss := range subSkills {
+		contentMD5, err := hashSvc.HashArchiveContent(ss.SourcePath, []byte(ss.Content), ss.Assets)
+		if err != nil {
+			log.Printf("sub-skill promote: hash failed for %s of plugin %s: %v", ss.SourcePath, pluginItem.ID, err)
+			continue
+		}
+
+		if child, ok := existingByPath[ss.SourcePath]; ok {
+			if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
+				created = append(created, updated)
+			}
+			reconciledIDs[child.ID] = struct{}{}
+			continue
+		}
+		if legacyPath := legacySingleMCPSourcePath(ss.SourcePath); legacyPath != "" {
+			if child, ok := existingByPath[legacyPath]; ok {
+				if child.Slug == pluginChildBaseSlug(pluginItem.Slug, ss) {
+					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
+						created = append(created, updated)
+					}
+					reconciledIDs[child.ID] = struct{}{}
+					continue
+				}
+			}
+		}
+		// Path migration (e.g. skills/foo → skills/sub/foo, or an MCP server
+		// moving across config files): same logical child, same slug, new
+		// path. Adopt the existing row instead of letting the create loop hit
+		// the unique slug index and mint a -2 suffixed duplicate while the old
+		// row gets archived.
+		if child, ok := existingBySlug[pluginChildBaseSlug(pluginItem.Slug, ss)]; ok {
+			_, claimed := reconciledIDs[child.ID]
+			_, oldPathStillShipped := newPaths[child.SourcePath]
+			if !claimed && !oldPathStillShipped {
+				if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
+					created = append(created, updated)
+				}
+				reconciledIDs[child.ID] = struct{}{}
+				continue
+			}
+		}
+
+		// New sub-skill: create a child skill item with slug collision retry.
+		baseSlug := pluginChildBaseSlug(pluginItem.Slug, ss)
+		parentID := pluginItem.ID
+		var childItem *models.CapabilityItem
+		var persistErr error
+		for attempt := 0; attempt < 10; attempt++ {
+			slug := baseSlug
+			if attempt > 0 {
+				slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
+			}
+			childID := uuid.New().String()
+			assetRecords, uploadedKeys, assetErr := buildSubSkillAssetRecords(childID, 1, ss)
+			if assetErr != nil {
+				cleanupStorageKeys(uploadedKeys)
+				persistErr = assetErr
+				log.Printf("sub-skill promote: asset build failed for %q of plugin %s: %v", ss.Name, pluginItem.ID, assetErr)
+				break
+			}
+			childItem, persistErr = persistNewItem(h.db, createItemRequest{
+				ID:             childID,
+				RegistryID:     pluginItem.RegistryID,
+				RepoID:         pluginItem.RepoID,
+				Slug:           slug,
+				ItemType:       ss.ItemType,
+				Name:           ss.Name,
+				Description:    ss.Description,
+				Version:        ss.Version,
+				Content:        ss.Content,
+				ContentMD5:     contentMD5,
+				Metadata:       ss.Metadata,
+				SourcePath:     ss.SourcePath,
+				SourceType:     "archive",
+				CreatedBy:      createdBy,
+				ParentPluginID: &parentID,
+			}, createItemAssets{Records: assetRecords})
+			if persistErr == nil {
+				enqueueScanAsync(childItem.ID, 1, "create")
+				break
+			}
+			cleanupStorageKeys(uploadedKeys)
+			if errors.Is(persistErr, ErrSlugConflict) {
+				// Own-child adoption first: the slot holder being THIS plugin's
+				// child (any status, any source_path) means we raced another
+				// upload or migrated paths — update that row instead of
+				// suffixing a duplicate.
+				var own models.CapabilityItem
+				if err := h.db.Where("repo_id = ? AND item_type = ? AND slug = ? AND parent_plugin_id = ?", pluginItem.RepoID, ss.ItemType, slug, pluginItem.ID).First(&own).Error; err == nil {
+					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, own, ss, contentMD5, createdBy); ok {
+						childItem = updated
+						persistErr = nil
+						reconciledIDs[own.ID] = struct{}{}
+					}
+					break
+				}
+				// Legacy: an archived foreign row left on the exact same path.
+				var archived models.CapabilityItem
+				if err := h.db.Where("repo_id = ? AND item_type = ? AND slug = ? AND status = ? AND source_path = ?", pluginItem.RepoID, ss.ItemType, slug, "archived", ss.SourcePath).First(&archived).Error; err == nil {
+					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, archived, ss, contentMD5, createdBy); ok {
+						childItem = updated
+						persistErr = nil
+						reconciledIDs[archived.ID] = struct{}{}
+					}
+					break
+				}
+				continue
+			}
+			break
+		}
+		if persistErr != nil {
+			log.Printf("sub-skill promote: failed to create child skill %q for plugin %s: %v", ss.Name, pluginItem.ID, persistErr)
+			continue
+		}
+		created = append(created, childItem)
+	}
+
+	// Archive children whose source_path no longer exists in the uploaded archive.
+	for _, ch := range existing {
+		if _, ok := reconciledIDs[ch.ID]; ok {
+			continue
+		}
+		if _, ok := newPaths[ch.SourcePath]; ok {
+			continue
+		}
+		if ch.Status == "archived" {
+			continue
+		}
+		if err := h.db.Model(&models.CapabilityItem{}).Where("id = ?", ch.ID).Update("status", "archived").Error; err != nil {
+			log.Printf("sub-skill reconcile: archive failed for %s: %v", ch.ID, err)
+		}
+	}
+
+	return created
+}
+
 // createItemFromArchive handles multipart/form-data archive upload item creation.
 func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, services.MaxArchiveUploadSize)
@@ -2489,9 +3223,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		itemType = c.GetString("defaultItemType")
 	}
 	name := c.PostForm("name")
-	if name == "" && header != nil {
-		name = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
-	}
 	slug := c.PostForm("slug")
 	registryID := c.PostForm("registryId")
 	description := c.PostForm("description")
@@ -2499,8 +3230,8 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	version := c.PostForm("version")
 	createdByForm := c.PostForm("createdBy")
 
-	if itemType == "" || name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType and name are required"})
+	if itemType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType is required"})
 		return
 	}
 
@@ -2522,10 +3253,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 	if createdBy == "" {
 		createdBy = "anonymous"
-	}
-
-	if slug == "" {
-		slug = slugify(name)
 	}
 
 	if h.archiveSvc == nil {
@@ -2552,6 +3279,19 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Archive parser returned no item"})
 		return
 	}
+	if name == "" {
+		name = result.Parsed.Name
+	}
+	if name == "" && header != nil {
+		name = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+	}
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if slug == "" {
+		slug = slugify(name)
+	}
 	contentMD5, err := h.hashSvc.HashArchiveContent(result.MainPath, []byte(result.MainContent), result.Assets)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2577,8 +3317,8 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 				break
 			}
 		}
-		// Extract description from CLAUDE.md if empty
-		if description == "" && result.MainContent != "" {
+		// Extract description from CLAUDE.md if empty.
+		if description == "" && result.MainPath == "CLAUDE.md" && result.MainContent != "" {
 			description = extractFirstParagraph(result.MainContent)
 		}
 	}
@@ -2719,6 +3459,14 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create item"})
 		return
+	}
+
+	// Promote bundled sub-skills (skills/<name>/SKILL.md) into standalone skill items
+	// linked to this plugin via parent_plugin_id. Best-effort: child failures don't
+	// roll back the parent plugin (a later re-upload reconciles them).
+	if itemType == "plugin" {
+		childSkills := reconcilePluginSubSkills(h, item, result.Assets, createdBy)
+		indexSubSkillsAsync(h, childSkills)
 	}
 
 	if h.indexerSvc != nil {

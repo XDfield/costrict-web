@@ -69,9 +69,14 @@ func main() {
 		case "ingest-upstream":
 			source := ""
 			dryRun := false
+			reparse := false
 			for _, arg := range os.Args[2:] {
 				if arg == "--dry-run" {
 					dryRun = true
+					continue
+				}
+				if arg == "--reparse" {
+					reparse = true
 					continue
 				}
 				if strings.HasPrefix(arg, "--source=") {
@@ -85,7 +90,7 @@ func main() {
 			if source == "" {
 				log.Fatalf("Missing source. Use --source=<url|tarball|dir>")
 			}
-			if err := ingestUpstreamCatalog(db, source, dryRun); err != nil {
+			if err := ingestUpstreamCatalog(db, source, dryRun, reparse); err != nil {
 				log.Fatalf("Failed to ingest upstream catalog: %v", err)
 			}
 			return
@@ -228,7 +233,7 @@ func printMigrateHelp() {
 	fmt.Println("                                                Backfill legacy user IDs to subject_id")
 	fmt.Println("  go run ./cmd/migrate user-external-identities [--dry-run]")
 	fmt.Println("                                                Backfill users.external_key/auth_provider/provider_user_id/phone")
-	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=<url|tarball|dir> [--dry-run]")
+	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=<url|tarball|dir> [--dry-run] [--reparse]")
 	fmt.Println("                                                Pull the upstream catalog bundle (built by")
 	fmt.Println("                                                costrict-skills-repo's scripts/build_catalog_bundle.py)")
 	fmt.Println("                                                and reconcile capability_items in one pass.")
@@ -250,7 +255,7 @@ func printMigrateHelp() {
 // importEverythingAICoding + backfillCatalogMetadata combo. It dispatches
 // to services.CatalogIngestService which understands the bundle format
 // directly (no git, no fake registry).
-func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
+func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) error {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		return fmt.Errorf("source is empty")
@@ -277,10 +282,12 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
 		healthEvalDDL := []string{
 			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS health jsonb DEFAULT '{}'`,
 			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS evaluation jsonb DEFAULT '{}'`,
+			// Sub-skill provenance: ingest links bundled sub-skills back to their parent plugin.
+			`ALTER TABLE capability_items ADD COLUMN IF NOT EXISTS parent_plugin_id uuid`,
 		}
 		for _, stmt := range healthEvalDDL {
 			if err := db.Exec(stmt).Error; err != nil {
-				return fmt.Errorf("ensure health/evaluation columns before ingest: %w", err)
+				return fmt.Errorf("ensure health/evaluation/parent_plugin_id columns before ingest: %w", err)
 			}
 		}
 	}
@@ -316,6 +323,7 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun bool) error {
 	result, err := svc.Ingest(context.Background(), src, services.IngestOptions{
 		DryRun:      dryRun,
 		TriggerUser: "system",
+		Reparse:     reparse,
 	})
 	if err != nil {
 		return err
