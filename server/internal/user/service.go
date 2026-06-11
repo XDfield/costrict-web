@@ -69,6 +69,14 @@ func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 	return &user, nil
 }
 
+// UpdateUniversalID updates a user's CasdoorUniversalID by their local subject_id.
+func (s *UserService) UpdateUniversalID(subjectID, universalID string) error {
+	if subjectID == "" || universalID == "" {
+		return fmt.Errorf("subject_id and universal_id are required")
+	}
+	return s.db.Model(&models.User{}).Where("subject_id = ?", subjectID).Update("casdoor_universal_id", universalID).Error
+}
+
 // GetUsersByIDs retrieves multiple users by their IDs
 func (s *UserService) GetUsersByIDs(userIDs []string) (map[string]*models.User, error) {
 	if len(userIDs) == 0 {

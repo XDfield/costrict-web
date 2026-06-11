@@ -227,8 +227,13 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 		}
 	}
 	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(user.SubjectID)
+	// ID should always reflect the stable Casdoor universal_id when available.
+	id := user.SubjectID
+	if user.CasdoorUniversalID != nil && *user.CasdoorUniversalID != "" {
+		id = *user.CasdoorUniversalID
+	}
 	return authUserDTO{
-		ID:                 user.SubjectID,
+		ID:                 id,
 		SubjectID:          user.SubjectID,
 		Name:               name,
 		Username:           user.Username,
@@ -246,14 +251,7 @@ func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
 	if claims.PreferredUsername != "" {
 		name = claims.PreferredUsername
 	}
-	// Fallback chain: universal_id → sub → id
 	userID := claims.UniversalID
-	if userID == "" {
-		userID = claims.Sub
-	}
-	if userID == "" {
-		userID = claims.ID
-	}
 	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(userID)
 	return authUserDTO{
 		ID:                 userID,
@@ -571,6 +569,16 @@ func GetCurrentUser(c *gin.Context) {
 			user, err = UserModule.Service.GetUserByID(currentUserID)
 		}
 		if err == nil && user != nil {
+			// Runtime backfill: if casdoor_universal_id is empty but token has it, update DB
+			if (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID == "") && UserModule.Service != nil {
+				if authClaimsRaw, exists := c.Get(middleware.AuthClaimsKey); exists {
+					if authClaims, ok := authClaimsRaw.(middleware.AuthClaims); ok && authClaims.UniversalID != "" {
+						if updateErr := UserModule.Service.UpdateUniversalID(user.SubjectID, authClaims.UniversalID); updateErr == nil {
+							user.CasdoorUniversalID = &authClaims.UniversalID
+						}
+					}
+				}
+			}
 			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
 			return
 		}
@@ -605,6 +613,12 @@ func GetCurrentUser(c *gin.Context) {
 	if UserModule != nil && UserModule.Service != nil {
 		// Try to find existing user only (read-only), don't create
 		if user, userErr := UserModule.Service.FindUserByClaims(claims); userErr == nil && user != nil {
+			// Runtime backfill: if casdoor_universal_id is empty but claims have it, update DB
+			if (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID == "") && claims.UniversalID != "" {
+				if updateErr := UserModule.Service.UpdateUniversalID(user.SubjectID, claims.UniversalID); updateErr == nil {
+					user.CasdoorUniversalID = &claims.UniversalID
+				}
+			}
 			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
 			return
 		}
