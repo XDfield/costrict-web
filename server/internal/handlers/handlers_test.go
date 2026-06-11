@@ -135,8 +135,11 @@ func TestGetCurrentUserReturnsLocalSubjectUser(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.User.ID != "usr_local_1" || body.User.SubjectID != "usr_local_1" {
-		t.Fatalf("expected subject_id based response, got %+v", body.User)
+	if body.User.ID != casdoorUniversalID {
+		t.Fatalf("expected id=%s, got %+v", casdoorUniversalID, body.User)
+	}
+	if body.User.SubjectID != "usr_local_1" {
+		t.Fatalf("expected subjectId=usr_local_1, got %+v", body.User)
 	}
 	if body.User.Name != "Alice" || body.User.Username != "alice" {
 		t.Fatalf("unexpected name fields: %+v", body.User)

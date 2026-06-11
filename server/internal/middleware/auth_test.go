@@ -286,8 +286,8 @@ func TestParseJWTToken_MissingSubClaim(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing sub claim, got nil")
 	}
-	if got := err.Error(); got != "no id, sub or universal_id in token" {
-		t.Errorf("expected 'no id, sub or universal_id in token', got %q", got)
+	if got := err.Error(); got != "no sub, universal_id or id in token" {
+		t.Errorf("expected 'no sub, universal_id or id in token', got %q", got)
 	}
 }
 
@@ -307,8 +307,11 @@ func TestParseJWTToken_UniversalIDFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if info.Sub != "uid-456" {
-		t.Errorf("expected sub 'uid-456' from universal_id fallback, got %q", info.Sub)
+	if info.Sub != "" {
+		t.Errorf("expected empty sub (no backfill), got %q", info.Sub)
+	}
+	if info.UniversalID != "uid-456" {
+		t.Errorf("expected universal_id 'uid-456', got %q", info.UniversalID)
 	}
 }
 

@@ -203,27 +203,20 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	}
 
 	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
-	sub := normalized.UniversalID
-	if sub == "" {
-		sub = normalized.Sub
-	}
-	if sub == "" {
-		sub = normalized.ID
-	}
-	if sub == "" {
-		return nil, fmt.Errorf("no id, sub or universal_id in token")
+	if normalized.Sub == "" && normalized.UniversalID == "" && normalized.ID == "" {
+		return nil, fmt.Errorf("no sub, universal_id or id in token")
 	}
 
 	return &CasdoorUserInfo{
-		ID:               normalized.ID,
-		Sub:              sub,
-		UniversalID:      normalized.UniversalID,
-		Name:             normalized.Name,
+		ID:                normalized.ID,
+		Sub:               normalized.Sub,
+		UniversalID:       normalized.UniversalID,
+		Name:              normalized.Name,
 		PreferredUsername: normalized.PreferredUsername,
-		Email:            normalized.Email,
-		Provider:         normalized.Provider,
-		ProviderUserID:   normalized.ProviderUserID,
-		Phone:            normalized.Phone,
+		Email:             normalized.Email,
+		Provider:          normalized.Provider,
+		ProviderUserID:    normalized.ProviderUserID,
+		Phone:             normalized.Phone,
 	}, nil
 }
 
@@ -289,6 +282,9 @@ func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*Casd
 
 func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	userID := userInfo.Sub
+	if userID == "" {
+		userID = userInfo.UniversalID
+	}
 	userName := userInfo.PreferredUsername
 	authClaims := AuthClaims{
 		ID:                userInfo.ID,
