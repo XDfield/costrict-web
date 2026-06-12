@@ -560,7 +560,20 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			shouldUpdate = true
 		}
 
+
 		// Check if any critical fields need updating
+		// Determine the best provider rank from existing identities for DisplayName protection.
+		// This must be computed before any field mutations so the baseline is stable.
+		bestExistingRank := 0
+		var existingIdentities []models.UserAuthIdentity
+		if err := s.db.Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
+			for _, id := range existingIdentities {
+				if r := providerRank(id.Provider); r > bestExistingRank {
+					bestExistingRank = r
+				}
+			}
+		}
+
 		if user.SubjectID == "" {
 			user.SubjectID = subjectID
 			shouldUpdate = true
@@ -599,11 +612,10 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
 			// Only overwrite DisplayName if no value exists yet, or the current
-			// login provider ranks >= the stored AuthProvider. This prevents a
+			// login provider ranks >= the best existing identity. This prevents a
 			// lower-ranked provider (e.g. phone) from clobbering a name set by
 			// a higher-ranked one (e.g. IDTrust).
-			currentRank := providerRank(ptrString(user.AuthProvider))
-			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= currentRank {
+			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= bestExistingRank {
 				user.DisplayName = &claims.PreferredUsername
 				shouldUpdate = true
 			}
@@ -619,6 +631,42 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
 			user.AvatarURL = &claims.Picture
 			shouldUpdate = true
+		}
+
+		// Calibrate display fields against the best existing identity to fix
+		// historical dirty data caused by the previous AuthProvider-based protection bug.
+		if len(existingIdentities) > 0 {
+			var existingPtrs []*models.UserAuthIdentity
+			for idx := range existingIdentities {
+				existingPtrs = append(existingPtrs, &existingIdentities[idx])
+			}
+			bestIdentity := selectBestPrimary(existingPtrs)
+			if bestIdentity != nil {
+				if bestDN := ptrString(bestIdentity.DisplayName); bestDN != "" {
+					if providerRank(claims.Provider) < bestExistingRank && (user.DisplayName == nil || *user.DisplayName != bestDN) {
+						user.DisplayName = &bestDN
+						shouldUpdate = true
+					}
+				}
+				if bestEmail := ptrString(bestIdentity.Email); bestEmail != "" && strings.Contains(bestEmail, "@") {
+					if user.Email == nil || *user.Email != bestEmail {
+						user.Email = &bestEmail
+						shouldUpdate = true
+					}
+				}
+				if bestPhone := ptrString(bestIdentity.Phone); bestPhone != "" {
+					if user.Phone == nil || *user.Phone != bestPhone {
+						user.Phone = &bestPhone
+						shouldUpdate = true
+					}
+				}
+				if bestAvatar := ptrString(bestIdentity.AvatarURL); bestAvatar != "" {
+					if user.AvatarURL == nil || *user.AvatarURL != bestAvatar {
+						user.AvatarURL = &bestAvatar
+						shouldUpdate = true
+					}
+				}
+			}
 		}
 
 		if shouldUpdate {
