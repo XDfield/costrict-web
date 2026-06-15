@@ -2,15 +2,16 @@ package channel
 
 import (
 	"context"
-	"fmt"
 )
 
 type MessageHandler interface {
 	Handle(ctx context.Context, msg *InboundMessage, sender Sender) error
 }
 
-type EchoMessageHandler struct{}
+// NoopMessageHandler does nothing when receiving messages
+type NoopMessageHandler struct{}
 
-func (h *EchoMessageHandler) Handle(_ context.Context, msg *InboundMessage, sender Sender) error {
-	return sender.Send(context.Background(), fmt.Sprintf("[Echo] %s", msg.Content))
+func (h *NoopMessageHandler) Handle(_ context.Context, msg *InboundMessage, sender Sender) error {
+	// No-op: message is logged but no automatic response is sent
+	return nil
 }

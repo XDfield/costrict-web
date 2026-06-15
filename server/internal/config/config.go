@@ -63,9 +63,12 @@ type DeptSyncConfig struct {
 type ChannelSystemConfig struct {
 	EnabledTypes []string // Deprecated; use individual enabled flags below
 	WeCom        WeComSystemConfig
+	WeComBot     WeComBotSystemConfig
 	// Individual channel enable flags (system-level availability)
+	WebhookEnabled      bool `mapstructure:"CHANNEL_WEBHOOK_ENABLED"`
 	WeComEnabled        bool `mapstructure:"CHANNEL_WECOM_ENABLED"`
 	WeComWebhookEnabled bool `mapstructure:"CHANNEL_WECOM_WEBHOOK_ENABLED"`
+	WeComBotEnabled     bool `mapstructure:"CHANNEL_WECOM_BOT_ENABLED"`
 	WeChatEnabled       bool `mapstructure:"CHANNEL_WECHAT_ENABLED"`
 }
 
@@ -75,6 +78,11 @@ type WeComSystemConfig struct {
 	Secret         string
 	Token          string
 	EncodingAESKey string
+}
+
+type WeComBotSystemConfig struct {
+	ProxyURL  string
+	AuthToken string
 }
 
 type CasdoorConfig struct {
@@ -188,14 +196,20 @@ func Load() *Config {
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
+				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", true),
 			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", true),
 			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", true),
+			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
 			WeCom: WeComSystemConfig{
 				CorpID:         getEnv("WECOM_CORP_ID", ""),
 				AgentID:        getEnvInt("WECOM_AGENT_ID", 0),
 				Secret:         getEnv("WECOM_SECRET", ""),
 				Token:          getEnv("WECOM_TOKEN", ""),
 				EncodingAESKey: getEnv("WECOM_ENCODING_AES_KEY", ""),
+			},
+			WeComBot: WeComBotSystemConfig{
+				ProxyURL:  getEnv("WECOM_BOT_PROXY_URL", ""),
+				AuthToken: getEnv("WECOM_BOT_PROXY_AUTH_TOKEN", ""),
 			},
 		},
 	}

@@ -30,6 +30,7 @@ type ChannelService struct {
 	weComEnabled        bool
 	weComWebhookEnabled bool
 	weChatEnabled       bool
+	weComBotEnabled     bool
 	actionHandler       ActionCallbackHandler
 }
 
@@ -43,7 +44,7 @@ func (s *ChannelService) SetReplyContextStore(store ReplyContextStore) {
 	s.sessionStore = store
 }
 
-func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *ChannelService {
+func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled, weComBotEnabled bool) *ChannelService {
 	adapters := make(map[string]ChannelAdapter)
 	// 只注册系统级别启用的适配器
 	for k, a := range adapterRegistry {
@@ -59,6 +60,10 @@ func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string,
 			}
 		case "wechat":
 			if !weChatEnabled {
+				continue
+			}
+		case "wecom-bot":
+			if !weComBotEnabled {
 				continue
 			}
 		}
@@ -81,6 +86,7 @@ func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string,
 		weComEnabled:        weComEnabled,
 		weComWebhookEnabled: weComWebhookEnabled,
 		weChatEnabled:       weChatEnabled,
+		weComBotEnabled:     weComBotEnabled,
 	}
 }
 
