@@ -1,0 +1,29 @@
+# Config files
+config.yaml
+config.yaml.local
+
+# Environment
+.env
+.env.local
+
+# Build artifacts
+wecom-bot-proxy
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
