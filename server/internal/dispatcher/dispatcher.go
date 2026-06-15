@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
@@ -30,17 +32,23 @@ type Dispatcher struct {
 	store           *notification.Store
 	notificationSvc *notification.NotificationService
 	wecomAdapter    *wecom.WeComAdapter
+	wecomBotAdapter interface{} // Will be set to *wecombot.WeComBotAdapter if available
+	weComEnabled    bool
+	weComBotEnabled bool
 	gwClient        *gateway.Client
 	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
 }
 
-func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
+func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, wecomBotAdapter interface{}, weComEnabled, weComBotEnabled bool, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
 	return &Dispatcher{
 		db:              db,
 		store:           store,
 		notificationSvc: notificationSvc,
 		wecomAdapter:    wecomAdapter,
+		wecomBotAdapter: wecomBotAdapter,
+		weComEnabled:    weComEnabled,
+		weComBotEnabled: weComBotEnabled,
 		gwClient:        gwClient,
 		gwRegistry:      gwRegistry,
 		appURL:          appURL,
@@ -198,7 +206,7 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 	cardData["button_list"] = buttons
 	d.updateNotificationData(n.ActionToken, info.Title, cardData)
 
-	if d.wecomAdapter != nil {
+	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
 		sessionURL := d.buildSessionURL(input)
 		taskID := fmt.Sprintf("perm_%s_%d", input.SessionID, time.Now().UnixMilli())
 		card := wecom.InteractiveCard{
@@ -209,7 +217,13 @@ func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
 			HorizontalContentList: info.HorizontalItems,
 			Buttons:             buttons,
 		}
-		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
+		var err error
+		if d.weComBotEnabled && d.wecomBotAdapter != nil {
+			err = d.sendWecomBotCard(wecomUserID, card, taskID)
+		} else if d.weComEnabled && d.wecomAdapter != nil {
+			err = d.wecomAdapter.SendInteractiveCard(context.Background(), wecomUserID, card, taskID)
+		}
+		if err != nil {
 			slog.Error("[dispatcher] send wecom approval card failed", "error", err)
 		}
 	}
@@ -289,7 +303,7 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 	cardData["submit_button"] = submitBtn
 	d.updateNotificationData(n.ActionToken, title, cardData)
 
-	if d.wecomAdapter != nil {
+	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
 		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
 		voteCard := wecom.VoteCard{
 			Title:        title,
@@ -298,7 +312,13 @@ func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string,
 			SubmitButton: submitBtn,
 			ReplaceText:  "已提交",
 		}
-		if err := d.wecomAdapter.SendVoteCard(nil, wecomUserID, voteCard, taskID); err != nil {
+		var err error
+		if d.weComBotEnabled && d.wecomBotAdapter != nil {
+			err = d.sendWecomBotVoteCard(wecomUserID, voteCard, taskID)
+		} else if d.weComEnabled && d.wecomAdapter != nil {
+			err = d.wecomAdapter.SendVoteCard(context.Background(), wecomUserID, voteCard, taskID)
+		}
+		if err != nil {
 			slog.Error("[dispatcher] send wecom question card failed", "index", questionIndex, "error", err)
 		}
 	}
@@ -353,7 +373,7 @@ func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, i
 		d.updateNotificationData(n.ActionToken, title, cardData)
 	}
 
-	if d.wecomAdapter != nil {
+	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
 		taskID := fmt.Sprintf("guide_%s_%d", input.SessionID, time.Now().UnixMilli())
 		card := wecom.InteractiveCard{
 			Title:       title,
@@ -361,7 +381,13 @@ func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, i
 			URL:         url,
 			Buttons:     buttons,
 		}
-		if err := d.wecomAdapter.SendInteractiveCard(nil, wecomUserID, card, taskID); err != nil {
+		var err error
+		if d.weComBotEnabled && d.wecomBotAdapter != nil {
+			err = d.sendWecomBotCard(wecomUserID, card, taskID)
+		} else if d.weComEnabled && d.wecomAdapter != nil {
+			err = d.wecomAdapter.SendInteractiveCard(context.Background(), wecomUserID, card, taskID)
+		}
+		if err != nil {
 			slog.Error("[dispatcher] send wecom guidance card failed", "error", err)
 		}
 	}
@@ -535,7 +561,7 @@ func (d *Dispatcher) fetchSessionTitle(input DispatchInput) string {
 }
 
 func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID string, title string, subTitle string) {
-	if d.wecomAdapter == nil {
+	if d.wecomAdapter == nil && d.wecomBotAdapter == nil {
 		return
 	}
 	sessionURL := d.buildSessionURL(input)
@@ -559,7 +585,13 @@ func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID stri
 			{Title: "点击跳转到会话页面查看", URL: sessionURL},
 		},
 	}
-	if err := d.wecomAdapter.SendTextNoticeCard(nil, wecomUserID, card, taskID); err != nil {
+	var err error
+	if d.weComBotEnabled && d.wecomBotAdapter != nil {
+		err = d.sendWecomBotTextNoticeCard(wecomUserID, card, taskID)
+	} else if d.weComEnabled && d.wecomAdapter != nil {
+		err = d.wecomAdapter.SendTextNoticeCard(context.Background(), wecomUserID, card, taskID)
+	}
+	if err != nil {
 		slog.Error("[dispatcher] send wecom session notice card failed", "error", err)
 	}
 }
@@ -743,4 +775,47 @@ func strVal(m map[string]any, key string) string {
 func mustMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// sendWecomBotCard sends interactive card via wecom-bot adapter if available
+func (d *Dispatcher) sendWecomBotCard(userID string, card wecom.InteractiveCard, taskID string) error {
+	if d.wecomBotAdapter == nil {
+		return fmt.Errorf("wecom-bot adapter not available")
+	}
+
+	// Type assertion to wecom-bot adapter
+	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
+	if !ok {
+		return fmt.Errorf("invalid wecom-bot adapter type")
+	}
+
+	return adapter.SendInteractiveCard(context.Background(), userID, card, taskID)
+}
+
+// sendWecomBotVoteCard sends vote card via wecom-bot adapter if available
+func (d *Dispatcher) sendWecomBotVoteCard(userID string, card wecom.VoteCard, taskID string) error {
+	if d.wecomBotAdapter == nil {
+		return fmt.Errorf("wecom-bot adapter not available")
+	}
+
+	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
+	if !ok {
+		return fmt.Errorf("invalid wecom-bot adapter type")
+	}
+
+	return adapter.SendVoteCard(context.Background(), userID, card, taskID)
+}
+
+// sendWecomBotTextNoticeCard sends text notice card via wecom-bot adapter if available
+func (d *Dispatcher) sendWecomBotTextNoticeCard(userID string, card wecom.TextNoticeCard, taskID string) error {
+	if d.wecomBotAdapter == nil {
+		return fmt.Errorf("wecom-bot adapter not available")
+	}
+
+	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
+	if !ok {
+		return fmt.Errorf("invalid wecom-bot adapter type")
+	}
+
+	return adapter.SendTextNoticeCard(context.Background(), userID, card, taskID)
 }

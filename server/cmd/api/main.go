@@ -38,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -498,7 +499,7 @@ func main() {
 
 			authzModule.RegisterAPIRoutes(authed)
 
-			notificationModule := notification.New(db, cfg.AppURL)
+			notificationModule := notification.New(db, cfg.AppURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
@@ -538,7 +539,8 @@ func main() {
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
-			channelModule = channel.New(db, &channel.EchoMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
+			channel.RegisterAdapter(wecombot.NewWeComBotAdapter(cfg.Channels.WeComBot))
+			channelModule = channel.New(db, &channel.NoopMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled, cfg.Channels.WeComBotEnabled)
 			channelModule.Service.SetReplyContextStore(channel.NewPostgresReplyContextStore(db))
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
@@ -628,7 +630,7 @@ func main() {
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 
-	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
+	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled)
 	distSvc.SetNotificationService(notificationSvc)
 
 	notificationStore := notification.NewStore(db)
@@ -639,7 +641,13 @@ func main() {
 		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
+	// Get wecom-bot adapter if available
+	var wecomBotAdapterForDispatcher interface{}
+	if a, ok := channel.GetAdapter("wecom-bot"); ok {
+		wecomBotAdapterForDispatcher = a
+	}
+
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry)
 
 	// Create cloud module before action handlers so closures can reference it
 	cloudModule = cloud.New(gatewayRegistry, gatewayClient)
