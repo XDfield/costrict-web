@@ -98,6 +98,23 @@ type ChannelConfig struct {
 	DeletedAt       gorm.DeletedAt `gorm:"index"                                          json:"-"`
 }
 
+// EnterpriseCustomer 大客户品牌配置（平台管理员配置）。一行 = 一个大客户。
+// AccountIDs 为 jsonb 字符串数组，存的是 users.subject_id 列表（与 CapabilityItem.CreatedBy、
+// UserSystemRole.UserID 同口径）；前端 matchEnterprise(item.createdBy) 用其命中渲染大客户标识。
+// Logo 存 base64 data URI（避免前端 canvas 抽主题色时跨域污染）。
+type EnterpriseCustomer struct {
+	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	Name       string         `gorm:"not null"                                       json:"name"`
+	Logo       string         `gorm:"type:text;not null"                             json:"logo"`                // base64 data URI
+	AccountIDs datatypes.JSON `gorm:"column:account_ids;type:jsonb;not null;default:'[]'" json:"-"`              // ["usr_a",...] = users.subject_id 列表
+	CreatedBy  *string        `gorm:"size:191"                                       json:"createdBy,omitempty"` // 操作者 subject_id
+	CreatedAt  time.Time      `                                                      json:"createdAt"`
+	UpdatedAt  time.Time      `                                                      json:"updatedAt"`
+	DeletedAt  gorm.DeletedAt `gorm:"index"                                          json:"-"`
+}
+
+func (EnterpriseCustomer) TableName() string { return "enterprise_customers" }
+
 type DeviceRelease struct {
 	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Version      string    `gorm:"not null;uniqueIndex:idx_release_version_platform" json:"version"`
