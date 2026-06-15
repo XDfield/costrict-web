@@ -90,6 +90,8 @@ func CreateEnterpriseCustomerHandler(svc *Service) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name and logo are required"})
 			case errors.Is(err, ErrLogoTooLarge):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "logo too large or not an image data uri"})
+			case errors.Is(err, ErrLogoInvalid):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "logo is not a valid base64 image data uri"})
 			case errors.Is(err, ErrNameTooLong):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name too long"})
 			default:
@@ -144,6 +146,8 @@ func UpdateEnterpriseCustomerHandler(svc *Service) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name and logo are required"})
 			case errors.Is(err, ErrLogoTooLarge):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "logo too large or not an image data uri"})
+			case errors.Is(err, ErrLogoInvalid):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "logo is not a valid base64 image data uri"})
 			case errors.Is(err, ErrNameTooLong):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "name too long"})
 			case errors.Is(err, ErrEnterpriseCustomerNotFound):

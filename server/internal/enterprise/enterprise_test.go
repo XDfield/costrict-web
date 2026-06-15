@@ -25,7 +25,16 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 
-	db.Exec(`CREATE TABLE enterprise_customers (
+	// Pin the pool to a single connection so every query in a test hits the same
+	// :memory: database. With the default pool a second connection opens a fresh,
+	// empty :memory: db and the hand-created table vanishes ("no such table").
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("failed to get underlying sql.DB: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
+	if err := db.Exec(`CREATE TABLE enterprise_customers (
 		id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
 		name TEXT NOT NULL,
 		logo TEXT NOT NULL,
@@ -34,7 +43,9 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		created_at DATETIME,
 		updated_at DATETIME,
 		deleted_at DATETIME
-	)`)
+	)`).Error; err != nil {
+		t.Fatalf("failed to create enterprise_customers table: %v", err)
+	}
 
 	return db
 }
@@ -103,6 +114,8 @@ func TestService_Create_Validation(t *testing.T) {
 		{"logo not data:image prefix", "Acme", "http://x/a.png", ErrLogoTooLarge},
 		{"logo too large", "Acme", logoDataURIPrefix + strings.Repeat("A", MaxLogoBytes), ErrLogoTooLarge},
 		{"name too long", strings.Repeat("n", MaxNameBytes+1), validLogo, ErrNameTooLong},
+		{"logo bad base64 payload", "Acme", "data:image/png;base64,!!!notbase64!!!", ErrLogoInvalid},
+		{"logo missing base64 marker", "Acme", "data:image/png,rawdata", ErrLogoInvalid},
 	}
 
 	for _, tc := range cases {
@@ -133,7 +146,7 @@ func TestService_Update(t *testing.T) {
 		t.Fatalf("Create returned error: %v", err)
 	}
 
-	newLogo := "data:image/jpeg;base64,/9j/4AAQ="
+	newLogo := "data:image/jpeg;base64,/9j/4AAQ"
 	updated, err := svc.Update(created.ID, "Acme Renamed", newLogo, []string{"usr_uuid_2", "usr_uuid_3"})
 	if err != nil {
 		t.Fatalf("Update returned error: %v", err)

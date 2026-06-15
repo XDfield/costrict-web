@@ -1,6 +1,7 @@
 package enterprise
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -33,6 +34,9 @@ var (
 	ErrLogoTooLarge = errors.New("logo too large or not an image data uri")
 	// ErrNameTooLong is returned when the name exceeds MaxNameBytes.
 	ErrNameTooLong = errors.New("name too long")
+	// ErrLogoInvalid is returned when the logo is not a valid base64 image data
+	// URI (missing the ";base64," marker or carrying an undecodable payload).
+	ErrLogoInvalid = errors.New("logo is not a valid base64 image data uri")
 )
 
 // validateCustomerInput enforces the shared write-side rules for Create/Update:
@@ -48,6 +52,17 @@ func validateCustomerInput(name, logo string) error {
 	}
 	if len(logo) > MaxLogoBytes || !strings.HasPrefix(logo, logoDataURIPrefix) {
 		return ErrLogoTooLarge
+	}
+	// The logo must be a base64-encoded data URI: locate the ";base64," marker and
+	// verify the payload actually decodes. Run this after the length/prefix checks
+	// so an oversized logo still fails with ErrLogoTooLarge.
+	idx := strings.Index(logo, ";base64,")
+	if idx < 0 {
+		return ErrLogoInvalid
+	}
+	payload := logo[idx+len(";base64,"):]
+	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+		return ErrLogoInvalid
 	}
 	return nil
 }
