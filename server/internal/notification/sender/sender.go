@@ -8,6 +8,7 @@ type NotificationMessage struct {
 	EventType string         `json:"eventType"`
 	SessionID string         `json:"sessionId,omitempty"`
 	DeviceID  string         `json:"deviceId,omitempty"`
+	UserID    string         `json:"userId,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
@@ -21,12 +22,13 @@ type ChannelSender interface {
 
 // ConfigField 用户配置字段描述（供前端渲染表单）
 type ConfigField struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Type        string `json:"type"`     // "text" | "password" | "url"
-	Required    bool   `json:"required"`
-	Placeholder string `json:"placeholder,omitempty"`
-	HelpText    string `json:"helpText,omitempty"`
+	Key          string      `json:"key"`
+	Label        string      `json:"label"`
+	Type         string      `json:"type"`           // "text" | "password" | "url"
+	Required     bool        `json:"required"`
+	Placeholder  string      `json:"placeholder,omitempty"`
+	HelpText     string      `json:"helpText,omitempty"`
+	DefaultValue interface{} `json:"defaultValue,omitempty"`
 }
 
 var registry = map[string]ChannelSender{}

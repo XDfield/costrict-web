@@ -10,18 +10,67 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
 	"github.com/costrict/costrict-web/server/internal/pathutil"
+	"github.com/lib/pq"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 type NotificationService struct {
 	db           *gorm.DB
 	cloudBaseURL string
+	// System-level channel availability controls
+	webhookEnabled  bool
+	weComEnabled    bool
+	weComBotEnabled bool
 }
 
-func NewNotificationService(db *gorm.DB, cloudBaseURL string) *NotificationService {
+func NewNotificationService(db *gorm.DB, cloudBaseURL string, webhookEnabled, weComEnabled, weComBotEnabled bool) *NotificationService {
 	sender.Register(sender.NewWeComSender())
 	sender.Register(sender.NewWebhookSender())
-	return &NotificationService{db: db, cloudBaseURL: cloudBaseURL}
+	sender.Register(sender.NewWeComBotSender())
+	return &NotificationService{
+		db:              db,
+		cloudBaseURL:    cloudBaseURL,
+		webhookEnabled:  webhookEnabled,
+		weComEnabled:    weComEnabled,
+		weComBotEnabled: weComBotEnabled,
+	}
+}
+
+// ensureWeComBotChannel ensures that the user has a wecom-bot notification channel
+// If it doesn't exist, it creates one with default configuration
+func (s *NotificationService) ensureWeComBotChannel(userID string) error {
+	// Check if user already has a wecom-bot channel
+	var existingChannel models.UserNotificationChannel
+	err := s.db.Where("user_id = ? AND channel_type = ? AND deleted_at IS NULL", userID, "wecom-bot").
+		First(&existingChannel).Error
+
+	if err == nil {
+		// Channel already exists, no need to create
+		return nil
+	}
+
+	if err != gorm.ErrRecordNotFound {
+		// Database error
+		return err
+	}
+
+	// Channel doesn't exist, create default wecom-bot channel
+	channel := models.UserNotificationChannel{
+		UserID:        userID,
+		ChannelType:   "wecom-bot",
+		Name:          "企微机器人",
+		Enabled:       true,
+		UserConfig:    datatypes.JSON(`{"enabled":true}`),
+		TriggerEvents: pq.StringArray{"permission", "question", "idle"},
+		// SystemChannelID is left empty (zero value) for wecom-bot
+	}
+
+	if err := s.db.Create(&channel).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type sessionInfo struct {
@@ -200,12 +249,33 @@ func (s *NotificationService) send(userID, eventType string, msg sender.Notifica
 	}
 
 	for _, ch := range channels {
+		// Check system-level channel availability control
+		var isSystemEnabled bool
+		switch ch.ChannelType {
+		case "webhook":
+			isSystemEnabled = s.webhookEnabled
+		case "wecom":
+			isSystemEnabled = s.weComEnabled
+		case "wecom-bot":
+			isSystemEnabled = s.weComBotEnabled
+		default:
+			// For unknown channel types, assume disabled
+			isSystemEnabled = false
+		}
+
+		if !isSystemEnabled {
+			slog.Info("channel type disabled at system level, skipping",
+				"userID", userID, "channelType", ch.ChannelType, "eventType", eventType)
+			continue
+		}
+
 		snd, ok := sender.Get(ch.ChannelType)
 		if !ok {
 			continue
 		}
 
 		sentAt := time.Now()
+		msg.UserID = userID
 		err := snd.Send(json.RawMessage(ch.UserConfig), msg)
 
 		logEntry := models.NotificationLog{
@@ -250,6 +320,7 @@ func (s *NotificationService) SendTest(userChannelID, userID string) error {
 		Title:     "测试通知",
 		Body:      "这是一条来自 CoStrict 的测试通知",
 		EventType: "test",
+		UserID:    userID,
 	}
 
 	return snd.Send(json.RawMessage(ch.UserConfig), msg)
@@ -278,14 +349,26 @@ func (s *NotificationService) ListLogs(userChannelID, userID string, limit int) 
 }
 
 func (s *NotificationService) GetAvailableChannelTypes() []map[string]any {
+	// Map of system-level availability controls
+	channelEnabled := map[string]bool{
+		"webhook":    s.webhookEnabled,
+		"wecom":      s.weComEnabled,
+		"wecom-bot":  s.weComBotEnabled,
+	}
+
 	var systemChannels []models.SystemNotificationChannel
 	s.db.Where("enabled = true AND deleted_at IS NULL").Find(&systemChannels)
 
 	result := make([]map[string]any, 0, len(systemChannels)+1)
 	seen := map[string]bool{}
 
+	// First, add system channels that are both enabled and have config
 	for _, sc := range systemChannels {
 		if seen[sc.Type] {
+			continue
+		}
+		// Check system-level availability
+		if enabled, ok := channelEnabled[sc.Type]; !ok || !enabled {
 			continue
 		}
 		seen[sc.Type] = true
@@ -303,13 +386,31 @@ func (s *NotificationService) GetAvailableChannelTypes() []map[string]any {
 		})
 	}
 
-	if webhookSnd, ok := sender.Get("webhook"); ok && !seen["webhook"] {
+	// Then, add built-in channels that are enabled but not seen in system channels
+	for channelType, enabled := range channelEnabled {
+		if !enabled || seen[channelType] {
+			continue
+		}
+
+		snd, ok := sender.Get(channelType)
+		if !ok {
+			continue
+		}
+
+		// Use default names for built-in channels
+		name := map[string]string{
+			"webhook":   "自定义 Webhook",
+			"wecom":     "企微应用通知",
+			"wecom-bot": "企微机器人",
+		}[channelType]
+
 		result = append(result, map[string]any{
 			"systemChannelId": "",
-			"type":            "webhook",
-			"name":            "自定义 Webhook",
-			"schema":          webhookSnd.UserConfigSchema(),
+			"type":            channelType,
+			"name":            name,
+			"schema":          snd.UserConfigSchema(),
 		})
+		seen[channelType] = true
 	}
 
 	return result
