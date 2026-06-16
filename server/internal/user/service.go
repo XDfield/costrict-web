@@ -34,6 +34,12 @@ type UserService struct {
 	db            *gorm.DB
 	syncInterval  time.Duration
 	onUserUpdated func(userSubjectID string)
+	// postLoginHook runs after a user is successfully fetched or created in
+	// GetOrCreateUser (covering both the OAuth callback and JWKS-middleware login
+	// paths). Injected from main.go (mirroring SetSubjectResolver) so the user
+	// package needs no systemrole dependency. Must be best-effort and never block
+	// login. nil = no hook (default behaviour unchanged).
+	postLoginHook func(*models.User)
 }
 
 // NewUserService creates a new UserService instance
@@ -56,6 +62,19 @@ func (s *UserService) SetOnUserUpdated(fn func(userSubjectID string)) {
 func (s *UserService) notifyUserUpdated(userSubjectID string) {
 	if s.onUserUpdated != nil {
 		s.onUserUpdated(userSubjectID)
+	}
+}
+
+// SetPostLoginHook installs a hook run after every successful GetOrCreateUser.
+// Used to wire bootstrap platform-admin granting without the user package
+// importing systemrole (cycle avoidance). The hook must be best-effort.
+func (s *UserService) SetPostLoginHook(fn func(*models.User)) {
+	s.postLoginHook = fn
+}
+
+func (s *UserService) runPostLoginHook(u *models.User) {
+	if s.postLoginHook != nil && u != nil {
+		s.postLoginHook(u)
 	}
 }
 
@@ -423,9 +442,25 @@ func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, er
 	return users, err
 }
 
-// GetOrCreateUser retrieves or creates a user based on JWT claims
-// This should be called during login callback, not on every API request
+// GetOrCreateUser retrieves or creates a user based on JWT claims.
+// This should be called during login callback, not on every API request.
+//
+// It is the single login choke point: both the OAuth callback
+// (handlers.go) and the JWKS auth middleware path (users.go) call it. A
+// successfully resolved user is passed through the injected post-login hook
+// (SetPostLoginHook) — used for bootstrap platform-admin granting — so the hook
+// covers every login path regardless of which internal branch resolved the
+// user. The hook is best-effort and must never block login.
 func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
+	u, err := s.getOrCreateUser(claims)
+	if err != nil {
+		return nil, err
+	}
+	s.runPostLoginHook(u)
+	return u, nil
+}
+
+func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("nil JWT claims")
 	}

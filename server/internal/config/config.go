@@ -39,6 +39,12 @@ type Config struct {
 	Search                    SearchConfig
 	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	// BootstrapPlatformAdmins lists email addresses (case-insensitive, lowercased
+	// here) that are automatically granted the platform_admin role when they log
+	// in. This bootstraps the first administrator without manual SQL: a deployment
+	// only needs to set BOOTSTRAP_PLATFORM_ADMINS. Empty means no bootstrap (zero
+	// behaviour change).
+	BootstrapPlatformAdmins []string
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -175,6 +181,7 @@ func Load() *Config {
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		BootstrapPlatformAdmins: getEnvSliceLower("BOOTSTRAP_PLATFORM_ADMINS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
@@ -275,6 +282,21 @@ func getEnvSlice(key string, defaultValue []string) []string {
 	}
 	if len(result) == 0 {
 		return defaultValue
+	}
+	return result
+}
+
+// getEnvSliceLower is like getEnvSlice but lowercases each entry. Used for
+// case-insensitive matching (e.g. email allowlists). Returns defaultValue when
+// the variable is unset/empty or contains only blanks.
+func getEnvSliceLower(key string, defaultValue []string) []string {
+	parts := getEnvSlice(key, nil)
+	if parts == nil {
+		return defaultValue
+	}
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		result = append(result, strings.ToLower(p))
 	}
 	return result
 }

@@ -220,6 +220,19 @@ func main() {
 		return userModule.Service.GetUserStatus(subjectID)
 	})
 
+	// Bootstrap platform-admin granting (initial admin without manual SQL):
+	// installed as a post-login hook on the single GetOrCreateUser choke point, so
+	// it covers both the OAuth callback and the JWKS auth-middleware login paths.
+	// Users whose email is in BOOTSTRAP_PLATFORM_ADMINS are granted platform_admin
+	// on login (idempotent, best-effort, granted_by='bootstrap'). The user package
+	// stays free of a systemrole import (cycle avoidance) via this injected hook.
+	// Empty allowlist = complete no-op.
+	bootstrapGranter := userpkg.NewBootstrapAdminGranter(
+		systemrole.NewSystemRoleService(db),
+		cfg.BootstrapPlatformAdmins,
+	)
+	userModule.Service.SetPostLoginHook(bootstrapGranter.ApplyOnLogin)
+
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
