@@ -33,6 +33,11 @@ func (m *Module) RegisterAPIRoutes(apiGroup *gin.RouterGroup) {
 func (m *Module) RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
 	// Admin endpoint to grant a system role (module permission) to a user.
 	adminGroup.POST("/permissions/users/:userId/grant", GrantUserRoleHandler(m.systemRoleService))
+
+	// Resource permission matrix: list every resource permission and edit a
+	// single resource's allowed roles (reloads the in-memory registry on write).
+	adminGroup.GET("/resource-permissions", ListResourcePermissionsHandler(m.Service))
+	adminGroup.PUT("/resource-permissions/:code", UpdateResourcePermissionHandler(m.Service))
 }
 
 func (m *Module) RegisterInternalRoutes(internalGroup *gin.RouterGroup) {

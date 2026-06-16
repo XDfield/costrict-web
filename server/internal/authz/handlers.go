@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,82 @@ func GrantUserRoleHandler(svc *systemrole.SystemRoleService) gin.HandlerFunc {
 			}
 			return
 		}
+
+		audit.Record(operatorID, audit.ActionSystemRoleGrant, audit.TargetUser, c.Param("userId"), gin.H{"role": req.Role})
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+// ListResourcePermissionsHandler godoc
+// @Summary      List resource permissions
+// @Description  List all resource permissions (menu + api) for the permission matrix (platform admin only)
+// @Tags         admin/permissions
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{permissions=[]models.ResourcePermission}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /admin/resource-permissions [get]
+func ListResourcePermissionsHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		perms, err := svc.ListResourcePermissions()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list resource permissions"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"permissions": perms})
+	}
+}
+
+type updateResourcePermissionRequest struct {
+	AllowedRoles []string `json:"allowedRoles"`
+}
+
+// UpdateResourcePermissionHandler godoc
+// @Summary      Update resource permission
+// @Description  Update the allowed roles for a single resource code (platform admin only)
+// @Tags         admin/permissions
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        code  path      string                          true  "Resource code"
+// @Param        body  body      updateResourcePermissionRequest true  "Allowed roles"
+// @Success      200   {object}  object{success=bool}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /admin/resource-permissions/{code} [put]
+func UpdateResourcePermissionHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		code := c.Param("code")
+		if code == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "resource code is required"})
+			return
+		}
+
+		var req updateResourcePermissionRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		if err := svc.UpdateResourcePermission(code, req.AllowedRoles); err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidResourceRole):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid system role in allowedRoles"})
+			case errors.Is(err, ErrResourcePermissionNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": "resource permission not found"})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update resource permission"})
+			}
+			return
+		}
+
+		audit.Record(c.GetString(appmiddleware.UserIDKey), audit.ActionResourcePermissionUpdate, audit.TargetResourcePermission, code, gin.H{"allowedRoles": req.AllowedRoles})
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

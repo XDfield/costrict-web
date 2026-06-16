@@ -267,6 +267,7 @@ func setupTestDB(t *testing.T) func() {
 			casdoor_sub TEXT,
 			organization TEXT,
 			is_active INTEGER DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'active',
 			last_login_at DATETIME,
 			last_sync_at DATETIME,
 			created_at DATETIME,

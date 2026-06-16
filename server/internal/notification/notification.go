@@ -26,6 +26,12 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		admin.DELETE("/:id", AdminDeleteSystemChannelHandler(m.Service))
 	}
 
+	announcements := apiGroup.Group("/admin/announcements")
+	announcements.Use(systemrole.RequirePlatformAdmin(m.Service.db))
+	{
+		announcements.POST("", AdminBroadcastAnnouncementHandler(m.Service))
+	}
+
 	channels := apiGroup.Group("/notification-channels")
 	{
 		channels.GET("/available", ListAvailableTypesHandler(m.Service))

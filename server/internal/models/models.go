@@ -115,6 +115,32 @@ type EnterpriseCustomer struct {
 
 func (EnterpriseCustomer) TableName() string { return "enterprise_customers" }
 
+// SystemSetting 系统级设置 / feature flags（平台管理员配置，全局单例 KV）。
+// 与 UserConfig（per-user KV）区分：此表为全局系统级配置（如维护模式、功能开关）。
+type SystemSetting struct {
+	Key       string         `gorm:"primaryKey;size:128" json:"key"`
+	Value     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"value" swaggertype:"object"`
+	UpdatedBy string         `gorm:"size:191" json:"updatedBy"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+	CreatedAt time.Time      `json:"createdAt"`
+}
+
+func (SystemSetting) TableName() string { return "system_settings" }
+
+// AdminAuditLog 后台管理写操作审计日志。每行 = 一次管理员写操作。
+// 仅追加写入（fire-and-forget）；ActorID 为操作者 subject_id，Payload 存请求体子集 / 变更摘要。
+type AdminAuditLog struct {
+	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ActorID    string         `gorm:"column:actor_id;not null;index" json:"actorId"`
+	Action     string         `gorm:"not null;index" json:"action"`
+	TargetType string         `gorm:"column:target_type" json:"targetType"`
+	TargetID   string         `gorm:"column:target_id" json:"targetId"`
+	Payload    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"payload" swaggertype:"object"`
+	CreatedAt  time.Time      `gorm:"index" json:"createdAt"`
+}
+
+func (AdminAuditLog) TableName() string { return "admin_audit_logs" }
+
 type DeviceRelease struct {
 	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Version      string    `gorm:"not null;uniqueIndex:idx_release_version_platform" json:"version"`
@@ -625,6 +651,7 @@ type User struct {
 
 	// 状态字段
 	IsActive    bool       `gorm:"not null;default:true" json:"is_active"` // 是否激活
+	Status      string     `gorm:"size:32;not null;default:'active';index" json:"status"` // 账户状态: active|disabled|banned（admin 封禁，独立于 is_active）
 	LastLoginAt *time.Time `json:"last_login_at"`                          // 最后登录时间
 	LastSyncAt  *time.Time `json:"last_sync_at"`                           // 最后同步时间
 

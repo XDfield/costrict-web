@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/audit"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
@@ -105,6 +106,11 @@ func AdminCreateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 			return
 		}
 
+		audit.Record(userID, audit.ActionNotificationChannelCreate, audit.TargetNotificationChannel, ch.ID, gin.H{
+			"type": ch.Type,
+			"name": ch.Name,
+		})
+
 		c.JSON(http.StatusCreated, gin.H{"channel": ch})
 	}
 }
@@ -165,7 +171,7 @@ func AdminUpdateSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 			return
 		}
 
-		_ = userID
+		audit.Record(userID, audit.ActionNotificationChannelUpdate, audit.TargetNotificationChannel, channelID, gin.H{"name": ch.Name})
 		c.JSON(http.StatusOK, gin.H{"channel": ch})
 	}
 }
@@ -202,8 +208,78 @@ func AdminDeleteSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 			return
 		}
 
-		_ = userID
+		audit.Record(userID, audit.ActionNotificationChannelDelete, audit.TargetNotificationChannel, channelID, nil)
 		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+// --- 管理员：全局公告 / 群发 ---
+
+// AdminBroadcastAnnouncementHandler godoc
+//
+//	@Summary		Broadcast an announcement
+//	@Description	Send an in-app announcement to all users / an organization / a single user (platform admin only). Optionally also pushes to recipients' external channels.
+//	@Tags			admin/announcements
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		object{scope=object{type=string,targetId=string},title=string,content=string,pushExternal=bool}	true	"Announcement"
+//	@Success		200		{object}	object{sentCount=int}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/admin/announcements [post]
+func AdminBroadcastAnnouncementHandler(svc *NotificationService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		operatorID := c.GetString(middleware.UserIDKey)
+		if operatorID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		var req struct {
+			Scope struct {
+				Type     string `json:"type" binding:"required"` // all | organization | user
+				TargetID string `json:"targetId"`
+			} `json:"scope" binding:"required"`
+			Title        string `json:"title" binding:"required"`
+			Content      string `json:"content" binding:"required"`
+			PushExternal bool   `json:"pushExternal"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		switch req.Scope.Type {
+		case "all", "organization", "user":
+			// ok
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scope type"})
+			return
+		}
+		if (req.Scope.Type == "organization" || req.Scope.Type == "user") && req.Scope.TargetID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "targetId is required for this scope"})
+			return
+		}
+
+		sentCount, err := svc.Broadcast(
+			BroadcastScope{Type: req.Scope.Type, TargetID: req.Scope.TargetID},
+			req.Title, req.Content, req.PushExternal, operatorID,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to broadcast announcement"})
+			return
+		}
+
+		audit.Record(operatorID, audit.ActionAnnouncementSend, audit.TargetAnnouncement, "", gin.H{
+			"scope":        req.Scope.Type,
+			"targetId":     req.Scope.TargetID,
+			"title":        req.Title,
+			"pushExternal": req.PushExternal,
+			"sentCount":    sentCount,
+		})
+
+		c.JSON(http.StatusOK, gin.H{"sentCount": sentCount})
 	}
 }
 

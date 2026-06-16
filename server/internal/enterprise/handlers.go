@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -100,6 +101,11 @@ func CreateEnterpriseCustomerHandler(svc *Service) gin.HandlerFunc {
 			return
 		}
 
+		audit.Record(operatorID, audit.ActionEnterpriseCreate, audit.TargetEnterpriseCustomer, customer.ID, gin.H{
+			"name": customer.Name,
+			"ids":  decodeIDs(customer.AccountIDs),
+		})
+
 		c.JSON(http.StatusOK, gin.H{"customer": customerResponse{
 			ID:   customer.ID,
 			IDs:  decodeIDs(customer.AccountIDs),
@@ -158,6 +164,11 @@ func UpdateEnterpriseCustomerHandler(svc *Service) gin.HandlerFunc {
 			return
 		}
 
+		audit.Record(operatorID, audit.ActionEnterpriseUpdate, audit.TargetEnterpriseCustomer, customer.ID, gin.H{
+			"name": customer.Name,
+			"ids":  decodeIDs(customer.AccountIDs),
+		})
+
 		c.JSON(http.StatusOK, gin.H{"customer": customerResponse{
 			ID:   customer.ID,
 			IDs:  decodeIDs(customer.AccountIDs),
@@ -196,6 +207,8 @@ func DeleteEnterpriseCustomerHandler(svc *Service) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete enterprise customer"})
 			return
 		}
+
+		audit.Record(operatorID, audit.ActionEnterpriseDelete, audit.TargetEnterpriseCustomer, c.Param("id"), nil)
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

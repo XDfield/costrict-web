@@ -169,7 +169,8 @@ func (s *DistributionService) resolveRecipients(tx *gorm.DB, target Distribution
 		return []string{target.TargetID}, nil
 	case "organization":
 		var userIDs []string
-		if err := tx.Model(&models.User{}).Where("organization = ?", target.TargetID).Pluck("subject_id", &userIDs).Error; err != nil {
+		// Exclude users without a subject_id (mirrors notification resolveBroadcastRecipients).
+		if err := tx.Model(&models.User{}).Where("organization = ? AND subject_id <> ''", target.TargetID).Pluck("subject_id", &userIDs).Error; err != nil {
 			return nil, err
 		}
 		return userIDs, nil
@@ -179,6 +180,73 @@ func (s *DistributionService) resolveRecipients(tx *gorm.DB, target Distribution
 	default:
 		return nil, fmt.Errorf("unsupported scope type: %s", target.ScopeType)
 	}
+}
+
+// DistributionListFilter holds filters for the global (platform admin) distribution list.
+type DistributionListFilter struct {
+	Status    string // active | paused | revoked | "" (all)
+	ScopeType string // user | organization | "" (all)
+	Search    string // optional: matches item name / distributor id / target id
+	Page      int    // 1-based
+	PageSize  int    // defaults to 20
+}
+
+// ListAllDistributions lists distributions across all distributors (platform admin view),
+// with optional status/scope/search filters and pagination.
+func (s *DistributionService) ListAllDistributions(ctx context.Context, f DistributionListFilter) ([]models.ItemDistribution, int64, error) {
+	q := s.db.WithContext(ctx).Model(&models.ItemDistribution{})
+
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+	}
+	if f.ScopeType != "" {
+		q = q.Where("scope_type = ?", f.ScopeType)
+	}
+	if f.Search != "" {
+		like := "%" + f.Search + "%"
+		q = q.Where(
+			"distributor_id LIKE ? OR target_id LIKE ? OR item_id IN (?)",
+			like, like,
+			s.db.Model(&models.CapabilityItem{}).Select("id").Where("name LIKE ?", like),
+		)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	page := f.Page
+	if page < 1 {
+		page = 1
+	}
+	size := f.PageSize
+	if size <= 0 {
+		size = 20
+	}
+
+	var list []models.ItemDistribution
+	if err := q.
+		Preload("Item").
+		Order("created_at DESC").
+		Offset((page - 1) * size).
+		Limit(size).
+		Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+// ListReceipts lists all receipts for a given distribution (drives the detail drawer).
+func (s *DistributionService) ListReceipts(ctx context.Context, distID string) ([]models.ItemDistributionReceipt, error) {
+	var receipts []models.ItemDistributionReceipt
+	if err := s.db.WithContext(ctx).
+		Where("distribution_id = ?", distID).
+		Order("created_at DESC").
+		Find(&receipts).Error; err != nil {
+		return nil, err
+	}
+	return receipts, nil
 }
 
 // ListItemDistributions lists all distributions for a given item.
@@ -380,20 +448,25 @@ func (s *DistributionService) GetReceiptByDistributionAndUser(ctx context.Contex
 	return &receipt, nil
 }
 
-// GetEffectivePermission returns the effective permission mode for a user on an item.
+// GetEffectivePermission returns the effective permission mode (readonly |
+// dismissible) for a user on an item, derived from the most recent active,
+// non-dismissed distribution receipt. The bool reports whether such a
+// distribution exists.
 func (s *DistributionService) GetEffectivePermission(ctx context.Context, itemID, userID string) (string, bool) {
-	var receipt models.ItemDistributionReceipt
+	var modes []string
 	err := s.db.WithContext(ctx).
+		Model(&models.ItemDistributionReceipt{}).
 		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
 		Where("item_distribution_receipts.user_id = ? AND item_distributions.item_id = ? AND item_distributions.status = ? AND item_distribution_receipts.receipt_status != ?",
 			userID, itemID, "active", "dismissed").
-		Select("item_distributions.permission_mode").
-		Scan(&receipt).Error
+		Order("item_distributions.created_at DESC").
+		Limit(1).
+		Pluck("item_distributions.permission_mode", &modes).Error
 
-	if err != nil || receipt.ID == "" {
+	if err != nil || len(modes) == 0 {
 		return "", false
 	}
-	return receipt.ReceiptStatus, true // Note: this needs a join to get permission_mode, simplified here
+	return modes[0], true
 }
 
 // canModifyDistribution checks if an operator can modify a distribution.

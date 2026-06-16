@@ -3,7 +3,9 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/audit"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -83,6 +85,12 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 		return
 	}
 
+	audit.Record(userID, audit.ActionDistributionCreate, audit.TargetDistribution, itemID, gin.H{
+		"itemId":         itemID,
+		"targets":        req.Targets,
+		"permissionMode": req.PermissionMode,
+	})
+
 	c.JSON(http.StatusCreated, gin.H{"distributions": results})
 }
 
@@ -141,6 +149,64 @@ func (h *DistributionHandler) ListReceivedDistributions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"receipts": receipts})
 }
 
+func atoiDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// ListAllDistributions godoc
+// @Summary      List all distributions (platform admin)
+// @Description  List distributions across all distributors with status/scope/search filters and pagination. Platform admin only.
+// @Tags         distributions
+// @Produce      json
+// @Param        status    query     string  false  "Filter by status (active|paused|revoked)"
+// @Param        scope     query     string  false  "Filter by scope type (user|organization)"
+// @Param        search    query     string  false  "Search by item name / distributor / target"
+// @Param        page      query     int     false  "Page number (1-based)"
+// @Param        pageSize  query     int     false  "Page size (default 20)"
+// @Success      200  {object}  object{distributions=[]models.ItemDistribution,total=int}
+// @Failure      500  {object}  object{error=string}
+// @Router       /admin/distributions [get]
+func (h *DistributionHandler) ListAllDistributions(c *gin.Context) {
+	f := services.DistributionListFilter{
+		Status:    c.Query("status"),
+		ScopeType: c.Query("scope"),
+		Search:    c.Query("search"),
+		Page:      atoiDefault(c.Query("page"), 1),
+		PageSize:  atoiDefault(c.Query("pageSize"), 20),
+	}
+	list, total, err := h.distSvc.ListAllDistributions(c.Request.Context(), f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"distributions": list, "total": total})
+}
+
+// ListDistributionReceipts godoc
+// @Summary      List distribution receipts (platform admin)
+// @Description  List all receipts for a distribution (unread/read/accepted/dismissed). Platform admin only.
+// @Tags         distributions
+// @Produce      json
+// @Param        id   path      string  true  "Distribution ID"
+// @Success      200  {object}  object{receipts=[]models.ItemDistributionReceipt}
+// @Failure      500  {object}  object{error=string}
+// @Router       /admin/distributions/{id}/receipts [get]
+func (h *DistributionHandler) ListDistributionReceipts(c *gin.Context) {
+	receipts, err := h.distSvc.ListReceipts(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"receipts": receipts})
+}
+
 // UpdateDistribution godoc
 // @Summary      Update distribution
 // @Description  Update a distribution's status, permission mode, or message
@@ -181,6 +247,11 @@ func (h *DistributionHandler) UpdateDistribution(c *gin.Context) {
 		return
 	}
 
+	audit.Record(userID, audit.ActionDistributionUpdate, audit.TargetDistribution, distID, gin.H{
+		"status":         req.Status,
+		"permissionMode": req.PermissionMode,
+	})
+
 	c.JSON(http.StatusOK, dist)
 }
 
@@ -209,6 +280,8 @@ func (h *DistributionHandler) RevokeDistribution(c *gin.Context) {
 		}
 		return
 	}
+
+	audit.Record(userID, audit.ActionDistributionRevoke, audit.TargetDistribution, distID, nil)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Distribution revoked"})
 }

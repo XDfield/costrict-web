@@ -28,6 +28,8 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/adminuser"
+	"github.com/costrict/costrict-web/server/internal/audit"
 	"github.com/costrict/costrict-web/server/internal/authz"
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
@@ -48,6 +50,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/project"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/settings"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
@@ -83,6 +86,10 @@ func main() {
 	db.Model(&models.CapabilityRegistry{}).
 		Where("sync_status = ?", "syncing").
 		Update("sync_status", "error")
+
+	// Install the process-wide admin audit logger (fire-and-forget writes from
+	// management handlers). Must run before any handler can call audit.Record.
+	audit.Init(db)
 
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
@@ -200,6 +207,15 @@ func main() {
 			ProviderUserID:    claims.ProviderUserID,
 			Phone:             claims.Phone,
 		})
+	})
+
+	// Account-status gate (M1 · 成员管理): RequireAuth consults this hook for the
+	// resolved subject and rejects banned/disabled members. Conservative by
+	// design — the checker errors fail open (handled in middleware), and the gate
+	// is entirely inert until installed here. A lightweight single-column lookup
+	// per authenticated request; can be cached later if the hot path needs it.
+	middleware.SetStatusChecker(func(subjectID string) (string, error) {
+		return userModule.Service.GetUserStatus(subjectID)
 	})
 
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
@@ -440,10 +456,23 @@ func main() {
 			notificationModule.RegisterRoutes(authed)
 
 			enterprise.New(db).RegisterRoutes(authed)
+			settings.New(db).RegisterRoutes(authed)
 
 			admin := authed.Group("/admin")
 			admin.Use(systemrole.RequirePlatformAdmin(db))
 			authzModule.RegisterAdminRoutes(admin)
+
+			// Admin distribution management (platform admin only)
+			admin.GET("/distributions", distHandler.ListAllDistributions)
+			admin.GET("/distributions/:id/receipts", distHandler.ListDistributionReceipts)
+
+			// Admin audit-log query (platform admin only). The write path is the
+			// package-level audit.Logger initialized above.
+			audit.NewModule(db).RegisterRoutes(admin)
+
+			// Admin member management (M1, platform admin only): user list,
+			// profile, status switch, organization roll-up.
+			adminuser.New(userModule.Service).RegisterRoutes(admin)
 
 			kanbanModule := kanban.New()
 			kanbanModule.RegisterRoutes(authed, authzModule.Service)
@@ -466,7 +495,6 @@ func main() {
 			_ = kanbanModule
 		}
 	}
-
 
 	var redisClient *redis.Client
 	var store gateway.Store
@@ -593,7 +621,13 @@ func main() {
 
 func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Casdoor user already resolved upstream by OptionalAuth (UserIDKey set).
+		// OptionalAuth does NOT run the account-status gate, so enforce it here to
+		// close the bypass where a banned user keeps a live Casdoor session.
 		if c.GetString(middleware.UserIDKey) != "" {
+			if middleware.EnforceAccountStatus(c) {
+				return
+			}
 			c.Next()
 			return
 		}
@@ -616,6 +650,16 @@ func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc 
 		}
 		c.Set("deviceId", dev.DeviceID)
 		c.Set("authSource", "device-token")
+
+		// Device-token path: previously this bypassed the banned/disabled gate
+		// entirely (RequireAuth was never in the chain). Apply it now that the
+		// subject is resolved, so a banned member can't keep using a device token.
+		// Fails open on lookup error / no checker (see middleware.EnforceAccountStatus).
+		// NOTE: the team WebSocket group (/ws) still uses bare OptionalAuth and is
+		// intentionally NOT gated here — a separate path with its own handlers.
+		if middleware.EnforceAccountStatus(c) {
+			return
+		}
 		c.Next()
 	}
 }

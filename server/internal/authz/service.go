@@ -8,8 +8,17 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
+
+// ErrResourcePermissionNotFound is returned when updating a resource code that
+// does not exist in the resource_permissions table.
+var ErrResourcePermissionNotFound = errors.New("resource permission not found")
+
+// ErrInvalidResourceRole is returned when an allowed role is not a known system role.
+var ErrInvalidResourceRole = errors.New("invalid system role in allowedRoles")
 
 // PermissionResult is the unified permission snapshot for a user.
 type PermissionResult struct {
@@ -74,6 +83,48 @@ func (s *Service) loadRegistry() error {
 	s.apiRegistry = api
 	s.mu.Unlock()
 	return nil
+}
+
+// ReloadRegistry reloads the in-memory resource-permission registry from the
+// database. It must be called after any write to the resource_permissions table
+// (e.g. UpdateResourcePermission); otherwise changes only take effect on a
+// process restart.
+func (s *Service) ReloadRegistry() error {
+	return s.loadRegistry()
+}
+
+// ListResourcePermissions returns the full resource_permissions table (menu+api)
+// for rendering the permission matrix.
+func (s *Service) ListResourcePermissions() ([]models.ResourcePermission, error) {
+	var perms []models.ResourcePermission
+	if err := s.db.Order("resource_type ASC, resource_code ASC").Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+// UpdateResourcePermission updates the allowed roles for a single resource code,
+// then reloads the in-memory registry so the change takes effect immediately.
+func (s *Service) UpdateResourcePermission(code string, allowedRoles []string) error {
+	// Reject unknown roles so we never persist dirty data into the registry.
+	for _, role := range allowedRoles {
+		if !systemrole.IsValidRole(role) {
+			return ErrInvalidResourceRole
+		}
+	}
+
+	result := s.db.Model(&models.ResourcePermission{}).
+		Where("resource_code = ?", code).
+		Update("allowed_roles", pq.StringArray(allowedRoles))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrResourcePermissionNotFound
+	}
+
+	// Reload so HasPermission / GetUserPermissions reflect the change without a restart.
+	return s.loadRegistry()
 }
 
 // GetUserPermissions builds the full permission snapshot for a user.
