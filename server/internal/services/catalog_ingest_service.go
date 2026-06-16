@@ -283,7 +283,14 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 	itemsBySlug := indexItemsBySlug(existingItems)
 	logger.Info("catalog-ingest: %d existing items in public registry", len(existingItems))
 
-	seenEntryDirs := make(map[string]bool, len(entries))
+	// seenSourcePaths is the set of EXACT primary file paths the bundle carries
+	// this run (normalized). The soft-archive pass keys on this, not on the
+	// 2-segment entryDir: a nested sub-skill row
+	// (skills/<parent>/<child>/SKILL.md) collapses to the same entryDir as a
+	// still-present top-level skills/<parent>/SKILL.md, so entryDir-keying never
+	// archived it. Comparing the full source_path keeps the parent and archives
+	// the orphaned child.
+	seenSourcePaths := make(map[string]bool, len(entries))
 
 	// Second-pass reconcile state (plugin child → parent plugin linking).
 	//
@@ -320,7 +327,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			result.IncompleteErrors = append(result.IncompleteErrors, fmt.Sprintf("entry %s: unsupported type %q", entry.ID, entry.Type))
 			continue
 		}
-		seenEntryDirs[paths.EntryDir] = true
+		seenSourcePaths[normalizeSourcePath(paths.SourcePath)] = true
 
 		absPath := filepath.Join(bundleDir, paths.BundlePath)
 		fileBytes, err := readBundleFile(absPath)
@@ -359,17 +366,33 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 		}
 	}
 
-	// Soft-archive items whose entry dir is no longer in upstream. Runs BEFORE
-	// the parent-link reconcile so rows archived this round are already
+	// Soft-archive items whose EXACT primary file is no longer in upstream. Runs
+	// BEFORE the parent-link reconcile so rows archived this round are already
 	// excluded from its status filter — otherwise an active child could be
 	// linked to a parent plugin that this very loop is about to archive.
+	//
+	// Scope is deliberately `itemsByEntryDir` (rows whose source_path parses to a
+	// catalog `<type-dir>/<id>` shape), NOT all public rows: user-authored items
+	// carry an empty / single-segment source_path that entryDirFromSourcePath
+	// drops, so they never enter this map and are never archived here. The
+	// archive PREDICATE keys on the full source_path (seenSourcePaths) rather
+	// than the 2-segment entryDir, so a nested sub-skill orphan whose parent
+	// skill is still present upstream is archived (its own path is gone) while
+	// the parent stays active.
 	if !opts.DryRun {
-		for entryDir, items := range itemsByEntryDir {
-			if seenEntryDirs[entryDir] {
-				continue
-			}
+		for _, items := range itemsByEntryDir {
 			for _, item := range items {
 				if item.Status == "archived" {
+					continue
+				}
+				// Still shipped upstream under its exact path → keep.
+				if seenSourcePaths[normalizeSourcePath(item.SourcePath)] {
+					continue
+				}
+				// Never sweep user-owned rows: forks and uploaded (archive)
+				// items can carry a catalog-shaped source_path but are not
+				// catalog-managed. Mirrors reconcileParentPluginLinks' exclusion.
+				if item.SourceType == "archive" || item.SourceType == "fork" {
 					continue
 				}
 				if err := s.DB.Model(&models.CapabilityItem{}).
@@ -1301,6 +1324,19 @@ func entryDirFromSourcePath(sourcePath string) string {
 		return ""
 	}
 	return filepath.Join(parts[0], parts[1])
+}
+
+// normalizeSourcePath canonicalizes a SourcePath for exact comparison against
+// the bundle's primary file paths (`primaryPathsForEntry(...).SourcePath`):
+// forward slashes, with the optional leading "catalog-download/" stripped.
+// Both the DB rows (written by this service) and the bundle paths are normally
+// already in this form; the prefix strip defends against legacy rows that
+// stored the bundle-relative path — same tolerance as entryDirFromSourcePath.
+func normalizeSourcePath(sourcePath string) string {
+	if sourcePath == "" {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.ToSlash(sourcePath), "catalog-download/")
 }
 
 // buildDescriptionsJSON packs the upstream entry's per-locale descriptions
