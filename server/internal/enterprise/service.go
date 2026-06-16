@@ -35,8 +35,18 @@ var (
 	// ErrNameTooLong is returned when the name exceeds MaxNameBytes.
 	ErrNameTooLong = errors.New("name too long")
 	// ErrLogoInvalid is returned when the logo is not a valid base64 image data
-	// URI (missing the ";base64," marker or carrying an undecodable payload).
+	// URI (missing the ";base64," marker, an unsupported MIME subtype, or carrying
+	// an undecodable payload).
 	ErrLogoInvalid = errors.New("logo is not a valid base64 image data uri")
+
+	// allowedLogoMIME is the raster-image MIME allowlist for logos. SVG and other
+	// types are rejected (image/svg+xml can carry scripts), mirroring the frontend.
+	allowedLogoMIME = map[string]bool{
+		"image/png":  true,
+		"image/jpeg": true,
+		"image/gif":  true,
+		"image/webp": true,
+	}
 )
 
 // validateCustomerInput enforces the shared write-side rules for Create/Update:
@@ -58,6 +68,14 @@ func validateCustomerInput(name, logo string) error {
 	// so an oversized logo still fails with ErrLogoTooLarge.
 	idx := strings.Index(logo, ";base64,")
 	if idx < 0 {
+		return ErrLogoInvalid
+	}
+	// Constrain the MIME subtype to a raster-image allowlist. This explicitly
+	// rejects image/svg+xml (which can carry scripts) and any other exotic type,
+	// matching the frontend's tightened check. The mime sits between "data:" and
+	// ";base64," (e.g. "data:image/png;base64,...").
+	mime := logo[len("data:"):idx]
+	if !allowedLogoMIME[mime] {
 		return ErrLogoInvalid
 	}
 	payload := logo[idx+len(";base64,"):]

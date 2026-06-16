@@ -116,6 +116,7 @@ func TestService_Create_Validation(t *testing.T) {
 		{"name too long", strings.Repeat("n", MaxNameBytes+1), validLogo, ErrNameTooLong},
 		{"logo bad base64 payload", "Acme", "data:image/png;base64,!!!notbase64!!!", ErrLogoInvalid},
 		{"logo missing base64 marker", "Acme", "data:image/png,rawdata", ErrLogoInvalid},
+		{"logo unsupported svg mime", "Acme", "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=", ErrLogoInvalid},
 	}
 
 	for _, tc := range cases {
