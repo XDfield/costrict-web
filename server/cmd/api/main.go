@@ -28,6 +28,7 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/adminitem"
 	"github.com/costrict/costrict-web/server/internal/adminuser"
 	"github.com/costrict/costrict-web/server/internal/audit"
 	"github.com/costrict/costrict-web/server/internal/authz"
@@ -473,6 +474,10 @@ func main() {
 			// Admin member management (M1, platform admin only): user list,
 			// profile, status switch, organization roll-up.
 			adminuser.New(userModule.Service).RegisterRoutes(admin)
+
+			// Admin content management (M6, platform admin only): cross-registry
+			// item list, across-author status switch (上下架), and delete.
+			adminitem.New(db).RegisterRoutes(admin)
 
 			kanbanModule := kanban.New()
 			kanbanModule.RegisterRoutes(authed, authzModule.Service)

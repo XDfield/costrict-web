@@ -1211,6 +1211,14 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		return
 	}
 
+	// Ownership guard: only the item's author or a platform admin may edit it.
+	// (Repo-scoped admins go through MoveItem/TransferItem, which keep their own
+	// checks; this closes the previously-unguarded bare PUT path.)
+	if item.CreatedBy != uid && !callerIsPlatformAdmin(c, db) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can edit this item"})
+		return
+	}
+
 	originalName := item.Name
 	originalDescription := item.Description
 	originalCategory := item.Category
@@ -1390,6 +1398,13 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	var item models.CapabilityItem
 	if db.First(&item, "id = ?", id).Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+
+	// Ownership guard: only the item's author or a platform admin may edit it.
+	callerID := c.GetString(middleware.UserIDKey)
+	if item.CreatedBy != callerID && !callerIsPlatformAdmin(c, db) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can edit this item"})
 		return
 	}
 
@@ -1734,6 +1749,25 @@ func indexSubSkillsAsync(h *ItemHandler, children []*models.CapabilityItem) {
 func DeleteItem(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
+
+	// Ownership guard: only the item's author or a platform admin may delete it.
+	// This closes the previously-unguarded bare DELETE path (any logged-in user
+	// could delete any item). Platform admins moderate via /admin/items, but the
+	// admin check here keeps this path safe for repo-scoped admin tooling too.
+	var existing models.CapabilityItem
+	if err := db.Select("id, created_by").First(&existing, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item"})
+		return
+	}
+	callerID := c.GetString(middleware.UserIDKey)
+	if existing.CreatedBy != callerID && !callerIsPlatformAdmin(c, db) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can delete this item"})
+		return
+	}
 
 	err := db.Transaction(func(tx *gorm.DB) error {
 		// Some environments may not have all tables yet (older schemas/tests).

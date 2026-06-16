@@ -49,6 +49,9 @@ const (
 	ActionSettingUpdate = "setting.update"
 
 	ActionAnnouncementSend = "announcement.send"
+
+	ActionItemStatusChange = "item.status_change"
+	ActionItemDelete       = "item.delete"
 )
 
 // Common target-type constants for the target_type column.
@@ -60,6 +63,7 @@ const (
 	TargetNotificationChannel = "notification_channel"
 	TargetSetting             = "setting"
 	TargetAnnouncement        = "announcement"
+	TargetItem                = "item"
 )
 
 // pkgLogger is the process-wide audit logger. nil until Init runs.
