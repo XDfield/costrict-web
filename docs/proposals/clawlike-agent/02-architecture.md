@@ -23,8 +23,8 @@
 │  │                                                              │ │
 │  │  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌────────────┐ │ │
 │  │  │ Persona  │  │ Memory    │  │~~Skills~~│  │ Providers  │ │ │
-│  │  │ Manager  │  │ (postgres)│  │(暂时禁用)│  │ Manager    │ │ │
-│  │  │ (GORM)   │  │           │  │          │  │ (GORM)     │ │ │
+│  │  │ Manager  │  │ Manager   │  │(暂时禁用)│  │ Manager    │ │ │
+│  │  │ (GORM)   │  │ (TEXT)    │  │          │  │ (GORM)     │ │ │
 │  │  └──────────┘  └───────────┘  └──────────┘  └────────────┘ │ │
 │  │                                                              │ │
 │  │  ┌─────────────────────────────────────────────────────────┐ │ │
@@ -32,7 +32,8 @@
 │  │  │  - Session Service (postgres)                           │ │ │
 │  │  │  - AgentFactory (per-user 动态构建)                      │ │ │
 │  │  │  - Event Channel → 流式输出                              │ │ │
-│  │  │  - Tools: memory_*, skill_load, workspace_*             │ │ │
+│  │  │  - Tools: memory_view/update, workspace_*               │ │ │
+│  │  │  - Post-run hook: 异步 LLM 合并 memory                  │ │ │
 │  │  └─────────────────────────────────────────────────────────┘ │ │
 │  │                                                              │ │
 │  │  ┌─────────────────────────────────────────────────────────┐ │ │
@@ -59,7 +60,7 @@
 │  ┌───────────────────────────┴──────────────────────────────────┐│
 │  │  PostgreSQL                                                  ││
 │  │  agent_personas | agent_providers | agent_workspace_tasks   ││
-│  │  clawagent_memories (auto) | clawagent_sessions (auto)      ││
+│  │  agent_memories | clawagent_sessions (auto)                ││
 │  └──────────────────────────────────────────────────────────────┘│
 └──────────────────────────────────┬────────────────────────────────┘
                                    │ HTTP Proxy (via cloud tunnel)
@@ -82,12 +83,14 @@
 ```
 server/internal/clawagent/
 ├── runtime.go              # ClawAgentRuntime 主入口
-├── handler.go              # 实现 channel.MessageHandler 接口
+├── handler.go              # 实现 channel.MessageHandler 接口（含 memory 异步刷新触发）
 ├── persona.go              # Persona 管理
 ├── persona_models.go       # Persona GORM 模型
+├── memory.go               # Memory 管理（单 TEXT 字段，LLM 合并刷新）
+├── memory_models.go        # Memory GORM 模型
 ├── providers.go            # Provider 管理
 ├── provider_models.go      # Provider GORM 模型
-├── ~~skills.go~~           # ~~DBSkillRepository（内存缓存 + DB 按需加载）~~ **暂时禁用**
+├── ~~skills.go~~           # ~~DBSkillRepository~~ **暂时禁用**
 ├── device_proxy.go         # DeviceProxyClient（对接 cs-cloud localserver API）
 ├── workspace_delegate.go   # Workspace 委托工具（调用 DeviceProxyClient + announce）
 ├── event_bus.go            # 内部 EventBus（announce 回调 + 崩溃恢复协调，不对外暴露 SSE）
@@ -103,9 +106,10 @@ server/internal/clawagent/
 
 | 组件 | 选型 | 理由 |
 |------|------|------|
-| Memory 后端 | `memory/postgres` | PostgreSQL 持久化 + TF-IDF 关键词检索，支持横向扩展，无需 pgvector |
+| Memory 后端 | 自建 `agent_memories` 表（单 TEXT） | 简化：单用户单条 memory，全量注入 system prompt，无关键词检索/向量检索 |
+| Memory 刷新 | 每轮 final response 后异步 LLM 合并 | 不阻塞回复，失败保留旧值 |
 | Session 后端 | `session/postgres` | 会话上下文持久化，服务重启不丢失对话历史 |
-| ~~Skill 后端~~ | ~~自定义 `DBSkillRepository`~~ | **暂时禁用**：纯内存缓存 + DB 按需加载，不引入文件系统 |
+| ~~Skill 后端~~ | ~~自定义 `DBSkillRepository`~~ | **暂时禁用** |
 | 设备委托 | `DeviceProxyClient` → cs-cloud API | 通过 HTTP 代理调用设备端 localserver API，不依赖专用 RPC 协议 |
 | 委托单位 | Workspace（非 Device） | 以 workspace 为核心，workspace 绑定 device |
 | 实时事件流 | 复用 cs-cloud `/api/v1/events` SSE 透传 | 前端直连 gateway proxy，服务端不新建 SSE 端点 |
@@ -170,11 +174,16 @@ openaiGroup.Any("/v1/*path", clawRT.OpenAIHandler())
                                                     ↓
                                     ClawAgentRuntime.HandleMessage()
                                     ├── 从 Casdoor context 获取 userID
-                                    ├── 构造 sessionID
+                                    ├── 构造 baseKey（agent:clawagent:{chan}:{chat}:{user}）
+                                    ├── resolveActiveSession(userID, baseKey) → activeSessionID
+                                    │   ├── 首次: 建 v1
+                                    │   ├── stale: 归档旧版 + 建 v(N+1)
+                                    │   └── fresh: 复用当前 active
+                                    ├── memoryMgr.Load(userID) → memory content
                                     ├── 调用 runner.Run(ctx, userID, sessionID, msg)
                                     │   ├── AgentFactory 加载该用户的 Persona
                                     │   ├── AgentFactory 加载该用户的 Providers
-                                    │   ├── AgentFactory 注入 Memory tools (postgres)
+                                    │   ├── AgentFactory 把 memory 拼到 system prompt
                                     │   ├── ~~AgentFactory 注入 DBSkillRepository~~ (暂时禁用)
                                     │   └── AgentFactory 注入 workspace_* tools
                                     │       └── workspace_delegate → DeviceProxyClient
@@ -186,8 +195,8 @@ openaiGroup.Any("/v1/*path", clawRT.OpenAIHandler())
                                     └── 消费 event channel
                                         ├── 流式文本 → 回复用户
                                         ├── tool_call → 执行工具
-                                        │   ├── memory_add/search → postgres
-                                        │   ├── ~~skill_load~~     → ~~DB 查询 + 内存缓存~~ (暂时禁用)
+                                        │   ├── memory_view/update (备用，主路径走 hook)
+                                        │   ├── ~~skill_load~~     → (暂时禁用)
                                         │   └── workspace_delegate → DeviceProxyClient → cs-cloud
                                         │       ├── (阻塞) SSE 等待 → 同步返回结果
                                         │       └── (非阻塞) 立即返回 → 异步 watchAndAnnounce:
@@ -195,7 +204,11 @@ openaiGroup.Any("/v1/*path", clawRT.OpenAIHandler())
                                         │           ├── session.idle → announceToAgent()
                                         │           │   → runner.Run() 注入结果到 Agent session
                                         │           └── EventBus 内部扇出（超时检测等）
-                                        └── tool_result → 继续对话
+                                        ├── tool_result → 继续对话
+                                        └── IsFinalResponse → go memoryMgr.Refresh()
+                                                ├── LLM 合并: 旧 memory + 本轮对话 → 新 memory
+                                                ├── Save(userID, newMemory)（失败保留旧值）
+                                                └── 不阻塞，不影响主回复流
 
 前端实时监控:
   GET /cloud/device/{id}/proxy/api/v1/events → cs-cloud SSE 透传（按 conversation_id 过滤）

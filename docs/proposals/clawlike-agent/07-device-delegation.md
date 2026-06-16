@@ -262,7 +262,7 @@ if !input.Blocking {
     // 立即返回 taskID + conversationID
     // 异步 goroutine 通过 EventBus 订阅设备 SSE 事件
     // 完成后通过 announce 机制回传结果到 Agent session（见 7.8）
-    go c.watchAndAnnounce(ctx, taskID, agentSessionID, deviceID, convID)
+    go c.watchAndAnnounce(ctx, taskID, agentSessionBaseKey, deviceID, convID)
     return &WorkspaceDelegateOutput{
         TaskID: taskID,
         Status: "running",
@@ -367,7 +367,7 @@ Agent: ✅ 已在后端服务 workspace 中添加日志中间件。
                     │   - 结果: {output/summary}\n
                     │   请基于此结果决定下一步。"
                     │
-                    ├── runner.Run(ctx, userID, agentSessionID, callbackMsg)
+                    ├── runner.Run(ctx, userID, activeSID, callbackMsg)  // 由 ResolveActive(baseKey) 解析
                     │     → Agent 基于结果做下一步决策
                     │
                     └── TaskRegistry.MarkDelivered(taskID) → delivery_status=delivered
@@ -387,13 +387,22 @@ func (rt *ClawAgentRuntime) announceToAgent(task *DelegationTask) {
         return  // 阻塞模式，同步返回，无需 announce
     }
 
+    // 动态解析当前 active sessionID（处理 reset / prune 场景）
+    // 详见 12-session-design.md §12.3.6
+    activeSID, err := rt.sessionMeta.ResolveActive(task.UserID, task.AgentSessionBaseKey)
+    if err == ErrSessionPruned {
+        rt.tasks.MarkDeliveryFailed(task.TaskID, "session pruned")
+        return
+    }
+    // err == ErrSessionArchived 时 activeSID 仍返回最新 active 版本，正常注入即可
+
     callbackMsg := buildCallbackMessage(task)
-    _, err := rt.runner.Run(ctx, task.UserID, task.AgentSessionID,
+    _, err = rt.runner.Run(ctx, task.UserID, activeSID,
         model.NewUserMessage(callbackMsg))
     if err != nil {
         retryCount := task.AnnounceRetryCount + 1
         if retryCount >= MaxAnnounceRetry {
-            rt.tasks.MarkDeliveryFailed(task.TaskID)  // delivery_status=failed
+            rt.tasks.MarkDeliveryFailed(task.TaskID, "runner.Run failed")  // delivery_status=failed
             return
         }
         rt.tasks.UpdateAnnounceRetry(task.TaskID, retryCount)

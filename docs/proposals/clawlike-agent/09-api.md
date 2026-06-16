@@ -28,10 +28,8 @@ func (rt *ClawAgentRuntime) RegisterRoutes(r *gin.RouterGroup) {
         g.POST("/providers/:id/test", rt.testProvider)
 
         // Memory
-        g.GET("/memories",           rt.listMemories)
-        g.GET("/memories/search",    rt.searchMemories)
-        g.DELETE("/memories/:id",    rt.deleteMemory)
-        g.DELETE("/memories",        rt.clearMemories)
+        g.GET("/memory",             rt.getMemory)
+        g.PUT("/memory",             rt.updateMemory)
 
         // Workspace 委托
         g.GET("/workspaces",              rt.listWorkspaces)
@@ -162,39 +160,39 @@ data: {"sessionId":"sess-abc123","messageId":"msg-001"}
 
 ## 9.5 Memory API
 
-### GET /api/clawagent/memories?page=1&limit=20
+### GET /api/clawagent/memory — 获取当前用户的 memory
 
 ```json
 {
-    "memories": [
-        {
-            "id": "mem-001",
-            "content": "用户偏好使用 Go 语言",
-            "topics": ["preference", "language"],
-            "createdAt": "2026-06-15T10:00:00Z"
-        }
-    ],
-    "total": 42,
-    "page": 1,
-    "limit": 20
+    "content": "用户偏好使用 Go 语言，常用 workspace 是 ws-001（后端服务）。倾向于简洁代码风格，不喜欢多余注释。最近在做 cs-cloud 集成。",
+    "updatedAt": "2026-06-15T10:30:00Z",
+    "lengthBytes": 187
 }
 ```
 
-### GET /api/clawagent/memories/search?q=编程语言
+### PUT /api/clawagent/memory — 用户手动覆盖 memory
 
 ```json
 {
-    "results": [
-        {
-            "id": "mem-001",
-            "content": "用户偏好使用 Go 语言",
-            "score": 0.92
-        }
-    ]
+    "content": "用户手动编辑后的 memory 内容..."
 }
 ```
 
-> Memory 后端为 `memory/postgres`，使用 TF-IDF 关键词检索，数据持久化到 PostgreSQL。
+响应 `200 OK`：
+
+```json
+{
+    "content": "用户手动编辑后的 memory 内容...",
+    "updatedAt": "2026-06-15T10:31:00Z",
+    "lengthBytes": 156,
+    "truncated": false
+}
+```
+
+- 超过 4KB 自动截断，返回 `truncated: true`
+- 用户覆盖后，下一轮对话的 LLM 合并会基于用户版本
+
+> Memory 是每用户一份的 TEXT 字段，详见 [03-soul-and-memory.md](./03-soul-and-memory.md#32-memory记忆)。无列表、无搜索、无分页。
 
 ## 9.6 Workspace 委托 API
 
@@ -247,7 +245,8 @@ data: {"sessionId":"sess-abc123","messageId":"msg-001"}
     "deviceId": "dev-001",
     "task": "运行测试并报告结果",
     "conversationId": "conv-xyz789",
-    "agentSessionId": "wecom-bot:chat123:user456",
+    "agentSessionBaseKey": "agent:clawagent:wecom-bot:chat123:user456",
+    "activeSessionId":    "agent:clawagent:wecom-bot:chat123:user456:v2",
     "status": "running",
     "deliveryStatus": "pending",
     "progressSummary": "正在分析 test/handler_test.go ...",

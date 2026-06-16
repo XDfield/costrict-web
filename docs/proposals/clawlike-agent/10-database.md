@@ -42,6 +42,33 @@ CREATE TABLE agent_providers (
 CREATE INDEX idx_agent_providers_user ON agent_providers(user_id);
 ```
 
+## agent_memories 表
+
+每用户一条记录，存储完整 memory 文本。**自建表，不走 trpc-agent-go memory 后端**（理由见下方）。
+
+```sql
+CREATE TABLE agent_memories (
+    user_id    VARCHAR(255) PRIMARY KEY,
+    content    TEXT         NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+```
+
+设计要点：
+
+- `user_id` 作为主键，保证一对一
+- `content` 由 LLM 合并生成，程序端硬截断到 4KB（详见 [03-soul-and-memory.md §3.2](./03-soul-and-memory.md)）
+- `updated_at` 用于诊断（最近一次刷新时间）
+- 通过 GORM 管理，与其他业务表一起 AutoMigrate
+- 无需索引（按主键查询），无需软删除
+
+**为什么不用 trpc-agent-go memory 后端**：
+
+1. 单 TEXT 模型不需要关键词检索/向量检索
+2. 用户可直接编辑，需要简单表结构便于 REST API 暴露
+3. 减少框架依赖，调试简单
+4. 与 Persona 的存储模式一致（GORM + 标准 migration）
+
 ## agent_workspace_tasks 表
 
 记录 workspace 委托任务的生命周期。借鉴 agent-runtime 提案的 TaskRecord 设计，包含完整状态机和交付管理。
@@ -49,15 +76,15 @@ CREATE INDEX idx_agent_providers_user ON agent_providers(user_id);
 ```sql
 CREATE TABLE agent_workspace_tasks (
     id               UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id          VARCHAR(64)  NOT NULL UNIQUE,
-    user_id          VARCHAR(255) NOT NULL,
-    workspace_id     VARCHAR(255) NOT NULL,
-    device_id        VARCHAR(255) NOT NULL,
-    directory_path   TEXT,
-    task             TEXT         NOT NULL,
-    skill            VARCHAR(255),
-    agent_session_id VARCHAR(255),                -- ClawAgent 会话 ID（用于 announce 回传）
-    conversation_id  VARCHAR(255),                -- cs-cloud 设备端会话 ID
+    task_id                 VARCHAR(64)  NOT NULL UNIQUE,
+    user_id                 VARCHAR(255) NOT NULL,
+    workspace_id            VARCHAR(255) NOT NULL,
+    device_id               VARCHAR(255) NOT NULL,
+    directory_path          TEXT,
+    task                    TEXT         NOT NULL,
+    skill                   VARCHAR(255),
+    agent_session_base_key  VARCHAR(255),                -- ClawAgent base_key（不含 :v{N}，用于 announce 回传，动态解析 active 版本，详见 12-session-design.md §12.3.6）
+    conversation_id         VARCHAR(255),                -- cs-cloud 设备端会话 ID
     status           VARCHAR(20)  NOT NULL DEFAULT 'queued',  -- 见状态机
     delivery_status  VARCHAR(20)  NOT NULL DEFAULT 'pending', -- 见交付状态机
     progress_summary TEXT,                        -- 中间进度摘要（SSE 事件流更新）
@@ -74,7 +101,31 @@ CREATE INDEX idx_workspace_tasks_workspace      ON agent_workspace_tasks(workspa
 CREATE INDEX idx_workspace_tasks_device         ON agent_workspace_tasks(device_id);
 CREATE INDEX idx_workspace_tasks_status         ON agent_workspace_tasks(status);
 CREATE INDEX idx_workspace_tasks_conversation   ON agent_workspace_tasks(conversation_id);
-CREATE INDEX idx_workspace_tasks_agent_session  ON agent_workspace_tasks(agent_session_id);
+CREATE INDEX idx_workspace_tasks_agent_session  ON agent_workspace_tasks(agent_session_base_key);  -- 详见 12-session-design.md §12.3.6
+```
+
+## agent_session_meta 表
+
+业务元数据表，与 trpc-agent-go 自动管理的 `clawagent_sessions` 配合，提供 freshness / reset / prune / 容量上限等生命周期管理。**详见 [12-session-design.md](./12-session-design.md)**。
+
+```sql
+CREATE TABLE agent_session_meta (
+    session_id      VARCHAR(255) PRIMARY KEY,   -- 含 :v{N} 后缀，对应 clawagent_sessions.session_id
+    user_id         VARCHAR(255) NOT NULL,
+    base_key        VARCHAR(255) NOT NULL,       -- 不含版本号的部分
+    version         INTEGER NOT NULL DEFAULT 1,
+    reset_type      VARCHAR(20) NOT NULL,        -- direct/group/thread/event/task
+    last_message_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    message_count   INTEGER NOT NULL DEFAULT 0,
+    token_estimate  INTEGER NOT NULL DEFAULT 0,
+    is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
+    archived_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uk_session_meta_user_base_ver UNIQUE (user_id, base_key, version)
+);
+
+CREATE INDEX idx_session_meta_user_lastmsg ON agent_session_meta(user_id, last_message_at DESC);
+CREATE INDEX idx_session_meta_base_active  ON agent_session_meta(base_key) WHERE is_archived = FALSE;
 ```
 
 ### 任务状态机
@@ -118,44 +169,6 @@ CREATE INDEX idx_workspace_tasks_agent_session  ON agent_workspace_tasks(agent_s
 | `failed` | 交付失败（announce 指数退避重试 5 次后放弃） |
 | `not_applicable` | 阻塞模式（blocking=true），同步返回结果，无需异步回传 |
 
-## clawagent_memories 表（自动创建）
-
-此表由 trpc-agent-go 的 `memory/postgres` 后端**自动创建**，无需手动 migration。
-
-初始化时通过 `memory.NewPostgresMemory()` 配置表名后，框架会执行 `CREATE TABLE IF NOT EXISTS`：
-
-```sql
--- 由 trpc-agent-go 自动执行（表名可配，默认 clawagent_memories）
-CREATE TABLE IF NOT EXISTS clawagent_memories (
-    memory_id     TEXT        PRIMARY KEY,
-    app_name      TEXT        NOT NULL,
-    user_id       TEXT        NOT NULL,
-    memory_data   JSONB       NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ                          -- 软删除（可配）
-);
-
-CREATE INDEX IF NOT EXISTS idx_clawagent_memories_user      ON clawagent_memories(user_id);
-CREATE INDEX IF NOT EXISTS idx_clawagent_memories_app_user  ON clawagent_memories(app_name, user_id);
-CREATE INDEX IF NOT EXISTS idx_clawagent_memories_deleted   ON clawagent_memories(deleted_at);
-```
-
-**配置项**（在 `setup.go` 中）：
-
-```go
-memOpts := []memory.PostgresOption{
-    memory.WithPostgresClientDSN(cfg.DB.DSN),
-    memory.WithTableName("clawagent_memories"),
-    memory.WithSoftDelete(true),
-    memory.WithMinSearchScore(0.1),   // TF-IDF 最小匹配分数
-    memory.WithMaxResults(10),
-    memory.WithExtractor(memory.DefaultExtractor()), // 自动记忆提取
-}
-```
-
-> **注意**：不需要 pgvector 扩展。`memory/postgres` 后端使用 PostgreSQL 内置的全文检索 + TF-IDF 关键词匹配，无需向量数据库。
-
 ## clawagent_sessions 表（自动创建）
 
 此表由 trpc-agent-go 的 `session/postgres` 后端**自动创建**，用于会话上下文持久化。
@@ -180,10 +193,10 @@ CREATE TABLE IF NOT EXISTS clawagent_sessions (
 |----------|----------|------|
 | Persona（人格） | `agent_personas` 表 | 用户自定义 Agent 人格，GORM 管理 |
 | Provider（模型配置） | `agent_providers` 表 | 用户自配 LLM Provider，GORM 管理 |
-| Memory（记忆） | `clawagent_memories` 表 | trpc-agent-go postgres 后端自动管理 |
+| Memory（记忆） | `agent_memories` 表 | 单 TEXT 字段，GORM 管理，LLM 合并刷新 |
 | Session（会话上下文） | `clawagent_sessions` 表 | trpc-agent-go postgres 后端自动管理 |
+| Session 元数据 | `agent_session_meta` 表 | freshness / 版本 / 归档状态，GORM 管理，见 [12-session-design.md](./12-session-design.md) |
 | 委托任务历史 | `agent_workspace_tasks` 表 | GORM 管理 |
-| Skill 内容 | `capability_items.content` | 复用现有 Capability Hub 数据 |
 
 > **关键**：进程内不持有任何不可恢复的状态。任何实例崩溃后，另一个实例可从 PostgreSQL 恢复全部上下文（Memory、Session、Persona、Provider）。
 
@@ -191,12 +204,12 @@ CREATE TABLE IF NOT EXISTS clawagent_sessions (
 
 ```sql
 -- migrations/20260615000000_create_clawagent_tables.up.sql
--- 包含 agent_personas, agent_providers, agent_workspace_tasks 三张表的 DDL
--- clawagent_memories 和 clawagent_sessions 由 trpc-agent-go 运行时自动创建
+-- 包含 agent_personas, agent_providers, agent_memories, agent_workspace_tasks, agent_session_meta 五张表的 DDL
+-- clawagent_sessions 由 trpc-agent-go 运行时自动创建
 
 -- migrations/20260615000000_create_clawagent_tables.down.sql
--- DROP TABLE IF EXISTS agent_personas, agent_providers, agent_workspace_tasks;
--- clawagent_memories 和 clawagent_sessions 由运维手动清理（如需要）
+-- DROP TABLE IF EXISTS agent_personas, agent_providers, agent_memories, agent_workspace_tasks, agent_session_meta;
+-- clawagent_sessions 由运维手动清理（如需要）
 ```
 
 通过 goose 管理，与现有 migration 流程一致。

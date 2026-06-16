@@ -16,7 +16,7 @@
 | 能力 | 说明 |
 |------|------|
 | **Soul（人格）** | 每个用户拥有可自定义的 Agent 人格（SOUL.md 等价物） |
-| **Memory（记忆）** | 跨会话持久化记忆（PostgreSQL + TF-IDF 关键词检索，暂不引入向量搜索） |
+| **Memory（记忆）** | 每用户一份 memory（TEXT 字段），每轮对话全量注入 system prompt，每轮结束后 LLM 自动合并更新（PostgreSQL 持久化，无向量、无关键词检索） |
 | **Provider（多模型）** | 用户自配 LLM Provider（OpenAI / DeepSeek / Ollama 等） |
 | **Channel（渠道）** | 通过企微等 IM 渠道与用户交互 |
 | **Device Delegation（设备委托）** | 将任务以 Workspace 为单位委托到 device 执行（通过 cs-cloud API） |
@@ -56,7 +56,7 @@
 
 **实施阶段**：P5（依赖 P4 Workspace 委托完成）
 
-**首期实施总工期**：**21.5 天**（含 P5 核心 AI 通知处理，不含暂时禁用的 P3 Skill 集成）
+**首期实施总工期**：**23.5 天**（含 P5 核心 AI 通知处理 + P4.5 Session 维护，不含暂时禁用的 P3 Skill 集成）
 
 详细实施计划见 [11-roadmap.md](./11-roadmap.md)，AI 通知处理设计见 [ai-driven-notification-handling.md](./ai-driven-notification-handling.md)。
 
@@ -77,4 +77,5 @@
 | [09-api.md](./09-api.md) | REST API 设计 |
 | [10-database.md](./10-database.md) | 数据库表结构 DDL + 无状态横向扩展 |
 | [11-roadmap.md](./11-roadmap.md) | 分阶段实施计划 |
+| [12-session-design.md](./12-session-design.md) | Session 设计与刷新机制（freshness / reset / prune / announce 协调，对比 openclaw） |
 | [~~05-skills-integration.md~~](./05-skills-integration.md) | ~~Skill 与 Capability Hub 对接（DBSkillRepository）~~ **暂时禁用** |

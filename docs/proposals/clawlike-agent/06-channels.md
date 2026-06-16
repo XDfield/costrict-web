@@ -38,9 +38,14 @@ func (rt *ClawAgentRuntime) Handle(
         return sender.Send(ctx, "抱歉，无法识别您的身份。")
     }
 
-    // 2. 构造 sessionID（渠道维度隔离）
-    sessionID := fmt.Sprintf("%s:%s:%s",
+    // 2. 构造 baseKey（渠道维度隔离）+ 解析 active sessionID（含版本号）
+    //    详见 12-session-design.md
+    baseKey := fmt.Sprintf("agent:clawagent:%s:%s:%s",
         msg.ChannelType, msg.ExternalChatID, msg.ExternalUserID)
+    sessionID, err := rt.resolveActiveSession(userID, baseKey)
+    if err != nil {
+        return err
+    }
 
     // 3. 调用 Runner
     userMessage := model.NewUserMessage(msg.Content)
@@ -110,10 +115,13 @@ ClawAgent 只需实现 `MessageHandler` 接口即可接入企微消息流。
 
 ### 企微消息路由
 
-| 消息来源 | ExternalChatType | sessionID 构造 | 说明 |
-|---------|-----------------|---------------|------|
-| 单聊 | "single" | `wecom-bot:{chatID}:{userID}` | 一对一私聊 |
-| 群聊 | "group" | `wecom-bot:{chatID}:group` | 群内共享 session |
+| 消息来源 | ExternalChatType | baseKey 构造（实际 sessionID 含 `:v{N}` 版本后缀） | 说明 |
+|---------|-----------------|----------------------------------------------|------|
+| 单聊 | "single" | `agent:clawagent:wecom-bot:{chatID}:{userID}` | 一对一私聊，daily reset |
+| 群聊 | "group" | `agent:clawagent:wecom-bot:{chatID}:group` | 群内共享 session，30min idle reset |
+| 群内 thread | "group"+threadId | `agent:clawagent:wecom-bot:{chatID}:group:thread:{threadId}` | 独立上下文 |
+
+sessionID 完整规范与 freshness / reset / prune 机制详见 [12-session-design.md](./12-session-design.md)。
 
 ### 企微通知场景的 AI 化处理（核心特性）
 
@@ -143,7 +151,7 @@ GET  /api/clawagent/sessions   → 列出会话
 GET  /api/clawagent/history/:id → 获取会话历史
 ```
 
-详细 API 见 [08-api.md](./08-api.md)。
+详细 API 见 [09-api.md](./09-api.md)。
 
 ## 6.6 OpenAI 兼容 API
 
