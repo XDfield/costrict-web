@@ -214,6 +214,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.UserNotificationChannel{},
 		&models.UserConfig{},
 		&models.MCPUserConfig{},
+		&models.EnterpriseCustomer{},
 		&models.NotificationLog{},
 		&models.ItemCategory{},
 		&models.DeviceRelease{},

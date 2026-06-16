@@ -36,6 +36,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/dispatcher"
+	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
@@ -437,6 +438,8 @@ func main() {
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
+
+			enterprise.New(db).RegisterRoutes(authed)
 
 			admin := authed.Group("/admin")
 			admin.Use(systemrole.RequirePlatformAdmin(db))
