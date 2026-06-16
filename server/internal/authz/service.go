@@ -44,6 +44,7 @@ type Service struct {
 	capabilityProvider CapabilityProvider
 	casdoorEndpoint    string
 	jwksProvider       *middleware.JWKSProvider
+	deptProvider       DepartmentProvider
 	menuRegistry       ResourceRegistry
 	apiRegistry        ResourceRegistry
 	mu                 sync.RWMutex
@@ -184,7 +185,20 @@ func (s *Service) HasPermission(userID, resourceCode string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list roles: %w", err)
 	}
-	return hasAny(roles, allowed), nil
+	if hasAny(roles, allowed) {
+		return true, nil
+	}
+
+	// Role path missed → fall back to the fine-grained grant path so a direct
+	// user grant or a (inherited) department grant on this resource code can also
+	// confer access. CheckGrant has a zero-cost fast path when no grants exist,
+	// and fails closed if dept-sync is unavailable, so this never weakens the
+	// existing role-based deny.
+	granted, gErr := s.CheckGrant(userID, resourceCode)
+	if gErr != nil {
+		return false, gErr
+	}
+	return granted, nil
 }
 
 // VerifyToken parses a bearer token to resolve the userID and then checks permission.

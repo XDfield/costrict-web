@@ -224,6 +224,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.ItemDistribution{},
 		&models.ItemDistributionReceipt{},
 		&models.Organization{},
+		&models.PermissionGrant{},
 	)
 }
 

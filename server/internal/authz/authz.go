@@ -38,6 +38,12 @@ func (m *Module) RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
 	// single resource's allowed roles (reloads the in-memory registry on write).
 	adminGroup.GET("/resource-permissions", ListResourcePermissionsHandler(m.Service))
 	adminGroup.PUT("/resource-permissions/:code", UpdateResourcePermissionHandler(m.Service))
+
+	// Fine-grained permission grants (mentor RBAC): grant a permission code to a
+	// user or department (department grants inherit to descendants by dept_path).
+	adminGroup.GET("/permission-grants", ListPermissionGrantsHandler(m.Service))
+	adminGroup.POST("/permission-grants", GrantPermissionHandler(m.Service))
+	adminGroup.DELETE("/permission-grants/:id", RevokePermissionHandler(m.Service))
 }
 
 func (m *Module) RegisterInternalRoutes(internalGroup *gin.RouterGroup) {

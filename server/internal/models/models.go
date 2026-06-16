@@ -677,6 +677,28 @@ type ResourcePermission struct {
 	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
 }
 
+// PermissionGrant 细粒度权限授予（mentor RBAC 方案 / prd §11.2）。
+// 一行 = 一次授权：(PermissionCode, subject)，subject ∈ {user, department}。
+// 与 ResourcePermission.AllowedRoles（粗粒度角色门禁）共存，最终鉴权 = role 路径 ∪ grant 路径。
+// 部门授权向子部门继承：用冗余存的 DeptPath 做前缀匹配（U == P_D 或 U 以 P_D + '/' 开头）。
+type PermissionGrant struct {
+	ID             string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	PermissionCode string    `gorm:"column:permission_code;not null;size:128;index:idx_permission_grants_code;uniqueIndex:uk_permission_grant,priority:1" json:"permissionCode"`
+	SubjectType    string    `gorm:"column:subject_type;not null;size:32;index:idx_permission_grants_subject,priority:1;uniqueIndex:uk_permission_grant,priority:2" json:"subjectType"` // user | department
+	SubjectID      string    `gorm:"column:subject_id;not null;size:191;index:idx_permission_grants_subject,priority:2;uniqueIndex:uk_permission_grant,priority:3" json:"subjectId"`
+	DeptPath       string    `gorm:"column:dept_path;not null;size:1024;default:''" json:"deptPath"` // 部门授权时冗余存其 dept_path
+	GrantedBy      string    `gorm:"column:granted_by;size:191" json:"grantedBy"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+func (PermissionGrant) TableName() string { return "permission_grants" }
+
+// Subject types for PermissionGrant.SubjectType.
+const (
+	PermissionSubjectUser       = "user"
+	PermissionSubjectDepartment = "department"
+)
+
 // UserAuthIdentity stores one external login identity bound to a local user.
 type UserAuthIdentity struct {
 	ID              uint           `gorm:"primaryKey;autoIncrement" json:"id"`

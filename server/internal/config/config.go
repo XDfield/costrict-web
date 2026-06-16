@@ -37,7 +37,19 @@ type Config struct {
 	LLM                       LLMConfig
 	Embedding                 EmbeddingConfig
 	Search                    SearchConfig
+	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+}
+
+// DeptSyncConfig holds connection settings for the external dept-sync service
+// (real department/user tree, X-API-Key authenticated). Both fields are optional:
+// when BaseURL or APIKey is empty the dept-sync client is considered unconfigured
+// and degrades gracefully (admin endpoints return 503, frontend shows a notice).
+type DeptSyncConfig struct {
+	BaseURL    string // e.g. http://dept-sync:8080 (no trailing /api)
+	APIKey     string // X-API-Key value issued by dept-sync (query_key table)
+	TimeoutSec int    // per-request HTTP timeout, default 10s
+	CacheTTLSec int   // in-memory cache TTL for tree/users responses, default 60s
 }
 
 type ChannelSystemConfig struct {
@@ -155,6 +167,12 @@ func Load() *Config {
 		Search: SearchConfig{
 			DefaultLimit:        getEnvInt("SEARCH_DEFAULT_LIMIT", 20),
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
+		},
+		DeptSync: DeptSyncConfig{
+			BaseURL:     getEnv("DEPT_SYNC_URL", ""),
+			APIKey:      getEnv("DEPT_SYNC_API_KEY", ""),
+			TimeoutSec:  getEnvInt("DEPT_SYNC_TIMEOUT_SECONDS", 10),
+			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
 		Channels: ChannelSystemConfig{

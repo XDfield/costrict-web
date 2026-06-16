@@ -6,6 +6,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 )
@@ -161,6 +162,140 @@ func UpdateResourcePermissionHandler(svc *Service) gin.HandlerFunc {
 		}
 
 		audit.Record(c.GetString(appmiddleware.UserIDKey), audit.ActionResourcePermissionUpdate, audit.TargetResourcePermission, code, gin.H{"allowedRoles": req.AllowedRoles})
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+// ListPermissionGrantsHandler godoc
+//
+//	@Summary		List permission grants
+//	@Description	List fine-grained permission grants, optionally filtered by permissionCode (platform admin only)
+//	@Tags			admin/permissions
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			permissionCode	query		string	false	"Filter by permission code"
+//	@Success		200	{object}	object{grants=[]models.PermissionGrant}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		403	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/permission-grants [get]
+func ListPermissionGrantsHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		grants, err := svc.ListGrants(c.Query("permissionCode"))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list permission grants"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"grants": grants})
+	}
+}
+
+type grantPermissionRequest struct {
+	PermissionCode string `json:"permissionCode" binding:"required"`
+	SubjectType    string `json:"subjectType" binding:"required"` // user | department
+	SubjectID      string `json:"subjectId" binding:"required"`
+}
+
+// GrantPermissionHandler godoc
+//
+//	@Summary		Grant fine-grained permission
+//	@Description	Grant a permission to a user or department (platform admin only). For department subjects the materialized dept_path is resolved from dept-sync and stored redundantly for prefix-based inheritance.
+//	@Tags			admin/permissions
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		grantPermissionRequest	true	"Grant request"
+//	@Success		200	{object}	object{grant=models.PermissionGrant}
+//	@Failure		400	{object}	object{error=string}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		403	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/permission-grants [post]
+func GrantPermissionHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		operatorID := c.GetString(appmiddleware.UserIDKey)
+		if operatorID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		var req grantPermissionRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		// For department grants, resolve and store the dept_path redundantly so
+		// CheckGrant stays a pure prefix comparison with no tree lookup.
+		var deptPath string
+		if req.SubjectType == models.PermissionSubjectDepartment {
+			p, err := svc.ResolveDepartmentPath(req.SubjectID)
+			if err != nil {
+				c.JSON(http.StatusBadGateway, gin.H{
+					"error": "failed to resolve department path from dept-sync",
+					"code":  "dept_sync_unavailable",
+				})
+				return
+			}
+			deptPath = p
+		}
+
+		grant, err := svc.GrantPermission(req.PermissionCode, req.SubjectType, req.SubjectID, deptPath, operatorID)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidSubjectType):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subject type"})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to grant permission"})
+			}
+			return
+		}
+
+		audit.Record(operatorID, audit.ActionPermissionGrantGrant, audit.TargetPermissionGrant, grant.ID, gin.H{
+			"permissionCode": grant.PermissionCode,
+			"subjectType":    grant.SubjectType,
+			"subjectId":      grant.SubjectID,
+			"deptPath":       grant.DeptPath,
+		})
+
+		c.JSON(http.StatusOK, gin.H{"grant": grant})
+	}
+}
+
+// RevokePermissionHandler godoc
+//
+//	@Summary		Revoke fine-grained permission
+//	@Description	Revoke a permission grant by id (platform admin only)
+//	@Tags			admin/permissions
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id	path		string	true	"Grant id"
+//	@Success		200	{object}	object{success=bool}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		403	{object}	object{error=string}
+//	@Failure		404	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/permission-grants/{id} [delete]
+func RevokePermissionHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		operatorID := c.GetString(appmiddleware.UserIDKey)
+		id := c.Param("id")
+		if id == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "grant id is required"})
+			return
+		}
+
+		if err := svc.RevokePermission(id); err != nil {
+			if errors.Is(err, ErrGrantNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "permission grant not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke permission"})
+			return
+		}
+
+		audit.Record(operatorID, audit.ActionPermissionGrantRevoke, audit.TargetPermissionGrant, id, nil)
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

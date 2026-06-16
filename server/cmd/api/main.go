@@ -38,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/deptsync"
 	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
@@ -244,6 +245,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
+
+	// Shared dept-sync client: backs both the admin department-tree proxy (M1 org
+	// view) and the authz fine-grained grant engine (mentor RBAC department
+	// inheritance). Optional dependency — when unconfigured, department grants
+	// simply never match (CheckGrant fails closed) while user grants and the role
+	// path keep working.
+	deptSyncClient := deptsync.New(cfg.DeptSync)
+	authzModule.Service.SetDepartmentProvider(deptSyncDepartmentProvider{client: deptSyncClient})
 
 	var channelModule *channel.Module
 	var cloudModule *cloud.Module
@@ -475,6 +484,13 @@ func main() {
 			// profile, status switch, organization roll-up.
 			adminuser.New(userModule.Service).RegisterRoutes(admin)
 
+			// Admin department tree (M1 org view, platform admin only): proxies the
+			// external dept-sync service for the real org tree and correlates its
+			// members back to local users via universal id. Optional dependency —
+			// when dept-sync is not configured these endpoints return 503 and the
+			// frontend shows a "department service unavailable" notice.
+			deptsync.NewModule(deptSyncClient, db).RegisterRoutes(admin)
+
 			// Admin content management (M6, platform admin only): cross-registry
 			// item list, across-author status switch (上下架), and delete.
 			adminitem.New(db).RegisterRoutes(admin)
@@ -667,4 +683,29 @@ func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc 
 		}
 		c.Next()
 	}
+}
+
+// deptSyncDepartmentProvider adapts the deptsync HTTP client to authz's narrow
+// DepartmentProvider interface, translating deptsync.Dept into authz.DepartmentInfo
+// (only dept id + materialized path are needed for prefix-based inheritance). It
+// keeps authz free of any deptsync import (avoids an import cycle) while letting
+// the grant engine reuse the same cached client as the admin department view.
+type deptSyncDepartmentProvider struct {
+	client *deptsync.Client
+}
+
+func (p deptSyncDepartmentProvider) GetUserDepartments(deptSyncUserID string) ([]authz.DepartmentInfo, error) {
+	depts, err := p.client.GetUserDepartments(deptSyncUserID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]authz.DepartmentInfo, 0, len(depts))
+	for _, d := range depts {
+		out = append(out, authz.DepartmentInfo{DeptID: d.DeptID, DeptPath: d.DeptPath})
+	}
+	return out, nil
+}
+
+func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, error) {
+	return p.client.GetDepartmentPath(deptID)
 }

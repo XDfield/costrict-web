@@ -38,6 +38,9 @@ const (
 
 	ActionResourcePermissionUpdate = "resource_permission.update"
 
+	ActionPermissionGrantGrant  = "permission_grant.grant"
+	ActionPermissionGrantRevoke = "permission_grant.revoke"
+
 	ActionDistributionCreate = "distribution.create"
 	ActionDistributionUpdate = "distribution.update"
 	ActionDistributionRevoke = "distribution.revoke"
@@ -59,6 +62,7 @@ const (
 	TargetEnterpriseCustomer  = "enterprise_customer"
 	TargetUser                = "user"
 	TargetResourcePermission  = "resource_permission"
+	TargetPermissionGrant     = "permission_grant"
 	TargetDistribution        = "distribution"
 	TargetNotificationChannel = "notification_channel"
 	TargetSetting             = "setting"

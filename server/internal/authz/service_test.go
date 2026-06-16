@@ -60,6 +60,22 @@ func setupAuthzTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("create resource_permissions table: %v", err)
 	}
 
+	// permission_grants backs HasPermission's grant fallback (CheckGrant). The
+	// resource-permission tests never grant anything, so this stays empty, but the
+	// table must exist for the fallback query not to error.
+	if err := db.Exec(`CREATE TABLE permission_grants (
+		id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+		permission_code TEXT NOT NULL,
+		subject_type TEXT NOT NULL,
+		subject_id TEXT NOT NULL,
+		dept_path TEXT NOT NULL DEFAULT '',
+		granted_by TEXT,
+		created_at DATETIME,
+		UNIQUE(permission_code, subject_type, subject_id)
+	)`).Error; err != nil {
+		t.Fatalf("create permission_grants table: %v", err)
+	}
+
 	seed := []models.ResourcePermission{
 		{ResourceCode: "repositories", ResourceType: "menu", AllowedRoles: pq.StringArray{}},
 		{ResourceCode: "capabilities", ResourceType: "menu", AllowedRoles: pq.StringArray{systemrole.SystemRolePlatformAdmin}},
