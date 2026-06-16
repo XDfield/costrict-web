@@ -26,13 +26,9 @@ func newMarketplaceRouter(userID string) *gin.Engine {
 		c.Next()
 	}
 
-	// Setup services with mock implementations
+	// Setup services
 	db := database.GetDB()
-	embeddingSvc := services.NewEmbeddingService(&config.EmbeddingConfig{
-		Provider:   "mock",
-		Dimensions: 1024,
-	})
-	searchSvc := services.NewSearchService(db, embeddingSvc, &config.SearchConfig{})
+	searchSvc := services.NewSearchService(db, &config.SearchConfig{})
 	behaviorSvc := services.NewBehaviorService(db)
 	recommendSvc := services.NewRecommendService(db, behaviorSvc, searchSvc)
 
@@ -347,8 +343,6 @@ func TestGetNewAndNoteworthy_WithLimit(t *testing.T) {
 
 func TestFindSimilar_Success(t *testing.T) {
 	defer setupTestDB(t)()
-	embedding := "[0.1,0.2,0.3]"
-	embedding2 := "[0.2,0.3,0.4]"
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-similar", Name: "similar-reg", SourceType: "internal", OwnerID: "u1",
 	})
@@ -362,7 +356,6 @@ func TestFindSimilar_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   &embedding,
 	})
 	database.DB.Create(&models.CapabilityItem{
 		ID:          "item-similar2",
@@ -374,7 +367,6 @@ func TestFindSimilar_Success(t *testing.T) {
 		Status:      "active",
 		CreatedBy:   "u1",
 		Metadata:    datatypes.JSON([]byte("{}")),
-		Embedding:   &embedding2,
 	})
 
 	r := newMarketplaceRouter("")
@@ -388,8 +380,8 @@ func TestFindSimilar_ItemNotFound(t *testing.T) {
 	defer setupTestDB(t)()
 	r := newMarketplaceRouter("")
 	w := get(r, "/api/items/nonexistent-item/similar")
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 

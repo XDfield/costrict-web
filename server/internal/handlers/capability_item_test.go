@@ -39,7 +39,7 @@ func newItemRouter(userID string) *gin.Engine {
 	db := database.GetDB()
 	tagSvc := &services.TagService{DB: db}
 	TagSvc = tagSvc
-	itemHandler := NewItemHandler(db, nil, &services.ParserService{}, nil, tagSvc)
+	itemHandler := NewItemHandler(db, &services.ParserService{}, nil, tagSvc)
 
 	r.GET("/api/registries/:id/items", injectUser, ListItems)
 	r.POST("/api/registries/:id/items", injectUser, CreateItem)
