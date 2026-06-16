@@ -132,12 +132,8 @@ func main() {
 	jobSvc := &services.JobService{DB: db}
 	handlers.JobService = jobSvc
 
-	// Embedding and Indexer Services
-	embeddingSvc := services.NewEmbeddingService(&cfg.Embedding)
-	indexerSvc := services.NewIndexerService(db, embeddingSvc)
-
 	// Search Service
-	searchSvc := services.NewSearchService(db, embeddingSvc, &cfg.Search)
+	searchSvc := services.NewSearchService(db, &cfg.Search)
 
 	// Behavior Service
 	behaviorSvc := services.NewBehaviorService(db)
@@ -157,15 +153,15 @@ func main() {
 	defer sched.Stop()
 	handlers.SyncScheduler = sched
 
-	// Initialize ItemHandler with indexer and parser
+	// Initialize ItemHandler with parser
 	parserSvc := &services.ParserService{}
 	categorySvc := &services.CategoryService{DB: db}
 	tagSvc := &services.TagService{DB: db}
 	handlers.CategorySvc = categorySvc
 	handlers.TagSvc = tagSvc
-	itemHandler := handlers.NewItemHandler(db, indexerSvc, parserSvc, categorySvc, tagSvc)
+	itemHandler := handlers.NewItemHandler(db, parserSvc, categorySvc, tagSvc)
 
-	// Initialize AI-powered handlers
+	// Initialize search and recommend handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
 	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
@@ -174,9 +170,6 @@ func main() {
 	// Initialize Distribution handler
 	distSvc := services.NewDistributionService(db, behaviorSvc)
 	distHandler := handlers.NewDistributionHandler(db, distSvc)
-
-	// Start background indexing (every hour)
-	indexerSvc.StartBackgroundIndexing(context.Background(), time.Hour)
 
 	r := gin.New()
 

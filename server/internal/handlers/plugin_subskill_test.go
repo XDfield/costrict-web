@@ -765,7 +765,7 @@ func TestReconcilePluginSubSkills_EnqueuesScanJobs(t *testing.T) {
 	if err := database.DB.Create(&plugin).Error; err != nil {
 		t.Fatalf("create plugin: %v", err)
 	}
-	h := NewItemHandler(database.DB, nil, &services.ParserService{}, nil, nil)
+	h := NewItemHandler(database.DB, &services.ParserService{}, nil, nil)
 	children := reconcilePluginSubSkills(h, &plugin, []services.ArchiveAsset{
 		{Path: "skills/alpha/SKILL.md", Content: skillMD("Alpha", "alpha v1"), Size: int64(len(skillMD("Alpha", "alpha v1"))), MimeType: "text/markdown"},
 	}, "u1")

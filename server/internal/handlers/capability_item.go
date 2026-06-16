@@ -28,10 +28,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// ItemHandler handles item operations with indexing support
+// ItemHandler handles item operations
 type ItemHandler struct {
 	db          *gorm.DB
-	indexerSvc  *services.IndexerService
 	parserSvc   *services.ParserService
 	archiveSvc  *services.ArchiveService
 	categorySvc *services.CategoryService
@@ -89,14 +88,13 @@ func expandSecurityStatusFilters(values []string) []string {
 }
 
 // NewItemHandler creates a new item handler
-func NewItemHandler(db *gorm.DB, indexerSvc *services.IndexerService, parserSvc *services.ParserService, categorySvc *services.CategoryService, tagSvc *services.TagService) *ItemHandler {
+func NewItemHandler(db *gorm.DB, parserSvc *services.ParserService, categorySvc *services.CategoryService, tagSvc *services.TagService) *ItemHandler {
 	var archiveSvc *services.ArchiveService
 	if parserSvc != nil {
 		archiveSvc = &services.ArchiveService{Parser: parserSvc}
 	}
 	return &ItemHandler{
 		db:          db,
-		indexerSvc:  indexerSvc,
 		parserSvc:   parserSvc,
 		archiveSvc:  archiveSvc,
 		categorySvc: categorySvc,
@@ -526,7 +524,6 @@ type ItemResponse struct {
 	CreatedAt           time.Time                   `json:"createdAt"`
 	UpdatedAt           time.Time                   `json:"updatedAt"`
 	ExperienceScore     float64                     `json:"experienceScore"`
-	EmbeddingUpdatedAt  *time.Time                  `json:"embeddingUpdatedAt"`
 	Tags                []models.ItemTagDict        `json:"tags,omitempty"`
 	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
 	RepoName            string                      `json:"repoName,omitempty"`
@@ -690,7 +687,6 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		CreatedAt:           item.CreatedAt,
 		UpdatedAt:           item.UpdatedAt,
 		ExperienceScore:     item.ExperienceScore,
-		EmbeddingUpdatedAt:  item.EmbeddingUpdatedAt,
 		Tags:                item.Tags,
 		CurrentVersionLabel: services.NewContentHashService().BuildVersionLabel(item.CurrentRevision),
 	}
@@ -1512,8 +1508,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		// bundled skills/ set may have changed even when the parent is byte-identical.
 		// Reconcile sub-skills unconditionally for plugins (idempotent).
 		if item.ItemType == "plugin" {
-			childSkills := reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
-			indexSubSkillsAsync(h, childSkills)
+			_ = reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
 		}
 		c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 		return
@@ -1690,36 +1685,10 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 
 	// Reconcile bundled sub-skills (create/update/archive) for plugin updates.
 	if item.ItemType == "plugin" {
-		childSkills := reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
-		indexSubSkillsAsync(h, childSkills)
-	}
-
-	if h.indexerSvc != nil {
-		go func() {
-			bgCtx := context.Background()
-			if err := h.indexerSvc.IndexItem(bgCtx, &item); err != nil {
-				log.Printf("Failed to index item %s: %v", item.ID, err)
-			}
-		}()
+		_ = reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
 	}
 
 	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
-}
-
-// indexSubSkillsAsync fires async indexing for newly created sub-skill items.
-func indexSubSkillsAsync(h *ItemHandler, children []*models.CapabilityItem) {
-	if h.indexerSvc == nil {
-		return
-	}
-	for _, child := range children {
-		ch := child
-		go func() {
-			bgCtx := context.Background()
-			if err := h.indexerSvc.IndexItem(bgCtx, ch); err != nil {
-				log.Printf("Failed to index sub-skill %s: %v", ch.ID, err)
-			}
-		}()
-	}
 }
 
 // DeleteItem godoc
@@ -2345,16 +2314,6 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		return
 	}
 
-	// Async index the item for semantic search
-	if h.indexerSvc != nil {
-		go func() {
-			ctx := context.Background()
-			if err := h.indexerSvc.IndexItem(ctx, item); err != nil {
-				log.Printf("Failed to index item %s: %v", item.ID, err)
-			}
-		}()
-	}
-
 	enqueueScanAsync(item.ID, 1, "create")
 
 	if h.categorySvc != nil && req.Category != "" {
@@ -2538,16 +2497,6 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		item.Descriptions = src.Descriptions
 	}
 
-	// Async index + security scan for the new copy.
-	if h.indexerSvc != nil {
-		forked := item
-		go func() {
-			ctx := context.Background()
-			if err := h.indexerSvc.IndexItem(ctx, forked); err != nil {
-				log.Printf("Failed to index forked item %s: %v", forked.ID, err)
-			}
-		}()
-	}
 	enqueueScanAsync(item.ID, 1, "fork")
 
 	// Carry over tags.
@@ -2676,14 +2625,6 @@ func (h *ItemHandler) forkPluginChildren(srcPluginID, newPluginID, userID string
 			h.db.Model(&models.CapabilityVersion{}).Where("item_id = ? AND revision = ?", forked.ID, 1).Update("descriptions", child.Descriptions)
 		}
 
-		if h.indexerSvc != nil {
-			f := forked
-			go func() {
-				if err := h.indexerSvc.IndexItem(context.Background(), f); err != nil {
-					log.Printf("Failed to index sub-skill fork %s: %v", f.ID, err)
-				}
-			}()
-		}
 		enqueueScanAsync(forked.ID, 1, "fork")
 
 		if h.tagSvc != nil {
@@ -3605,17 +3546,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	// linked to this plugin via parent_plugin_id. Best-effort: child failures don't
 	// roll back the parent plugin (a later re-upload reconciles them).
 	if itemType == "plugin" {
-		childSkills := reconcilePluginSubSkills(h, item, result.Assets, createdBy)
-		indexSubSkillsAsync(h, childSkills)
-	}
-
-	if h.indexerSvc != nil {
-		go func() {
-			ctx := context.Background()
-			if err := h.indexerSvc.IndexItem(ctx, item); err != nil {
-				log.Printf("Failed to index item %s: %v", item.ID, err)
-			}
-		}()
+		_ = reconcilePluginSubSkills(h, item, result.Assets, createdBy)
 	}
 
 	if h.tagSvc != nil {
