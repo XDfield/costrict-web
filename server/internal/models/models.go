@@ -452,10 +452,7 @@ type CapabilityItem struct {
 	CreatedAt         time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
 	UpdatedAt         time.Time            `json:"updatedAt"`
 
-	// Vector embedding for semantic search
-	Embedding          *string    `gorm:"type:vector(1024)" json:"-"`
-	ExperienceScore    float64    `gorm:"default:0" json:"experienceScore"`
-	EmbeddingUpdatedAt *time.Time `json:"embeddingUpdatedAt"`
+	ExperienceScore float64 `gorm:"default:0" json:"experienceScore"`
 
 	// Tags loaded separately (not persisted by GORM)
 	Tags []ItemTagDict `gorm:"-" json:"tags,omitempty"`

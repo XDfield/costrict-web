@@ -352,7 +352,7 @@ func TestIngest_SubSkill_OrphanArchivedWhenPluginRemoved(t *testing.T) {
 	}
 
 	// Second bundle: plugin + sub-skill both removed (empty index, but keep one
-	// unrelated entry so the bundle is non-trivial and seenEntryDirs is populated).
+	// unrelated entry so the bundle is non-trivial and seenSourcePaths is populated).
 	keep := []catalogEntry{pluginEntry("survivor-plugin")}
 	keepBodies := map[string]string{"survivor-plugin": pluginBodyFor("Survivor")}
 	dir2 := writeMultiEntryBundle(t, keep, keepBodies)

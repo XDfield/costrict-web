@@ -11,15 +11,13 @@ import (
 
 // GenerateService handles skill analysis and improvement using LLM
 type GenerateService struct {
-	llmClient  *llm.Client
-	indexerSvc *IndexerService
+	llmClient *llm.Client
 }
 
 // NewGenerateService creates a new generate service
-func NewGenerateService(llmClient *llm.Client, indexerSvc *IndexerService) *GenerateService {
+func NewGenerateService(llmClient *llm.Client) *GenerateService {
 	return &GenerateService{
-		llmClient:  llmClient,
-		indexerSvc: indexerSvc,
+		llmClient: llmClient,
 	}
 }
 
@@ -83,11 +81,6 @@ func (s *GenerateService) ImproveSkill(ctx context.Context, itemID string, impro
 	if result := db.Save(&item); result.Error != nil {
 		return nil, result.Error
 	}
-
-	// Re-index the item
-	go func() {
-		_ = s.indexerSvc.IndexItem(context.Background(), &item)
-	}()
 
 	return &item, nil
 }

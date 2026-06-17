@@ -43,10 +43,6 @@ func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*go
 
 	log.Println("Database connected successfully")
 
-	if err := enablePgVector(db); err != nil {
-		log.Printf("Warning: Failed to enable pgvector extension: %v (continuing without vector support)", err)
-	}
-
 	if err := configureConnectionPool(db); err != nil {
 		log.Printf("Warning: Failed to configure connection pool: %v (continuing with defaults)", err)
 	}
@@ -96,15 +92,6 @@ func configureConnectionPool(db *gorm.DB) error {
 	sqlDB.SetConnMaxLifetime(maxLifetime)
 
 	log.Printf("Database pool configured: max_open=%d max_idle=%d max_lifetime=%s", maxOpen, maxIdle, maxLifetime)
-	return nil
-}
-
-// enablePgVector enables the pgvector extension in PostgreSQL.
-func enablePgVector(db *gorm.DB) error {
-	if err := db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
-		return fmt.Errorf("failed to create vector extension: %w", err)
-	}
-	log.Println("pgvector extension enabled successfully")
 	return nil
 }
 

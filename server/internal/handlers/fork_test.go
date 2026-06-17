@@ -27,7 +27,7 @@ func newForkRouter(userID string) *gin.Engine {
 	db := database.GetDB()
 	tagSvc := &services.TagService{DB: db}
 	TagSvc = tagSvc
-	itemHandler := NewItemHandler(db, nil, &services.ParserService{}, nil, tagSvc)
+	itemHandler := NewItemHandler(db, &services.ParserService{}, nil, tagSvc)
 	r.POST("/api/items/:id/fork", injectUser, itemHandler.ForkItem)
 	r.GET("/api/items/:id", injectUser, GetItem)
 	return r

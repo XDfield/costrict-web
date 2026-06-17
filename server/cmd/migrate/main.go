@@ -149,13 +149,12 @@ func main() {
 // schema current" so the default migrate path and any subcommand that needs
 // the schema in place (e.g. ingest-upstream) can never drift in ordering.
 //
-// Ordering matters: runPreMigrations must precede autoMigrateAll because
-// AutoMigrate touches CapabilityItem.Embedding (a pgvector `vector(1024)`
-// column) and the pre-migration bootstrap establishes the tables/columns
-// AutoMigrate reconciles against. Every step is idempotent, so re-running on
-// an already-migrated DB is a no-op. Data backfills (content versioning,
-// external identities, organizations) are intentionally NOT part of schema
-// prep — they live only in the default migrate path.
+// Ordering matters: runPreMigrations must precede autoMigrateAll because the
+// pre-migration bootstrap establishes the tables/columns AutoMigrate reconciles
+// against. Every step is idempotent, so re-running on an already-migrated DB is
+// a no-op. Data backfills (content versioning, external identities,
+// organizations) are intentionally NOT part of schema prep — they live only in
+// the default migrate path.
 func prepareSchema(db *gorm.DB) error {
 	if err := runPreMigrations(db); err != nil {
 		return fmt.Errorf("run pre-migrations: %w", err)
