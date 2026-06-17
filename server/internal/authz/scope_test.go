@@ -166,6 +166,102 @@ func TestResolveUserScope_ExtraDeptGrantToDepartment(t *testing.T) {
 	}
 }
 
+// TestResolveUserScope_ScopeDeptUserTarget is the metrics-view preset for #2: a
+// platform admin grants a specific USER (海俊) the right to see a TARGET department
+// (AI效能部) and its subtree, beyond his own department. The grant is on the user
+// (subject_type=user), and its dept_path holds the TARGET department path — the
+// exact value ResolveUserScope adds as an extra-visible prefix for that user. This
+// pins the grant-creation ↔ scope-consumption contract: dept_path written ==
+// prefix read.
+func TestResolveUserScope_ScopeDeptUserTarget(t *testing.T) {
+	db := setupGrantTestDB(t)
+	const devGroupPath = "/研发体系/Costrict研发部/开发组"
+	const targetSubtree = "/研发体系/AI效能部"
+	seedUser(t, db, "usr_haijun", "uid_haijun")
+
+	dp := &fakeDeptProvider{
+		userDepts: map[string][]DepartmentInfo{
+			"uid_haijun": {{DeptID: "6571", DeptPath: devGroupPath}},
+		},
+		// The grant-creation handler resolves the TARGET department's path from here.
+		deptPaths: map[string]string{"5889": targetSubtree},
+	}
+	svc := newScopeTestService(t, db, nil, dp)
+
+	// Mirror what GrantPermissionHandler does for a user subject + targetDeptId:
+	// resolve the target department's path, then store it as the grant dept_path.
+	targetPath, err := svc.ResolveDepartmentPath("5889")
+	if err != nil {
+		t.Fatalf("resolve target dept path: %v", err)
+	}
+	if _, err := svc.GrantPermission(ScopeDeptPermission, models.PermissionSubjectUser, "usr_haijun", targetPath, "op"); err != nil {
+		t.Fatalf("grant user scope.dept with target: %v", err)
+	}
+
+	scope, err := svc.ResolveUserScope("usr_haijun")
+	if err != nil {
+		t.Fatalf("ResolveUserScope: %v", err)
+	}
+	if scope.AllAccess {
+		t.Fatalf("must not be AllAccess")
+	}
+	want := []string{devGroupPath, targetSubtree}
+	if !containsAll(scope.VisibleDeptPrefixes, want) || len(scope.VisibleDeptPrefixes) != 2 {
+		t.Fatalf("VisibleDeptPrefixes = %v, want exactly %v", scope.VisibleDeptPrefixes, want)
+	}
+}
+
+// TestGrantPermission_RetargetsDeptPath: re-granting the same user's
+// kanban.scope.dept with a different target department updates the stored
+// dept_path in place (the unique key forbids a second row), so ResolveUserScope
+// then reflects the NEW target only.
+func TestGrantPermission_RetargetsDeptPath(t *testing.T) {
+	db := setupGrantTestDB(t)
+	const devGroupPath = "/研发体系/Costrict研发部/开发组"
+	const firstTarget = "/研发体系/AI效能部"
+	const secondTarget = "/研发体系/平台部"
+	seedUser(t, db, "usr_haijun", "uid_haijun")
+
+	dp := &fakeDeptProvider{
+		userDepts: map[string][]DepartmentInfo{
+			"uid_haijun": {{DeptID: "6571", DeptPath: devGroupPath}},
+		},
+	}
+	svc := newScopeTestService(t, db, nil, dp)
+
+	g1, err := svc.GrantPermission(ScopeDeptPermission, models.PermissionSubjectUser, "usr_haijun", firstTarget, "op")
+	if err != nil {
+		t.Fatalf("first grant: %v", err)
+	}
+	g2, err := svc.GrantPermission(ScopeDeptPermission, models.PermissionSubjectUser, "usr_haijun", secondTarget, "op")
+	if err != nil {
+		t.Fatalf("re-target grant: %v", err)
+	}
+	if g1.ID != g2.ID {
+		t.Fatalf("re-target should reuse the same grant row; %s != %s", g1.ID, g2.ID)
+	}
+	if g2.DeptPath != secondTarget {
+		t.Fatalf("re-target should update dept_path; got %q want %q", g2.DeptPath, secondTarget)
+	}
+
+	grants, err := svc.ListGrants(ScopeDeptPermission)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("re-target must not create a second row; got %d", len(grants))
+	}
+
+	scope, err := svc.ResolveUserScope("usr_haijun")
+	if err != nil {
+		t.Fatalf("ResolveUserScope: %v", err)
+	}
+	want := []string{devGroupPath, secondTarget}
+	if !containsAll(scope.VisibleDeptPrefixes, want) || len(scope.VisibleDeptPrefixes) != 2 {
+		t.Fatalf("VisibleDeptPrefixes = %v, want exactly %v (old target must be gone)", scope.VisibleDeptPrefixes, want)
+	}
+}
+
 // TestResolveUserScope_DeptGrantNotApplicable: a ScopeDeptPermission department
 // grant on a department the user is NOT under must not open that subtree.
 func TestResolveUserScope_DeptGrantNotApplicable(t *testing.T) {

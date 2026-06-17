@@ -47,9 +47,14 @@ func (s *Service) SetDepartmentProvider(p DepartmentProvider) {
 }
 
 // GrantPermission records a fine-grained grant of permissionCode to a subject.
-// For department subjects, deptPath is the materialized path stored redundantly
-// to make CheckGrant a pure prefix comparison. The operation is idempotent: an
-// existing (code, type, id) grant is left untouched.
+// For department subjects (and user-subject metrics-scope grants) deptPath is the
+// materialized path stored redundantly to make rechecks a pure prefix comparison.
+//
+// The operation is idempotent on (code, type, id). When such a grant already
+// exists, it is returned unchanged UNLESS a non-empty deptPath differs from the
+// stored one — that means re-targeting an existing grant (e.g. moving a user's
+// kanban.scope.dept from department Y to Z), so the stored dept_path is updated
+// in place (the unique key forbids a second row for the same triple).
 func (s *Service) GrantPermission(permissionCode, subjectType, subjectID, deptPath, grantedBy string) (*models.PermissionGrant, error) {
 	permissionCode = strings.TrimSpace(permissionCode)
 	subjectID = strings.TrimSpace(subjectID)
@@ -60,11 +65,17 @@ func (s *Service) GrantPermission(permissionCode, subjectType, subjectID, deptPa
 		return nil, ErrInvalidSubjectType
 	}
 
-	// Existing grant → return it (idempotent grant).
+	// Existing grant → idempotent, but allow re-targeting its dept_path.
 	var existing models.PermissionGrant
 	err := s.db.Where("permission_code = ? AND subject_type = ? AND subject_id = ?",
 		permissionCode, subjectType, subjectID).First(&existing).Error
 	if err == nil {
+		if deptPath != "" && deptPath != existing.DeptPath {
+			if uerr := s.db.Model(&existing).Update("dept_path", deptPath).Error; uerr != nil {
+				return nil, uerr
+			}
+			existing.DeptPath = deptPath
+		}
 		return &existing, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {

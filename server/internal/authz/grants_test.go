@@ -2,10 +2,15 @@ package authz
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -395,6 +400,116 @@ func TestRevokePermission(t *testing.T) {
 		if err := svc.RevokePermission(badID); !errors.Is(err, ErrGrantNotFound) {
 			t.Fatalf("RevokePermission(%q): expected ErrGrantNotFound, got %v", badID, err)
 		}
+	}
+}
+
+// newGrantHandlerContext builds a gin context for GrantPermissionHandler tests
+// with an authenticated operator and a JSON body.
+func newGrantHandlerContext(t *testing.T, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	c.Set(appmiddleware.UserIDKey, "usr_admin")
+	return c, rec
+}
+
+// TestGrantPermissionHandler_UserTargetDept covers the #2 metrics-view preset path
+// through the HTTP handler: a user-subject kanban.scope.dept grant with a
+// targetDeptId resolves the TARGET department's path and stores it as the grant
+// dept_path — so ResolveUserScope later opens that target subtree for the user.
+func TestGrantPermissionHandler_UserTargetDept(t *testing.T) {
+	db := setupGrantTestDB(t)
+	const devGroupPath = "/研发体系/Costrict研发部/开发组"
+	const targetSubtree = "/研发体系/AI效能部"
+	seedUser(t, db, "usr_haijun", "uid_haijun")
+
+	dp := &fakeDeptProvider{
+		userDepts: map[string][]DepartmentInfo{
+			"uid_haijun": {{DeptID: "6571", DeptPath: devGroupPath}},
+		},
+		deptPaths: map[string]string{"5889": targetSubtree},
+	}
+	svc := newGrantTestService(t, db, dp)
+
+	c, rec := newGrantHandlerContext(t,
+		`{"permissionCode":"kanban.scope.dept","subjectType":"user","subjectId":"usr_haijun","targetDeptId":"5889"}`)
+	GrantPermissionHandler(svc)(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	grants, err := svc.ListGrants(ScopeDeptPermission)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("expected 1 grant, got %d", len(grants))
+	}
+	if grants[0].SubjectType != models.PermissionSubjectUser || grants[0].SubjectID != "usr_haijun" {
+		t.Fatalf("grant subject wrong: %+v", grants[0])
+	}
+	if grants[0].DeptPath != targetSubtree {
+		t.Fatalf("grant dept_path = %q, want target %q", grants[0].DeptPath, targetSubtree)
+	}
+
+	scope, err := svc.ResolveUserScope("usr_haijun")
+	if err != nil {
+		t.Fatalf("ResolveUserScope: %v", err)
+	}
+	if !containsAll(scope.VisibleDeptPrefixes, []string{devGroupPath, targetSubtree}) {
+		t.Fatalf("VisibleDeptPrefixes = %v, want to contain own dept + target subtree", scope.VisibleDeptPrefixes)
+	}
+}
+
+// TestGrantPermissionHandler_ScopeAllUser covers the "see all company" preset: a
+// user-subject kanban.scope.all grant (no target) confers AllAccess.
+func TestGrantPermissionHandler_ScopeAllUser(t *testing.T) {
+	db := setupGrantTestDB(t)
+	seedUser(t, db, "usr_ops", "uid_ops")
+	svc := newGrantTestService(t, db, nil)
+
+	c, rec := newGrantHandlerContext(t,
+		`{"permissionCode":"kanban.scope.all","subjectType":"user","subjectId":"usr_ops"}`)
+	GrantPermissionHandler(svc)(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	scope, err := svc.ResolveUserScope("usr_ops")
+	if err != nil {
+		t.Fatalf("ResolveUserScope: %v", err)
+	}
+	if !scope.AllAccess {
+		t.Fatalf("usr_ops should have AllAccess via kanban.scope.all grant")
+	}
+}
+
+// TestGrantPermissionHandler_TargetDeptUnavailable: when dept-sync can't resolve
+// the target department, the grant is rejected with a degraded-dependency signal
+// rather than silently persisting an empty (meaningless) target path.
+func TestGrantPermissionHandler_TargetDeptUnavailable(t *testing.T) {
+	db := setupGrantTestDB(t)
+	seedUser(t, db, "usr_haijun", "uid_haijun")
+	svc := newGrantTestService(t, db, &fakeDeptProvider{fail: true})
+
+	c, rec := newGrantHandlerContext(t,
+		`{"permissionCode":"kanban.scope.dept","subjectType":"user","subjectId":"usr_haijun","targetDeptId":"5889"}`)
+	GrantPermissionHandler(svc)(c)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dept_sync_unavailable") {
+		t.Fatalf("body should carry dept_sync_unavailable code; got %s", rec.Body.String())
+	}
+	grants, _ := svc.ListGrants("")
+	if len(grants) != 0 {
+		t.Fatalf("no grant should persist on degraded dept-sync; got %d", len(grants))
 	}
 }
 

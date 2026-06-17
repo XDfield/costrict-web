@@ -228,6 +228,15 @@ type grantPermissionRequest struct {
 	PermissionCode string `json:"permissionCode" binding:"required"`
 	SubjectType    string `json:"subjectType" binding:"required"` // user | department
 	SubjectID      string `json:"subjectId" binding:"required"`
+	// TargetDeptID is an optional target department, used only when the grant binds
+	// a TARGET department to a USER subject — i.e. the metrics-view preset
+	// "kanban.scope.dept" where a specific user A is allowed to see an extra
+	// department Y (and its subtree) beyond their own. The target department's
+	// materialized dept_path is resolved from dept-sync and stored in the grant's
+	// dept_path, which ResolveUserScope reads as the extra-visible prefix for A.
+	// (For department subjects the dept_path is the SUBJECT department's own path,
+	// resolved from SubjectID; TargetDeptID is ignored there.)
+	TargetDeptID string `json:"targetDeptId"`
 }
 
 // GrantPermissionHandler godoc
@@ -259,14 +268,30 @@ func GrantPermissionHandler(svc *Service) gin.HandlerFunc {
 			return
 		}
 
-		// For department grants, resolve and store the dept_path redundantly so
-		// CheckGrant stays a pure prefix comparison with no tree lookup.
+		// Resolve the grant's dept_path. There are two distinct sources, never both:
+		//   - Department subject: dept_path = the SUBJECT department's own path
+		//     (CheckGrant inheritance matches the user's department against it).
+		//   - User subject + TargetDeptID: dept_path = the TARGET department's path
+		//     (ResolveUserScope adds it as an extra-visible prefix for that user).
+		// Both resolve via dept-sync and store redundantly so rechecks need no tree
+		// lookup. dept-sync unavailability is reported so the caller can degrade.
 		var deptPath string
-		if req.SubjectType == models.PermissionSubjectDepartment {
+		switch {
+		case req.SubjectType == models.PermissionSubjectDepartment:
 			p, err := svc.ResolveDepartmentPath(req.SubjectID)
 			if err != nil {
 				c.JSON(http.StatusBadGateway, gin.H{
 					"error": "failed to resolve department path from dept-sync",
+					"code":  "dept_sync_unavailable",
+				})
+				return
+			}
+			deptPath = p
+		case req.TargetDeptID != "":
+			p, err := svc.ResolveDepartmentPath(req.TargetDeptID)
+			if err != nil {
+				c.JSON(http.StatusBadGateway, gin.H{
+					"error": "failed to resolve target department path from dept-sync",
 					"code":  "dept_sync_unavailable",
 				})
 				return
