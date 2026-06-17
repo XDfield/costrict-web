@@ -1,12 +1,13 @@
-{{- if not .Values.daemonSet.enabled }}
+{{- if .Values.daemonSet.enabled }}
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: {{ include "gateway.fullname" . }}
   labels:
     {{- include "gateway.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  updateStrategy:
+    {{- toYaml .Values.daemonSet.updateStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "gateway.selectorLabels" . | nindent 6 }}
@@ -42,12 +43,22 @@ spec:
               value: {{ .Values.config.port | quote }}
             - name: SERVER_URL
               value: {{ .Values.config.serverUrl | quote }}
+            # DaemonSet 模式下用 Node 名作为 Gateway ID，节点不变则 ID 不变
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: GATEWAY_ID
-              value: {{ .Values.config.gatewayId | quote }}
+              value: $(NODE_NAME)
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
+            # Server 通过 Pod IP 直接回连该 Gateway
             - name: GATEWAY_INTERNAL_URL
-              value: {{ .Values.config.internalUrl | quote }}
+              value: "http://$(POD_IP):{{ .Values.config.port }}"
             - name: GATEWAY_REGION
               value: {{ .Values.config.region | quote }}
             - name: GATEWAY_CAPACITY

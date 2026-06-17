@@ -2,6 +2,15 @@
 
 replicaCount: 1
 
+# Run Gateway as a DaemonSet instead of a Deployment.
+# When enabled, one Gateway Pod is scheduled per Node and replicaCount is ignored.
+daemonSet:
+  enabled: false
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
 image:
   repository: ghcr.io/xdfield/costrict-web-gateway
   pullPolicy: IfNotPresent
