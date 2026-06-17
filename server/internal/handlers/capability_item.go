@@ -215,6 +215,10 @@ func defaultSourcePathForItemType(itemType string) string {
 		return ".mcp.json"
 	case "plugin":
 		return ".plugin.json"
+	case "rule":
+		return "RULE.md"
+	case "template":
+		return "TEMPLATE.md"
 	default:
 		return ""
 	}
@@ -2666,11 +2670,28 @@ type pluginChildAsset struct {
 	Assets      []services.ArchiveAsset // files under the child directory, with paths relative to that directory
 }
 
-// extractSubSkillAssets returns the sub-skills bundled inside a plugin archive.
-// A sub-skill is a non-binary text asset whose path is "skills/<name>/SKILL.md".
-// For deeper nesting (e.g. "skills/a/b/SKILL.md") the directory immediately above
-// SKILL.md ("b") is used as the skill name, matching how the device installs it.
+// extractSubSkillAssets returns the directory-type children bundled inside a
+// plugin archive: skills/<name>/SKILL.md and evaluators/<name>/SKILL.md. Both
+// are SKILL.md-shaped directory items (a SKILL.md plus sibling files under the
+// same directory) and become item_type=skill rows. For deeper nesting (e.g.
+// "skills/a/b/SKILL.md") the directory immediately above SKILL.md ("b") is used
+// as the name, matching how the device installs it.
+//
+// The source_path is the verbatim archive path so the plugin "work tree"
+// mirrors the original repository layout (skills/... and evaluators/... live
+// under different roots and never collide).
 func extractSubSkillAssets(assets []services.ArchiveAsset) []pluginChildAsset {
+	out := make([]pluginChildAsset, 0)
+	out = append(out, extractSkillDirChildren(assets, "skills/")...)
+	out = append(out, extractSkillDirChildren(assets, "evaluators/")...)
+	return out
+}
+
+// extractSkillDirChildren returns directory-type skill children whose SKILL.md
+// lives under the given top-level prefix ("skills/" or "evaluators/"). Both map
+// to item_type=skill; only the prefix differs, keeping evaluators generic
+// rather than hardcoded to cospower.
+func extractSkillDirChildren(assets []services.ArchiveAsset, prefix string) []pluginChildAsset {
 	out := make([]pluginChildAsset, 0)
 	seen := make(map[string]struct{})
 	for _, asset := range assets {
@@ -2678,25 +2699,25 @@ func extractSubSkillAssets(assets []services.ArchiveAsset) []pluginChildAsset {
 			continue
 		}
 		p := asset.Path
-		if !strings.HasPrefix(p, "skills/") || !strings.HasSuffix(p, "/SKILL.md") {
+		if !strings.HasPrefix(p, prefix) || !strings.HasSuffix(p, "/SKILL.md") {
 			continue
 		}
-		dir := path.Dir(p) // "skills/<...>/<name>"
+		dir := path.Dir(p) // "<prefix-root>/<...>/<name>"
 		name := path.Base(dir)
-		if name == "" || name == "skills" {
+		if name == "" || dir == strings.TrimSuffix(prefix, "/") {
 			continue
 		}
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		prefix := dir + "/"
+		childPrefix := dir + "/"
 		childAssets := make([]services.ArchiveAsset, 0)
 		for _, candidate := range assets {
-			if candidate.Path == p || !strings.HasPrefix(candidate.Path, prefix) {
+			if candidate.Path == p || !strings.HasPrefix(candidate.Path, childPrefix) {
 				continue
 			}
-			relPath := strings.TrimPrefix(candidate.Path, prefix)
+			relPath := strings.TrimPrefix(candidate.Path, childPrefix)
 			if relPath == "" || relPath == "SKILL.md" {
 				continue
 			}
@@ -2716,6 +2737,109 @@ func extractSubSkillAssets(assets []services.ArchiveAsset) []pluginChildAsset {
 		})
 	}
 	return out
+}
+
+// pluginFileChildSpec describes a single-file plugin-child extractor: every
+// non-binary .md file under <prefix> becomes one child of the given item_type,
+// with a path-faithful source_path. Used for commands/agents/rules/templates,
+// which (unlike skills/evaluators) are individual files, not directories.
+type pluginFileChildSpec struct {
+	prefix   string // top-level dir prefix, e.g. "commands/"
+	itemType string // resulting capability_items.item_type
+}
+
+// pluginFileChildSpecs lists the single-file child types in a stable order. The
+// path→type mapping is the cross-repo contract shared with the upstream catalog
+// pipeline and the frontend TYPE_META:
+//
+//	commands/<f>.md          -> command
+//	agents/<f>.md            -> subagent
+//	rules/<group>/<f>.md     -> rule       (nestable; group segment kept in slug)
+//	templates/<f>.md         -> template
+var pluginFileChildSpecs = []pluginFileChildSpec{
+	{prefix: "commands/", itemType: "command"},
+	{prefix: "agents/", itemType: "subagent"},
+	{prefix: "rules/", itemType: "rule"},
+	{prefix: "templates/", itemType: "template"},
+}
+
+// extractPluginFileChildren returns the single-file children (commands, agents,
+// rules, templates) bundled inside a plugin archive. Each matching .md file
+// becomes one child with item_type per pluginFileChildSpecs and a verbatim
+// source_path. rules/ may be nested (rules/<group>/<file>.md); the intermediate
+// segments are folded into the slug suffix so siblings sharing a leaf filename
+// (including non-ASCII ones) stay unique while the source_path remains faithful.
+func extractPluginFileChildren(assets []services.ArchiveAsset) []pluginChildAsset {
+	out := make([]pluginChildAsset, 0)
+	seen := make(map[string]struct{})
+	for _, asset := range assets {
+		if asset.Binary {
+			continue
+		}
+		p := asset.Path
+		if !strings.HasSuffix(strings.ToLower(p), ".md") {
+			continue
+		}
+		var spec *pluginFileChildSpec
+		for i := range pluginFileChildSpecs {
+			if strings.HasPrefix(p, pluginFileChildSpecs[i].prefix) {
+				spec = &pluginFileChildSpecs[i]
+				break
+			}
+		}
+		if spec == nil {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+
+		// Inner segments (between the top-level dir and the file) plus the
+		// leaf filename without extension form the slug suffix; this keeps
+		// nested rules unique. Falls back to the leaf when only one segment.
+		rel := strings.TrimPrefix(p, spec.prefix)
+		leaf := strings.TrimSuffix(path.Base(rel), path.Ext(rel))
+		dirPart := path.Dir(rel)
+		slugSuffix := leaf
+		if dirPart != "." && dirPart != "" {
+			slugSuffix = strings.ReplaceAll(dirPart, "/", "-") + "-" + leaf
+		}
+
+		out = append(out, pluginChildAsset{
+			ItemType:   spec.itemType,
+			Name:       pluginChildDisplayName(p),
+			SlugSuffix: slugSuffix,
+			Version:    "1.0.0",
+			SourcePath: p,
+			Content:    string(asset.Content),
+			Metadata:   datatypes.JSON([]byte("{}")),
+		})
+	}
+	return out
+}
+
+// pluginChildDisplayName derives a human-friendly name from a child file path,
+// e.g. "rules/dfx/安全.md" -> "安全", "commands/run-tests.md" -> "Run tests".
+// Non-ASCII leaves (Chinese filenames) are returned as-is; ASCII leaves are
+// title-cased with separators turned into spaces.
+func pluginChildDisplayName(filePath string) string {
+	base := path.Base(filePath)
+	if strings.EqualFold(base, "SKILL.md") {
+		base = path.Base(path.Dir(filePath))
+	} else {
+		base = strings.TrimSuffix(base, path.Ext(base))
+	}
+	name := strings.ReplaceAll(base, "-", " ")
+	name = strings.ReplaceAll(name, "_", " ")
+	if name == "" {
+		return base
+	}
+	r := []rune(name)
+	if r[0] >= 'a' && r[0] <= 'z' {
+		r[0] = r[0] - 32
+	}
+	return string(r)
 }
 
 func hasObjectMCPServers(content []byte) bool {
@@ -3112,6 +3236,7 @@ func pluginChildBaseSlug(pluginSlug string, child pluginChildAsset) string {
 // subsequent re-upload can reconcile them.
 func reconcilePluginSubSkills(h *ItemHandler, pluginItem *models.CapabilityItem, assets []services.ArchiveAsset, createdBy string) []*models.CapabilityItem {
 	subSkills := extractSubSkillAssets(assets)
+	subSkills = append(subSkills, extractPluginFileChildren(assets)...)
 	if h.parserSvc != nil {
 		mcpChildren, err := extractPluginMCPAssets(h.parserSvc, pluginItem, assets)
 		if err != nil {

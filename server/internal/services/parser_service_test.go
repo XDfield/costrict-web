@@ -255,3 +255,62 @@ func TestInferItemType_PluginJSON(t *testing.T) {
 		t.Errorf("InferItemType = %q, want plugin", got)
 	}
 }
+
+func TestInferItemType_PluginChildTypes(t *testing.T) {
+	p := &ParserService{}
+	cases := []struct {
+		path string
+		want string
+	}{
+		// Standard Claude-Code plugin layout.
+		{"skills/requirement-analysis/SKILL.md", "skill"},
+		{"evaluators/aireq-evaluator/SKILL.md", "skill"}, // evaluators are SKILL.md-shaped
+		{"agents/reviewer.md", "subagent"},
+		{"commands/run-tests.md", "command"},
+		{"hooks/post-commit.md", "hook"},
+		// New rule/template types (cospower convention, generic).
+		{"rules/coding-standards/go-checklist.md", "rule"},
+		{"rules/dfx/安全.md", "rule"}, // nested + non-ASCII leaf
+		{"templates/system-design.md", "template"},
+		// Plugin-prefixed paths (children live under the plugin dir at install).
+		{"my-plugin/rules/dfx/安全.md", "rule"},
+		{"my-plugin/templates/x.md", "template"},
+		{"my-plugin/commands/foo.md", "command"},
+		{"my-plugin/agents/bar.md", "subagent"},
+		// Non-special markdown still collapses to skill.
+		{"docs/usage.md", "skill"},
+		{"PROMPT.md", "skill"},
+	}
+	for _, tc := range cases {
+		if got := p.InferItemType(tc.path); got != tc.want {
+			t.Errorf("InferItemType(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestInferSlug_NestedRulesAndTemplates(t *testing.T) {
+	p := &ParserService{}
+	cases := []struct {
+		path string
+		want string
+	}{
+		// Top-level dir name dropped; nested group segment kept for uniqueness.
+		{"rules/coding-standards/go-checklist.md", "coding-standards-go-checklist"},
+		{"templates/system-design.md", "system-design"},
+		{"evaluators/aireq-evaluator/SKILL.md", "aireq-evaluator"},
+		// Two same-leaf rules under different groups must NOT collide.
+		{"rules/dfx/checklist.md", "dfx-checklist"},
+		{"rules/security/checklist.md", "security-checklist"},
+	}
+	seen := map[string]string{}
+	for _, tc := range cases {
+		got := p.InferSlug(tc.path)
+		if got != tc.want {
+			t.Errorf("InferSlug(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+		if prev, ok := seen[got]; ok {
+			t.Errorf("InferSlug collision: %q and %q both produced %q", prev, tc.path, got)
+		}
+		seen[got] = tc.path
+	}
+}

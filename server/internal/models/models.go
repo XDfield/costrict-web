@@ -402,6 +402,14 @@ type CapabilityItem struct {
 	Health            datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
 	Evaluation        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
 	SourcePath        string               `json:"sourcePath"`
+	// CatalogEntryDir is the synthetic "<type-dir>/<entry-id>" key for catalog-
+	// ingested rows, used purely to match a DB row back to its upstream catalog
+	// entry across re-ingests. It is decoupled from SourcePath so SourcePath can
+	// hold the faithful, repo-relative path (e.g. rules/dfx/安全.md) that the
+	// plugin "work tree" mirrors, while matching stays stable. Empty for non-
+	// catalog rows and for legacy rows (which fall back to deriving the key from
+	// SourcePath). Not exposed in the API.
+	CatalogEntryDir   string               `gorm:"index:idx_item_catalog_entry_dir" json:"-"`
 	SourceSHA         string               `json:"sourceSha"`
 	SourceType        string               `gorm:"not null;default:'direct'" json:"sourceType"`                                  // direct | archive | fork
 	Source            string               `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
