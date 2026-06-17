@@ -39,11 +39,13 @@ type Config struct {
 	Search                    SearchConfig
 	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
-	// BootstrapPlatformAdmins lists email addresses (case-insensitive, lowercased
-	// here) that are automatically granted the platform_admin role when they log
-	// in. This bootstraps the first administrator without manual SQL: a deployment
-	// only needs to set BOOTSTRAP_PLATFORM_ADMINS. Empty means no bootstrap (zero
-	// behaviour change).
+	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
+	// NOT lowercased) that are automatically granted the platform_admin role when
+	// they log in. universal_id is the stable global identity anchor Casdoor issues
+	// for every identity (email can be empty for GitHub/phone logins, so it is not
+	// reliable). This bootstraps the first administrator without manual SQL: a
+	// deployment only needs to set BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS. Empty
+	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
 }
 
@@ -181,7 +183,8 @@ func Load() *Config {
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
-		BootstrapPlatformAdmins: getEnvSliceLower("BOOTSTRAP_PLATFORM_ADMINS", nil),
+		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
+		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),

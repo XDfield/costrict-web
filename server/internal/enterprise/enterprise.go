@@ -24,6 +24,9 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 	admin := apiGroup.Group("/admin/enterprise-customers")
 	admin.Use(systemrole.RequirePlatformAdmin(m.db))
 	{
+		// Admin list returns raw universal_id + resolved members (who is configured);
+		// the public GET above only exposes resolved subject_ids.
+		admin.GET("", ListEnterpriseCustomersAdminHandler(m.Service))
 		admin.POST("", CreateEnterpriseCustomerHandler(m.Service))
 		admin.PUT("/:id", UpdateEnterpriseCustomerHandler(m.Service))
 		admin.DELETE("/:id", DeleteEnterpriseCustomerHandler(m.Service))

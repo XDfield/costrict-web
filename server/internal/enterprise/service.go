@@ -103,8 +103,10 @@ func (s *Service) List() ([]models.EnterpriseCustomer, error) {
 	return customers, nil
 }
 
-// Create inserts a new enterprise customer. ids are subject_id strings; name and
-// logo (base64 data URI) are required.
+// Create inserts a new enterprise customer. ids are Casdoor universal_id strings
+// (the stable identity anchor); name and logo (base64 data URI) are required. The
+// stored jsonb format is unchanged — only the semantics moved from subject_id to
+// universal_id (see ResolveSubjectIDs / ResolveMembers for the lookup side).
 func (s *Service) Create(name, logo string, ids []string, operatorID string) (*models.EnterpriseCustomer, error) {
 	if err := validateCustomerInput(name, logo); err != nil {
 		return nil, err
@@ -123,8 +125,9 @@ func (s *Service) Create(name, logo string, ids []string, operatorID string) (*m
 	return &customer, nil
 }
 
-// Update mutates name/logo/account_ids of an existing customer. Empty name/logo
-// are rejected (a full PUT replaces all three fields).
+// Update mutates name/logo/account_ids of an existing customer. ids are Casdoor
+// universal_id strings (same semantics as Create). Empty name/logo are rejected
+// (a full PUT replaces all three fields).
 func (s *Service) Update(id, name, logo string, ids []string) (*models.EnterpriseCustomer, error) {
 	if err := validateCustomerInput(name, logo); err != nil {
 		return nil, err
@@ -157,6 +160,143 @@ func (s *Service) Delete(id string) error {
 		return ErrEnterpriseCustomerNotFound
 	}
 	return nil
+}
+
+// Member is a resolved enterprise-customer account: a stored Casdoor universal_id
+// joined against the local users table. SubjectID/Username/DisplayName/AvatarURL
+// are best-effort — they are empty when the universal_id has no matching local
+// user yet (e.g. the person was configured but has never logged in). This lets the
+// admin UI show "who is configured" even before those users exist locally.
+type Member struct {
+	UniversalID string `json:"universalId"`
+	SubjectID   string `json:"subjectId"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	AvatarURL   string `json:"avatarUrl"`
+}
+
+// ResolveMembersBatch resolves a set of Casdoor universal_id values to their
+// local users in a SINGLE query and returns a map keyed by universal_id. This is
+// the shared core used both by ResolveMembers (single customer) and by the list
+// handlers (which pass the union of every customer's account_ids so the whole
+// list resolves in one IN query — O(1) DB round-trips instead of N+1 per row).
+//
+// Determinism: when two user rows share the same casdoor_universal_id (the column
+// is a plain, non-unique index), the lowest-id row wins. We ORDER BY id ASC and
+// only record the FIRST row seen per universal_id, so the resolved Member is
+// stable across calls regardless of physical scan order. nil/empty input yields
+// an empty map. Map values are filled with subject_id / username / display name /
+// avatar; a missing universal_id is simply absent from the map (caller decides
+// how to represent "not yet a local user").
+func (s *Service) ResolveMembersBatch(universalIDs []string) map[string]Member {
+	byUniversalID := make(map[string]Member, len(universalIDs))
+	if len(universalIDs) == 0 {
+		return byUniversalID
+	}
+
+	// Deduplicate inputs so the IN list (and the map capacity) stays tight even if
+	// the same universal_id appears across several customers.
+	seenInput := make(map[string]struct{}, len(universalIDs))
+	uniqueIDs := make([]string, 0, len(universalIDs))
+	for _, uid := range universalIDs {
+		if uid == "" {
+			continue
+		}
+		if _, ok := seenInput[uid]; ok {
+			continue
+		}
+		seenInput[uid] = struct{}{}
+		uniqueIDs = append(uniqueIDs, uid)
+	}
+	if len(uniqueIDs) == 0 {
+		return byUniversalID
+	}
+
+	var users []models.User
+	// ORDER BY id ASC makes the tiebreak below deterministic (lowest id wins).
+	if err := s.db.Where("casdoor_universal_id IN ?", uniqueIDs).Order("id ASC").Find(&users).Error; err != nil {
+		// On query error degrade gracefully: return an empty map so callers emit
+		// unresolved Members rather than dropping data.
+		return byUniversalID
+	}
+
+	for _, u := range users {
+		if u.CasdoorUniversalID == nil || *u.CasdoorUniversalID == "" {
+			continue
+		}
+		key := *u.CasdoorUniversalID
+		// Deterministic tiebreak: keep the first (lowest-id) row, skip later
+		// duplicates that share the same non-unique universal_id.
+		if _, exists := byUniversalID[key]; exists {
+			continue
+		}
+		m := Member{UniversalID: key, SubjectID: u.SubjectID, Username: u.Username}
+		if u.DisplayName != nil {
+			m.DisplayName = *u.DisplayName
+		}
+		if u.AvatarURL != nil {
+			m.AvatarURL = *u.AvatarURL
+		}
+		byUniversalID[key] = m
+	}
+	return byUniversalID
+}
+
+// assembleMembers builds the ordered Member slice for one customer from a shared
+// byUniversalID map (the output of ResolveMembersBatch). Order is stable (input
+// order preserved) and EVERY input universal_id yields one Member — unresolved
+// ones keep an empty SubjectID (meaning "not yet a local user").
+func assembleMembers(universalIDs []string, byUniversalID map[string]Member) []Member {
+	out := make([]Member, 0, len(universalIDs))
+	for _, uid := range universalIDs {
+		if m, ok := byUniversalID[uid]; ok {
+			m.UniversalID = uid
+			out = append(out, m)
+			continue
+		}
+		out = append(out, Member{UniversalID: uid})
+	}
+	return out
+}
+
+// subjectIDsFrom maps one customer's universal_id list to its resolved subject_id
+// list using a shared byUniversalID map (the output of ResolveMembersBatch),
+// dropping any universal_id with no matching local user. Feeds the PUBLIC store
+// endpoint; preserves stored order.
+func subjectIDsFrom(universalIDs []string, byUniversalID map[string]Member) []string {
+	out := make([]string, 0, len(universalIDs))
+	for _, uid := range universalIDs {
+		if m, ok := byUniversalID[uid]; ok && m.SubjectID != "" {
+			out = append(out, m.SubjectID)
+		}
+	}
+	return out
+}
+
+// ResolveMembers resolves each universal_id to its local user (subject_id /
+// username / display name / avatar) for a SINGLE customer. Order is stable (input
+// order preserved) and EVERY input universal_id yields one Member — unresolved
+// ones keep an empty SubjectID (meaning "not yet a local user"). Runs one DB
+// query via ResolveMembersBatch. nil-safe on empty input.
+func (s *Service) ResolveMembers(universalIDs []string) []Member {
+	if len(universalIDs) == 0 {
+		return []Member{}
+	}
+	return assembleMembers(universalIDs, s.ResolveMembersBatch(universalIDs))
+}
+
+// ResolveSubjectIDs maps the stored universal_id list to the subject_id list,
+// dropping any universal_id that has no matching local user. This feeds the
+// PUBLIC store endpoint: the frontend keeps matching on item.created_by
+// (subject_id), so universal_id never leaks to non-admin callers. nil-safe.
+func (s *Service) ResolveSubjectIDs(universalIDs []string) []string {
+	out := make([]string, 0, len(universalIDs))
+	for _, m := range s.ResolveMembers(universalIDs) {
+		if m.SubjectID != "" {
+			out = append(out, m.SubjectID)
+		}
+	}
+	return out
 }
 
 // decodeIDs unmarshals the account_ids jsonb column into a string slice, falling

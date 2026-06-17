@@ -49,16 +49,16 @@ func (f *fakeGranter) callCount() int {
 	return len(f.calls)
 }
 
-func userWithEmail(subjectID, email string) *models.User {
-	e := email
-	return &models.User{SubjectID: subjectID, Email: &e}
+func userWithUniversalID(subjectID, universalID string) *models.User {
+	id := universalID
+	return &models.User{SubjectID: subjectID, CasdoorUniversalID: &id}
 }
 
-func TestBootstrap_EmailHit_Grants(t *testing.T) {
+func TestBootstrap_UniversalIDHit_Grants(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 1 {
 		t.Fatalf("expected 1 grant call, got %d", g.callCount())
@@ -75,23 +75,24 @@ func TestBootstrap_EmailHit_Grants(t *testing.T) {
 	}
 }
 
-func TestBootstrap_CaseInsensitive(t *testing.T) {
-	// Config-supplied allowlist with mixed case + user email with different case.
+func TestBootstrap_CaseSensitive_NoGrantOnCaseMismatch(t *testing.T) {
+	// universal_id is case-sensitive: a case mismatch must NOT match (unlike the
+	// old email-based, case-insensitive allowlist).
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"Admin@Example.COM"})
+	b := NewBootstrapAdminGranter(g, []string{"UUID-Admin-1"})
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "ADMIN@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
-	if g.callCount() != 1 {
-		t.Fatalf("expected case-insensitive match to grant once, got %d calls", g.callCount())
+	if g.callCount() != 0 {
+		t.Fatalf("expected case-sensitive mismatch to NOT grant, got %d calls", g.callCount())
 	}
 }
 
 func TestBootstrap_TrimsWhitespace(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"  admin@example.com  "})
+	b := NewBootstrapAdminGranter(g, []string{"  uuid-admin-1  "})
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 1 {
 		t.Fatalf("expected whitespace-trimmed match to grant once, got %d calls", g.callCount())
@@ -100,12 +101,12 @@ func TestBootstrap_TrimsWhitespace(t *testing.T) {
 
 func TestBootstrap_AlreadyGranted_Idempotent(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
 	// Two logins: both call GrantRole (config is source of truth, checked every
 	// login), but the backing store stays at a single effective grant.
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 2 {
 		t.Fatalf("expected GrantRole invoked on every login (2), got %d", g.callCount())
@@ -117,12 +118,12 @@ func TestBootstrap_AlreadyGranted_Idempotent(t *testing.T) {
 
 func TestBootstrap_NotInList_NoGrant(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "someone-else@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-someone-else"))
 
 	if g.callCount() != 0 {
-		t.Fatalf("expected no grant for non-listed email, got %d calls", g.callCount())
+		t.Fatalf("expected no grant for non-listed universal_id, got %d calls", g.callCount())
 	}
 }
 
@@ -130,7 +131,7 @@ func TestBootstrap_EmptyConfig_NoOp(t *testing.T) {
 	g := newFakeGranter()
 	b := NewBootstrapAdminGranter(g, nil)
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 0 {
 		t.Fatalf("expected empty allowlist to be a no-op, got %d calls", g.callCount())
@@ -141,33 +142,33 @@ func TestBootstrap_BlankOnlyConfig_NoOp(t *testing.T) {
 	g := newFakeGranter()
 	b := NewBootstrapAdminGranter(g, []string{"", "   "})
 
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 0 {
 		t.Fatalf("expected blank-only allowlist to be a no-op, got %d calls", g.callCount())
 	}
 }
 
-func TestBootstrap_NilOrEmptyEmail_NoGrant(t *testing.T) {
+func TestBootstrap_NilOrEmptyUniversalID_NoGrant(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
-	// nil email
+	// nil universal_id (e.g. claim missing) must be nil-safe, not panic.
 	b.ApplyOnLogin(&models.User{SubjectID: "usr_1"})
-	// empty email pointer
+	// empty universal_id pointer
 	empty := ""
-	b.ApplyOnLogin(&models.User{SubjectID: "usr_2", Email: &empty})
+	b.ApplyOnLogin(&models.User{SubjectID: "usr_2", CasdoorUniversalID: &empty})
 
 	if g.callCount() != 0 {
-		t.Fatalf("expected no grant for users without email, got %d calls", g.callCount())
+		t.Fatalf("expected no grant for users without universal_id, got %d calls", g.callCount())
 	}
 }
 
 func TestBootstrap_EmptySubjectID_NoGrant(t *testing.T) {
 	g := newFakeGranter()
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
-	b.ApplyOnLogin(userWithEmail("", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("", "uuid-admin-1"))
 
 	if g.callCount() != 0 {
 		t.Fatalf("expected no grant when subjectID is empty, got %d calls", g.callCount())
@@ -177,10 +178,10 @@ func TestBootstrap_EmptySubjectID_NoGrant(t *testing.T) {
 func TestBootstrap_GrantFailure_DoesNotPanicOrBlock(t *testing.T) {
 	g := newFakeGranter()
 	g.err = errors.New("db down")
-	b := NewBootstrapAdminGranter(g, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(g, []string{"uuid-admin-1"})
 
 	// Must not panic; ApplyOnLogin returns nothing and swallows the error.
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 
 	if g.callCount() != 1 {
 		t.Fatalf("expected the grant to be attempted once, got %d calls", g.callCount())
@@ -188,15 +189,15 @@ func TestBootstrap_GrantFailure_DoesNotPanicOrBlock(t *testing.T) {
 }
 
 func TestBootstrap_NilGranter_NoOp(t *testing.T) {
-	b := NewBootstrapAdminGranter(nil, []string{"admin@example.com"})
+	b := NewBootstrapAdminGranter(nil, []string{"uuid-admin-1"})
 	// Must not panic.
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 }
 
 func TestBootstrap_NilReceiver_NoOp(t *testing.T) {
 	var b *BootstrapAdminGranter
 	// Must not panic.
-	b.ApplyOnLogin(userWithEmail("usr_1", "admin@example.com"))
+	b.ApplyOnLogin(userWithUniversalID("usr_1", "uuid-admin-1"))
 }
 
 func TestBootstrap_NilUser_NoOp(t *testing.T) {

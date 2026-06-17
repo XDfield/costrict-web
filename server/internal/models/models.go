@@ -99,14 +99,16 @@ type ChannelConfig struct {
 }
 
 // EnterpriseCustomer 大客户品牌配置（平台管理员配置）。一行 = 一个大客户。
-// AccountIDs 为 jsonb 字符串数组，存的是 users.subject_id 列表（与 CapabilityItem.CreatedBy、
-// UserSystemRole.UserID 同口径）；前端 matchEnterprise(item.createdBy) 用其命中渲染大客户标识。
+// AccountIDs 为 jsonb 字符串数组，存的是 Casdoor universal_id 列表（系统内"指代一个人"的统一锚点，
+// 见 20260617100000 迁移）。公开端点 ListEnterpriseCustomersHandler 会把这些 universal_id 解析回
+// users.subject_id 后才下发，前端再用 matchEnterprise(item.createdBy)（createdBy 即 subject_id）命中
+// 渲染大客户标识；universal_id 本身不对公开端点暴露。
 // Logo 存 base64 data URI（避免前端 canvas 抽主题色时跨域污染）。
 type EnterpriseCustomer struct {
 	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Name       string         `gorm:"not null"                                       json:"name"`
 	Logo       string         `gorm:"type:text;not null"                             json:"logo"`                // base64 data URI
-	AccountIDs datatypes.JSON `gorm:"column:account_ids;type:jsonb;not null;default:'[]'" json:"-"`              // ["usr_a",...] = users.subject_id 列表
+	AccountIDs datatypes.JSON `gorm:"column:account_ids;type:jsonb;not null;default:'[]'" json:"-"`              // ["uni_a",...] = Casdoor universal_id 列表
 	CreatedBy  *string        `gorm:"size:191"                                       json:"createdBy,omitempty"` // 操作者 subject_id
 	CreatedAt  time.Time      `                                                      json:"createdAt"`
 	UpdatedAt  time.Time      `                                                      json:"updatedAt"`

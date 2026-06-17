@@ -17,6 +17,7 @@ import (
 // the admin console reads stable subject_id / status / organization fields.
 type adminUserResponse struct {
 	SubjectID    string   `json:"subject_id"`
+	UniversalID  string   `json:"universalId"` // Casdoor universal_id: the identity anchor for enterprise/grant selection + echo-back
 	Username     string   `json:"username"`
 	DisplayName  string   `json:"displayName"`
 	Email        string   `json:"email"`
@@ -49,6 +50,7 @@ func atoiDefault(s string, def int) int {
 func toResponse(u models.User, roles []string) adminUserResponse {
 	r := adminUserResponse{
 		SubjectID:    u.SubjectID,
+		UniversalID:  derefStr(u.CasdoorUniversalID),
 		Username:     u.Username,
 		DisplayName:  derefStr(u.DisplayName),
 		Email:        derefStr(u.Email),
