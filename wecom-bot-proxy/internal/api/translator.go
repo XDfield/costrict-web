@@ -3,9 +3,8 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
-	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/ws"
+	"github.com/go-sphere/wecom-aibot-go-sdk/aibot"
 )
 
 // --- Business request types (costrict-web → proxy) ---
@@ -44,7 +43,7 @@ type CardUpdateRequest struct {
 	TaskID   string `json:"task_id,omitempty"`
 }
 
-// --- Inbound translation (WS frame → standardized inbound) ---
+// --- Inbound translation (SDK WsFrame → standardized inbound) ---
 
 type InboundMsg struct {
 	ExternalChatID    string         `json:"externalChatId"`
@@ -56,9 +55,17 @@ type InboundMsg struct {
 	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
-// TranslateMsgCallback translates an aibot_msg_callback WS frame to an InboundMsg.
-func TranslateMsgCallback(frame *ws.WSFrame) (*InboundMsg, error) {
-	var body ws.MsgCallbackBody
+// TranslateMsgCallback translates a message callback WsFrame to an InboundMsg.
+func TranslateMsgCallback(frame *aibot.WsFrame) (*InboundMsg, error) {
+	var body struct {
+		MsgID    string          `json:"msgid"`
+		BotID    string          `json:"aibotid"`
+		ChatID   string          `json:"chatid,omitempty"`
+		ChatType string          `json:"chattype"`
+		From     aibot.MessageFrom `json:"from"`
+		MsgType string          `json:"msgtype"`
+		Text    *aibot.TextContent `json:"text,omitempty"`
+	}
 	if err := json.Unmarshal(frame.Body, &body); err != nil {
 		return nil, fmt.Errorf("unmarshal msg callback: %w", err)
 	}
@@ -69,36 +76,13 @@ func TranslateMsgCallback(frame *ws.WSFrame) (*InboundMsg, error) {
 		chatID = body.From.UserID
 	}
 
-	content := ""
-	contentType := "text"
-
-	switch body.MsgType {
-	case "text":
-		if body.Text != nil {
-			content = body.Text.Content
-		}
-		contentType = "text"
-	case "image":
-		contentType = "image"
-	case "file":
-		contentType = "file"
-	case "voice":
-		contentType = "voice"
-	case "video":
-		contentType = "video"
-	case "mixed":
-		contentType = "mixed"
-	default:
-		contentType = body.MsgType
-	}
-
 	return &InboundMsg{
 		ExternalChatID:    chatID,
 		ExternalChatType:  chatType,
 		ExternalUserID:    body.From.UserID,
 		ExternalMessageID: body.MsgID,
-		ContentType:       contentType,
-		Content:           content,
+		ContentType:       body.MsgType,
+		Content:           extractTextContent(body.MsgType, body.Text),
 		Metadata: map[string]any{
 			"reqId":    frame.Headers.ReqID,
 			"botId":    body.BotID,
@@ -109,14 +93,30 @@ func TranslateMsgCallback(frame *ws.WSFrame) (*InboundMsg, error) {
 	}, nil
 }
 
-// TranslateEventCallback translates an aibot_event_callback WS frame to an InboundMsg.
-func TranslateEventCallback(frame *ws.WSFrame) (*InboundMsg, error) {
-	var body ws.EventCallbackBody
+// TranslateEventCallback translates an event callback WsFrame to an InboundMsg.
+func TranslateEventCallback(frame *aibot.WsFrame) (*InboundMsg, error) {
+	var body struct {
+		MsgID      string          `json:"msgid"`
+		CreateTime int64           `json:"create_time"`
+		BotID      string          `json:"aibotid"`
+		ChatID     string          `json:"chatid,omitempty"`
+		ChatType   string          `json:"chattype,omitempty"`
+		From       aibot.MessageFrom `json:"from,omitempty"`
+		MsgType    string          `json:"msgtype"`
+		Event      json.RawMessage `json:"event"`
+	}
 	if err := json.Unmarshal(frame.Body, &body); err != nil {
 		return nil, fmt.Errorf("unmarshal event callback: %w", err)
 	}
 
-	eventType := body.Event.EventType
+	// Parse event type from raw event
+	var eventMeta struct {
+		EventType string `json:"eventtype"`
+	}
+	if err := json.Unmarshal(body.Event, &eventMeta); err != nil {
+		return nil, fmt.Errorf("parse event type: %w", err)
+	}
+
 	chatID := body.ChatID
 	chatType := body.ChatType
 	if chatType == "single" || chatType == "" {
@@ -127,30 +127,22 @@ func TranslateEventCallback(frame *ws.WSFrame) (*InboundMsg, error) {
 	}
 
 	contentType := "event"
-	content := eventType
+	content := eventMeta.EventType
 	metadata := map[string]any{
 		"reqId":      frame.Headers.ReqID,
 		"botId":      body.BotID,
-		"eventType":  eventType,
+		"eventType":  eventMeta.EventType,
 		"chatId":     body.ChatID,
 		"chatType":   body.ChatType,
 		"timestamp":  body.CreateTime,
+		"event":      body.Event,
 	}
 
-	switch eventType {
-	case ws.EventTypeTemplateCard:
+	switch eventMeta.EventType {
+	case "template_card_event":
 		contentType = "action_callback"
-		content = body.Event.EventType
-		metadata["taskId"] = body.Event.TaskID
-		metadata["responseCode"] = body.Event.ResponseCode
-		if body.Event.Feedback != nil {
-			metadata["feedbackId"] = body.Event.Feedback.ID
-		}
-		if len(body.Event.SelectedItems) > 0 {
-			metadata["selectedItems"] = body.Event.SelectedItems
-		}
-	case ws.EventTypeDisconnected:
-		// Don't forward disconnect events to backends
+		content = eventMeta.EventType
+	case "disconnected_event":
 		return nil, nil
 	}
 
@@ -165,99 +157,20 @@ func TranslateEventCallback(frame *ws.WSFrame) (*InboundMsg, error) {
 	}, nil
 }
 
-// --- Outbound translation (business request → WS command frame) ---
-
-// TranslateSend converts a business SendRequest to an aibot_send_msg WS frame.
-func TranslateSend(req *SendRequest) (*ws.WSFrame, error) {
-	chatType := ws.ChatTypeUnspecified
-	switch req.ChatType {
-	case "single":
-		chatType = ws.ChatTypeSingle
-	case "group":
-		chatType = ws.ChatTypeGroup
+func extractTextContent(msgType string, text *aibot.TextContent) string {
+	if text == nil {
+		return ""
 	}
-
-	body := &ws.SendMsgBody{
-		ChatID:   req.UserID,
-		ChatType: chatType,
-		MsgType:  req.MsgType,
-	}
-
-	switch req.MsgType {
+	switch msgType {
 	case "text":
-		body.Text = &ws.TextBody{Content: req.Content}
-	case "markdown":
-		body.Markdown = &ws.MarkdownBody{Content: req.Content}
-	case "card":
-		body.MsgType = "template_card"
-		body.TemplateCard = json.RawMessage(req.Content)
+		return text.Content
+	case "image":
+		return ""
+	case "file":
+		return ""
+	case "voice":
+		return ""
 	default:
-		body.Text = &ws.TextBody{Content: req.Content}
+		return text.Content
 	}
-
-	return ws.NewCommand(ws.CmdSendMsg, generateReqID(), body)
-}
-
-// TranslateReply converts a business ReplyRequest to an aibot_respond_msg WS frame.
-func TranslateReply(req *ReplyRequest) (*ws.WSFrame, error) {
-	body := &ws.RespondMsgBody{
-		MsgType: req.MsgType,
-	}
-
-	switch req.MsgType {
-	case "text":
-		body.Text = &ws.TextBody{Content: req.Content}
-	case "markdown":
-		body.Markdown = &ws.MarkdownBody{Content: req.Content}
-	default:
-		body.Text = &ws.TextBody{Content: req.Content}
-	}
-
-	return ws.NewCommand(ws.CmdRespondMsg, req.ReqID, body)
-}
-
-// TranslateStreamReply converts a business StreamReplyRequest to an aibot_respond_msg WS frame.
-func TranslateStreamReply(req *StreamReplyRequest) (*ws.WSFrame, error) {
-	body := &ws.RespondMsgBody{
-		MsgType: "stream",
-		Stream: &ws.StreamBody{
-			ID:      req.StreamID,
-			Finish:  req.Finish,
-			Content: req.Content,
-		},
-	}
-
-	return ws.NewCommand(ws.CmdRespondMsg, req.ReqID, body)
-}
-
-// TranslateWelcome converts a business WelcomeRequest to an aibot_respond_welcome_msg WS frame.
-func TranslateWelcome(req *WelcomeRequest) (*ws.WSFrame, error) {
-	body := &ws.RespondWelcomeBody{
-		MsgType: req.MsgType,
-	}
-
-	switch req.MsgType {
-	case "text":
-		body.Text = &ws.TextBody{Content: req.Content}
-	case "markdown":
-		body.Markdown = &ws.MarkdownBody{Content: req.Content}
-	default:
-		body.Text = &ws.TextBody{Content: req.Content}
-	}
-
-	return ws.NewCommand(ws.CmdRespondWelcome, req.ReqID, body)
-}
-
-// TranslateCardUpdate converts a business CardUpdateRequest to an aibot_respond_update_msg WS frame.
-func TranslateCardUpdate(req *CardUpdateRequest) (*ws.WSFrame, error) {
-	body := &ws.RespondUpdateBody{
-		ResponseType: "update_template_card",
-		TemplateCard: json.RawMessage(req.Content),
-	}
-
-	return ws.NewCommand(ws.CmdRespondUpdate, req.ReqID, body)
-}
-
-func generateReqID() string {
-	return fmt.Sprintf("proxy_%d", time.Now().UnixNano())
 }

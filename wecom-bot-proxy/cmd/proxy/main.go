@@ -14,8 +14,8 @@ import (
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/config"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/dedup"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/router"
-	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/ws"
 	"github.com/gin-gonic/gin"
+	"github.com/go-sphere/wecom-aibot-go-sdk/aibot"
 )
 
 func main() {
@@ -73,12 +73,23 @@ func main() {
 	// Initialize backend manager
 	backendMgr := backend.NewManager(cfg.Backends, logger)
 
-	// Create proxy (core orchestrator)
-	proxy := api.NewProxy(cfg, logger, nil, routes, backendMgr, dedupStore)
+	// Initialize SDK client
+	scene := 0
+	sdk := aibot.NewWSClient(aibot.WSClientOptions{
+		BotID:                  cfg.Bot.BotID,
+		Secret:                 cfg.Bot.Secret,
+		Scene:                  &scene,
+		WSURL:                  cfg.Bot.WSURL,
+		HeartbeatInterval:      int(cfg.Bot.HeartbeatInterval.Milliseconds()),
+		ReconnectInterval:      int(cfg.Bot.ReconnectInitialBackoff.Milliseconds()),
+		MaxReconnectAttempts:   -1, // unlimited
+		MaxAuthFailureAttempts: 5,
+		RequestTimeout:         int(cfg.Backends[cfg.Routing.DefaultBackend].Timeout.Milliseconds()),
+	})
 
-	// Initialize WS connection
-	wsConn := ws.NewConn(cfg.Bot, logger, proxy.HandleWSFrame)
-	proxy.SetWSConn(wsConn)
+	// Create proxy (core orchestrator)
+	proxy := api.NewProxy(cfg, logger, sdk, routes, backendMgr, dedupStore)
+	proxy.SetupSDKHandlers()
 
 	// Context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,8 +104,9 @@ func main() {
 		cancel()
 	}()
 
-	// Start WS connection
-	wsConn.Start(ctx)
+	// Start WebSocket connection via SDK
+	sdk.Connect()
+	defer sdk.Disconnect()
 
 	// Setup HTTP server
 	gin.SetMode(gin.ReleaseMode)
@@ -116,6 +128,7 @@ func main() {
 		logger.Info("shutting down")
 	case err := <-srvErr:
 		logger.Error("http server error", "error", err)
+		os.Exit(1)
 	}
 }
 

@@ -10,24 +10,24 @@ import (
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/config"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/dedup"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/router"
-	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/ws"
 	"github.com/gin-gonic/gin"
+	"github.com/go-sphere/wecom-aibot-go-sdk/aibot"
 )
 
 // Proxy is the core orchestrator that wires together WS, router, dedup, and backends.
 type Proxy struct {
-	cfg     *config.Config
-	logger  *slog.Logger
-	wsConn  *ws.Conn
-	routes  *router.Table
+	cfg      *config.Config
+	logger   *slog.Logger
+	sdk      *aibot.WSClient
+	routes   *router.Table
 	backends *backend.Manager
-	dedup   *dedup.Store
+	dedup    *dedup.Store
 }
 
 func NewProxy(
 	cfg *config.Config,
 	logger *slog.Logger,
-	wsConn *ws.Conn,
+	sdk *aibot.WSClient,
 	routes *router.Table,
 	backends *backend.Manager,
 	dedupStore *dedup.Store,
@@ -35,28 +35,64 @@ func NewProxy(
 	p := &Proxy{
 		cfg:      cfg,
 		logger:   logger,
-		wsConn:   wsConn,
+		sdk:      sdk,
 		routes:   routes,
 		backends: backends,
 		dedup:    dedupStore,
 	}
-
 	return p
 }
 
-func (p *Proxy) SetWSConn(conn *ws.Conn) {
-	p.wsConn = conn
+// setupSDKHandlers registers message/event handlers on the SDK client.
+func (p *Proxy) SetupSDKHandlers() {
+	if p.sdk == nil {
+		return
+	}
+
+	p.sdk.OnConnected(func() {
+		p.logger.Info("ws connected")
+	})
+
+	p.sdk.OnAuthenticated(func() {
+		p.logger.Info("ws authenticated")
+	})
+
+	p.sdk.OnDisconnected(func(reason string) {
+		p.logger.Warn("ws disconnected", "reason", reason)
+	})
+
+	p.sdk.OnReconnecting(func(attempt int) {
+		p.logger.Info("ws reconnecting", "attempt", attempt)
+	})
+
+	p.sdk.OnError(func(err error) {
+		p.logger.Error("ws error", "error", err)
+	})
+
+	// Route all message types to our handler
+	p.sdk.OnMessage(func(frame *aibot.WsFrame) {
+		p.handleInbound(frame)
+	})
+	p.sdk.OnMessageText(func(frame *aibot.WsFrame) {
+		p.handleInbound(frame)
+	})
+	p.sdk.OnEvent(func(frame *aibot.WsFrame) {
+		p.handleInbound(frame)
+	})
+	p.sdk.OnEventTemplateCardEvent(func(frame *aibot.WsFrame) {
+		p.handleInbound(frame)
+	})
 }
 
-// HandleWSFrame is the InboundHandler for ws.Conn.
-func (p *Proxy) HandleWSFrame(frame *ws.WSFrame) {
+// handleInbound translates a WS frame and forwards it to the appropriate backend.
+func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 	var inbound *InboundMsg
 	var err error
 
 	switch frame.Cmd {
-	case ws.CmdMsgCallback:
+	case aibot.WsCmd.CALLBACK:
 		inbound, err = TranslateMsgCallback(frame)
-	case ws.CmdEventCallback:
+	case aibot.WsCmd.EVENT_CALLBACK:
 		inbound, err = TranslateEventCallback(frame)
 	default:
 		p.logger.Debug("ignoring ws frame", "cmd", frame.Cmd)
@@ -171,17 +207,29 @@ func (p *Proxy) handleSend(c *gin.Context) {
 		p.logger.Info("registered task route", "taskId", req.TaskID, "backend", backendName)
 	}
 
-	// Translate and send via WS
-	frame, err := TranslateSend(&req)
-	if err != nil {
-		p.logger.Error("failed to translate send", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "translation failed"})
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
 	}
 
-	if err := p.wsConn.Send(frame); err != nil {
-		p.logger.Error("failed to send via ws", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws send failed"})
+	// Send via SDK
+	var err error
+	switch req.MsgType {
+	case "text":
+		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
+	case "markdown":
+		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
+	case "card":
+		// Send as template_card via raw send
+		body := aibot.CreateTextReplyBody(req.Content)
+		_, err = p.sdk.SendMessage(req.UserID, body)
+	default:
+		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
+	}
+
+	if err != nil {
+		p.logger.Error("failed to send via sdk", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "send failed"})
 		return
 	}
 
@@ -200,16 +248,30 @@ func (p *Proxy) handleReply(c *gin.Context) {
 		return
 	}
 
-	frame, err := TranslateReply(&req)
-	if err != nil {
-		p.logger.Error("failed to translate reply", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "translation failed"})
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
 	}
 
-	if err := p.wsConn.Send(frame); err != nil {
-		p.logger.Error("failed to send reply via ws", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws send failed"})
+	// Create minimal frame with req_id for SDK reply
+	frame := &aibot.WsFrame{
+		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
+	}
+
+	var body any
+	switch req.MsgType {
+	case "text":
+		body = aibot.CreateTextReplyBody(req.Content)
+	case "markdown":
+		body = aibot.CreateMarkdownReplyBody(req.Content)
+	default:
+		body = aibot.CreateTextReplyBody(req.Content)
+	}
+
+	_, err := p.sdk.Reply(frame, body, "")
+	if err != nil {
+		p.logger.Error("failed to reply via sdk", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "reply failed"})
 		return
 	}
 
@@ -228,16 +290,19 @@ func (p *Proxy) handleStreamReply(c *gin.Context) {
 		return
 	}
 
-	frame, err := TranslateStreamReply(&req)
-	if err != nil {
-		p.logger.Error("failed to translate stream reply", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "translation failed"})
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
 	}
 
-	if err := p.wsConn.Send(frame); err != nil {
-		p.logger.Error("failed to send stream reply via ws", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws send failed"})
+	frame := &aibot.WsFrame{
+		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
+	}
+
+	_, err := p.sdk.ReplyStream(frame, req.StreamID, req.Content, req.Finish, nil, nil)
+	if err != nil {
+		p.logger.Error("failed to stream reply via sdk", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "stream reply failed"})
 		return
 	}
 
@@ -256,16 +321,20 @@ func (p *Proxy) handleWelcome(c *gin.Context) {
 		return
 	}
 
-	frame, err := TranslateWelcome(&req)
-	if err != nil {
-		p.logger.Error("failed to translate welcome", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "translation failed"})
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
 	}
 
-	if err := p.wsConn.Send(frame); err != nil {
-		p.logger.Error("failed to send welcome via ws", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws send failed"})
+	frame := &aibot.WsFrame{
+		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
+	}
+
+	body := aibot.CreateWelcomeReplyBody(req.Content)
+	_, err := p.sdk.ReplyWelcome(frame, body)
+	if err != nil {
+		p.logger.Error("failed to send welcome via sdk", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "welcome failed"})
 		return
 	}
 
@@ -284,16 +353,25 @@ func (p *Proxy) handleCardUpdate(c *gin.Context) {
 		return
 	}
 
-	frame, err := TranslateCardUpdate(&req)
-	if err != nil {
-		p.logger.Error("failed to translate card update", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "translation failed"})
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
 	}
 
-	if err := p.wsConn.Send(frame); err != nil {
-		p.logger.Error("failed to send card update via ws", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws send failed"})
+	frame := &aibot.WsFrame{
+		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
+	}
+
+	var templateCard aibot.TemplateCard
+	if err := json.Unmarshal([]byte(req.Content), &templateCard); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template card json"})
+		return
+	}
+
+	_, err := p.sdk.UpdateTemplateCard(frame, templateCard, nil)
+	if err != nil {
+		p.logger.Error("failed to update card via sdk", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "card update failed"})
 		return
 	}
 
@@ -309,26 +387,21 @@ func (p *Proxy) handleHealth(c *gin.Context) {
 		}
 	}
 
+	connected := false
+	if p.sdk != nil {
+		connected = p.sdk.IsConnected()
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"status":       p.wsConn.State().String(),
-		"bot_id":       p.cfg.Bot.BotID,
-		"connected_at": p.wsConn.ConnectedAt(),
-		"last_pong":    p.wsConn.LastPong(),
-		"task_routes":  p.routes.Size(),
-		"backends":     backends,
+		"status":     map[bool]string{true: "connected", false: "disconnected"}[connected],
+		"bot_id":     p.cfg.Bot.BotID,
+		"connected":  connected,
+		"backends":   backends,
 	})
 }
 
-// HealthStatus is returned by the health endpoint.
 type HealthStatus struct {
 	Status      string `json:"status"`
 	BotID       string `json:"bot_id"`
-	ConnectedAt string `json:"connected_at,omitempty"`
-	LastPong    string `json:"last_pong,omitempty"`
-}
-
-// marshalJSON is a helper to check JSON marshaling works.
-func marshalJSON(v any) json.RawMessage {
-	data, _ := json.Marshal(v)
-	return data
+	Connected   bool   `json:"connected"`
 }
