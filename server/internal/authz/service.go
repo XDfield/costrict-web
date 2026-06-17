@@ -203,14 +203,24 @@ func (s *Service) HasPermission(userID, resourceCode string) (bool, error) {
 
 // VerifyToken parses a bearer token to resolve the userID and then checks permission.
 func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResult, error) {
+	allowed, perms, _, err := s.VerifyTokenWithUser(token, resourceCode)
+	return allowed, perms, err
+}
+
+// VerifyTokenWithUser is VerifyToken but also returns the resolved costrict-web
+// userID (subject_id). It lets callers (e.g. the internal /auth/verify handler)
+// attach extra user-keyed facts such as the metrics-dashboard scope without
+// re-parsing the token. The userID is returned whenever the token parses, even
+// when access is denied, so the caller can decide what to do.
+func (s *Service) VerifyTokenWithUser(token, resourceCode string) (bool, *PermissionResult, string, error) {
 	token = strings.TrimPrefix(token, "Bearer ")
 	if token == "" {
-		return false, nil, errors.New("empty token")
+		return false, nil, "", errors.New("empty token")
 	}
 
 	userInfo, err := middleware.ParseToken(token, s.casdoorEndpoint, s.jwksProvider)
 	if err != nil {
-		return false, nil, fmt.Errorf("parse token: %w", err)
+		return false, nil, "", fmt.Errorf("parse token: %w", err)
 	}
 
 	userID := userInfo.Sub
@@ -233,17 +243,17 @@ func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResu
 
 	allowed, err := s.HasPermission(userID, resourceCode)
 	if err != nil {
-		return false, nil, err
+		return false, nil, userID, err
 	}
 	if !allowed {
-		return false, nil, nil
+		return false, nil, userID, nil
 	}
 
 	perms, err := s.GetUserPermissions(userID)
 	if err != nil {
-		return false, nil, err
+		return false, nil, userID, err
 	}
-	return true, perms, nil
+	return true, perms, userID, nil
 }
 
 func hasAny(have, want []string) bool {

@@ -28,6 +28,12 @@ func New(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityPr
 func (m *Module) RegisterAPIRoutes(apiGroup *gin.RouterGroup) {
 	// Public authenticated endpoint for the frontend to fetch permissions.
 	apiGroup.GET("/auth/permissions", GetUserPermissionsHandler(m.Service))
+
+	// Authenticated endpoint: the current user's metrics-dashboard visibility
+	// scope (which department subtrees they may see). Any logged-in user may query
+	// their own scope; reused by the metrics dashboard (指标看板) to enforce
+	// "see only your own department subtree unless specially opened up".
+	apiGroup.GET("/auth/dept-scope", GetUserScopeHandler(m.Service))
 }
 
 func (m *Module) RegisterAdminRoutes(adminGroup *gin.RouterGroup) {

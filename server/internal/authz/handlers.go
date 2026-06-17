@@ -30,15 +30,48 @@ func GetUserPermissionsHandler(svc *Service) gin.HandlerFunc {
 	}
 }
 
+// GetUserScopeHandler returns the current user's metrics-dashboard visibility
+// scope (which department subtrees they may see). Any authenticated user may query
+// their own scope; it carries no privileged data beyond the caller's own access.
+func GetUserScopeHandler(svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString(appmiddleware.UserIDKey)
+		if userID == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		scope, err := svc.ResolveUserScope(userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve scope"})
+			return
+		}
+
+		c.JSON(http.StatusOK, scope)
+	}
+}
+
 type verifyRequest struct {
 	Token    string `json:"token" binding:"required"`
 	Resource string `json:"resource" binding:"required"`
 }
 
 type verifyResponse struct {
-	Allowed      bool             `json:"allowed"`
-	Menus        []string         `json:"menus,omitempty"`
-	Capabilities []string         `json:"capabilities,omitempty"`
+	Allowed      bool     `json:"allowed"`
+	Menus        []string `json:"menus,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Scope is the caller's metrics-dashboard visibility scope, included so an
+	// external service (e.g. efficiency-dashboard) can verify a token and obtain
+	// the department-scope facts in a single internal round-trip. Omitted when the
+	// token is not allowed (Allowed=false) or scope resolution fails (best-effort).
+	Scope *scopeSummary `json:"scope,omitempty"`
+}
+
+// scopeSummary is the compact scope view embedded in the verify response: the
+// fields an external consumer needs to enforce department visibility.
+type scopeSummary struct {
+	AllAccess           bool     `json:"allAccess"`
+	VisibleDeptPrefixes []string `json:"visibleDeptPrefixes"`
 }
 
 type grantUserRoleRequest struct {
@@ -311,7 +344,7 @@ func VerifyTokenHandler(svc *Service) gin.HandlerFunc {
 			return
 		}
 
-		allowed, perms, err := svc.VerifyToken(req.Token, req.Resource)
+		allowed, perms, userID, err := svc.VerifyTokenWithUser(req.Token, req.Resource)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token verification failed"})
 			return
@@ -321,6 +354,18 @@ func VerifyTokenHandler(svc *Service) gin.HandlerFunc {
 		if perms != nil {
 			resp.Menus = perms.Menus
 			resp.Capabilities = perms.Capabilities
+		}
+		// Attach a compact scope summary so an external consumer (e.g.
+		// efficiency-dashboard) gets department visibility in the same call. Only
+		// when the token is allowed and the userID resolved; scope resolution is
+		// best-effort and never fails the verify.
+		if allowed && userID != "" {
+			if scope, sErr := svc.ResolveUserScope(userID); sErr == nil && scope != nil {
+				resp.Scope = &scopeSummary{
+					AllAccess:           scope.AllAccess,
+					VisibleDeptPrefixes: scope.VisibleDeptPrefixes,
+				}
+			}
 		}
 		c.JSON(http.StatusOK, resp)
 	}
