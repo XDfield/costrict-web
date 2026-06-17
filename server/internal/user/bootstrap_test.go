@@ -252,6 +252,58 @@ func TestGetOrCreateUser_FiresPostLoginHook(t *testing.T) {
 	}
 }
 
+// TestSyncUser_DoesNotFireHook proves the read-only-sync path (used by
+// user-search backfill) upserts the user WITHOUT running the post-login hook,
+// while GetOrCreateUser on the same claims DOES. This guards the invariant that
+// bootstrap platform-admin granting only happens on the user's own genuine login,
+// never when a third party merely searches for / backfills them.
+func TestSyncUser_DoesNotFireHook(t *testing.T) {
+	db := setupUserTestDB(t)
+	svc := NewUserService(db)
+
+	var hookCalls int
+	svc.SetPostLoginHook(func(_ *models.User) { hookCalls++ })
+
+	claims := &JWTClaims{
+		ID:                "u1",
+		Sub:               "org/alice",
+		UniversalID:       "uuid-u1",
+		Name:              "alice",
+		PreferredUsername: "Alice",
+		Email:             "alice@example.com",
+		Owner:             "org",
+	}
+
+	// Backfill/sync path: must upsert the user but NOT fire the hook.
+	synced, err := svc.SyncUser(claims)
+	if err != nil {
+		t.Fatalf("SyncUser create path: %v", err)
+	}
+	if synced == nil || synced.SubjectID == "" {
+		t.Fatalf("SyncUser returned no user: %+v", synced)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("SyncUser must not fire the post-login hook, got %d calls", hookCalls)
+	}
+
+	// Sync again on the now-existing user: still no hook.
+	if _, err := svc.SyncUser(claims); err != nil {
+		t.Fatalf("SyncUser existing path: %v", err)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("SyncUser (existing user) must not fire the hook, got %d calls", hookCalls)
+	}
+
+	// The genuine login path on the same user DOES fire the hook, confirming the
+	// only difference between the two entry points is the hook.
+	if _, err := svc.GetOrCreateUser(claims); err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("GetOrCreateUser should fire the hook exactly once, got %d", hookCalls)
+	}
+}
+
 // TestGetOrCreateUser_NoHookByDefault confirms zero behaviour change when no
 // hook is installed (default path unchanged).
 func TestGetOrCreateUser_NoHookByDefault(t *testing.T) {

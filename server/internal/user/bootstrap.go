@@ -7,6 +7,20 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 )
 
+// SyncUser upserts a user from JWT/Casdoor claims WITHOUT running the post-login
+// hook. It is the read-only-sync counterpart of GetOrCreateUser: use it for
+// background reconciliation (e.g. user-search backfill from Casdoor) where the
+// caller is not the authenticated user themselves and therefore must not trigger
+// login-only side effects such as bootstrap platform-admin granting.
+//
+// GetOrCreateUser (which DOES fire the hook) must remain reserved for genuine
+// login paths (OAuth callback + JWKS auth), where the bearer has proven they own
+// the identity. Granting roles during a third party's search of a user would
+// violate the "granted on the user's own verified login" invariant.
+func (s *UserService) SyncUser(claims *JWTClaims) (*models.User, error) {
+	return s.getOrCreateUser(claims)
+}
+
 // RoleGranter is the minimal surface the bootstrap granter needs from the
 // systemrole service. Declaring it here (instead of importing systemrole) keeps
 // the user package free of a systemrole dependency and avoids an import cycle —

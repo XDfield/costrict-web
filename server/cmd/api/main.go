@@ -221,8 +221,11 @@ func main() {
 	})
 
 	// Bootstrap platform-admin granting (initial admin without manual SQL):
-	// installed as a post-login hook on the single GetOrCreateUser choke point, so
-	// it covers both the OAuth callback and the JWKS auth-middleware login paths.
+	// installed as a post-login hook on GetOrCreateUser, which fires only on a
+	// genuine login by the user themselves (the OAuth callback and the JWKS
+	// auth-middleware path). Read-only background sync (user-search backfill) goes
+	// through SyncUser and does NOT trigger this hook, so a user is never granted
+	// platform_admin merely because someone else searched for them.
 	// Users whose email is in BOOTSTRAP_PLATFORM_ADMINS are granted platform_admin
 	// on login (idempotent, best-effort, granted_by='bootstrap'). The user package
 	// stays free of a systemrole import (cycle avoidance) via this injected hook.

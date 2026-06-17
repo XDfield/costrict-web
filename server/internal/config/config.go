@@ -52,10 +52,10 @@ type Config struct {
 // when BaseURL or APIKey is empty the dept-sync client is considered unconfigured
 // and degrades gracefully (admin endpoints return 503, frontend shows a notice).
 type DeptSyncConfig struct {
-	BaseURL    string // e.g. http://dept-sync:8080 (no trailing /api)
-	APIKey     string // X-API-Key value issued by dept-sync (query_key table)
-	TimeoutSec int    // per-request HTTP timeout, default 10s
-	CacheTTLSec int   // in-memory cache TTL for tree/users responses, default 60s
+	BaseURL     string // e.g. http://dept-sync:8080 (no trailing /api)
+	APIKey      string // X-API-Key value issued by dept-sync (query_key table)
+	TimeoutSec  int    // per-request HTTP timeout, default 10s
+	CacheTTLSec int    // in-memory cache TTL for tree/users responses, default 60s
 }
 
 type ChannelSystemConfig struct {
