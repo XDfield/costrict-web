@@ -384,11 +384,15 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=conflict&state="+state, nil)
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "identity_already_bound") {
-		t.Fatalf("expected identity_already_bound error, got %s", w.Body.String())
+	location := w.Header().Get("Location")
+	if !strings.Contains(location, "bind=conflict") {
+		t.Fatalf("expected redirect with bind=conflict, got %q", location)
+	}
+	if !strings.Contains(location, "merge_token=") {
+		t.Fatalf("expected redirect with merge_token, got %q", location)
 	}
 }
 

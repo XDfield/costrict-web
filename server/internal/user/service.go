@@ -1,6 +1,7 @@
 package user
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -252,7 +253,23 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&existing).Error
 		if err == nil {
 			if existing.UserSubjectID != userSubjectID {
-				return fmt.Errorf("identity_already_bound")
+				// Allow claiming if the identity was unbound (soft-deleted).
+				if !existing.DeletedAt.Valid {
+					return fmt.Errorf("identity_already_bound")
+				}
+				updates := s.buildIdentityUpdates(&existing, claims)
+				updates["user_subject_id"] = userSubjectID
+				updates["deleted_at"] = nil
+				updates["explicitly_unbound"] = false
+				if opt.UpdateLastLogin {
+					updates["last_login_at"] = time.Now()
+				}
+				if len(updates) > 0 {
+					if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+						return err
+					}
+				}
+				return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
 			}
 			// Skip restoring explicitly unbound identities unless forceRebind is set
 			if existing.ExplicitlyUnbound && !opt.ForceRebind {
@@ -331,6 +348,63 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 		}
 
 		return s.refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+	})
+}
+
+// TransferIdentityToUser transfers an identity (identified by externalKey) from its current
+// owner to targetUserSubjectID. This is used for account merging when a user explicitly
+// confirms that they want to claim an identity already bound to another account.
+func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externalKey string, _ string) error {
+	if targetUserSubjectID == "" || externalKey == "" {
+		return fmt.Errorf("target_user_subject_id and external_key are required")
+	}
+
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var identity models.UserAuthIdentity
+		if err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&identity).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return fmt.Errorf("identity_not_found")
+			}
+			return err
+		}
+
+		oldUserSubjectID := identity.UserSubjectID
+		if oldUserSubjectID == targetUserSubjectID {
+			return nil // Already owned by this user
+		}
+
+		// Transfer the identity: update user_subject_id and restore if soft-deleted
+		now := time.Now()
+		updates := map[string]interface{}{
+			"user_subject_id": targetUserSubjectID,
+			"updated_at":      now,
+		}
+		if identity.DeletedAt.Valid {
+			updates["deleted_at"] = nil
+		}
+		if identity.ExplicitlyUnbound {
+			updates["explicitly_unbound"] = false
+		}
+		if err := tx.Model(&identity).Unscoped().Updates(updates).Error; err != nil {
+			return err
+		}
+
+		// Refresh both users' profiles
+		if err := s.refreshUserProfileFromIdentitiesTx(tx, targetUserSubjectID); err != nil {
+			return err
+		}
+		if oldUserSubjectID != targetUserSubjectID {
+			if err := s.refreshUserProfileFromIdentitiesTx(tx, oldUserSubjectID); err != nil {
+				return err
+			}
+		}
+
+		s.notifyUserUpdated(targetUserSubjectID)
+		if oldUserSubjectID != targetUserSubjectID {
+			s.notifyUserUpdated(oldUserSubjectID)
+		}
+
+		return nil
 	})
 }
 
@@ -671,7 +745,18 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 
 		if shouldUpdate {
 			user.LastSyncAt = &now
-			if err := s.db.Save(&user).Error; err != nil {
+			if err := s.db.Omit("subject_id").Save(&user).Error; err != nil {
+				if errors.Is(err, gorm.ErrDuplicatedKey) {
+					// Duplicate subject_id — another user row has the same value.
+					// This is a data integrity issue; log a warning and reload
+					// so the caller can proceed rather than failing outright.
+					fmt.Printf("[WARN] Duplicate subject_id for user id=%d (subject_id=%q): %v\n", user.ID, user.SubjectID, err)
+					var reloaded models.User
+					if reloadErr := s.db.Where("id = ?", user.ID).Take(&reloaded).Error; reloadErr == nil {
+						s.notifyUserUpdated(reloaded.SubjectID)
+						return &reloaded, nil
+					}
+				}
 				return nil, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
@@ -940,6 +1025,11 @@ func buildExternalKey(claims *JWTClaims) string {
 	return ""
 }
 
+// BuildExternalKey is the public wrapper for buildExternalKey.
+func BuildExternalKey(claims *JWTClaims) string {
+	return buildExternalKey(claims)
+}
+
 func legacyExternalKey(claims *JWTClaims) string {
 	if claims == nil {
 		return ""
@@ -1097,7 +1187,11 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 	}
 	now := time.Now()
 	user.LastSyncAt = &now
-	return tx.Save(&user).Error
+	// Omit columns with UNIQUE constraints (immutable after creation)
+	if err := tx.Omit("subject_id", "username", "external_key").Save(&user).Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 func equalStringPtr(a, b *string) bool {

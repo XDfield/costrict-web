@@ -39,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
 	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
+	"github.com/costrict/costrict-web/server/internal/clawagent"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -366,6 +367,8 @@ func main() {
 			authed.GET("/auth/me", handlers.GetCurrentUser)
 			authed.GET("/auth/identities", handlers.ListBoundIdentities)
 			authed.POST("/auth/bind/start", handlers.StartBindAuth)
+			authed.POST("/auth/bind/confirm-merge", handlers.ConfirmMergeIdentity)
+			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
 
 			usage := authed.Group("/usage")
@@ -622,6 +625,15 @@ func main() {
 		// Inner goroutine observes ctx.Done() and exits.
 	})
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
+// Initialize ClawAgent personal AI assistant
+	clawRT, err := clawagent.NewFromMain(db, cfg, gatewayRegistry, gatewayClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize ClawAgent: %v", err)
+	}
+	channelModule.Service.SetMessageHandler(clawRT)
+	clawRT.RegisterRoutes(r.Group("/api", middleware.RequireAuth(casdoorEndpoint, jwksProvider)))
+	// Setup OpenAI-compatible API endpoint
+	clawRT.SetupOpenAIHandler(r.Group("/"), middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
@@ -648,6 +660,24 @@ func main() {
 	}
 
 	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry)
+// Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
+	if clawRT != nil {
+		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
+			req := clawagent.AIEventRequest{
+				UserID:     userID,
+				EventType:  eventType,
+				SessionID:  sessionID,
+				DeviceID:   deviceID,
+				Path:       path,
+				ActionData: actionData,
+			}
+			if err := clawRT.EventHandler.HandleAIEvent(context.Background(), req); err != nil {
+				log.Printf("[clawagent] AI event handler error: %v", err)
+				return false
+			}
+			return true
+		})
+	}
 
 	// Create cloud module before action handlers so closures can reference it
 	cloudModule = cloud.New(gatewayRegistry, gatewayClient)

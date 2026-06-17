@@ -205,6 +205,45 @@ func verifyBindStatePayload(payload, sig string) bool {
 	return hmac.Equal([]byte(signBindStatePayload(payload)), []byte(sig))
 }
 
+// mergeState carries the information needed to complete an account merge after the user
+// confirms the merge dialog on the frontend.
+type mergeState struct {
+	Provider      string `json:"provider"`
+	ExternalKey   string `json:"externalKey"`
+	UserSubjectID string `json:"userSubjectId"`
+	ExpiresAt     int64  `json:"expiresAt"`
+	Nonce         string `json:"nonce"`
+}
+
+func encodeMergeState(s mergeState) string {
+	b, _ := json.Marshal(s)
+	payload := base64.RawURLEncoding.EncodeToString(b)
+	return payload + "." + signBindStatePayload(payload)
+}
+
+func decodeMergeState(encoded string) mergeState {
+	parts := strings.Split(encoded, ".")
+	if len(parts) != 2 {
+		return mergeState{}
+	}
+	payload, sig := parts[0], parts[1]
+	if !verifyBindStatePayload(payload, sig) {
+		return mergeState{}
+	}
+	b, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return mergeState{}
+	}
+	var out mergeState
+	if err := json.Unmarshal(b, &out); err != nil {
+		return mergeState{}
+	}
+	if out.ExpiresAt > 0 && time.Now().Unix() > out.ExpiresAt {
+		return mergeState{}
+	}
+	return out
+}
+
 func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 	name := user.Username
 	if user.DisplayName != nil && *user.DisplayName != "" {
@@ -445,6 +484,12 @@ func StartBindAuth(c *gin.Context) {
 }
 
 func bindAuthCallback(c *gin.Context, state bindState) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC] bindAuthCallback panicked: %v\n", r)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+		}
+	}()
 	if state.ExpiresAt == 0 || time.Now().Unix() > state.ExpiresAt {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_state"})
 		return
@@ -486,7 +531,23 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 	}
 	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
-			c.JSON(http.StatusConflict, gin.H{"error": "identity_already_bound", "message": "该登录方式已绑定其他账号"})
+			externalKey := userpkg.BuildExternalKey(claims)
+			mergeToken := encodeMergeState(mergeState{
+				Provider:      claims.Provider,
+				ExternalKey:   externalKey,
+				UserSubjectID: currentUser.SubjectID,
+				ExpiresAt:     time.Now().Add(5 * time.Minute).Unix(),
+				Nonce:         uuid.NewString(),
+			})
+			redirectURL := state.RedirectTo
+			if redirectURL == "" {
+				redirectURL = defaultFrontendURL + "/settings/account"
+			}
+			sep := "?"
+			if strings.Contains(redirectURL, "?") {
+				sep = "&"
+			}
+			c.Redirect(http.StatusFound, redirectURL+sep+"bind=conflict&merge_token="+mergeToken)
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
@@ -691,6 +752,73 @@ func stringPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+// ConfirmMergeIdentity godoc
+// @Summary      Confirm account merge
+// @Description  After the user confirms the merge dialog on the frontend, this endpoint
+// transfers the conflicting identity from the other account to the current user.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  object{merge_token=string}  true  "Merge token from the OAuth redirect"
+// @Success      200  {object}  object{message=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /auth/bind/confirm-merge [post]
+func ConfirmMergeIdentity(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	var req struct {
+		MergeToken string `json:"merge_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	ms := decodeMergeState(req.MergeToken)
+	if ms.ExpiresAt == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_merge_token"})
+		return
+	}
+	if ms.UserSubjectID != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "merge_token_user_mismatch"})
+		return
+	}
+	if err := UserModule.Service.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
+		if err.Error() == "identity_not_found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "identity_not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to merge identity"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "identity_merged"})
+}
+
+// CancelMergeIdentity godoc
+// @Summary      Cancel account merge
+// @Description  Cancels the merge operation when the user declines the merge dialog.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  object{merge_token=string}  true  "Merge token to cancel"
+// @Success      200  {object}  object{message=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/bind/cancel-merge [post]
+func CancelMergeIdentity(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "merge_cancelled"})
 }
 
 func derefString(s *string) string {
