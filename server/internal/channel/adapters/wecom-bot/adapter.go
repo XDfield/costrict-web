@@ -43,11 +43,13 @@ func (a *WeComBotAdapter) Capabilities() channel.ChannelCapabilities {
 	}
 }
 
-func (a *WeComBotAdapter) ValidateConfig(_ json.RawMessage) error {
+func (a *WeComBotAdapter) ValidateConfig(config json.RawMessage) error {
+	// wecom-bot 无需用户配置，直接绑定当前用户的 idtrust 认证
 	return nil
 }
 
 func (a *WeComBotAdapter) ConfigSchema() []channel.ConfigField {
+	// wecom-bot 无需用户配置，直接绑定当前用户的 idtrust 认证
 	return nil
 }
 

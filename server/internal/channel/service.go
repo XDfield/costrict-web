@@ -44,6 +44,10 @@ func (s *ChannelService) SetReplyContextStore(store ReplyContextStore) {
 	s.sessionStore = store
 }
 
+func (s *ChannelService) SetMessageHandler(h MessageHandler) {
+	s.messageHandler = h
+}
+
 func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled, weComBotEnabled bool) *ChannelService {
 	adapters := make(map[string]ChannelAdapter)
 	// 只注册系统级别启用的适配器
@@ -108,7 +112,20 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 	}
 
 	if len(configs) == 0 {
-		return "success", http.StatusOK, nil
+		// wecom-bot is system-level: auto-create config and process
+		if channelType == "wecom-bot" && s.weComBotEnabled {
+			sysCfg := models.ChannelConfig{
+				ChannelType: "wecom-bot",
+				Name:        "wecom-bot 系统",
+				Enabled:     true,
+			}
+			if err := s.db.Create(&sysCfg).Error; err == nil {
+				configs = append(configs, sysCfg)
+			}
+		}
+		if len(configs) == 0 {
+			return "success", http.StatusOK, nil
+		}
 	}
 
 	msg, err := adapter.ParseInbound(r, nil)
@@ -227,8 +244,8 @@ func (s *ChannelService) GetConfig(userID, configID string) (*models.ChannelConf
 		return nil, fmt.Errorf("channel config not found")
 	}
 
-	// 对企微应用渠道，动态组合IDTrust绑定信息
-	if ch.ChannelType == "wecom" {
+	// 对企微应用渠道和 bot 渠道，动态组合IDTrust绑定信息
+	if ch.ChannelType == "wecom" || ch.ChannelType == "wecom-bot" {
 		ch = s.enrichWecomChannelConfig(userID, ch)
 	}
 
@@ -259,7 +276,7 @@ func (s *ChannelService) ListConfigs(userID string) ([]models.ChannelConfig, err
 	}
 
 	// 如果有IDTrust绑定但没有企微channel，自动创建
-	if hasIDTrust && !hasWecomChannel {
+	if s.weComEnabled && hasIDTrust && !hasWecomChannel {
 		autoCreatedChannel := models.ChannelConfig{
 			UserID:      userID,
 			ChannelType: "wecom",
@@ -272,14 +289,44 @@ func (s *ChannelService) ListConfigs(userID string) ([]models.ChannelConfig, err
 		}
 	}
 
-	// 对企微应用渠道，动态组合IDTrust绑定信息
+	// wecom-bot 长连接机器人：同样按 IDTrust 绑定自动创建 config，默认禁用
+	if s.weComBotEnabled && hasIDTrust {
+		hasWecomBotChannel := false
+		for _, cfg := range configs {
+			if cfg.ChannelType == "wecom-bot" {
+				hasWecomBotChannel = true
+				break
+			}
+		}
+		if !hasWecomBotChannel {
+			botChannel := models.ChannelConfig{
+				UserID:      userID,
+				ChannelType: "wecom-bot",
+				Name:        "企微 bot",
+				Enabled:     true,
+			}
+			if err := s.db.Create(&botChannel).Error; err == nil {
+				configs = append([]models.ChannelConfig{botChannel}, configs...)
+			}
+		}
+	}
+
+	// 对企微应用渠道和 bot 渠道，动态组合IDTrust绑定信息
 	for i := range configs {
-		if configs[i].ChannelType == "wecom" {
+		if configs[i].ChannelType == "wecom" || configs[i].ChannelType == "wecom-bot" {
 			configs[i] = s.enrichWecomChannelConfig(userID, configs[i])
 		}
 	}
 
-	return configs, nil
+	// 仅返回系统层面启用的频道类型（过滤掉被 .env 禁用的类型）
+	filtered := make([]models.ChannelConfig, 0, len(configs))
+	for _, cfg := range configs {
+		if _, ok := s.adapters[cfg.ChannelType]; ok {
+			filtered = append(filtered, cfg)
+		}
+	}
+
+	return filtered, nil
 }
 
 // enrichWecomChannelConfig 为企微应用渠道动态组合IDTrust绑定信息
@@ -334,6 +381,11 @@ func (s *ChannelService) SendTestMessage(userID, configID string) error {
 	adapter, ok := s.adapters[ch.ChannelType]
 	if !ok {
 		return fmt.Errorf("unsupported channel type")
+	}
+
+	// wecom / wecom-bot 的 config 在数据库中以空存储，由 enrichWecomChannelConfig 动态填充 userId
+	if ch.ChannelType == "wecom" || ch.ChannelType == "wecom-bot" {
+		ch = s.enrichWecomChannelConfig(userID, ch)
 	}
 
 	var userCfg struct {
