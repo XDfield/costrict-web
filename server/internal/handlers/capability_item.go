@@ -2290,7 +2290,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		return
 	}
 
-t	uid := c.GetString(middleware.UserIDKey)
+	uid := c.GetString(middleware.UserIDKey)
 		if uid == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 			return
@@ -2354,7 +2354,7 @@ t	uid := c.GetString(middleware.UserIDKey)
 		Content:     req.Content,
 		ContentMD5:  contentMD5,
 		Metadata:    metadata,
-		CreatedBy:   createdBy,
+		CreatedBy:   uid,
 		SourcePath:  req.SourcePath,
 		Source:      req.Source,
 		SourceType:  "direct",
