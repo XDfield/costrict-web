@@ -47,6 +47,24 @@ type Config struct {
 	// deployment only needs to set BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS. Empty
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
+	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
+}
+
+// ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
+type ClawAgentConfig struct {
+	EncryptionKey string // AES-256-GCM encryption key for API keys
+	Session       ClawAgentSessionConfig
+}
+
+type ClawAgentSessionConfig struct {
+	DailyResetHour               int // Daily reset hour for direct sessions (default 4)
+	GroupIdleMinutes             int // Idle timeout for group sessions in minutes (default 30)
+	EventIdleMinutes             int // Idle timeout for event sessions in minutes (default 60)
+	TaskIdleMinutes              int // Idle timeout for task sessions in minutes (default 120)
+	PruneAfterDays               int // Delete archived sessions after N days (default 30)
+	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
+	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
+	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -210,6 +228,19 @@ func Load() *Config {
 			WeComBot: WeComBotSystemConfig{
 				ProxyURL:  getEnv("WECOM_BOT_PROXY_URL", ""),
 				AuthToken: getEnv("WECOM_BOT_PROXY_AUTH_TOKEN", ""),
+			},
+		},
+		ClawAgent: ClawAgentConfig{
+			EncryptionKey: getEnv("CLAWAGENT_ENCRYPTION_KEY", ""),
+			Session: ClawAgentSessionConfig{
+				DailyResetHour:               getEnvInt("CLAWAGENT_SESSION_DAILY_RESET_HOUR", 4),
+				GroupIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_GROUP_IDLE_MINUTES", 30),
+				EventIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_EVENT_IDLE_MINUTES", 60),
+				TaskIdleMinutes:              getEnvInt("CLAWAGENT_SESSION_TASK_IDLE_MINUTES", 120),
+				PruneAfterDays:               getEnvInt("CLAWAGENT_SESSION_PRUNE_AFTER_DAYS", 30),
+				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
+				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
+				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
 			},
 		},
 	}

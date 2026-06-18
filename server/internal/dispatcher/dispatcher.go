@@ -27,6 +27,10 @@ type DispatchInput struct {
 	ActionData  map[string]any
 }
 
+// AIEventHandler is a callback for AI-driven event processing.
+// Return true if the event was handled (card dispatch will be skipped).
+type AIEventHandler func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool
+
 type Dispatcher struct {
 	db              *gorm.DB
 	store           *notification.Store
@@ -38,6 +42,7 @@ type Dispatcher struct {
 	gwClient        *gateway.Client
 	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
+	aiEventHandler  AIEventHandler
 }
 
 func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, wecomBotAdapter interface{}, weComEnabled, weComBotEnabled bool, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
@@ -53,6 +58,13 @@ func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationServic
 		gwRegistry:      gwRegistry,
 		appURL:          appURL,
 	}
+}
+
+// SetAIEventHandler registers an AI-driven event handler.
+// When set, permission/question events are first forwarded to AI;
+// only fall back to card dispatch if AI handler returns false or is nil.
+func (d *Dispatcher) SetAIEventHandler(h AIEventHandler) {
+	d.aiEventHandler = h
 }
 
 // --- WeCom UserID Resolution ---
@@ -119,6 +131,16 @@ func (d *Dispatcher) selectChannels(userID string) *SelectedChannels {
 // --- Dispatch Routing ---
 
 func (d *Dispatcher) dispatchNow(input DispatchInput, channels *SelectedChannels) {
+	// Try AI event handler first for actionable events
+	if needsInteraction(input.EventType) && d.aiEventHandler != nil {
+		handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
+		if handled {
+			slog.Info("[dispatcher] event handled by AI", "eventType", input.EventType, "sessionID", input.SessionID)
+			return
+		}
+		slog.Info("[dispatcher] AI declined, falling back to card dispatch", "eventType", input.EventType, "sessionID", input.SessionID)
+	}
+
 	if needsInteraction(input.EventType) && len(channels.Interactive) > 0 {
 		d.dispatchInteractive(input, channels)
 		return
