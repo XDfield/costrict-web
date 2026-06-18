@@ -49,15 +49,15 @@ type SearchResultItem struct {
 	Score float64 `json:"score"`
 }
 
-// SemanticSearch previously performed vector similarity search. pgvector has been
-// removed, so this now delegates to keyword search.
+// SemanticSearch performs semantic-aware search. Currently delegates to keyword
+// search because vector similarity search is not enabled.
 func (s *SearchService) SemanticSearch(ctx context.Context, req SearchRequest) (*SearchResult, error) {
 	_ = ctx
 	return s.KeywordSearch(req)
 }
 
-// HybridSearch previously combined semantic and keyword search. pgvector has been
-// removed, so this now delegates to keyword search.
+// HybridSearch performs hybrid search. Currently delegates to keyword search
+// because vector similarity search is not enabled.
 func (s *SearchService) HybridSearch(ctx context.Context, req SearchRequest) (*SearchResult, error) {
 	_ = ctx
 	return s.KeywordSearch(req)
@@ -116,8 +116,8 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 	}, nil
 }
 
-// FindSimilar previously used vector similarity to find related items. pgvector
-// has been removed, so it now returns an empty result set.
+// FindSimilar finds items related to the given item. Currently returns an empty
+// result set because vector similarity search is not enabled.
 func (s *SearchService) FindSimilar(ctx context.Context, itemID string, page, pageSize int) ([]SearchResultItem, int64, error) {
 	_ = ctx
 	_ = itemID

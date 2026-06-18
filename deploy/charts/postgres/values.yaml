@@ -3,9 +3,9 @@
 replicaCount: 1
 
 image:
-  repository: pgvector/pgvector
+  repository: postgres
   pullPolicy: IfNotPresent
-  tag: "pg16"
+  tag: "16"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -49,7 +49,6 @@ auth:
 
 # Init SQL executed on first startup
 initSQL: |
-  CREATE EXTENSION IF NOT EXISTS vector;
   GRANT ALL PRIVILEGES ON DATABASE costrict_db TO costrict;
 
 # Persistence
