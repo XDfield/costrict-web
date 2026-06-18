@@ -213,10 +213,10 @@ func Load() *Config {
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
-			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
-				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", true),
-			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", true),
-			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", true),
+			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", false),
+				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
+			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", false),
+			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", false),
 			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
 			WeCom: WeComSystemConfig{
 				CorpID:         getEnv("WECOM_CORP_ID", ""),
