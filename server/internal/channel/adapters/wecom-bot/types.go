@@ -25,6 +25,13 @@ type proxyCardUpdateRequest struct {
 	TaskID   string `json:"task_id,omitempty"`
 }
 
+type proxyStreamReplyRequest struct {
+	ReqID    string `json:"req_id"`
+	StreamID string `json:"stream_id"`
+	Content  string `json:"content"`
+	Finish   bool   `json:"finish"`
+}
+
 type proxyResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`

@@ -104,3 +104,18 @@ func (s *adapterSender) SendMessage(ctx context.Context, msg OutboundMessage) er
 func (s *adapterSender) ReplyContext() ReplyContext {
 	return s.replyCtx
 }
+
+// SendStream implements StreamSender by delegating to the adapter if it
+// supports streaming, or falling back to a one-shot Send on finish.
+func (s *adapterSender) SendStream(ctx context.Context, content string, finish bool) error {
+	if streamer, ok := s.adapter.(interface {
+		SendStream(ctx context.Context, config json.RawMessage, target ReplyTarget, metadata map[string]any, content string, finish bool) error
+	}); ok {
+		return streamer.SendStream(ctx, s.config, s.replyCtx.Target, s.replyCtx.Metadata, content, finish)
+	}
+	// Non-streaming adapter: send on final chunk, drop intermediate
+	if finish {
+		return s.Send(ctx, content)
+	}
+	return nil
+}

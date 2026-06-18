@@ -162,6 +162,7 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 				ExternalChatID: msg.ExternalChatID,
 				ExternalUserID: msg.ExternalUserID,
 			},
+			Metadata: msg.Metadata,
 		}
 		s.sessionStore.Record(rc)
 

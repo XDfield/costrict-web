@@ -86,6 +86,21 @@ func (a *WeComBotAdapter) Reply(ctx context.Context, _ json.RawMessage, target c
 	return a.client.Send(ctx, target.ExternalChatID, "single", msgType, message.Content, "")
 }
 
+// SendStream sends a streaming reply chunk to wecom-bot-proxy.
+// It implements the adapter-level streaming interface detected by adapterSender.
+func (a *WeComBotAdapter) SendStream(ctx context.Context, _ json.RawMessage, target channel.ReplyTarget, metadata map[string]any, content string, finish bool) error {
+	if a.client == nil {
+		return fmt.Errorf("wecom-bot proxy not configured")
+	}
+	reqID, _ := metadata["reqId"].(string)
+	if reqID == "" {
+		// No reqID available; fall back to one-shot send
+		return a.Reply(ctx, nil, target, channel.OutboundMessage{ContentType: "text", Content: content})
+	}
+	// Use reqID as streamID (unique per inbound message)
+	return a.client.ReplyStream(ctx, reqID, reqID, content, finish)
+}
+
 func (a *WeComBotAdapter) SendInteractiveCard(ctx context.Context, userID string, card wecom.InteractiveCard, taskID string) error {
 	if a.client == nil {
 		return fmt.Errorf("wecom-bot proxy not configured")

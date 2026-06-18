@@ -47,6 +47,16 @@ func (c *BotProxyClient) Reply(ctx context.Context, reqID, msgType, content stri
 	return c.doPost(ctx, "/api/bot/reply", req)
 }
 
+func (c *BotProxyClient) ReplyStream(ctx context.Context, reqID, streamID string, content string, finish bool) error {
+	req := proxyStreamReplyRequest{
+		ReqID:    reqID,
+		StreamID: streamID,
+		Content:  content,
+		Finish:   finish,
+	}
+	return c.doPost(ctx, "/api/bot/reply/stream", req)
+}
+
 func (c *BotProxyClient) UpdateCard(ctx context.Context, reqID string, cardUpdate []byte) error {
 	req := proxyCardUpdateRequest{
 		ReqID:   reqID,
