@@ -73,6 +73,10 @@ func getRegistryIDForRepo(repoID string) (string, error) {
 // @Router       /repositories/{id}/sync [post]
 func TriggerRepoSync(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	registryID := c.Query("registryId")
 	if registryID != "" {
 		triggerSync(c, registryID)
@@ -114,6 +118,9 @@ func TriggerRepoSync(c *gin.Context) {
 // @Router       /repositories/{id}/sync/cancel [post]
 func CancelRepoSync(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
 		cancelSync(c, registryID)
@@ -142,6 +149,10 @@ func CancelRepoSync(c *gin.Context) {
 // @Router       /repositories/{id}/sync-status [get]
 func GetRepoSyncStatus(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
 		getSyncStatus(c, registryID)
@@ -204,6 +215,10 @@ func GetRepoSyncStatus(c *gin.Context) {
 // @Router       /repositories/{id}/sync-logs [get]
 func ListRepoSyncLogs(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
 		listSyncLogs(c, registryID)
@@ -243,6 +258,10 @@ func ListRepoSyncLogs(c *gin.Context) {
 // @Router       /repositories/{id}/sync-jobs [get]
 func ListRepoSyncJobs(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
 		listSyncJobs(c, registryID)

@@ -853,12 +853,23 @@ func buildExternalKeyForResponse(claims *userpkg.JWTClaims) string {
 // @Failure      500  {object}  object{error=string}
 // @Router       /repositories [get]
 func ListRepositories(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	userID, _ := userIDVal.(string)
 	db := database.GetDB()
+
+	// Public repositories are visible to everyone
 	var repos []models.Repository
-	result := db.Find(&repos)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch repositories"})
-		return
+	db.Where("visibility = 'public'").Find(&repos)
+
+	// Private repositories: only those the caller is a member of
+	if userID != "" {
+		var repoIDs []string
+		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
+		if len(repoIDs) > 0 {
+			var privateRepos []models.Repository
+			db.Where("id IN ? AND visibility != 'public'", repoIDs).Find(&privateRepos)
+			repos = append(repos, privateRepos...)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"repositories": repos})
@@ -1044,6 +1055,11 @@ func GetRepository(c *gin.Context) {
 		return
 	}
 
+	if !canReadRepo(c, repo.ID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	c.JSON(http.StatusOK, repo)
 }
 
@@ -1062,6 +1078,10 @@ func GetRepository(c *gin.Context) {
 // @Router       /repositories/{id} [put]
 func UpdateRepository(c *gin.Context) {
 	id := c.Param("id")
+	if !requireRepoAdmin(c, id) {
+		return
+	}
+
 	var req struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
@@ -1114,6 +1134,10 @@ func UpdateRepository(c *gin.Context) {
 // @Router       /repositories/{id} [delete]
 func DeleteRepository(c *gin.Context) {
 	id := c.Param("id")
+	if !requireRepoAdmin(c, id) {
+		return
+	}
+
 	db := database.GetDB()
 
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -1229,6 +1253,26 @@ func getCallerRepoRole(c *gin.Context, repoID string) string {
 
 func isRepoAdmin(role string) bool {
 	return role == "owner" || role == "admin"
+}
+
+// canReadRepo returns true if the caller is allowed to read a repository.
+// Public repos are readable by everyone; private repos require membership.
+func canReadRepo(c *gin.Context, repoID string) bool {
+	visibility := getRepoVisibility(repoID)
+	if visibility == "public" {
+		return true
+	}
+	return getCallerRepoRole(c, repoID) != ""
+}
+
+// requireRepoAdmin checks whether the caller is an admin/owner of the repository.
+// If not, it responds with 403 and returns false.
+func requireRepoAdmin(c *gin.Context, repoID string) bool {
+	if !isRepoAdmin(getCallerRepoRole(c, repoID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only repo owner or admin can perform this action"})
+		return false
+	}
+	return true
 }
 
 // AddRepositoryMember godoc
@@ -1406,6 +1450,11 @@ func RemoveRepositoryMember(c *gin.Context) {
 // @Router       /repositories/{id}/members [get]
 func ListRepositoryMembers(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var members []models.RepoMember
 	result := db.Where("repo_id = ?", repoID).Find(&members)
@@ -1427,6 +1476,11 @@ func ListRepositoryMembers(c *gin.Context) {
 // @Router       /repositories/{id}/registry [get]
 func GetRepositoryRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
 	result := db.Where("repo_id = ?", repoID).Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").First(&registry)
@@ -1447,6 +1501,11 @@ func GetRepositoryRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries [get]
 func ListRepoRegistries(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var registries []models.CapabilityRegistry
 	db.Where("repo_id = ?", repoID).Order("created_at ASC").Find(&registries)
@@ -1466,6 +1525,10 @@ func ListRepoRegistries(c *gin.Context) {
 // @Router       /repositories/{id}/registries [post]
 func AddRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	var req CreateSyncRegistryInput
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -1515,6 +1578,10 @@ func AddRepoRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries/{regId} [put]
 func UpdateRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	regID := c.Param("regId")
 	db := database.GetDB()
 
@@ -1593,6 +1660,10 @@ func UpdateRepoRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries/{regId} [delete]
 func RemoveRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	regID := c.Param("regId")
 	db := database.GetDB()
 

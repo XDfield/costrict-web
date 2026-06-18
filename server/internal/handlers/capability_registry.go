@@ -29,6 +29,10 @@ func ListRegistries(c *gin.Context) {
 	var registries []models.CapabilityRegistry
 
 	if repoId := c.Query("repoId"); repoId != "" {
+		if !canReadRepo(c, repoId) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+			return
+		}
 		db.Where("repo_id = ?", repoId).Find(&registries)
 		c.JSON(http.StatusOK, gin.H{"registries": registries})
 		return
@@ -86,6 +90,10 @@ func CreateRegistry(c *gin.Context) {
 		return
 	}
 
+	if req.RepoID != "" && !requireRepoAdmin(c, req.RepoID) {
+		return
+	}
+
 	registry := models.CapabilityRegistry{
 		ID:             uuid.New().String(),
 		Name:           req.Name,
@@ -126,6 +134,10 @@ func GetRegistry(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
 		return
 	}
+	if registry.RepoID != "" && !canReadRepo(c, registry.RepoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this registry"})
+		return
+	}
 	c.JSON(http.StatusOK, registry)
 }
 
@@ -164,6 +176,10 @@ func UpdateRegistry(c *gin.Context) {
 	result := db.First(&registry, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return
+	}
+
+	if registry.RepoID != "" && !requireRepoAdmin(c, registry.RepoID) {
 		return
 	}
 
@@ -218,6 +234,17 @@ func UpdateRegistry(c *gin.Context) {
 func DeleteRegistry(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
+
+	var registry models.CapabilityRegistry
+	if db.First(&registry, "id = ?", id).Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return
+	}
+
+	if registry.RepoID != "" && !requireRepoAdmin(c, registry.RepoID) {
+		return
+	}
+
 	result := db.Delete(&models.CapabilityRegistry{}, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete registry"})
