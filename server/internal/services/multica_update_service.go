@@ -139,7 +139,7 @@ func parseRepoURL(repoURL string) (owner, repo string) {
 }
 
 func extractPlatformFromAssetName(name, version string) string {
-	prefix := fmt.Sprintf("multica-cli-%s-", version)
+	prefix := fmt.Sprintf("cs-workflow-cli-%s-", version)
 	if !strings.HasPrefix(name, prefix) {
 		return ""
 	}
