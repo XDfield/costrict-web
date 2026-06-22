@@ -28,5 +28,6 @@ func New(db *gorm.DB) *Module {
 func (m *Module) RegisterRoutes(adminGroup *gin.RouterGroup) {
 	adminGroup.GET("/items", m.ListItemsHandler())
 	adminGroup.PUT("/items/:id/status", m.SetItemStatusHandler())
+	adminGroup.POST("/items/batch-delete", m.BatchDeleteItemsHandler())
 	adminGroup.DELETE("/items/:id", m.DeleteItemHandler())
 }

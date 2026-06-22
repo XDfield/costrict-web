@@ -2,13 +2,21 @@ package adminitem
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
+
+// maxBatchDelete bounds a single batch-delete request. The cap guards against an
+// accidental "select all → delete" wiping a huge slice in one transaction and
+// keeps the cascade's transaction size reasonable. The frontend's "select all
+// matching" path pulls ids in pages and must respect the same ceiling.
+const maxBatchDelete = 200
 
 func atoiDefault(s string, def int) int {
 	if s == "" {
@@ -182,5 +190,82 @@ func (m *Module) DeleteItemHandler() gin.HandlerFunc {
 		audit.Record(operatorID, audit.ActionItemDelete, audit.TargetItem, id, payload)
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+}
+
+type batchDeleteRequest struct {
+	IDs []string `json:"ids" binding:"required"`
+}
+
+// BatchDeleteItemsHandler godoc
+//
+//	@Summary		Batch delete items (admin)
+//	@Description	Delete up to 200 items (any author) and their dependent records in a single transaction (platform admin only). All succeed or none do; ids that no longer exist are reported as skipped.
+//	@Tags			admin/items
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		object{ids=[]string}	true	"Item ids to delete"
+//	@Success		200		{object}	object{success=bool,deleted=int,skipped=int,skippedIds=[]string}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/admin/items/batch-delete [post]
+func (m *Module) BatchDeleteItemsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		operatorID := c.GetString(appmiddleware.UserIDKey)
+		if operatorID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		var req batchDeleteRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		// Normalize: trim, drop blanks, de-duplicate while preserving order so the
+		// cap and the cascade both see a clean id set.
+		seen := make(map[string]bool, len(req.IDs))
+		ids := make([]string, 0, len(req.IDs))
+		for _, raw := range req.IDs {
+			id := strings.TrimSpace(raw)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no item ids provided"})
+			return
+		}
+		if len(ids) > maxBatchDelete {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many items: %d (max %d)", len(ids), maxBatchDelete)})
+			return
+		}
+
+		deleted, skipped, err := m.svc.BatchDeleteItems(ids)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete items"})
+			return
+		}
+
+		// One audit record for the batch; payload lists what was actually removed
+		// so the log describes the effect, not merely the request.
+		audit.Record(operatorID, audit.ActionItemDelete, audit.TargetItem, "batch", gin.H{
+			"requested":  len(ids),
+			"deleted":    len(deleted),
+			"skipped":    len(skipped),
+			"deletedIds": deleted,
+		})
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"deleted":    len(deleted),
+			"skipped":    len(skipped),
+			"skippedIds": skipped,
+		})
 	}
 }
