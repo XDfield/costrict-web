@@ -91,6 +91,7 @@ func setupTestDB(t *testing.T) func() {
 			health               TEXT DEFAULT '{}',
 			evaluation           TEXT DEFAULT '{}',
 			source_path          TEXT,
+			catalog_entry_dir    TEXT NOT NULL DEFAULT '',
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
 			source               TEXT NOT NULL DEFAULT '',

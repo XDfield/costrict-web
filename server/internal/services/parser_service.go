@@ -521,13 +521,22 @@ func (p *ParserService) InferItemType(filePath string) string {
 		return "command"
 	case strings.Contains(lower, "hooks/"):
 		return "hook"
+	case strings.Contains(lower, "rules/"):
+		// rules/<group>/<file>.md (cospower convention, nestable). The plugin
+		// "work tree" now renders a Rule node type, so we no longer collapse
+		// these into skill. Keep this BEFORE the default branch.
+		return "rule"
+	case strings.Contains(lower, "templates/"):
+		// templates/<file>.md (cospower convention). Surfaced as a Template
+		// node in the plugin work tree.
+		return "template"
 	default:
-		// PROMPT.md and RULE.md also land here. The current frontend
-		// store only renders 5 tabs (skill / subagent / command / mcp /
-		// plugin) — there is no Prompt or Rule tab — so we deliberately
-		// collapse all non-special .md files into "skill" so they show up
-		// under the Skills tab. A future change can split prompt/rule
-		// out once the frontend grows matching tabs.
+		// PROMPT.md and other non-special .md files land here. They collapse
+		// to "skill" so they show up under the Skills tab. The item_type
+		// contract shared across catalog / web / frontend is:
+		//   skill / subagent / command / mcp / rule / template / plugin / hook
+		// (rules/ and templates/ are handled above; keep this list in sync
+		// with catalog/schema.json and the frontend TYPE_META).
 		return "skill"
 	}
 }
@@ -541,7 +550,12 @@ func (p *ParserService) InferSlug(filePath string) string {
 	var meaningful []string
 	for _, part := range parts {
 		lower := strings.ToLower(part)
-		if lower == "skills" || lower == "agents" || lower == "commands" || lower == "hooks" || lower == "mcp" {
+		// Strip the top-level capability directory names. For nested layouts
+		// (e.g. rules/<group>/<file>.md, templates/<file>.md, evaluators/<name>/SKILL.md)
+		// the intermediate group/name segments are KEPT so the slug stays
+		// unique across siblings that share a leaf filename.
+		if lower == "skills" || lower == "agents" || lower == "commands" || lower == "hooks" || lower == "mcp" ||
+			lower == "rules" || lower == "templates" || lower == "evaluators" {
 			continue
 		}
 		if lower == "skill" || lower == "readme" || lower == "index" {

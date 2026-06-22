@@ -202,6 +202,15 @@ type catalogEntry struct {
 	// plugin entry, NOT a DB uuid). Resolved to capability_items.parent_plugin_id
 	// in the second reconcile pass; mirrored into metadata.bundled_in for tracing.
 	BundledIn string `json:"bundled_in,omitempty"`
+	// SourcePath is the faithful, plugin-root-relative path of this entry in the
+	// original repository (e.g. "rules/dfx/安全.md", "skills/foo/SKILL.md"),
+	// emitted by the upstream catalog pipeline. When present it is stored
+	// verbatim on capability_items.source_path so the plugin "work tree" mirrors
+	// the real repo layout. When empty the ingest falls back to the synthetic
+	// "<type-dir>/<id>/<file>" path. The file CONTENT is always read from the
+	// bundle's physical "<type-dir>/<id>/<file>" location regardless of this
+	// field. NOT used for MCP children, which keep their "<path>#<key>" form.
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 // catalogSecurityBlock mirrors the schema written by the upstream LLM
@@ -306,7 +315,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 	pluginEntryIDsSeen := make(map[string]bool)
 
 	for _, entry := range entries {
-		if entry.Type == "skill" || entry.Type == "mcp" {
+		if pluginBundledChildTypes[entry.Type] {
 			if paths, ok := primaryPathsForEntry(entry); ok {
 				// Record even an empty bundled_in: an item that previously was a
 				// plugin child but is no longer bundled must have its parent link
@@ -327,7 +336,20 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			result.IncompleteErrors = append(result.IncompleteErrors, fmt.Sprintf("entry %s: unsupported type %q", entry.ID, entry.Type))
 			continue
 		}
+		// Seed the seen-set under EVERY form a DB row may store this entry's
+		// path as, so the soft-archive predicate below recognizes the row as
+		// "still shipped" regardless of when it was last written:
+		//   - synthetic "<type-dir>/<id>/<file>" — legacy catalog rows (and MCP
+		//     children, which always keep the synthetic form) store this.
+		//   - faithful repo-relative path — rows written/converged after the
+		//     path-faithful change store this on source_path.
+		// Pre-faithful rows whose primary file is gone upstream match NEITHER
+		// form and are archived (ebdb4ad's nested-orphan fix), while a surviving
+		// sibling under the same entryDir is kept because its own path is seeded.
 		seenSourcePaths[normalizeSourcePath(paths.SourcePath)] = true
+		if entry.Type != "mcp" {
+			seenSourcePaths[normalizeSourcePath(faithfulSourcePath(entry, paths.SourcePath))] = true
+		}
 
 		absPath := filepath.Join(bundleDir, paths.BundlePath)
 		fileBytes, err := readBundleFile(absPath)
@@ -359,7 +381,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			result.Updated += updated
 			classifyAndAccumulate(result, failed, errs)
 		} else {
-			updated, skipped, failed, errs := s.applyMetadataOnly(entry, relatedItems, opts.DryRun)
+			updated, skipped, failed, errs := s.applyMetadataOnly(entry, relatedItems, paths.SourcePath, paths.EntryDir, opts.DryRun)
 			result.MetadataUpdated += updated
 			result.Skipped += skipped
 			classifyAndAccumulate(result, failed, errs)
@@ -371,14 +393,15 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 	// excluded from its status filter — otherwise an active child could be
 	// linked to a parent plugin that this very loop is about to archive.
 	//
-	// Scope is deliberately `itemsByEntryDir` (rows whose source_path parses to a
-	// catalog `<type-dir>/<id>` shape), NOT all public rows: user-authored items
-	// carry an empty / single-segment source_path that entryDirFromSourcePath
-	// drops, so they never enter this map and are never archived here. The
-	// archive PREDICATE keys on the full source_path (seenSourcePaths) rather
-	// than the 2-segment entryDir, so a nested sub-skill orphan whose parent
-	// skill is still present upstream is archived (its own path is gone) while
-	// the parent stays active.
+	// Scope is deliberately `itemsByEntryDir` (rows whose catalog_entry_dir /
+	// source_path parses to a catalog `<type-dir>/<id>` shape), NOT all public
+	// rows: user-authored items carry an empty / single-segment source_path that
+	// drops out of the index, so they never enter this map and are never
+	// archived here. The archive PREDICATE keys on the full source_path
+	// (seenSourcePaths, seeded above under both the synthetic and the faithful
+	// form) rather than the 2-segment entryDir, so a nested sub-skill orphan
+	// whose parent skill is still present upstream is archived (its own path is
+	// gone) while the parent stays active.
 	if !opts.DryRun {
 		for _, items := range itemsByEntryDir {
 			for _, item := range items {
@@ -583,15 +606,26 @@ func (s *CatalogIngestService) applyChangedEntry(
 			continue
 		}
 
+		// Path the row stores on source_path. The whole work tree mirrors the
+		// real repo, so every bundled child type prefers the upstream entry's
+		// faithful repo-relative path; MCP children keep the synthetic
+		// "<type-dir>/<id>/<file>" form (their identity is "<path>#<key>",
+		// never a real on-disk path). The match key (catalog_entry_dir) stays
+		// synthetic in all cases so re-ingest still locates the row.
+		displayPath := paths.SourcePath
+		if parsed.ItemType != "mcp" {
+			displayPath = faithfulSourcePath(entry, paths.SourcePath)
+		}
+
 		if exists {
-			if err := s.updateItem(existing, parsed, fileSHA, paths.SourcePath, entry, triggerUser); err != nil {
+			if err := s.updateItem(existing, parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser); err != nil {
 				failed++
 				errs = append(errs, fmt.Sprintf("update %s: %v", existing.ID, err))
 				continue
 			}
 			updated++
 		} else {
-			newItem, err := s.insertItem(parsed, fileSHA, paths.SourcePath, entry, triggerUser)
+			newItem, err := s.insertItem(parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser)
 			if err != nil {
 				failed++
 				errs = append(errs, fmt.Sprintf("insert %s: %v", parsed.Slug, err))
@@ -622,8 +656,24 @@ func (s *CatalogIngestService) applyChangedEntry(
 	return added, updated, failed, errs
 }
 
+// pluginBundledChildTypes is the set of item types that can appear as a plugin's
+// bundled children in the catalog. It must stay in sync with the path→type
+// contract shared across the upstream catalog pipeline, the archive-upload
+// extractors (handlers.pluginFileChildSpecs / extractSubSkillAssets), and the
+// frontend TYPE_META: skill / mcp / command / subagent / rule / template.
+// evaluators are synthesized upstream as item_type=skill, so they're covered by
+// the "skill" entry.
+var pluginBundledChildTypes = map[string]bool{
+	"skill":    true,
+	"mcp":      true,
+	"command":  true,
+	"subagent": true,
+	"rule":     true,
+	"template": true,
+}
+
 func isPluginBundledChild(entry catalogEntry) bool {
-	return entry.BundledIn != "" && (entry.Type == "skill" || entry.Type == "mcp")
+	return entry.BundledIn != "" && pluginBundledChildTypes[entry.Type]
 }
 
 // isUniqueViolationErr matches unique-constraint violations across the
@@ -651,13 +701,28 @@ func scopeBundledMCPParsedItem(parsed *ParsedItem, entry catalogEntry) *ParsedIt
 // applyMetadataOnly refreshes the columns that come from index.json
 // without touching content or versions. Use when the primary file sha
 // is unchanged but upstream may have re-categorized / re-scored.
+//
+// syntheticPath/entryDir are the entry's synthetic "<type-dir>/<id>/<file>" and
+// "<type-dir>/<id>" derived paths. They let this path also converge a row's
+// source_path to the upstream faithful path (and backfill catalog_entry_dir)
+// when only metadata changed — otherwise a first P3 rollout where existing
+// cospower skills are content-identical would keep their stale synthetic
+// source_path forever (the content-changed path never runs for them).
 func (s *CatalogIngestService) applyMetadataOnly(
 	entry catalogEntry,
 	items []*models.CapabilityItem,
+	syntheticPath, entryDir string,
 	dryRun bool,
 ) (updated, skipped, failed int, errs []string) {
 	for _, item := range items {
-		changed := s.computeMetadataDelta(item, entry)
+		// Faithful source_path for this row (MCP keeps the synthetic form, same
+		// rule as the content-changed path).
+		displayPath := syntheticPath
+		if item.ItemType != "mcp" {
+			displayPath = faithfulSourcePath(entry, syntheticPath)
+		}
+
+		changed := s.computeMetadataDelta(item, entry, displayPath, entryDir)
 		if !changed {
 			skipped++
 			continue
@@ -666,7 +731,7 @@ func (s *CatalogIngestService) applyMetadataOnly(
 			updated++
 			continue
 		}
-		if err := s.applyMetadataDelta(item, entry); err != nil {
+		if err := s.applyMetadataDelta(item, entry, displayPath, entryDir); err != nil {
 			failed++
 			errs = append(errs, fmt.Sprintf("metadata %s: %v", item.ID, err))
 			continue
@@ -687,11 +752,21 @@ func (s *CatalogIngestService) applyMetadataOnly(
 // computeMetadataDelta tells whether the upstream entry has any field
 // that differs from the DB row. The rule is: upstream non-empty wins,
 // upstream empty leaves DB untouched.
-func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem, entry catalogEntry) bool {
+func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem, entry catalogEntry, displayPath, entryDir string) bool {
 	// An archived row whose entry re-appeared upstream must be resurrected
 	// even when nothing else changed. The content-changed path already does
 	// this (updateItem sets Status="active"); this covers the unchanged path.
 	if item.Status == "archived" {
+		return true
+	}
+	// source_path / catalog_entry_dir convergence: a row imported before the
+	// faithful-path change (or before catalog_entry_dir existed) keeps its stale
+	// synthetic source_path even when content is identical. Detect drift so the
+	// work tree mirrors the real repo for these unchanged rows too.
+	if displayPath != "" && item.SourcePath != displayPath {
+		return true
+	}
+	if entryDir != "" && item.CatalogEntryDir != entryDir {
 		return true
 	}
 	// Bundled children mis-typed by an earlier ingest (InferItemType path
@@ -788,10 +863,18 @@ func descriptionsJSONEqual(a, b datatypes.JSON) bool {
 	return true
 }
 
-func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, entry catalogEntry) error {
+func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, entry catalogEntry, displayPath, entryDir string) error {
 	updates := map[string]any{}
 	if item.Status == "archived" {
 		updates["status"] = "active"
+	}
+	// Converge source_path to the faithful repo-relative path and backfill the
+	// decoupled match key, even when only metadata changed.
+	if displayPath != "" && item.SourcePath != displayPath {
+		updates["source_path"] = displayPath
+	}
+	if entryDir != "" && item.CatalogEntryDir != entryDir {
+		updates["catalog_entry_dir"] = entryDir
 	}
 	if isPluginBundledChild(entry) && item.ItemType != entry.Type {
 		updates["item_type"] = entry.Type
@@ -842,7 +925,7 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 func (s *CatalogIngestService) updateItem(
 	existing *models.CapabilityItem,
 	parsed *ParsedItem,
-	fileSHA, primaryPath string,
+	fileSHA, primaryPath, entryDir string,
 	entry catalogEntry,
 	triggerUser string,
 ) error {
@@ -899,6 +982,7 @@ func (s *CatalogIngestService) updateItem(
 	}
 	existing.Metadata = metadataJSON(meta)
 	existing.SourcePath = primaryPath
+	existing.CatalogEntryDir = entryDir
 	existing.SourceSHA = fileSHA
 	existing.UpdatedBy = triggerUser
 	// Re-apply ItemType so legacy rows that were imported when the parser
@@ -945,7 +1029,7 @@ func (s *CatalogIngestService) updateItem(
 
 func (s *CatalogIngestService) insertItem(
 	parsed *ParsedItem,
-	fileSHA, primaryPath string,
+	fileSHA, primaryPath, entryDir string,
 	entry catalogEntry,
 	triggerUser string,
 ) (*models.CapabilityItem, error) {
@@ -991,6 +1075,7 @@ func (s *CatalogIngestService) insertItem(
 		Health:          healthJSON(entry.Health),
 		Evaluation:      evaluationJSON(entry.Evaluation),
 		SourcePath:      primaryPath,
+		CatalogEntryDir: entryDir,
 		SourceSHA:       fileSHA,
 		Source:          source,
 		ExperienceScore: experienceScore,
@@ -1261,6 +1346,13 @@ func primaryPathsForEntry(entry catalogEntry) (entryPaths, bool) {
 	}, true
 }
 
+// typeDirAndFile maps a catalog entry type to its (type-dir, primary-file) pair
+// under catalog-download/. It MUST stay in lock-step with the upstream
+// TYPE_DIR_AND_FILE (costrict-skills-repo/scripts/build_catalog_bundle.py) and
+// _PRIMARY_FILE_BY_TYPE (download_catalog.py): the bundle lays each entry out at
+// catalog-download/<type-dir>/<id>/<file>, so a mismatch here means ingest can't
+// find the file. command/subagent/template follow the established
+// "<type>s dir + <TYPE>.md file" convention used by skill/prompt/rule.
 func typeDirAndFile(itemType string) (typeDir, fileName string, ok bool) {
 	switch itemType {
 	case "mcp":
@@ -1273,6 +1365,16 @@ func typeDirAndFile(itemType string) (typeDir, fileName string, ok bool) {
 		return "prompts", "PROMPT.md", true
 	case "rule":
 		return "rules", "RULE.md", true
+	case "template":
+		return "templates", "TEMPLATE.md", true
+	case "command":
+		return "commands", "COMMAND.md", true
+	case "subagent":
+		// Upstream writes subagent children to subagents/<id>/AGENT.md (see
+		// build_catalog_bundle.TYPE_DIR_AND_FILE / download_catalog
+		// _SINGLE_FILE_TYPE_SPEC). This filename MUST match it byte-for-byte or
+		// the bundle file can't be located and the child fails to ingest.
+		return "subagents", "AGENT.md", true
 	}
 	return "", "", false
 }
@@ -1288,19 +1390,48 @@ func indexItemsBySlug(items []models.CapabilityItem) map[string]*models.Capabili
 	return out
 }
 
-// indexItemsByEntryDir groups existing DB rows by the upstream-derived
-// "catalog-download/<type-dir>/<id>" prefix. A single upstream entry maps
-// to >=1 DB rows; this index lets us locate all of them in O(1).
+// indexItemsByEntryDir groups existing DB rows by the synthetic
+// "<type-dir>/<id>" entry key. A single upstream entry maps to >=1 DB rows;
+// this index lets us locate all of them in O(1) on re-ingest.
+//
+// The key is taken from catalog_entry_dir when set (the decoupled match key,
+// so source_path can carry the faithful repo path). For legacy rows ingested
+// before catalog_entry_dir existed it falls back to deriving the key from
+// source_path — those rows still have the synthetic "<type-dir>/<id>/<file>"
+// source_path, so the derivation is correct until the next ingest backfills
+// catalog_entry_dir and rewrites source_path to the faithful form.
 func indexItemsByEntryDir(items []models.CapabilityItem) map[string][]*models.CapabilityItem {
 	out := make(map[string][]*models.CapabilityItem, len(items))
 	for i := range items {
-		dir := entryDirFromSourcePath(items[i].SourcePath)
+		dir := catalogEntryDirForRow(items[i])
 		if dir == "" {
 			continue
 		}
 		out[dir] = append(out[dir], &items[i])
 	}
 	return out
+}
+
+// catalogEntryDirForRow returns the synthetic match key for a DB row, preferring
+// the stored catalog_entry_dir and falling back to deriving it from source_path
+// for legacy rows that predate the column.
+func catalogEntryDirForRow(item models.CapabilityItem) string {
+	if item.CatalogEntryDir != "" {
+		return item.CatalogEntryDir
+	}
+	return entryDirFromSourcePath(item.SourcePath)
+}
+
+// faithfulSourcePath returns the path to store on capability_items.source_path:
+// the upstream entry's verbatim repo-relative path when provided, else the
+// synthetic "<type-dir>/<id>/<file>" fallback. Used for every bundled child
+// type (including skill) so the whole work tree mirrors the real repo. MCP
+// children are excluded by the caller (they keep their "<path>#<key>" form).
+func faithfulSourcePath(entry catalogEntry, synthetic string) string {
+	if sp := strings.TrimSpace(entry.SourcePath); sp != "" {
+		return filepath.ToSlash(sp)
+	}
+	return synthetic
 }
 
 // entryDirFromSourcePath chops a SourcePath like
@@ -1436,11 +1567,20 @@ func (s *CatalogIngestService) reconcileParentPluginLinks(
 	//    - status: archived rows must neither receive new links (a child would
 	//      end up pointing at a parent invisible in the market) nor occupy an
 	//      entryDir slot that shadows the active row.
+	// Load every public plugin row plus every row of a type that can be a
+	// bundled child. Derived from pluginBundledChildTypes so adding a new child
+	// type (rule/template/command/subagent) automatically widens this scope.
+	childAndPluginTypes := make([]string, 0, len(pluginBundledChildTypes)+1)
+	for t := range pluginBundledChildTypes {
+		childAndPluginTypes = append(childAndPluginTypes, t)
+	}
+	childAndPluginTypes = append(childAndPluginTypes, "plugin")
+
 	var rows []models.CapabilityItem
 	if err := s.DB.
 		Where("registry_id = ? AND item_type IN ? AND source_type NOT IN ? AND status <> 'archived'",
-			PublicRegistryID, []string{"skill", "mcp", "plugin"}, []string{"archive", "fork"}).
-		Select("id", "item_type", "source_path", "parent_plugin_id").
+			PublicRegistryID, childAndPluginTypes, []string{"archive", "fork"}).
+		Select("id", "item_type", "source_path", "catalog_entry_dir", "parent_plugin_id").
 		Find(&rows).Error; err != nil {
 		logger.Warn("catalog-ingest: load rows for parent-plugin reconcile: %v", err)
 		return
@@ -1454,16 +1594,18 @@ func (s *CatalogIngestService) reconcileParentPluginLinks(
 	// current parent_plugin_id per child DB id (to detect stale links to clear).
 	childParentByID := make(map[string]*string)
 	for i := range rows {
-		dir := entryDirFromSourcePath(rows[i].SourcePath)
+		dir := catalogEntryDirForRow(rows[i])
 		if dir == "" {
 			continue
 		}
-		switch rows[i].ItemType {
-		case "skill", "mcp":
+		if rows[i].ItemType == "plugin" {
+			pluginIDByEntryDir[dir] = rows[i].ID
+			continue
+		}
+		// Any bundled-child type (skill/mcp/rule/template/command/subagent).
+		if pluginBundledChildTypes[rows[i].ItemType] {
 			childIDsByEntryDir[dir] = append(childIDsByEntryDir[dir], rows[i].ID)
 			childParentByID[rows[i].ID] = rows[i].ParentPluginID
-		case "plugin":
-			pluginIDByEntryDir[dir] = rows[i].ID
 		}
 	}
 
