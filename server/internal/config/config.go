@@ -37,7 +37,27 @@ type Config struct {
 	LLM                       LLMConfig
 	Embedding                 EmbeddingConfig
 	Search                    SearchConfig
+	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
+	// NOT lowercased) that are automatically granted the platform_admin role when
+	// they log in. universal_id is the stable global identity anchor Casdoor issues
+	// for every identity (email can be empty for GitHub/phone logins, so it is not
+	// reliable). This bootstraps the first administrator without manual SQL: a
+	// deployment only needs to set BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS. Empty
+	// means no bootstrap (zero behaviour change).
+	BootstrapPlatformAdmins []string
+}
+
+// DeptSyncConfig holds connection settings for the external dept-sync service
+// (real department/user tree, X-API-Key authenticated). Both fields are optional:
+// when BaseURL or APIKey is empty the dept-sync client is considered unconfigured
+// and degrades gracefully (admin endpoints return 503, frontend shows a notice).
+type DeptSyncConfig struct {
+	BaseURL     string // e.g. http://dept-sync:8080 (no trailing /api)
+	APIKey      string // X-API-Key value issued by dept-sync (query_key table)
+	TimeoutSec  int    // per-request HTTP timeout, default 10s
+	CacheTTLSec int    // in-memory cache TTL for tree/users responses, default 60s
 }
 
 type ChannelSystemConfig struct {
@@ -156,7 +176,15 @@ func Load() *Config {
 			DefaultLimit:        getEnvInt("SEARCH_DEFAULT_LIMIT", 20),
 			SimilarityThreshold: getEnvFloat("SEARCH_SIMILARITY_THRESHOLD", 0.7),
 		},
+		DeptSync: DeptSyncConfig{
+			BaseURL:     getEnv("DEPT_SYNC_URL", ""),
+			APIKey:      getEnv("DEPT_SYNC_API_KEY", ""),
+			TimeoutSec:  getEnvInt("DEPT_SYNC_TIMEOUT_SECONDS", 10),
+			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
+		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
+		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
@@ -257,6 +285,21 @@ func getEnvSlice(key string, defaultValue []string) []string {
 	}
 	if len(result) == 0 {
 		return defaultValue
+	}
+	return result
+}
+
+// getEnvSliceLower is like getEnvSlice but lowercases each entry. Used for
+// case-insensitive matching (e.g. email allowlists). Returns defaultValue when
+// the variable is unset/empty or contains only blanks.
+func getEnvSliceLower(key string, defaultValue []string) []string {
+	parts := getEnvSlice(key, nil)
+	if parts == nil {
+		return defaultValue
+	}
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		result = append(result, strings.ToLower(p))
 	}
 	return result
 }

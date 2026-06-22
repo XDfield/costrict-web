@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -82,6 +83,8 @@ func GrantSystemRoleHandler(svc *SystemRoleService) gin.HandlerFunc {
 			return
 		}
 
+		audit.Record(operatorID, audit.ActionSystemRoleGrant, audit.TargetUser, c.Param("userId"), gin.H{"role": req.Role})
+
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
 }
@@ -119,6 +122,8 @@ func RevokeSystemRoleHandler(svc *SystemRoleService) gin.HandlerFunc {
 			}
 			return
 		}
+
+		audit.Record(operatorID, audit.ActionSystemRoleRevoke, audit.TargetUser, c.Param("userId"), gin.H{"role": c.Param("role")})
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

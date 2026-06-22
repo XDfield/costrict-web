@@ -214,6 +214,8 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.UserConfig{},
 		&models.MCPUserConfig{},
 		&models.EnterpriseCustomer{},
+		&models.SystemSetting{},
+		&models.AdminAuditLog{},
 		&models.NotificationLog{},
 		&models.ItemCategory{},
 		&models.DeviceRelease{},
@@ -221,6 +223,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.ItemDistribution{},
 		&models.ItemDistributionReceipt{},
 		&models.Organization{},
+		&models.PermissionGrant{},
 	)
 }
 

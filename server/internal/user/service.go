@@ -34,6 +34,16 @@ type UserService struct {
 	db            *gorm.DB
 	syncInterval  time.Duration
 	onUserUpdated func(userSubjectID string)
+	// postLoginHook runs after a user is successfully fetched or created via
+	// GetOrCreateUser, which is reserved for genuine login paths (the OAuth
+	// callback and the JWKS auth-middleware path) where the bearer has proven they
+	// own the identity. It deliberately does NOT fire for read-only background sync
+	// (SyncUser, e.g. user-search backfill), so login-only side effects such as
+	// bootstrap platform-admin granting never trigger when a third party merely
+	// looks up a user. Injected from main.go (mirroring SetSubjectResolver) so the
+	// user package needs no systemrole dependency. Must be best-effort and never
+	// block login. nil = no hook (default behaviour unchanged).
+	postLoginHook func(*models.User)
 }
 
 // NewUserService creates a new UserService instance
@@ -56,6 +66,19 @@ func (s *UserService) SetOnUserUpdated(fn func(userSubjectID string)) {
 func (s *UserService) notifyUserUpdated(userSubjectID string) {
 	if s.onUserUpdated != nil {
 		s.onUserUpdated(userSubjectID)
+	}
+}
+
+// SetPostLoginHook installs a hook run after every successful GetOrCreateUser.
+// Used to wire bootstrap platform-admin granting without the user package
+// importing systemrole (cycle avoidance). The hook must be best-effort.
+func (s *UserService) SetPostLoginHook(fn func(*models.User)) {
+	s.postLoginHook = fn
+}
+
+func (s *UserService) runPostLoginHook(u *models.User) {
+	if s.postLoginHook != nil && u != nil {
+		s.postLoginHook(u)
 	}
 }
 
@@ -423,9 +446,29 @@ func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, er
 	return users, err
 }
 
-// GetOrCreateUser retrieves or creates a user based on JWT claims
-// This should be called during login callback, not on every API request
+// GetOrCreateUser retrieves or creates a user based on JWT claims, then runs the
+// post-login hook. It must only be called for a genuine login by the user
+// themselves — the OAuth callback (handlers.go) and the JWKS auth path — not on
+// every API request and NOT for read-only background sync.
+//
+// A successfully resolved user is passed through the injected post-login hook
+// (SetPostLoginHook) — used for bootstrap platform-admin granting — so the hook
+// covers every genuine login path regardless of which internal branch resolved
+// the user. The hook is best-effort and must never block login.
+//
+// For read-only reconciliation (e.g. user-search backfill, where the caller is
+// not the user being synced) use SyncUser instead, which performs the same upsert
+// without firing the hook.
 func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
+	u, err := s.getOrCreateUser(claims)
+	if err != nil {
+		return nil, err
+	}
+	s.runPostLoginHook(u)
+	return u, nil
+}
+
+func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("nil JWT claims")
 	}

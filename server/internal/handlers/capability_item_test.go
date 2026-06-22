@@ -1150,6 +1150,105 @@ func assertItemRelatedRowsDeleted(t *testing.T, itemID string) {
 
 func ptrString(v string) *string { return &v }
 
+// grantPlatformAdmin inserts a platform_admin system-role row for userID so
+// callerIsPlatformAdmin returns true for that user in the test DB.
+func grantPlatformAdmin(t *testing.T, userID string) {
+	t.Helper()
+	if err := database.DB.Exec(
+		`INSERT INTO user_system_roles (id, user_id, role, created_at) VALUES (?, ?, 'platform_admin', CURRENT_TIMESTAMP)`,
+		"role-"+userID, userID,
+	).Error; err != nil {
+		t.Fatalf("grant platform admin: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ownership hardening for the bare PUT/DELETE /items/:id paths
+// ---------------------------------------------------------------------------
+
+func seedOwnershipItem(t *testing.T, itemID, regID, createdBy string) {
+	t.Helper()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: regID, Name: regID + "-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: createdBy,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: itemID, RegistryID: regID, RepoID: "repo-1", Slug: itemID + "-slug", ItemType: "skill",
+		Name: "Owned", Status: "active", CreatedBy: createdBy, Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
+	})
+}
+
+func TestUpdateItem_AuthorCanEdit(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "own-1", "reg-own-1", "owner")
+
+	w := putJSON(newItemRouter("owner"), "/api/items/own-1", map[string]interface{}{"name": "Renamed"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("author should edit own item, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateItem_NonOwnerForbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "own-2", "reg-own-2", "owner")
+
+	w := putJSON(newItemRouter("intruder"), "/api/items/own-2", map[string]interface{}{"name": "Hijacked"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("non-owner should be forbidden, got %d: %s", w.Code, w.Body.String())
+	}
+	var item models.CapabilityItem
+	database.DB.First(&item, "id = ?", "own-2")
+	if item.Name != "Owned" {
+		t.Fatalf("item name must be unchanged, got %q", item.Name)
+	}
+}
+
+func TestUpdateItem_PlatformAdminCanEditAny(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "own-3", "reg-own-3", "owner")
+	grantPlatformAdmin(t, "admin")
+
+	w := putJSON(newItemRouter("admin"), "/api/items/own-3", map[string]interface{}{"name": "AdminEdited"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("platform admin should edit any item, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteItem_AuthorCanDelete(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "owndel-1", "reg-owndel-1", "owner")
+
+	w := deleteReq(newItemRouter("owner"), "/api/items/owndel-1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("author should delete own item, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteItem_NonOwnerForbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "owndel-2", "reg-owndel-2", "owner")
+
+	w := deleteReq(newItemRouter("intruder"), "/api/items/owndel-2")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("non-owner should be forbidden, got %d: %s", w.Code, w.Body.String())
+	}
+	var count int64
+	database.DB.Model(&models.CapabilityItem{}).Where("id = ?", "owndel-2").Count(&count)
+	if count != 1 {
+		t.Fatalf("item must still exist after forbidden delete, count=%d", count)
+	}
+}
+
+func TestDeleteItem_PlatformAdminCanDeleteAny(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "owndel-3", "reg-owndel-3", "owner")
+	grantPlatformAdmin(t, "admin")
+
+	w := deleteReq(newItemRouter("admin"), "/api/items/owndel-3")
+	if w.Code != http.StatusOK {
+		t.Fatalf("platform admin should delete any item, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListItemVersions
 // ---------------------------------------------------------------------------

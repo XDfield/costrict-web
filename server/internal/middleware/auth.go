@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/authidentity"
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -42,6 +44,129 @@ func SetSubjectResolver(resolver SubjectResolver) {
 
 func GetSubjectResolver() SubjectResolver {
 	return subjectResolver
+}
+
+// StatusChecker resolves the account status for a resolved subject id. It is an
+// optional, injected hook (mirroring SetSubjectResolver) so the middleware
+// package needs no DB/gorm dependency. main.go wires the concrete implementation
+// (backed by the users table) at startup.
+//
+// Contract / safety guarantees (account-status gate is a global, sensitive
+// change, so the default is intentionally conservative):
+//   - status: the literal account status ("active"/"disabled"/"banned").
+//   - err:    a lookup error. The middleware FAILS OPEN on error (lets the
+//     request through) so a transient DB hiccup can never lock out every user.
+//   - When statusChecker is nil the middleware behaves exactly as before (no
+//     status lookup at all). This keeps the default request path unchanged.
+type StatusChecker func(subjectID string) (status string, err error)
+
+var statusChecker StatusChecker
+
+// statusCacheTTL bounds how long a resolved account status is reused before the
+// underlying StatusChecker (a DB lookup) is consulted again. Short enough that a
+// ban takes effect within seconds even without an explicit invalidate; long
+// enough to keep the status gate off the per-request hot path.
+const statusCacheTTL = 30 * time.Second
+
+type statusCacheEntry struct {
+	status    string
+	expiresAt time.Time
+}
+
+var (
+	statusCacheMu sync.RWMutex
+	statusCache   = map[string]statusCacheEntry{}
+)
+
+// SetStatusChecker installs the account-status hook, wrapped in a short-TTL
+// in-memory cache so repeated authenticated requests from the same subject don't
+// each hit the DB. Passing nil disables the gate (the historical, status-unaware
+// behaviour) and clears the cache. The cache only stores successful lookups;
+// errors are not cached and still fail open in enforceAccountStatus.
+func SetStatusChecker(checker StatusChecker) {
+	statusCacheMu.Lock()
+	statusCache = map[string]statusCacheEntry{}
+	statusCacheMu.Unlock()
+
+	if checker == nil {
+		statusChecker = nil
+		return
+	}
+
+	statusChecker = func(subjectID string) (string, error) {
+		now := time.Now()
+		statusCacheMu.RLock()
+		entry, ok := statusCache[subjectID]
+		statusCacheMu.RUnlock()
+		if ok && now.Before(entry.expiresAt) {
+			return entry.status, nil
+		}
+
+		status, err := checker(subjectID)
+		if err != nil {
+			// Do not cache errors; caller fails open.
+			return "", err
+		}
+
+		statusCacheMu.Lock()
+		statusCache[subjectID] = statusCacheEntry{status: status, expiresAt: now.Add(statusCacheTTL)}
+		statusCacheMu.Unlock()
+		return status, nil
+	}
+}
+
+// InvalidateStatusCache drops any cached account status for the given subject so
+// a status change (ban/disable/restore) takes effect immediately rather than
+// after the TTL elapses. Safe to call even when the gate is disabled.
+func InvalidateStatusCache(subjectID string) {
+	statusCacheMu.Lock()
+	delete(statusCache, subjectID)
+	statusCacheMu.Unlock()
+}
+
+// EnforceAccountStatus consults the injected StatusChecker for the resolved
+// subject id (read from UserIDKey on the gin context) and aborts the request
+// when the account is disabled/banned. It is a no-op when no checker is
+// installed, when there is no resolved subject, or when the lookup errors
+// (fail-open). Returns true when the request was aborted.
+//
+// Exported so that auth paths which set UserIDKey outside of RequireAuth — most
+// importantly the device-token branch of requireUserOrDeviceAuth — can apply the
+// same banned/disabled gate (otherwise a banned user could keep using a device
+// token to bypass the status check). Callers must set UserIDKey first, then call
+// this and return early if it reports true.
+func EnforceAccountStatus(c *gin.Context) bool {
+	return enforceAccountStatus(c)
+}
+
+// enforceAccountStatus consults the injected StatusChecker for the resolved
+// subject id and aborts the request when the account is disabled/banned. It is a
+// no-op when no checker is installed, when there is no resolved subject, or when
+// the lookup errors (fail-open). Returns true when the request was aborted.
+func enforceAccountStatus(c *gin.Context) bool {
+	if statusChecker == nil {
+		return false
+	}
+	subjectID := c.GetString(UserIDKey)
+	if subjectID == "" {
+		return false
+	}
+	status, err := statusChecker(subjectID)
+	if err != nil {
+		// Fail open: never let an audit/DB wobble lock out legitimate users.
+		logger.Warn("[AccountStatus] status lookup failed for %s: %v (failing open)", subjectID, err)
+		return false
+	}
+	switch status {
+	case "banned":
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Account banned"})
+		return true
+	case "disabled":
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Account disabled"})
+		return true
+	default:
+		return false
+	}
 }
 
 // InternalAuth validates requests from internal services (gateway, etc.) using a shared secret.
@@ -150,20 +275,29 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 
 		setAuthContext(c, userInfo)
 		c.Set("accessToken", token)
+
+		// Account-status gate (banned/disabled). No-op when no checker is
+		// installed; fails open on lookup error. Runs only for required-auth
+		// requests so it rejects new authenticated requests from a banned user
+		// without touching the public/optional-auth paths.
+		if enforceAccountStatus(c) {
+			return
+		}
+
 		c.Next()
 	}
 }
 
 type CasdoorUserInfo struct {
-	ID               string `json:"id"`
-	Sub              string `json:"sub"`
-	UniversalID      string `json:"universal_id"`
-	Name             string `json:"name"`
+	ID                string `json:"id"`
+	Sub               string `json:"sub"`
+	UniversalID       string `json:"universal_id"`
+	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
-	Email            string `json:"email"`
-	Provider         string `json:"provider"`
-	ProviderUserID   string `json:"provider_user_id"`
-	Phone            string `json:"phone"`
+	Email             string `json:"email"`
+	Provider          string `json:"provider"`
+	ProviderUserID    string `json:"provider_user_id"`
+	Phone             string `json:"phone"`
 }
 
 type casdoorUserinfoResponse struct {
@@ -215,15 +349,15 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	}
 
 	return &CasdoorUserInfo{
-		ID:               normalized.ID,
-		Sub:              sub,
-		UniversalID:      normalized.UniversalID,
-		Name:             normalized.Name,
+		ID:                normalized.ID,
+		Sub:               sub,
+		UniversalID:       normalized.UniversalID,
+		Name:              normalized.Name,
 		PreferredUsername: normalized.PreferredUsername,
-		Email:            normalized.Email,
-		Provider:         normalized.Provider,
-		ProviderUserID:   normalized.ProviderUserID,
-		Phone:            normalized.Phone,
+		Email:             normalized.Email,
+		Provider:          normalized.Provider,
+		ProviderUserID:    normalized.ProviderUserID,
+		Phone:             normalized.Phone,
 	}, nil
 }
 
@@ -263,15 +397,15 @@ func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
 	}
 
 	return &CasdoorUserInfo{
-		ID:               casdoorResp.ID,
-		Sub:              casdoorResp.Sub,
-		UniversalID:      casdoorResp.UniversalID,
-		Name:             casdoorResp.Name,
+		ID:                casdoorResp.ID,
+		Sub:               casdoorResp.Sub,
+		UniversalID:       casdoorResp.UniversalID,
+		Name:              casdoorResp.Name,
 		PreferredUsername: casdoorResp.Name,
-		Email:            casdoorResp.Email,
-		Provider:         "",
-		ProviderUserID:   "",
-		Phone:            "",
+		Email:             casdoorResp.Email,
+		Provider:          "",
+		ProviderUserID:    "",
+		Phone:             "",
 	}, nil
 }
 

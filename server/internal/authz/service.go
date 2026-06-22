@@ -8,8 +8,17 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
+
+// ErrResourcePermissionNotFound is returned when updating a resource code that
+// does not exist in the resource_permissions table.
+var ErrResourcePermissionNotFound = errors.New("resource permission not found")
+
+// ErrInvalidResourceRole is returned when an allowed role is not a known system role.
+var ErrInvalidResourceRole = errors.New("invalid system role in allowedRoles")
 
 // PermissionResult is the unified permission snapshot for a user.
 type PermissionResult struct {
@@ -35,6 +44,7 @@ type Service struct {
 	capabilityProvider CapabilityProvider
 	casdoorEndpoint    string
 	jwksProvider       *middleware.JWKSProvider
+	deptProvider       DepartmentProvider
 	menuRegistry       ResourceRegistry
 	apiRegistry        ResourceRegistry
 	mu                 sync.RWMutex
@@ -74,6 +84,48 @@ func (s *Service) loadRegistry() error {
 	s.apiRegistry = api
 	s.mu.Unlock()
 	return nil
+}
+
+// ReloadRegistry reloads the in-memory resource-permission registry from the
+// database. It must be called after any write to the resource_permissions table
+// (e.g. UpdateResourcePermission); otherwise changes only take effect on a
+// process restart.
+func (s *Service) ReloadRegistry() error {
+	return s.loadRegistry()
+}
+
+// ListResourcePermissions returns the full resource_permissions table (menu+api)
+// for rendering the permission matrix.
+func (s *Service) ListResourcePermissions() ([]models.ResourcePermission, error) {
+	var perms []models.ResourcePermission
+	if err := s.db.Order("resource_type ASC, resource_code ASC").Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+// UpdateResourcePermission updates the allowed roles for a single resource code,
+// then reloads the in-memory registry so the change takes effect immediately.
+func (s *Service) UpdateResourcePermission(code string, allowedRoles []string) error {
+	// Reject unknown roles so we never persist dirty data into the registry.
+	for _, role := range allowedRoles {
+		if !systemrole.IsValidRole(role) {
+			return ErrInvalidResourceRole
+		}
+	}
+
+	result := s.db.Model(&models.ResourcePermission{}).
+		Where("resource_code = ?", code).
+		Update("allowed_roles", pq.StringArray(allowedRoles))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrResourcePermissionNotFound
+	}
+
+	// Reload so HasPermission / GetUserPermissions reflect the change without a restart.
+	return s.loadRegistry()
 }
 
 // GetUserPermissions builds the full permission snapshot for a user.
@@ -133,19 +185,42 @@ func (s *Service) HasPermission(userID, resourceCode string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list roles: %w", err)
 	}
-	return hasAny(roles, allowed), nil
+	if hasAny(roles, allowed) {
+		return true, nil
+	}
+
+	// Role path missed → fall back to the fine-grained grant path so a direct
+	// user grant or a (inherited) department grant on this resource code can also
+	// confer access. CheckGrant has a zero-cost fast path when no grants exist,
+	// and fails closed if dept-sync is unavailable, so this never weakens the
+	// existing role-based deny.
+	granted, gErr := s.CheckGrant(userID, resourceCode)
+	if gErr != nil {
+		return false, gErr
+	}
+	return granted, nil
 }
 
 // VerifyToken parses a bearer token to resolve the userID and then checks permission.
 func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResult, error) {
+	allowed, perms, _, err := s.VerifyTokenWithUser(token, resourceCode)
+	return allowed, perms, err
+}
+
+// VerifyTokenWithUser is VerifyToken but also returns the resolved costrict-web
+// userID (subject_id). It lets callers (e.g. the internal /auth/verify handler)
+// attach extra user-keyed facts such as the metrics-dashboard scope without
+// re-parsing the token. The userID is returned whenever the token parses, even
+// when access is denied, so the caller can decide what to do.
+func (s *Service) VerifyTokenWithUser(token, resourceCode string) (bool, *PermissionResult, string, error) {
 	token = strings.TrimPrefix(token, "Bearer ")
 	if token == "" {
-		return false, nil, errors.New("empty token")
+		return false, nil, "", errors.New("empty token")
 	}
 
 	userInfo, err := middleware.ParseToken(token, s.casdoorEndpoint, s.jwksProvider)
 	if err != nil {
-		return false, nil, fmt.Errorf("parse token: %w", err)
+		return false, nil, "", fmt.Errorf("parse token: %w", err)
 	}
 
 	userID := userInfo.Sub
@@ -168,17 +243,17 @@ func (s *Service) VerifyToken(token, resourceCode string) (bool, *PermissionResu
 
 	allowed, err := s.HasPermission(userID, resourceCode)
 	if err != nil {
-		return false, nil, err
+		return false, nil, userID, err
 	}
 	if !allowed {
-		return false, nil, nil
+		return false, nil, userID, nil
 	}
 
 	perms, err := s.GetUserPermissions(userID)
 	if err != nil {
-		return false, nil, err
+		return false, nil, userID, err
 	}
-	return true, perms, nil
+	return true, perms, userID, nil
 }
 
 func hasAny(have, want []string) bool {

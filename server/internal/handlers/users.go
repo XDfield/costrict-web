@@ -282,10 +282,14 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 			Owner:             u.Owner,
 		}
 		claims = userpkg.MergeJWTClaims(claims, nil)
-		// Only update existing users, don't create new ones (read-only lookup)
+		// Only update existing users, don't create new ones (read-only lookup).
+		// Use SyncUser (not GetOrCreateUser) so this background reconciliation does
+		// NOT fire the post-login hook: backfill runs when someone *searches* for a
+		// user, not when that user logs in, so it must not trigger login-only side
+		// effects such as bootstrap platform-admin granting.
 		if user, err := UserModule.Service.FindUserByClaims(claims); err == nil && user != nil {
 			// User exists, sync if needed
-			_, _ = UserModule.Service.GetOrCreateUser(claims)
+			_, _ = UserModule.Service.SyncUser(claims)
 		}
 	}
 }

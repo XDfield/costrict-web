@@ -28,6 +28,9 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/adminitem"
+	"github.com/costrict/costrict-web/server/internal/adminuser"
+	"github.com/costrict/costrict-web/server/internal/audit"
 	"github.com/costrict/costrict-web/server/internal/authz"
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
@@ -35,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/deptsync"
 	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
@@ -48,6 +52,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/project"
 	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/settings"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
@@ -83,6 +88,10 @@ func main() {
 	db.Model(&models.CapabilityRegistry{}).
 		Where("sync_status = ?", "syncing").
 		Update("sync_status", "error")
+
+	// Install the process-wide admin audit logger (fire-and-forget writes from
+	// management handlers). Must run before any handler can call audit.Record.
+	audit.Init(db)
 
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
@@ -195,6 +204,31 @@ func main() {
 		})
 	})
 
+	// Account-status gate (M1 · 成员管理): RequireAuth consults this hook for the
+	// resolved subject and rejects banned/disabled members. Conservative by
+	// design — the checker errors fail open (handled in middleware), and the gate
+	// is entirely inert until installed here. A lightweight single-column lookup
+	// per authenticated request; can be cached later if the hot path needs it.
+	middleware.SetStatusChecker(func(subjectID string) (string, error) {
+		return userModule.Service.GetUserStatus(subjectID)
+	})
+
+	// Bootstrap platform-admin granting (initial admin without manual SQL):
+	// installed as a post-login hook on GetOrCreateUser, which fires only on a
+	// genuine login by the user themselves (the OAuth callback and the JWKS
+	// auth-middleware path). Read-only background sync (user-search backfill) goes
+	// through SyncUser and does NOT trigger this hook, so a user is never granted
+	// platform_admin merely because someone else searched for them.
+	// Users whose Casdoor universal_id is in BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS are granted platform_admin
+	// on login (idempotent, best-effort, granted_by='bootstrap'). The user package
+	// stays free of a systemrole import (cycle avoidance) via this injected hook.
+	// Empty allowlist = complete no-op.
+	bootstrapGranter := userpkg.NewBootstrapAdminGranter(
+		systemrole.NewSystemRoleService(db),
+		cfg.BootstrapPlatformAdmins,
+	)
+	userModule.Service.SetPostLoginHook(bootstrapGranter.ApplyOnLogin)
+
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
@@ -220,6 +254,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
+
+	// Shared dept-sync client: backs both the admin department-tree proxy (M1 org
+	// view) and the authz fine-grained grant engine (mentor RBAC department
+	// inheritance). Optional dependency — when unconfigured, department grants
+	// simply never match (CheckGrant fails closed) while user grants and the role
+	// path keep working.
+	deptSyncClient := deptsync.New(cfg.DeptSync)
+	authzModule.Service.SetDepartmentProvider(deptSyncDepartmentProvider{client: deptSyncClient})
 
 	var channelModule *channel.Module
 	var cloudModule *cloud.Module
@@ -433,10 +475,34 @@ func main() {
 			notificationModule.RegisterRoutes(authed)
 
 			enterprise.New(db).RegisterRoutes(authed)
+			settings.New(db).RegisterRoutes(authed)
 
 			admin := authed.Group("/admin")
 			admin.Use(systemrole.RequirePlatformAdmin(db))
 			authzModule.RegisterAdminRoutes(admin)
+
+			// Admin distribution management (platform admin only)
+			admin.GET("/distributions", distHandler.ListAllDistributions)
+			admin.GET("/distributions/:id/receipts", distHandler.ListDistributionReceipts)
+
+			// Admin audit-log query (platform admin only). The write path is the
+			// package-level audit.Logger initialized above.
+			audit.NewModule(db).RegisterRoutes(admin)
+
+			// Admin member management (M1, platform admin only): user list,
+			// profile, status switch, organization roll-up.
+			adminuser.New(userModule.Service).RegisterRoutes(admin)
+
+			// Admin department tree (M1 org view, platform admin only): proxies the
+			// external dept-sync service for the real org tree and correlates its
+			// members back to local users via universal id. Optional dependency —
+			// when dept-sync is not configured these endpoints return 503 and the
+			// frontend shows a "department service unavailable" notice.
+			deptsync.NewModule(deptSyncClient, db).RegisterRoutes(admin)
+
+			// Admin content management (M6, platform admin only): cross-registry
+			// item list, across-author status switch (上下架), and delete.
+			adminitem.New(db).RegisterRoutes(admin)
 
 			kanbanModule := kanban.New()
 			kanbanModule.RegisterRoutes(authed, authzModule.Service)
@@ -459,7 +525,6 @@ func main() {
 			_ = kanbanModule
 		}
 	}
-
 
 	var redisClient *redis.Client
 	var store gateway.Store
@@ -586,7 +651,13 @@ func main() {
 
 func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Casdoor user already resolved upstream by OptionalAuth (UserIDKey set).
+		// OptionalAuth does NOT run the account-status gate, so enforce it here to
+		// close the bypass where a banned user keeps a live Casdoor session.
 		if c.GetString(middleware.UserIDKey) != "" {
+			if middleware.EnforceAccountStatus(c) {
+				return
+			}
 			c.Next()
 			return
 		}
@@ -609,6 +680,41 @@ func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc 
 		}
 		c.Set("deviceId", dev.DeviceID)
 		c.Set("authSource", "device-token")
+
+		// Device-token path: previously this bypassed the banned/disabled gate
+		// entirely (RequireAuth was never in the chain). Apply it now that the
+		// subject is resolved, so a banned member can't keep using a device token.
+		// Fails open on lookup error / no checker (see middleware.EnforceAccountStatus).
+		// NOTE: the team WebSocket group (/ws) still uses bare OptionalAuth and is
+		// intentionally NOT gated here — a separate path with its own handlers.
+		if middleware.EnforceAccountStatus(c) {
+			return
+		}
 		c.Next()
 	}
+}
+
+// deptSyncDepartmentProvider adapts the deptsync HTTP client to authz's narrow
+// DepartmentProvider interface, translating deptsync.Dept into authz.DepartmentInfo
+// (only dept id + materialized path are needed for prefix-based inheritance). It
+// keeps authz free of any deptsync import (avoids an import cycle) while letting
+// the grant engine reuse the same cached client as the admin department view.
+type deptSyncDepartmentProvider struct {
+	client *deptsync.Client
+}
+
+func (p deptSyncDepartmentProvider) GetUserDepartments(deptSyncUserID string) ([]authz.DepartmentInfo, error) {
+	depts, err := p.client.GetUserDepartments(deptSyncUserID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]authz.DepartmentInfo, 0, len(depts))
+	for _, d := range depts {
+		out = append(out, authz.DepartmentInfo{DeptID: d.DeptID, DeptPath: d.DeptPath})
+	}
+	return out, nil
+}
+
+func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, error) {
+	return p.client.GetDepartmentPath(deptID)
 }

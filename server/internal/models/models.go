@@ -99,14 +99,16 @@ type ChannelConfig struct {
 }
 
 // EnterpriseCustomer 大客户品牌配置（平台管理员配置）。一行 = 一个大客户。
-// AccountIDs 为 jsonb 字符串数组，存的是 users.subject_id 列表（与 CapabilityItem.CreatedBy、
-// UserSystemRole.UserID 同口径）；前端 matchEnterprise(item.createdBy) 用其命中渲染大客户标识。
+// AccountIDs 为 jsonb 字符串数组，存的是 Casdoor universal_id 列表（系统内"指代一个人"的统一锚点，
+// 见 20260617100000 迁移）。公开端点 ListEnterpriseCustomersHandler 会把这些 universal_id 解析回
+// users.subject_id 后才下发，前端再用 matchEnterprise(item.createdBy)（createdBy 即 subject_id）命中
+// 渲染大客户标识；universal_id 本身不对公开端点暴露。
 // Logo 存 base64 data URI（避免前端 canvas 抽主题色时跨域污染）。
 type EnterpriseCustomer struct {
 	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	Name       string         `gorm:"not null"                                       json:"name"`
 	Logo       string         `gorm:"type:text;not null"                             json:"logo"`                // base64 data URI
-	AccountIDs datatypes.JSON `gorm:"column:account_ids;type:jsonb;not null;default:'[]'" json:"-"`              // ["usr_a",...] = users.subject_id 列表
+	AccountIDs datatypes.JSON `gorm:"column:account_ids;type:jsonb;not null;default:'[]'" json:"-"`              // ["uni_a",...] = Casdoor universal_id 列表
 	CreatedBy  *string        `gorm:"size:191"                                       json:"createdBy,omitempty"` // 操作者 subject_id
 	CreatedAt  time.Time      `                                                      json:"createdAt"`
 	UpdatedAt  time.Time      `                                                      json:"updatedAt"`
@@ -114,6 +116,32 @@ type EnterpriseCustomer struct {
 }
 
 func (EnterpriseCustomer) TableName() string { return "enterprise_customers" }
+
+// SystemSetting 系统级设置 / feature flags（平台管理员配置，全局单例 KV）。
+// 与 UserConfig（per-user KV）区分：此表为全局系统级配置（如维护模式、功能开关）。
+type SystemSetting struct {
+	Key       string         `gorm:"primaryKey;size:128" json:"key"`
+	Value     datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"value" swaggertype:"object"`
+	UpdatedBy string         `gorm:"size:191" json:"updatedBy"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+	CreatedAt time.Time      `json:"createdAt"`
+}
+
+func (SystemSetting) TableName() string { return "system_settings" }
+
+// AdminAuditLog 后台管理写操作审计日志。每行 = 一次管理员写操作。
+// 仅追加写入（fire-and-forget）；ActorID 为操作者 subject_id，Payload 存请求体子集 / 变更摘要。
+type AdminAuditLog struct {
+	ID         string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ActorID    string         `gorm:"column:actor_id;not null;index" json:"actorId"`
+	Action     string         `gorm:"not null;index" json:"action"`
+	TargetType string         `gorm:"column:target_type" json:"targetType"`
+	TargetID   string         `gorm:"column:target_id" json:"targetId"`
+	Payload    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"payload" swaggertype:"object"`
+	CreatedAt  time.Time      `gorm:"index" json:"createdAt"`
+}
+
+func (AdminAuditLog) TableName() string { return "admin_audit_logs" }
 
 type DeviceRelease struct {
 	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
@@ -630,6 +658,7 @@ type User struct {
 
 	// 状态字段
 	IsActive    bool       `gorm:"not null;default:true" json:"is_active"` // 是否激活
+	Status      string     `gorm:"size:32;not null;default:'active';index" json:"status"` // 账户状态: active|disabled|banned（admin 封禁，独立于 is_active）
 	LastLoginAt *time.Time `json:"last_login_at"`                          // 最后登录时间
 	LastSyncAt  *time.Time `json:"last_sync_at"`                           // 最后同步时间
 
@@ -654,6 +683,28 @@ type ResourcePermission struct {
 	CreatedAt    time.Time      `                                                      json:"createdAt"`
 	UpdatedAt    time.Time      `                                                      json:"updatedAt"`
 }
+
+// PermissionGrant 细粒度权限授予（mentor RBAC 方案 / prd §11.2）。
+// 一行 = 一次授权：(PermissionCode, subject)，subject ∈ {user, department}。
+// 与 ResourcePermission.AllowedRoles（粗粒度角色门禁）共存，最终鉴权 = role 路径 ∪ grant 路径。
+// 部门授权向子部门继承：用冗余存的 DeptPath 做前缀匹配（U == P_D 或 U 以 P_D + '/' 开头）。
+type PermissionGrant struct {
+	ID             string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	PermissionCode string    `gorm:"column:permission_code;not null;size:128;index:idx_permission_grants_code;uniqueIndex:uk_permission_grant,priority:1" json:"permissionCode"`
+	SubjectType    string    `gorm:"column:subject_type;not null;size:32;index:idx_permission_grants_subject,priority:1;uniqueIndex:uk_permission_grant,priority:2" json:"subjectType"` // user | department
+	SubjectID      string    `gorm:"column:subject_id;not null;size:191;index:idx_permission_grants_subject,priority:2;uniqueIndex:uk_permission_grant,priority:3" json:"subjectId"`
+	DeptPath       string    `gorm:"column:dept_path;not null;size:1024;default:''" json:"deptPath"` // 部门授权时冗余存其 dept_path
+	GrantedBy      string    `gorm:"column:granted_by;size:191" json:"grantedBy"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+func (PermissionGrant) TableName() string { return "permission_grants" }
+
+// Subject types for PermissionGrant.SubjectType.
+const (
+	PermissionSubjectUser       = "user"
+	PermissionSubjectDepartment = "department"
+)
 
 // UserAuthIdentity stores one external login identity bound to a local user.
 type UserAuthIdentity struct {
