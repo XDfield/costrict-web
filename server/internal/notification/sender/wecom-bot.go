@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -20,13 +20,11 @@ type WeComBotSender struct {
 	client    *http.Client
 }
 
-func NewWeComBotSender() *WeComBotSender {
-	proxyURL := os.Getenv("WECOM_BOT_PROXY_URL")
+func NewWeComBotSender(proxyURL, authToken string) *WeComBotSender {
 	if proxyURL == "" {
 		proxyURL = "http://localhost:9090" // 默认地址，wecom-bot-proxy 服务端口
 	}
 
-	authToken := os.Getenv("WECOM_BOT_PROXY_AUTH_TOKEN")
 	if authToken == "" {
 		authToken = "default-token" // 默认 token，需要与 wecom-bot-proxy 配置匹配
 	}
@@ -62,16 +60,24 @@ func (s *WeComBotSender) UserConfigSchema() []ConfigField {
 }
 
 func (s *WeComBotSender) Send(userConfig json.RawMessage, msg NotificationMessage) error {
+	slog.Info("[wecom-bot:sender] Send called",
+		"userID", msg.UserID,
+		"eventType", msg.EventType,
+		"sessionID", msg.SessionID,
+		"title", msg.Title,
+	)
+
 	var cfg WeComBotConfig
 	if err := json.Unmarshal(userConfig, &cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
 	if !cfg.Enabled {
+		slog.Info("[wecom-bot:sender] user disabled, skipping", "userID", msg.UserID)
 		return nil // 用户已禁用，不发送
 	}
 
-	// 构造发送到 wecom-bot-proxy 的消息
+	// Construct message to wecom-bot-proxy
 	proxyMsg := map[string]interface{}{
 		"user_id":    msg.UserID,
 		"chat_type":  "individual",
@@ -85,8 +91,13 @@ func (s *WeComBotSender) Send(userConfig json.RawMessage, msg NotificationMessag
 		return fmt.Errorf("marshal message: %w", err)
 	}
 
-	// 发送到 wecom-bot-proxy
+	// Send to wecom-bot-proxy
 	url := fmt.Sprintf("%s/api/bot/send", s.proxyURL)
+	slog.Info("[wecom-bot:sender] posting to proxy",
+		"url", url,
+		"proxyUserID", msg.UserID,
+		"contentLen", len(msg.Title)+len(msg.Body),
+	)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -96,9 +107,12 @@ func (s *WeComBotSender) Send(userConfig json.RawMessage, msg NotificationMessag
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		slog.Error("[wecom-bot:sender] proxy request failed", "error", err)
 		return fmt.Errorf("send to proxy: %w", err)
 	}
 	defer resp.Body.Close()
+
+	slog.Info("[wecom-bot:sender] proxy response", "statusCode", resp.StatusCode)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("proxy returned %d", resp.StatusCode)

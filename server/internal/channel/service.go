@@ -437,6 +437,45 @@ func (s *ChannelService) SessionStore() ReplyContextStore {
 	return s.sessionStore
 }
 
+// CreateSenderForUser creates a Sender for a user on a specific channel type (e.g. "wecom-bot").
+// It looks up the user's channel config and resolves the external user ID (e.g. WeChat Work userId).
+// Returns an error if the channel type is not available or no config is found.
+func (s *ChannelService) CreateSenderForUser(userID string, channelType string) (Sender, error) {
+	adapter, ok := s.adapters[channelType]
+	if !ok {
+		return nil, fmt.Errorf("unsupported channel type: %s", channelType)
+	}
+
+	// For wecom/wecom-bot, resolve WeChat Work userId from IDTrust identity
+	var externalUserID string
+	if channelType == "wecom" || channelType == "wecom-bot" {
+		var identity models.UserAuthIdentity
+		if err := s.db.Where("user_subject_id = ? AND provider = ? AND deleted_at IS NULL", userID, "idtrust").
+			First(&identity).Error; err != nil {
+			return nil, fmt.Errorf("no idtrust identity for user %s", userID)
+		}
+		if identity.ProviderUserID != nil {
+			externalUserID = *identity.ProviderUserID
+		}
+		if externalUserID == "" {
+			return nil, fmt.Errorf("empty provider user id for user %s", userID)
+		}
+	}
+
+	target := ReplyTarget{
+		ExternalChatID:   externalUserID,
+		ExternalUserID:   externalUserID,
+		ExternalChatType: "single",
+	}
+	rc := ReplyContext{
+		ChannelType: channelType,
+		UserID:      userID,
+		Target:      target,
+	}
+	// Use empty config — wecom-bot adapter reads webhook URL from its own config
+	return NewAdapterSender(adapter, nil, rc), nil
+}
+
 func (s *ChannelService) GetQRCode(ctx context.Context, channelType string) (qrcodeID string, qrcodeImage string, err error) {
 	adapter, ok := s.adapters[channelType]
 	if !ok {

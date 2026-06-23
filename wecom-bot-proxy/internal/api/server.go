@@ -179,6 +179,10 @@ func (p *Proxy) authMiddleware() gin.HandlerFunc {
 
 		backendName := p.cfg.FindBackendByToken(authHeader)
 		if backendName == "" {
+			p.logger.Warn("auth failed: no matching backend",
+				"received_token", authHeader,
+				"backends", p.cfg.BackendNames(),
+			)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
@@ -220,9 +224,8 @@ func (p *Proxy) handleSend(c *gin.Context) {
 	case "markdown":
 		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
 	case "card":
-		// Send as template_card via raw send
-		body := aibot.CreateTextReplyBody(req.Content)
-		_, err = p.sdk.SendMessage(req.UserID, body)
+		// Send card content as markdown for now
+		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
 	default:
 		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
 	}

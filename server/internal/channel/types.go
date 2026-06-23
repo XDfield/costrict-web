@@ -32,9 +32,10 @@ type OutboundMessage struct {
 }
 
 type ReplyTarget struct {
-	ExternalChatID string `json:"externalChatId"`
-	ExternalUserID string `json:"externalUserId,omitempty"`
-	ContextToken   string `json:"contextToken,omitempty"`
+	ExternalChatID   string `json:"externalChatId"`
+	ExternalChatType string `json:"externalChatType,omitempty"`
+	ExternalUserID   string `json:"externalUserId,omitempty"`
+	ContextToken     string `json:"contextToken,omitempty"`
 }
 
 type ReplyContext struct {
