@@ -205,7 +205,7 @@ func StatsHandler(manager *ConnectionManager) gin.HandlerFunc {
 func isNotifiableEvent(eventType string) bool {
 	switch eventType {
 	case "session.completed", "session.failed", "session.aborted",
-		"permission", "permission_batch", "question", "idle":
+		"permission", "permission_batch", "question":
 		return true
 	}
 	return false
@@ -262,10 +262,11 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 
 		manager.RouteEvent(event, connIDs)
 
+			var actionData map[string]any
 		if isNotifiableEvent(body.Type) {
 			// Interactive dispatcher: checks channel_configs for interactive channels
 			if disp != nil {
-				actionData := normalizeActionData(body.Data)
+				actionData = normalizeActionData(body.Data)
 				logger.Info("[notify] dispatch input", "eventType", body.Type, "sessionID", body.SessionID, "actionData", actionData)
 
 				go disp.Dispatch(dispatcher.DispatchInput{
@@ -279,8 +280,12 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 			}
 
 			// One-way notification fallback: checks user_notification_channels
+			// Permission/question events are handled by the dispatcher's deferred notification
+			// system (30s timer). Only immediately notify for other events when dispatcher exists.
 			if notificationSvc != nil {
-				notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path)
+				if disp == nil || (body.Type != "permission" && body.Type != "question") {
+					notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path, actionData)
+				}
 			}
 		}
 

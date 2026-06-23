@@ -10,9 +10,9 @@ type Module struct {
 	Service *NotificationService
 }
 
-func New(db *gorm.DB, cloudBaseURL string, webhookEnabled, weComEnabled, weComBotEnabled bool) *Module {
+func New(db *gorm.DB, cloudBaseURL string, webhookEnabled, weComEnabled, weComBotEnabled bool, wecomBotProxyURL, wecomBotAuthToken string) *Module {
 	return &Module{
-		Service: NewNotificationService(db, cloudBaseURL, webhookEnabled, weComEnabled, weComBotEnabled),
+		Service: NewNotificationService(db, cloudBaseURL, webhookEnabled, weComEnabled, weComBotEnabled, wecomBotProxyURL, wecomBotAuthToken),
 	}
 }
 

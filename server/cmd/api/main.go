@@ -502,7 +502,7 @@ func main() {
 
 			authzModule.RegisterAPIRoutes(authed)
 
-			notificationModule := notification.New(db, cfg.AppURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled)
+			notificationModule := notification.New(db, cfg.AppURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
@@ -642,7 +642,7 @@ func main() {
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 
-	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled)
+	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
 
 	notificationStore := notification.NewStore(db)
@@ -671,12 +671,15 @@ func main() {
 				Path:       path,
 				ActionData: actionData,
 			}
+
+
 			if err := clawRT.EventHandler.HandleAIEvent(context.Background(), req); err != nil {
 				log.Printf("[clawagent] AI event handler error: %v", err)
 				return false
 			}
 			return true
 		})
+
 	}
 
 	// Create cloud module before action handlers so closures can reference it

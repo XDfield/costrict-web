@@ -167,7 +167,7 @@ func (d *Dispatcher) dispatchInteractive(input DispatchInput, channels *Selected
 
 func (d *Dispatcher) dispatchNotification(input DispatchInput) {
 	if d.notificationSvc != nil {
-		d.notificationSvc.TriggerNotifications(input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path)
+		d.notificationSvc.TriggerNotifications(input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
 	}
 }
 

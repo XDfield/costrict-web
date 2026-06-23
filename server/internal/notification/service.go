@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -22,12 +23,13 @@ type NotificationService struct {
 	webhookEnabled  bool
 	weComEnabled    bool
 	weComBotEnabled bool
+
 }
 
-func NewNotificationService(db *gorm.DB, cloudBaseURL string, webhookEnabled, weComEnabled, weComBotEnabled bool) *NotificationService {
+func NewNotificationService(db *gorm.DB, cloudBaseURL string, webhookEnabled, weComEnabled, weComBotEnabled bool, wecomBotProxyURL, wecomBotAuthToken string) *NotificationService {
 	sender.Register(sender.NewWeComSender())
 	sender.Register(sender.NewWebhookSender())
-	sender.Register(sender.NewWeComBotSender())
+	sender.Register(sender.NewWeComBotSender(wecomBotProxyURL, wecomBotAuthToken))
 	return &NotificationService{
 		db:              db,
 		cloudBaseURL:    cloudBaseURL,
@@ -35,6 +37,21 @@ func NewNotificationService(db *gorm.DB, cloudBaseURL string, webhookEnabled, we
 		weComEnabled:    weComEnabled,
 		weComBotEnabled: weComBotEnabled,
 	}
+}
+
+
+// resolveWeComUserID resolves the platform user UUID to a WeChat Work userId
+// by querying the UserAuthIdentity table for an idtrust binding.
+func (s *NotificationService) resolveWeComUserID(appUserID string) string {
+	var identity models.UserAuthIdentity
+	if err := s.db.Where("user_subject_id = ? AND provider = ? AND deleted_at IS NULL", appUserID, "idtrust").
+		First(&identity).Error; err != nil {
+		return ""
+	}
+	if identity.ProviderUserID != nil {
+		return *identity.ProviderUserID
+	}
+	return ""
 }
 
 // ensureWeComBotChannel ensures that the user has a wecom-bot notification channel
@@ -79,15 +96,17 @@ type sessionInfo struct {
 	deviceID    string
 	path        string
 	workspaceID string
+	actionData  map[string]any
 }
 
-func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID, deviceID, path string) {
+func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID, deviceID, path string, actionData map[string]any) {
 	go func() {
 		info := sessionInfo{
-			eventType: eventType,
-			sessionID: sessionID,
-			deviceID:  deviceID,
-			path:      path,
+			eventType:  eventType,
+			sessionID:  sessionID,
+			deviceID:   deviceID,
+			path:       path,
+			actionData: actionData,
 		}
 		workspaceID, err := s.getWorkspaceID(deviceID, path)
 		if err != nil {
@@ -98,110 +117,15 @@ func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID,
 		}
 		info.workspaceID = workspaceID
 
+
 		msg := s.buildMessage(info)
 		s.send(userID, eventType, msg)
 	}()
 }
 
+
 func (s *NotificationService) TriggerMessage(userID, eventType string, msg sender.NotificationMessage) {
 	go s.send(userID, eventType, msg)
-}
-
-// BroadcastScope selects the recipients of an announcement.
-//   - "all":          every user with a subject_id
-//   - "organization": every user whose organization == TargetID
-//   - "user":         the single user TargetID
-type BroadcastScope struct {
-	Type     string
-	TargetID string
-}
-
-// resolveBroadcastRecipients expands a BroadcastScope into a list of recipient
-// subject_ids. Mirrors the distribution service's org→subject_id expansion.
-func (s *NotificationService) resolveBroadcastRecipients(scope BroadcastScope) ([]string, error) {
-	switch scope.Type {
-	case "user":
-		if scope.TargetID == "" {
-			return nil, fmt.Errorf("targetId is required for user scope")
-		}
-		return []string{scope.TargetID}, nil
-	case "organization":
-		if scope.TargetID == "" {
-			return nil, fmt.Errorf("targetId is required for organization scope")
-		}
-		var userIDs []string
-		if err := s.db.Model(&models.User{}).
-			Where("organization = ? AND subject_id <> ''", scope.TargetID).
-			Pluck("subject_id", &userIDs).Error; err != nil {
-			return nil, err
-		}
-		return userIDs, nil
-	case "all":
-		var userIDs []string
-		if err := s.db.Model(&models.User{}).
-			Where("subject_id <> ''").
-			Pluck("subject_id", &userIDs).Error; err != nil {
-			return nil, err
-		}
-		return userIDs, nil
-	default:
-		return nil, fmt.Errorf("unsupported broadcast scope: %s", scope.Type)
-	}
-}
-
-// Broadcast sends an in-app announcement to every user matched by scope. For
-// each recipient it writes one per-user system_notification (in-app inbox) and,
-// when pushExternal is set, also fires the user's configured external channels
-// via the standard send path. Returns the number of recipients reached.
-//
-// Recipient resolution runs synchronously (so the caller gets an accurate count
-// and any scope error), but the per-user writes are batched on a background
-// goroutine to keep the request fast for large organizations. When pushExternal
-// is set we always go to the background, because external channel delivery can
-// block the request thread on slow third-party endpoints.
-func (s *NotificationService) Broadcast(scope BroadcastScope, title, content string, pushExternal bool, operatorID string) (int, error) {
-	recipients, err := s.resolveBroadcastRecipients(scope)
-	if err != nil {
-		return 0, err
-	}
-	if len(recipients) == 0 {
-		return 0, nil
-	}
-
-	store := NewStore(s.db)
-
-	deliver := func() {
-		for _, uid := range recipients {
-			if _, err := store.Create(CreateNotificationInput{
-				UserID:  uid,
-				Type:    EventSystemNotification,
-				Title:   title,
-				Content: content,
-			}); err != nil {
-				slog.Warn("broadcast: failed to create in-app notification", "userID", uid, "error", err)
-				continue
-			}
-			if pushExternal {
-				s.send(uid, EventSystemNotification, sender.NotificationMessage{
-					Title:     title,
-					Body:      content,
-					EventType: EventSystemNotification,
-				})
-			}
-		}
-	}
-
-	// External pushes can block on slow third-party endpoints, so they always go
-	// to the background. In-app-only broadcasts to small audiences deliver inline
-	// (keeping tests/synchronous callers simple); larger ones go to the background
-	// so the HTTP response (with the recipient count) returns promptly.
-	if pushExternal || len(recipients) > 50 {
-		go deliver()
-	} else {
-		deliver()
-	}
-
-	return len(recipients), nil
 }
 
 // getWorkspaceID 根据设备标识符和路径查找工作空间ID。
@@ -237,11 +161,15 @@ func (s *NotificationService) getWorkspaceID(deviceID, path string) (string, err
 }
 
 func (s *NotificationService) send(userID, eventType string, msg sender.NotificationMessage) {
+	slog.Info("[notify:send] entering send", "userID", userID, "eventType", eventType, "sessionID", msg.SessionID)
+
 	var channels []models.UserNotificationChannel
 	s.db.Where(
 		"user_id = ? AND enabled = true AND ? = ANY(trigger_events) AND deleted_at IS NULL",
 		userID, eventType,
 	).Find(&channels)
+
+	slog.Info("[notify:send] channel query result", "userID", userID, "eventType", eventType, "count", len(channels))
 
 	if len(channels) == 0 {
 		slog.Info("no notification channels found", "userID", userID, "eventType", eventType)
@@ -276,6 +204,20 @@ func (s *NotificationService) send(userID, eventType string, msg sender.Notifica
 
 		sentAt := time.Now()
 		msg.UserID = userID
+
+		// For wecom-bot, resolve platform UUID to WeChat Work userId
+		if ch.ChannelType == "wecom-bot" {
+			resolvedID := s.resolveWeComUserID(userID)
+			if resolvedID == "" {
+				slog.Error("[notify:send] failed to resolve wecom user id, skipping",
+					"userID", userID, "channelType", ch.ChannelType)
+				continue
+			}
+			msg.UserID = resolvedID
+			slog.Info("[notify:send] resolved wecom user id",
+				"platformUserID", userID, "wecomUserID", resolvedID)
+		}
+
 		err := snd.Send(json.RawMessage(ch.UserConfig), msg)
 
 		logEntry := models.NotificationLog{
@@ -443,19 +385,56 @@ func (s *NotificationService) IsSupportedTriggerEvent(event string) bool {
 }
 
 func (s *NotificationService) buildMessage(info sessionInfo) sender.NotificationMessage {
-	titles := map[string]string{
-		"session.completed": "会话执行完成",
-		"session.failed":    "会话执行失败",
-		"session.aborted":   "会话已中止",
-		"device.offline":    "设备已离线",
-		"permission":        "需要授权确认",
-		"question":          "需要回答问题",
-		"idle":              "会话等待中",
-	}
+	// Build body from actionData for permission/question events
+	var title string
+	var bodyParts []string
 
-	title, ok := titles[info.eventType]
-	if !ok {
-		title = "CoStrict 通知"
+	switch info.eventType {
+	case "permission":
+		title = "需要授权确认"
+		if info.actionData != nil {
+			permType, _ := info.actionData["permission"].(string)
+			cmd := extractCommand(info.actionData)
+			if permType != "" {
+				title = fmt.Sprintf("权限请求: %s", permType)
+			}
+			bodyParts = append(bodyParts, fmt.Sprintf("**请求**: %s", title))
+			if cmd != "" {
+				bodyParts = append(bodyParts, fmt.Sprintf("**命令**: %s", cmd))
+			}
+		} else {
+			bodyParts = append(bodyParts, fmt.Sprintf("**请求**: %s", title))
+		}
+
+	case "question":
+		title = "需要回答问题"
+		bodyParts = append(bodyParts, fmt.Sprintf("**请求**: %s", title))
+		if info.actionData != nil {
+			if questions, ok := info.actionData["questions"].([]any); ok && len(questions) > 0 {
+				if q, ok := questions[0].(map[string]any); ok {
+					if qText, _ := q["question"].(string); qText != "" {
+						bodyParts = append(bodyParts, fmt.Sprintf("> %s", qText))
+					}
+				}
+			}
+		}
+
+	case "idle":
+		title = "会话等待中"
+		bodyParts = append(bodyParts, "**会话等待中**")
+
+	default:
+		titles := map[string]string{
+			"session.completed": "会话执行完成",
+			"session.failed":    "会话执行失败",
+			"session.aborted":   "会话已中止",
+			"device.offline":    "设备已离线",
+		}
+		title = titles[info.eventType]
+		if title == "" {
+			title = "CoStrict 通知"
+		}
+		bodyParts = append(bodyParts, fmt.Sprintf("**状态更新**: %s", title))
 	}
 
 	sessionURL := ""
@@ -467,12 +446,33 @@ func (s *NotificationService) buildMessage(info sessionInfo) sender.Notification
 		sessionURL = s.cloudBaseURL
 	}
 
+	body := strings.Join(bodyParts, "\n")
+
 	return sender.NotificationMessage{
 		Title:     title,
-		Body:      fmt.Sprintf("**状态更新:** <font color=\"info\">%s</font>\n> **设备**: %s\n**会话**: %s", title, info.deviceID, info.sessionID),
+		Body:      body,
 		EventType: info.eventType,
 		SessionID: info.sessionID,
 		DeviceID:  info.deviceID,
 		Metadata:  map[string]any{"status": info.eventType, "sessionUrl": sessionURL},
 	}
+}
+
+// extractCommand extracts the command/pattern from permission actionData
+func extractCommand(data map[string]any) string {
+	// Try patterns first (array of strings)
+	if patterns, ok := data["patterns"].([]any); ok && len(patterns) > 0 {
+		if cmd, ok := patterns[0].(string); ok && cmd != "" {
+			return cmd
+		}
+	}
+	// Try metadata.input.command
+	if metadata, ok := data["metadata"].(map[string]any); ok {
+		if input, ok := metadata["input"].(map[string]any); ok {
+			if cmd, ok := input["command"].(string); ok && cmd != "" {
+				return cmd
+			}
+		}
+	}
+	return ""
 }
