@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "api.fullname" . }}
+  namespace: {{ include "api.namespace" . }}
   labels:
     {{- include "api.labels" . | nindent 4 }}
 spec:
@@ -23,7 +24,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "api.serviceAccountName" . }}
+      serviceAccountName: default
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -41,6 +42,8 @@ spec:
               value: {{ .Values.config.port | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: RUN_MIGRATIONS
+              value: {{ .Values.config.runMigrations | quote }}
             - name: DB_HOST
               value: {{ .Values.database.host | quote }}
             - name: DB_PORT
