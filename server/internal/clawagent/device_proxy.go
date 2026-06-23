@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -48,6 +49,30 @@ func NewDeviceProxyClient(gwRegistry *gateway.GatewayRegistry, gwClient *gateway
 		gwClient:   gwClient,
 		db:         db,
 	}
+}
+
+// deviceRow is a minimal view of the devices table for display-name lookup.
+// Kept local to avoid pulling the full models package into clawagent.
+type deviceRow struct {
+	DisplayName string `gorm:"column:display_name"`
+}
+
+// GetDeviceDisplayName returns the user-facing name of a device by its device_id.
+// Returns empty string if the device is not found (non-fatal for callers).
+func (c *DeviceProxyClient) GetDeviceDisplayName(ctx context.Context, deviceID string) (string, error) {
+	if c.db == nil || deviceID == "" {
+		return "", nil
+	}
+	var row deviceRow
+	err := c.db.WithContext(ctx).
+		Table("devices").
+		Select("display_name").
+		Where("device_id = ?", deviceID).
+		Take(&row).Error
+	if err != nil {
+		return "", err
+	}
+	return row.DisplayName, nil
 }
 
 // DeviceHealth represents device health information.
@@ -138,26 +163,36 @@ func (w *capturingResponseWriter) Write(b []byte) (int, error) { return w.body.W
 func (w *capturingResponseWriter) WriteHeader(statusCode int) { w.statusCode = statusCode }
 func (w *capturingResponseWriter) Flush() {}
 
-// parseDeviceResponse parses the standard device response envelope.
+// parseDeviceResponse parses the device response, supporting both the standard
+// envelope format ({ok, data, error}) used by writeOK endpoints and raw passthrough
+// responses from proxied agent endpoints (csc/cs backends).
 func parseDeviceResponse[T any](data []byte) (*T, error) {
 	var envelope struct {
-		OK   bool            `json:"ok"`
-		Data *T              `json:"data"`
+		OK    bool `json:"ok"`
+		Data *T   `json:"data"`
 		Error *struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error,omitempty"`
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, fmt.Errorf("parse envelope: %w", err)
-	}
-	if !envelope.OK {
+	if err := json.Unmarshal(data, &envelope); err == nil {
+		if envelope.OK {
+			if envelope.Data != nil {
+				return envelope.Data, nil
+			}
+			var zero T
+			return &zero, nil
+		}
 		if envelope.Error != nil {
 			return nil, fmt.Errorf("device error: %s", envelope.Error.Message)
 		}
-		return nil, fmt.Errorf("device error: %s", string(data))
 	}
-	return envelope.Data, nil
+
+	var result T
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return &result, nil
 }
 
 // --- Session/Conversation ---
@@ -174,6 +209,22 @@ func (c *DeviceProxyClient) CreateConversation(ctx context.Context, deviceID, wo
 		return nil, err
 	}
 	return parseDeviceResponse[Conversation](respBytes)
+}
+
+// GetConversationTitle fetches the title of a conversation/session from the device.
+func (c *DeviceProxyClient) GetConversationTitle(ctx context.Context, deviceID, sessionID, directory string) (string, error) {
+	respBytes, err := c.proxyToDevice(ctx, deviceID, "GET", fmt.Sprintf("/api/v1/conversations/%s", sessionID), directory, nil)
+	if err != nil {
+		return "", err
+	}
+	conv, err := parseDeviceResponse[map[string]any](respBytes)
+	if err != nil {
+		return "", err
+	}
+	if title, ok := (*conv)["title"].(string); ok {
+		return title, nil
+	}
+	return "", nil
 }
 
 func (c *DeviceProxyClient) SendPromptAsync(ctx context.Context, deviceID, convID, content string) error {
@@ -317,16 +368,64 @@ func (c *DeviceProxyClient) SubscribeEvents(ctx context.Context, deviceID, works
 
 // --- Permissions ---
 
-func (c *DeviceProxyClient) ReplyPermission(ctx context.Context, deviceID, permissionID, optionID string) error {
-	body := map[string]any{"option_id": optionID}
+func (c *DeviceProxyClient) ReplyPermission(ctx context.Context, deviceID, permissionID string, approved bool, directory string) error {
+	body := map[string]any{"approved": approved}
 	bodyBytes, _ := json.Marshal(body)
-	_, err := c.proxyToDevice(ctx, deviceID, "POST", fmt.Sprintf("/api/v1/permissions/%s/reply", permissionID), "", bodyBytes)
+	_, err := c.proxyToDevice(ctx, deviceID, "POST", fmt.Sprintf("/api/v1/permissions/%s/reply", permissionID), directory, bodyBytes)
 	return err
 }
 
-func (c *DeviceProxyClient) ReplyQuestion(ctx context.Context, deviceID, questionID, answer string) error {
-	body := map[string]any{"answer": answer}
+func (c *DeviceProxyClient) ReplyQuestion(ctx context.Context, deviceID, questionID string, answers [][]string, directory string) error {
+	body := map[string]any{"answers": answers}
 	bodyBytes, _ := json.Marshal(body)
-	_, err := c.proxyToDevice(ctx, deviceID, "POST", fmt.Sprintf("/api/v1/questions/%s/reply", questionID), "", bodyBytes)
+	slog.Info("[device_proxy] ReplyQuestion sending", "questionID", questionID, "deviceID", deviceID, "body", string(bodyBytes))
+	_, err := c.proxyToDevice(ctx, deviceID, "POST", fmt.Sprintf("/api/v1/questions/%s/reply", questionID), directory, bodyBytes)
 	return err
+}
+
+// --- Session Queries ---
+
+// GetSessionInfo retrieves conversation/session metadata from the device.
+func (c *DeviceProxyClient) GetSessionInfo(ctx context.Context, deviceID, sessionID, directory string) (map[string]any, error) {
+	respBytes, err := c.proxyToDevice(ctx, deviceID, "GET", fmt.Sprintf("/api/v1/conversations/%s", sessionID), directory, nil)
+	if err != nil {
+		return nil, err
+	}
+	result, err := parseDeviceResponse[map[string]any](respBytes)
+	if err != nil {
+		return nil, err
+	}
+	return *result, nil
+}
+
+// GetRecentMessages retrieves recent messages from a conversation.
+func (c *DeviceProxyClient) GetRecentMessages(ctx context.Context, deviceID, sessionID, directory string, limit int) ([]map[string]any, error) {
+	path := fmt.Sprintf("/api/v1/conversations/%s/messages", sessionID)
+	if limit > 0 {
+		path += fmt.Sprintf("?limit=%d", limit)
+	}
+	respBytes, err := c.proxyToDevice(ctx, deviceID, "GET", path, directory, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := parseDeviceResponse[[]map[string]any](respBytes)
+	if err == nil {
+		return *result, nil
+	}
+
+	wrapper, wErr := parseDeviceResponse[map[string]any](respBytes)
+	if wErr == nil {
+		if msgs, ok := (*wrapper)["messages"].([]any); ok {
+			out := make([]map[string]any, 0, len(msgs))
+			for _, m := range msgs {
+				if mm, ok := m.(map[string]any); ok {
+					out = append(out, mm)
+				}
+			}
+			return out, nil
+		}
+	}
+
+	return nil, err
 }

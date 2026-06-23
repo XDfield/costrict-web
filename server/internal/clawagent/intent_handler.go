@@ -75,7 +75,9 @@ func (h *IntentHandler) parseUserIntent(response string, ctx *EventContext) *Use
 	} else if ctx.EventType == "question" {
 		intent.Type = "answer_question"
 		intent.Confidence = 0.8
-		intent.QuestionID = ctx.QuestionID
+		if len(ctx.Questions) > 0 {
+				intent.QuestionID = ctx.Questions[0].ID
+			}
 		intent.Answers = map[string]any{"answer": response}
 	}
 
@@ -132,14 +134,22 @@ func containsStr(s, substr string) bool {
 
 func (h *IntentHandler) approvePermission(ctx context.Context, intent *UserIntent, eventCtx *EventContext) error {
 	if intent.PermissionID != "" {
-		return h.deviceProxy.ReplyPermission(ctx, intent.DeviceID, intent.PermissionID, "approve")
+		directory := ""
+		if eventCtx != nil {
+			directory = eventCtx.Path
+		}
+		return h.deviceProxy.ReplyPermission(ctx, intent.DeviceID, intent.PermissionID, true, directory)
 	}
 	return fmt.Errorf("missing permission ID")
 }
 
 func (h *IntentHandler) rejectPermission(ctx context.Context, intent *UserIntent, eventCtx *EventContext) error {
 	if intent.PermissionID != "" {
-		return h.deviceProxy.ReplyPermission(ctx, intent.DeviceID, intent.PermissionID, "reject")
+		directory := ""
+		if eventCtx != nil {
+			directory = eventCtx.Path
+		}
+		return h.deviceProxy.ReplyPermission(ctx, intent.DeviceID, intent.PermissionID, false, directory)
 	}
 	return fmt.Errorf("missing permission ID")
 }
@@ -147,7 +157,11 @@ func (h *IntentHandler) rejectPermission(ctx context.Context, intent *UserIntent
 func (h *IntentHandler) answerQuestion(ctx context.Context, intent *UserIntent, eventCtx *EventContext) error {
 	if intent.QuestionID != "" {
 		answer, _ := intent.Answers["answer"].(string)
-		return h.deviceProxy.ReplyQuestion(ctx, intent.DeviceID, intent.QuestionID, answer)
+		directory := ""
+		if eventCtx != nil {
+			directory = eventCtx.Path
+		}
+		return h.deviceProxy.ReplyQuestion(ctx, intent.DeviceID, intent.QuestionID, [][]string{{answer}}, directory)
 	}
 	return fmt.Errorf("missing question ID")
 }
@@ -162,11 +176,3 @@ func (h *IntentHandler) continueConversation(ctx context.Context, question strin
 	return nil
 }
 
-// EventContext holds context about a notification event.
-type EventContext struct {
-	EventType    string
-	DeviceID     string
-	PermissionID string
-	QuestionID   string
-	Data         map[string]any
-}

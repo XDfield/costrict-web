@@ -263,6 +263,7 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 		manager.RouteEvent(event, connIDs)
 
 			var actionData map[string]any
+		logger.Info("[notify] received device event", "type", body.Type, "sessionID", body.SessionID, "deviceID", device.DeviceID, "notifiable", isNotifiableEvent(body.Type))
 		if isNotifiableEvent(body.Type) {
 			// Interactive dispatcher: checks channel_configs for interactive channels
 			if disp != nil {
@@ -283,7 +284,7 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 			// Permission/question events are handled by the dispatcher's deferred notification
 			// system (30s timer). Only immediately notify for other events when dispatcher exists.
 			if notificationSvc != nil {
-				if disp == nil || (body.Type != "permission" && body.Type != "question") {
+				if disp == nil || (body.Type != "permission" && body.Type != "permission_batch" && body.Type != "question") {
 					notificationSvc.TriggerNotifications(device.UserID, body.Type, body.SessionID, device.DeviceID, body.Path, actionData)
 				}
 			}

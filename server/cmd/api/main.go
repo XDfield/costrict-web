@@ -637,7 +637,7 @@ func main() {
 
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
-	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
+	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, gatewayClient, deviceSvc)
 	authzModule.RegisterInternalRoutes(internalGroup)
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
@@ -663,6 +663,7 @@ func main() {
 // Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
 	if clawRT != nil {
 		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
+			log.Printf("[clawagent] aiEventHandler callback invoked: eventType=%s sessionID=%s deviceID=%s", eventType, sessionID, deviceID)
 			req := clawagent.AIEventRequest{
 				UserID:     userID,
 				EventType:  eventType,
@@ -672,6 +673,14 @@ func main() {
 				ActionData: actionData,
 			}
 
+			if channelModule != nil && cfg.Channels.WeComBotEnabled {
+				sender, err := channelModule.Service.CreateSenderForUser(userID, "wecom-bot")
+				if err != nil {
+					log.Printf("[clawagent] failed to create wecom-bot sender: %v", err)
+				} else {
+					req.Sender = sender
+				}
+			}
 
 			if err := clawRT.EventHandler.HandleAIEvent(context.Background(), req); err != nil {
 				log.Printf("[clawagent] AI event handler error: %v", err)
@@ -679,7 +688,6 @@ func main() {
 			}
 			return true
 		})
-
 	}
 
 	// Create cloud module before action handlers so closures can reference it

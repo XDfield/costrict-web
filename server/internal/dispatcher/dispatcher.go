@@ -86,6 +86,7 @@ func (d *Dispatcher) resolveWeComUserID(appUserID string) string {
 // --- Public Interface ---
 
 func (d *Dispatcher) Dispatch(input DispatchInput) {
+	slog.Info("[dispatcher] Dispatch received", "eventType", input.EventType, "sessionID", input.SessionID, "hasStore", d.store != nil, "hasAIHandler", d.aiEventHandler != nil)
 	if d.store == nil {
 		return
 	}
@@ -97,10 +98,27 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
-	// Permission batch: multiple permissions collected in a window
+	// Permission batch: try AI handler first, fall back to card dispatch
 	if input.EventType == "permission_batch" {
+		if d.aiEventHandler != nil {
+			handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
+			if handled {
+				slog.Info("[dispatcher] permission_batch handled by AI", "sessionID", input.SessionID)
+				return
+			}
+		}
 		d.dispatchPermissionBatch(input)
 		return
+	}
+
+	// Question: try AI handler first (bypass channel selection), fall back to dispatchNow
+	if input.EventType == "question" && d.aiEventHandler != nil {
+		handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
+		if handled {
+			slog.Info("[dispatcher] question handled by AI", "sessionID", input.SessionID)
+			return
+		}
+		slog.Info("[dispatcher] AI declined question, falling back to card dispatch", "sessionID", input.SessionID)
 	}
 
 	channels := d.selectChannels(input.UserID)
