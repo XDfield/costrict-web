@@ -248,6 +248,37 @@ func (s *Service) SetStatus(id, status string) error {
 	return nil
 }
 
+// BatchSetStatus flips the lifecycle status (上下架) of many items in a single
+// transaction. status must be active|archived. ids that no longer exist are
+// reported in skipped rather than updated. All-or-nothing: on any hard error
+// nothing is committed and (nil, nil, err) is returned.
+func (s *Service) BatchSetStatus(ids []string, status string) (updated, skipped []string, err error) {
+	if status != StatusActive && status != StatusArchived {
+		return nil, nil, ErrInvalidStatus
+	}
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, id := range ids {
+			var count int64
+			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Count(&count).Error; e != nil {
+				return e
+			}
+			if count == 0 {
+				skipped = append(skipped, id)
+				continue
+			}
+			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Update("status", status).Error; e != nil {
+				return e
+			}
+			updated = append(updated, id)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, nil, txErr
+	}
+	return updated, skipped, nil
+}
+
 // DeleteItem removes an item and ALL of its associated data across any author.
 // The cascade (shared with handlers.DeleteItem and BatchDeleteItems) lives in
 // internal/itemdelete: bundled sub-skills are hard-deleted recursively,

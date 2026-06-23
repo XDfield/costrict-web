@@ -269,3 +269,81 @@ func (m *Module) BatchDeleteItemsHandler() gin.HandlerFunc {
 		})
 	}
 }
+
+type batchStatusRequest struct {
+	IDs    []string `json:"ids" binding:"required"`
+	Status string   `json:"status" binding:"required"`
+}
+
+// BatchSetStatusHandler godoc
+//
+//	@Summary		Batch set item status (admin)
+//	@Description	Take up to 200 items online/offline (active|archived) across any author in a single transaction (platform admin only). ids that no longer exist are reported as skipped.
+//	@Tags			admin/items
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			body	body		object{ids=[]string,status=string}	true	"Item ids + new status (active|archived)"
+//	@Success		200		{object}	object{success=bool,updated=int,skipped=int,skippedIds=[]string}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/admin/items/batch-status [post]
+func (m *Module) BatchSetStatusHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		operatorID := c.GetString(appmiddleware.UserIDKey)
+		if operatorID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		var req batchStatusRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		seen := make(map[string]bool, len(req.IDs))
+		ids := make([]string, 0, len(req.IDs))
+		for _, raw := range req.IDs {
+			id := strings.TrimSpace(raw)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no item ids provided"})
+			return
+		}
+		if len(ids) > maxBatchDelete {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many items: %d (max %d)", len(ids), maxBatchDelete)})
+			return
+		}
+
+		updated, skipped, err := m.svc.BatchSetStatus(ids, req.Status)
+		if err != nil {
+			if errors.Is(err, ErrInvalidStatus) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update item status"})
+			}
+			return
+		}
+
+		audit.Record(operatorID, audit.ActionItemStatusChange, audit.TargetItem, "batch", gin.H{
+			"status":     req.Status,
+			"updated":    len(updated),
+			"skipped":    len(skipped),
+			"updatedIds": updated,
+		})
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"updated":    len(updated),
+			"skipped":    len(skipped),
+			"skippedIds": skipped,
+		})
+	}
+}

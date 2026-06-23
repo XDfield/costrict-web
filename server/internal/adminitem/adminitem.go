@@ -29,5 +29,6 @@ func (m *Module) RegisterRoutes(adminGroup *gin.RouterGroup) {
 	adminGroup.GET("/items", m.ListItemsHandler())
 	adminGroup.PUT("/items/:id/status", m.SetItemStatusHandler())
 	adminGroup.POST("/items/batch-delete", m.BatchDeleteItemsHandler())
+	adminGroup.POST("/items/batch-status", m.BatchSetStatusHandler())
 	adminGroup.DELETE("/items/:id", m.DeleteItemHandler())
 }

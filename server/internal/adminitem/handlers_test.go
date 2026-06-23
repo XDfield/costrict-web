@@ -516,3 +516,72 @@ func TestHandler_BatchDeleteItems(t *testing.T) {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
+
+func TestService_BatchSetStatus(t *testing.T) {
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "i1", "Alpha", "skill", "active", "clean", "u1", 4.5)
+	seedItem(t, db, "i2", "Beta", "plugin", "active", "clean", "u2", 4.0)
+
+	svc := NewService(db)
+	updated, skipped, err := svc.BatchSetStatus([]string{"i1", "i2", "ghost"}, StatusArchived)
+	if err != nil {
+		t.Fatalf("batch set status: %v", err)
+	}
+	if len(updated) != 2 || len(skipped) != 1 {
+		t.Fatalf("expected updated=2 skipped=1, got updated=%v skipped=%v", updated, skipped)
+	}
+	var archived int64
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE status='archived'`).Scan(&archived)
+	if archived != 2 {
+		t.Fatalf("expected 2 archived, got %d", archived)
+	}
+
+	// invalid status → ErrInvalidStatus, nothing changed
+	if _, _, err := svc.BatchSetStatus([]string{"i1"}, "bogus"); err != ErrInvalidStatus {
+		t.Fatalf("expected ErrInvalidStatus, got %v", err)
+	}
+}
+
+func TestHandler_BatchSetStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "i1", "Alpha", "skill", "active", "clean", "u1", 4.5)
+	m := New(db)
+
+	c, rec := newCtx(t, http.MethodPost, "/admin/items/batch-status", "admin1", `{"ids":["i1","ghost"],"status":"archived"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+		Skipped int `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Updated != 1 || resp.Skipped != 1 {
+		t.Fatalf("expected updated=1 skipped=1, got %+v", resp)
+	}
+	var status string
+	db.Raw(`SELECT status FROM capability_items WHERE id='i1'`).Scan(&status)
+	if status != "archived" {
+		t.Fatalf("expected i1 archived, got %q", status)
+	}
+
+	// invalid status → 400
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-status", "admin1", `{"ids":["i1"],"status":"weird"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad status, got %d", rec.Code)
+	}
+
+	// unauthenticated → 401
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-status", "", `{"ids":["i1"],"status":"active"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}

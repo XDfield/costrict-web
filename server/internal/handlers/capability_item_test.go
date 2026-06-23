@@ -46,6 +46,7 @@ func newItemRouter(userID string) *gin.Engine {
 	r.GET("/api/items/:id", injectUser, GetItem)
 	r.GET("/api/items/:id/assets", injectUser, ListItemAssets)
 	r.PUT("/api/items/:id", injectUser, itemHandler.UpdateItem)
+	r.DELETE("/api/items", injectUser, BatchDeleteItems)
 	r.DELETE("/api/items/:id", injectUser, DeleteItem)
 	r.GET("/api/items/:id/versions", injectUser, ListItemVersions)
 	r.GET("/api/items/:id/versions/:version", injectUser, GetItemVersion)
@@ -1246,6 +1247,66 @@ func TestDeleteItem_PlatformAdminCanDeleteAny(t *testing.T) {
 	w := deleteReq(newItemRouter("admin"), "/api/items/owndel-3")
 	if w.Code != http.StatusOK {
 		t.Fatalf("platform admin should delete any item, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func batchDeleteReq(r *gin.Engine, ids []string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]any{"ids": ids})
+	req := httptest.NewRequest(http.MethodDelete, "/api/items", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestBatchDeleteItems_OwnerDeletesOwnOthersForbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "bd-own-1", "reg-bd-1", "owner")
+	seedOwnershipItem(t, "bd-own-2", "reg-bd-2", "owner")
+	seedOwnershipItem(t, "bd-other", "reg-bd-3", "someone-else")
+
+	rec := batchDeleteReq(newItemRouter("owner"), []string{"bd-own-1", "bd-own-2", "bd-other", "ghost"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted   int `json:"deleted"`
+		Skipped   int `json:"skipped"`
+		Forbidden int `json:"forbidden"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Deleted != 2 || resp.Forbidden != 1 || resp.Skipped != 1 {
+		t.Fatalf("expected deleted=2 forbidden=1 skipped=1, got %+v", resp)
+	}
+	// Another user's item must survive a forbidden batch entry.
+	var count int64
+	database.DB.Model(&models.CapabilityItem{}).Where("id = ?", "bd-other").Count(&count)
+	if count != 1 {
+		t.Fatalf("other user's item must survive, count=%d", count)
+	}
+}
+
+func TestBatchDeleteItems_PlatformAdminDeletesAny(t *testing.T) {
+	defer setupTestDB(t)()
+	seedOwnershipItem(t, "bda-1", "reg-bda-1", "owner")
+	seedOwnershipItem(t, "bda-2", "reg-bda-2", "another")
+	grantPlatformAdmin(t, "admin")
+
+	rec := batchDeleteReq(newItemRouter("admin"), []string{"bda-1", "bda-2"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted   int `json:"deleted"`
+		Forbidden int `json:"forbidden"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Deleted != 2 || resp.Forbidden != 0 {
+		t.Fatalf("platform admin should delete any, got %+v", resp)
 	}
 }
 

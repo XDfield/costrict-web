@@ -1756,6 +1756,115 @@ func DeleteItem(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Item deleted"})
 }
 
+// maxBatchItems bounds a single batch operation so an accidental "select all →
+// delete" can't wipe an unbounded slice in one transaction. The frontend's
+// "select all matching" path pulls ids in pages and respects the same ceiling.
+const maxBatchItems = 200
+
+// BatchDeleteItems godoc
+// @Summary      Batch delete items
+// @Description  Delete up to 200 of the caller's own items (or any items for a platform admin) and their dependent records in a single transaction. All authorized deletes succeed or none do. Items the caller may not delete are reported in `forbidden`; ids that no longer exist are reported in `skipped`.
+// @Tags         items
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{ids=[]string}  true  "Item ids to delete"
+// @Success      200   {object}  object{deleted=int,skipped=int,forbidden=int}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /items [delete]
+func BatchDeleteItems(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	callerID := c.GetString(middleware.UserIDKey)
+	if callerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// Normalize: trim, drop blanks, de-duplicate while preserving order.
+	seen := make(map[string]bool, len(req.IDs))
+	ids := make([]string, 0, len(req.IDs))
+	for _, raw := range req.IDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no item ids provided"})
+		return
+	}
+	if len(ids) > maxBatchItems {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many items: %d (max %d)", len(ids), maxBatchItems)})
+		return
+	}
+
+	db := database.GetDB()
+	isAdmin := callerIsPlatformAdmin(c, db)
+
+	// Ownership filter: only the item's author (or a platform admin) may delete it.
+	// Batch-load the owners in one query rather than per-id.
+	var rows []struct {
+		ID        string
+		CreatedBy string
+	}
+	if err := db.Model(&models.CapabilityItem{}).Select("id, created_by").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
+		return
+	}
+	owner := make(map[string]string, len(rows))
+	for _, r := range rows {
+		owner[r.ID] = r.CreatedBy
+	}
+
+	authorized := make([]string, 0, len(ids))
+	skipped := make([]string, 0)
+	forbidden := make([]string, 0)
+	for _, id := range ids {
+		createdBy, exists := owner[id]
+		if !exists {
+			skipped = append(skipped, id) // already gone / never existed
+			continue
+		}
+		if createdBy != callerID && !isAdmin {
+			forbidden = append(forbidden, id) // not the caller's to delete
+			continue
+		}
+		authorized = append(authorized, id)
+	}
+
+	var deleted []string
+	if len(authorized) > 0 {
+		var batchSkipped []string
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var e error
+			deleted, batchSkipped, e = itemdelete.CascadeDeleteMany(tx, authorized)
+			return e
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
+			return
+		}
+		skipped = append(skipped, batchSkipped...)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"deleted":      len(deleted),
+		"skipped":      len(skipped),
+		"forbidden":    len(forbidden),
+		"deletedIds":   deleted,
+		"forbiddenIds": forbidden,
+	})
+}
+
 // ListItemVersions godoc
 // @Summary      List item versions
 // @Description  Get all versions of a skill item
