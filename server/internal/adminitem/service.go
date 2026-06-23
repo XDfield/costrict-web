@@ -276,6 +276,12 @@ func (s *Service) BatchSetStatus(ids []string, status string) (updated, skipped 
 	if txErr != nil {
 		return nil, nil, txErr
 	}
+	if updated == nil {
+		updated = []string{}
+	}
+	if skipped == nil {
+		skipped = []string{}
+	}
 	return updated, skipped, nil
 }
 
@@ -311,6 +317,14 @@ func (s *Service) BatchDeleteItems(ids []string) (deleted, skipped []string, err
 	})
 	if txErr != nil {
 		return nil, nil, txErr
+	}
+	// Normalize nil → empty so the JSON response is [] not null (matches the
+	// public batch endpoint and keeps frontend .length/.map safe).
+	if deleted == nil {
+		deleted = []string{}
+	}
+	if skipped == nil {
+		skipped = []string{}
 	}
 	return deleted, skipped, nil
 }
