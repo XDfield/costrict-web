@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -77,6 +78,24 @@ func main() {
 	// Redirect Gin's built-in output to our log files.
 	gin.DefaultWriter = logger.GinWriter()
 	gin.DefaultErrorWriter = logger.GinErrorWriter()
+
+	// Run database migrations from the same image before starting the server.
+	// The migrate binary is bundled in the production image; in local dev it may
+	// be absent, in which case we warn and continue.
+	if os.Getenv("RUN_MIGRATIONS") != "false" {
+		if _, err := os.Stat("./migrate"); err == nil {
+			log.Println("Running database migrations...")
+			migrateCmd := exec.Command("./migrate")
+			migrateCmd.Stdout = os.Stdout
+			migrateCmd.Stderr = os.Stderr
+			if err := migrateCmd.Run(); err != nil {
+				log.Fatalf("Database migration failed: %v", err)
+			}
+			log.Println("Database migrations completed")
+		} else {
+			log.Printf("Migration binary not found, skipping: %v", err)
+		}
+	}
 
 	cfg := config.Load()
 

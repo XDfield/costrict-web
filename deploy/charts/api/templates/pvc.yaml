@@ -3,6 +3,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "api.fullname" . }}-artifacts
+  namespace: {{ include "api.namespace" . }}
   labels:
     {{- include "api.labels" . | nindent 4 }}
   annotations:
