@@ -59,31 +59,40 @@ func count(t *testing.T, db *gorm.DB, sql string) int64 {
 	return n
 }
 
+// mustExec runs a seed statement and fails the test immediately on error, so a
+// failed insert can't let a later COUNT==0 cleanup assertion pass spuriously.
+func mustExec(t *testing.T, db *gorm.DB, sql string) {
+	t.Helper()
+	if err := db.Exec(sql).Error; err != nil {
+		t.Fatalf("seed exec failed: %v\nSQL: %s", err, sql)
+	}
+}
+
 func TestCascadeDelete_PluginSubskillAndOrphans(t *testing.T) {
 	db := setupFullSchema(t)
 
 	// Plugin P, its bundled sub-skill S1, and another user's fork F of P.
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('P','plugin','Plug','active','u1')`)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('S1','skill','Sub','active','u1','P')`)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by, forked_from_item_id, forked_from_owner_id) VALUES ('F','plugin','Fork','active','u2','P','u1')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('P','plugin','Plug','active','u1')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('S1','skill','Sub','active','u1','P')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by, forked_from_item_id, forked_from_owner_id) VALUES ('F','plugin','Fork','active','u2','P','u1')`)
 
 	// P's dependents across every cascade table.
-	db.Exec(`INSERT INTO capability_versions (id, item_id) VALUES ('pv','P')`)
-	db.Exec(`INSERT INTO capability_version_assets (id, version_id) VALUES ('pva','pv')`)
-	db.Exec(`INSERT INTO capability_assets (id, item_id) VALUES ('pa','P')`)
-	db.Exec(`INSERT INTO capability_artifacts (id, item_id) VALUES ('part','P')`)
-	db.Exec(`INSERT INTO item_favorites (id, item_id, user_id) VALUES ('pf','P','u9')`)
-	db.Exec(`INSERT INTO item_tags (id, item_id, tag_id) VALUES ('pt','P','t1')`)
-	db.Exec(`INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('pb','P','view')`)
-	db.Exec(`INSERT INTO scan_jobs (id, item_id) VALUES ('psj','P')`)
-	db.Exec(`INSERT INTO security_scans (id, item_id) VALUES ('pss','P')`)
-	db.Exec(`INSERT INTO mcp_user_configs (id, user_id, item_id) VALUES ('pmc','u9','P')`)
-	db.Exec(`INSERT INTO item_distributions (id, item_id) VALUES ('pd','P')`)
-	db.Exec(`INSERT INTO item_distribution_receipts (id, distribution_id, forked_item_id) VALUES ('pdr','pd','F')`)
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id) VALUES ('pv','P')`)
+	mustExec(t, db, `INSERT INTO capability_version_assets (id, version_id) VALUES ('pva','pv')`)
+	mustExec(t, db, `INSERT INTO capability_assets (id, item_id) VALUES ('pa','P')`)
+	mustExec(t, db, `INSERT INTO capability_artifacts (id, item_id) VALUES ('part','P')`)
+	mustExec(t, db, `INSERT INTO item_favorites (id, item_id, user_id) VALUES ('pf','P','u9')`)
+	mustExec(t, db, `INSERT INTO item_tags (id, item_id, tag_id) VALUES ('pt','P','t1')`)
+	mustExec(t, db, `INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('pb','P','view')`)
+	mustExec(t, db, `INSERT INTO scan_jobs (id, item_id) VALUES ('psj','P')`)
+	mustExec(t, db, `INSERT INTO security_scans (id, item_id) VALUES ('pss','P')`)
+	mustExec(t, db, `INSERT INTO mcp_user_configs (id, user_id, item_id) VALUES ('pmc','u9','P')`)
+	mustExec(t, db, `INSERT INTO item_distributions (id, item_id) VALUES ('pd','P')`)
+	mustExec(t, db, `INSERT INTO item_distribution_receipts (id, distribution_id, forked_item_id) VALUES ('pdr','pd','F')`)
 
 	// S1's own dependents (must be cleaned when S1 is hard-deleted).
-	db.Exec(`INSERT INTO capability_versions (id, item_id) VALUES ('sv','S1')`)
-	db.Exec(`INSERT INTO mcp_user_configs (id, user_id, item_id) VALUES ('smc','u9','S1')`)
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id) VALUES ('sv','S1')`)
+	mustExec(t, db, `INSERT INTO mcp_user_configs (id, user_id, item_id) VALUES ('smc','u9','S1')`)
 
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		return CascadeDelete(tx, "P")
@@ -128,8 +137,8 @@ func TestCascadeDelete_PluginSubskillAndOrphans(t *testing.T) {
 func TestCascadeDelete_SkipsMissingTablesAndCycles(t *testing.T) {
 	db := setupFullSchema(t)
 	// A pathological self-parent cycle must not loop forever.
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('A','plugin','A','active','u1','B')`)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('B','plugin','B','active','u1','A')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('A','plugin','A','active','u1','B')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('B','plugin','B','active','u1','A')`)
 
 	if err := db.Transaction(func(tx *gorm.DB) error {
 		return CascadeDelete(tx, "A")
@@ -143,9 +152,9 @@ func TestCascadeDelete_SkipsMissingTablesAndCycles(t *testing.T) {
 
 func TestCascadeDeleteMany_DedupsAndSkips(t *testing.T) {
 	db := setupFullSchema(t)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('P','plugin','P','active','u1')`)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('S','skill','S','active','u1','P')`)
-	db.Exec(`INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('X','skill','X','active','u1')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('P','plugin','P','active','u1')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by, parent_plugin_id) VALUES ('S','skill','S','active','u1','P')`)
+	mustExec(t, db, `INSERT INTO capability_items (id, item_type, name, status, created_by) VALUES ('X','skill','X','active','u1')`)
 
 	var deleted, skipped []string
 	if err := db.Transaction(func(tx *gorm.DB) error {

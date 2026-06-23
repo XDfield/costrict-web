@@ -248,6 +248,25 @@ func (s *Service) SetStatus(id, status string) error {
 	return nil
 }
 
+// GetItemStatuses returns the current status keyed by id for the given ids,
+// skipping any that don't exist. Used to capture the prior status for batch
+// audit (from→to), mirroring the single-item status path.
+func (s *Service) GetItemStatuses(ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	var rows []struct {
+		ID     string
+		Status string
+	}
+	s.db.Model(&models.CapabilityItem{}).Select("id, status").Where("id IN ?", ids).Find(&rows)
+	for _, r := range rows {
+		out[r.ID] = r.Status
+	}
+	return out
+}
+
 // BatchSetStatus flips the lifecycle status (上下架) of many items in a single
 // transaction. status must be active|archived. ids that no longer exist are
 // reported in skipped rather than updated. All-or-nothing: on any hard error

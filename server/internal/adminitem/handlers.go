@@ -322,6 +322,10 @@ func (m *Module) BatchSetStatusHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Capture prior statuses before the change so the audit can record the
+		// from→to transition per item (matches the single-item status path).
+		priorStatus := m.svc.GetItemStatuses(ids)
+
 		updated, skipped, err := m.svc.BatchSetStatus(ids, req.Status)
 		if err != nil {
 			if errors.Is(err, ErrInvalidStatus) {
@@ -332,11 +336,16 @@ func (m *Module) BatchSetStatusHandler() gin.HandlerFunc {
 			return
 		}
 
+		fromByID := make(map[string]string, len(updated))
+		for _, id := range updated {
+			fromByID[id] = priorStatus[id]
+		}
 		audit.Record(operatorID, audit.ActionItemStatusChange, audit.TargetItem, "batch", gin.H{
-			"status":     req.Status,
+			"to":         req.Status,
 			"updated":    len(updated),
 			"skipped":    len(skipped),
 			"updatedIds": updated,
+			"from":       fromByID,
 		})
 
 		c.JSON(http.StatusOK, gin.H{

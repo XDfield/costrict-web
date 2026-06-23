@@ -142,6 +142,15 @@ func seedItem(t *testing.T, db *gorm.DB, id, name, itemType, status, security, c
 	}
 }
 
+// mustExec runs a raw seed statement and fails the test immediately if it errors,
+// so a failed insert can't let a later COUNT==0 assertion pass for the wrong reason.
+func mustExec(t *testing.T, db *gorm.DB, sql string) {
+	t.Helper()
+	if err := db.Exec(sql).Error; err != nil {
+		t.Fatalf("seed exec failed: %v\nSQL: %s", err, sql)
+	}
+}
+
 func TestService_ListItems_FilterAndPaginate(t *testing.T) {
 	db := setupTestDB(t)
 	seedRepoRegistry(t, db)
@@ -239,17 +248,17 @@ func TestService_DeleteItem(t *testing.T) {
 	seedRepoRegistry(t, db)
 	seedItem(t, db, "i1", "Alpha", "plugin", "active", "clean", "u2", 4.5)
 	// dependent rows + a bundled sub-skill
-	db.Exec(`INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('v1','i1',1,'x','u2')`)
-	db.Exec(`INSERT INTO item_favorites (id, item_id, user_id) VALUES ('f1','i1','u9')`)
-	db.Exec(`INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('b1','i1','view')`)
-	db.Exec(`INSERT INTO capability_items
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('v1','i1',1,'x','u2')`)
+	mustExec(t, db, `INSERT INTO item_favorites (id, item_id, user_id) VALUES ('f1','i1','u9')`)
+	mustExec(t, db, `INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('b1','i1','view')`)
+	mustExec(t, db, `INSERT INTO capability_items
 		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, parent_plugin_id, created_at, updated_at)
 		VALUES ('sub1','reg-1','repo-1','sub-slug','skill','Sub','active','clean','u2','i1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 	// A version owned by the bundled sub-skill, to prove the sub-skill's own
 	// dependents are cleaned when it is hard-deleted (not just the parent's).
-	db.Exec(`INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('subv1','sub1',1,'x','u2')`)
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('subv1','sub1',1,'x','u2')`)
 	// Another user's fork of the plugin — must SURVIVE the source deletion.
-	db.Exec(`INSERT INTO capability_items
+	mustExec(t, db, `INSERT INTO capability_items
 		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, forked_from_item_id, created_at, updated_at)
 		VALUES ('fork1','reg-1','repo-1','fork-slug','plugin','Forked','active','clean','u7','i1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 
@@ -406,7 +415,7 @@ func TestService_BatchDeleteItems(t *testing.T) {
 	seedItem(t, db, "p1", "Plugin One", "plugin", "active", "clean", "u2", 4.0)
 	seedItem(t, db, "s1", "Skill One", "skill", "active", "clean", "u2", 4.0)
 	// p1 has a bundled sub-skill that is removed via p1's cascade.
-	db.Exec(`INSERT INTO capability_items
+	mustExec(t, db, `INSERT INTO capability_items
 		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, parent_plugin_id, created_at, updated_at)
 		VALUES ('sub-a','reg-1','repo-1','sub-a-slug','skill','SubA','active','clean','u2','p1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 

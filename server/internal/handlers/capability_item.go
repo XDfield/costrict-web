@@ -1841,7 +1841,7 @@ func BatchDeleteItems(c *gin.Context) {
 		authorized = append(authorized, id)
 	}
 
-	var deleted []string
+	deleted := make([]string, 0)
 	if len(authorized) > 0 {
 		var batchSkipped []string
 		err := db.Transaction(func(tx *gorm.DB) error {
