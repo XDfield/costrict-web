@@ -9,26 +9,37 @@ import (
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 )
 
 func newSyncRouter() *gin.Engine {
+	return newSyncRouterWithUser("")
+}
+
+func newSyncRouterWithUser(userID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/api/sync-logs/:id", GetSyncLogDetail)
-	r.GET("/api/sync-jobs/:id", GetSyncJobDetail)
-	r.GET("/api/registries/:id/sync-status", GetRegistrySyncStatus)
-	r.GET("/api/registries/:id/sync-logs", ListRegistrySyncLogs)
-	r.GET("/api/registries/:id/sync-jobs", ListRegistrySyncJobs)
-	r.POST("/api/registries/:id/sync", TriggerRegistrySync)
-	r.POST("/api/registries/:id/sync/cancel", CancelRegistrySync)
-	r.GET("/api/repositories/:id/sync-status", GetRepoSyncStatus)
-	r.GET("/api/repositories/:id/sync-logs", ListRepoSyncLogs)
-	r.GET("/api/repositories/:id/sync-jobs", ListRepoSyncJobs)
-	r.POST("/api/repositories/:id/sync", TriggerRepoSync)
-	r.POST("/api/repositories/:id/sync/cancel", CancelRepoSync)
+	injectUser := func(c *gin.Context) {
+		if userID != "" {
+			c.Set(middleware.UserIDKey, userID)
+		}
+		c.Next()
+	}
+	r.GET("/api/sync-logs/:id", injectUser, GetSyncLogDetail)
+	r.GET("/api/sync-jobs/:id", injectUser, GetSyncJobDetail)
+	r.GET("/api/registries/:id/sync-status", injectUser, GetRegistrySyncStatus)
+	r.GET("/api/registries/:id/sync-logs", injectUser, ListRegistrySyncLogs)
+	r.GET("/api/registries/:id/sync-jobs", injectUser, ListRegistrySyncJobs)
+	r.POST("/api/registries/:id/sync", injectUser, TriggerRegistrySync)
+	r.POST("/api/registries/:id/sync/cancel", injectUser, CancelRegistrySync)
+	r.GET("/api/repositories/:id/sync-status", injectUser, GetRepoSyncStatus)
+	r.GET("/api/repositories/:id/sync-logs", injectUser, ListRepoSyncLogs)
+	r.GET("/api/repositories/:id/sync-jobs", injectUser, ListRepoSyncJobs)
+	r.POST("/api/repositories/:id/sync", injectUser, TriggerRepoSync)
+	r.POST("/api/repositories/:id/sync/cancel", injectUser, CancelRepoSync)
 	return r
 }
 
@@ -363,7 +374,9 @@ func TestCancelRegistrySync_NoJobService(t *testing.T) {
 
 func TestTriggerRepoSync_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := postJSON(newSyncRouter(), "/api/repositories/no-repo/sync", nil)
+	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.RepoMember{ID: "mem-no-repo", RepoID: "no-repo", UserID: "u1", Role: "owner"})
+	w := postJSON(newSyncRouterWithUser("u1"), "/api/repositories/no-repo/sync", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -371,7 +384,9 @@ func TestTriggerRepoSync_NoRegistry(t *testing.T) {
 
 func TestCancelRepoSync_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
-	w := postJSON(newSyncRouter(), "/api/repositories/no-repo/sync/cancel", nil)
+	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.RepoMember{ID: "mem-no-repo", RepoID: "no-repo", UserID: "u1", Role: "owner"})
+	w := postJSON(newSyncRouterWithUser("u1"), "/api/repositories/no-repo/sync/cancel", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
@@ -379,6 +394,7 @@ func TestCancelRepoSync_NoRegistry(t *testing.T) {
 
 func TestGetRepoSyncStatus_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
+	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
 	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-status")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
@@ -387,6 +403,7 @@ func TestGetRepoSyncStatus_NoRegistry(t *testing.T) {
 
 func TestListRepoSyncLogs_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
+	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
 	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-logs")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
@@ -395,6 +412,7 @@ func TestListRepoSyncLogs_NoRegistry(t *testing.T) {
 
 func TestListRepoSyncJobs_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
+	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
 	w := get(newSyncRouter(), "/api/repositories/no-repo/sync-jobs")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)

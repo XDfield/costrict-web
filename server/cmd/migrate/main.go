@@ -233,6 +233,10 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.ItemDistributionReceipt{},
 		&models.Organization{},
 		&models.PermissionGrant{},
+		&models.GatewayRegistry{},
+		&models.GatewayDeviceBinding{},
+		&models.ServerEpoch{},
+		&models.ChannelReplyContext{},
 	)
 }
 

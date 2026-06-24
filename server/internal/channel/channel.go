@@ -9,9 +9,9 @@ type Module struct {
 	Service *ChannelService
 }
 
-func New(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *Module {
+func New(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled, weComBotEnabled bool) *Module {
 	return &Module{
-		Service: NewChannelService(db, handler, cloudBaseURL, enabledTypes, weComEnabled, weComWebhookEnabled, weChatEnabled),
+		Service: NewChannelService(db, handler, cloudBaseURL, enabledTypes, weComEnabled, weComWebhookEnabled, weChatEnabled, weComBotEnabled),
 	}
 }
 

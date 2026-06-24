@@ -1337,12 +1337,12 @@ func primaryPathsForEntry(entry catalogEntry) (entryPaths, bool) {
 	if !ok {
 		return entryPaths{}, false
 	}
-	entryDir := filepath.Join(typeDir, entry.ID)
+	entryDir := filepath.ToSlash(filepath.Join(typeDir, entry.ID))
 	return entryPaths{
 		EntryDir:   entryDir,
-		SourcePath: filepath.Join(entryDir, fileName),
-		BundleDir:  filepath.Join("catalog-download", entryDir),
-		BundlePath: filepath.Join("catalog-download", entryDir, fileName),
+		SourcePath: filepath.ToSlash(filepath.Join(entryDir, fileName)),
+		BundleDir:  filepath.ToSlash(filepath.Join("catalog-download", entryDir)),
+		BundlePath: filepath.ToSlash(filepath.Join("catalog-download", entryDir, fileName)),
 	}, true
 }
 
@@ -1629,7 +1629,7 @@ func (s *CatalogIngestService) reconcileParentPluginLinks(
 				continue
 			}
 
-			parentID, ok := pluginIDByEntryDir[filepath.Join("plugins", bundledIn)]
+			parentID, ok := pluginIDByEntryDir[filepath.ToSlash(filepath.Join("plugins", bundledIn))]
 			if !ok {
 				// Parent plugin not present/active this run (orphan, archived, or
 				// arrives later). Leave parent_plugin_id as-is; a future ingest

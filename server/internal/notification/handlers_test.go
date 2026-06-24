@@ -114,7 +114,7 @@ func newNotificationTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	db := setupNotificationTestDB(t)
-	module := New(db, "")
+	module := New(db, "", true, true, true, "", "")
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
 		if userID := c.GetHeader("X-User-ID"); userID != "" {
@@ -238,7 +238,7 @@ func TestGetWorkspaceIDNormalizesWindowsPath(t *testing.T) {
 		t.Fatalf("seed workspace directory: %v", err)
 	}
 
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", true, true, true, "", "")
 	workspaceID, err := svc.getWorkspaceID("device-1", `D:\DEV\myclaw`)
 	if err != nil {
 		t.Fatalf("get workspace id: %v", err)

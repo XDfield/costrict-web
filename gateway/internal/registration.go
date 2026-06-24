@@ -80,21 +80,25 @@ func Heartbeat(serverURL, gatewayID, secret string, currentConns int) (int64, er
 
 func (m *TunnelManager) NotifyAllOnline(serverURL, gatewayID, secret string) {
 	m.mu.RLock()
-	deviceIDs := make([]string, 0, len(m.sessions))
-	for id := range m.sessions {
-		deviceIDs = append(deviceIDs, id)
+	type devInfo struct {
+		id     string
+		connID string
+	}
+	devices := make([]devInfo, 0, len(m.sessions))
+	for id, ms := range m.sessions {
+		devices = append(devices, devInfo{id: id, connID: ms.connID})
 	}
 	m.mu.RUnlock()
 
-	for _, deviceID := range deviceIDs {
-		if err := NotifyOnline(serverURL, gatewayID, deviceID, secret); err != nil {
-			logger.Error("[Gateway] re-notify online failed for device %s: %v", deviceID, err)
+	for _, dev := range devices {
+		if err := NotifyOnline(serverURL, gatewayID, dev.id, dev.connID, secret); err != nil {
+			logger.Error("[Gateway] re-notify online failed for device %s: %v", dev.id, err)
 		}
 	}
 }
 
-func NotifyOnline(serverURL, gatewayID, deviceID, secret string) error {
-	body := map[string]any{"deviceID": deviceID, "gatewayID": gatewayID}
+func NotifyOnline(serverURL, gatewayID, deviceID, connID, secret string) error {
+	body := map[string]any{"deviceID": deviceID, "gatewayID": gatewayID, "connID": connID}
 	data, _ := json.Marshal(body)
 	resp, err := internalPost(serverURL+"/internal/gateway/device/online", secret, data)
 	if err != nil {

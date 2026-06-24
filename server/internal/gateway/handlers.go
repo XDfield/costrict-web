@@ -1,15 +1,19 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
+
+var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 // GatewayRegisterHandler godoc
 // @Summary      Register gateway
@@ -38,11 +42,12 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 		}
 
 		info := &GatewayInfo{
-			ID:          body.GatewayID,
-			Endpoint:    body.Endpoint,
-			InternalURL: body.InternalURL,
-			Region:      body.Region,
-			Capacity:    body.Capacity,
+			ID:            body.GatewayID,
+			Endpoint:      body.Endpoint,
+			InternalURL:   body.InternalURL,
+			Region:        body.Region,
+			Capacity:      body.Capacity,
+			LastHeartbeat: time.Now().UnixMilli(),
 		}
 		if err := registry.Register(info); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register gateway"})
@@ -98,19 +103,43 @@ func GatewayHeartbeatHandler(registry *GatewayRegistry) gin.HandlerFunc {
 // @Success      200  {object}  object{success=boolean}
 // @Failure      400  {object}  object{error=string}
 // @Router       /internal/gateway/device/online [post]
-func DeviceOnlineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceService) gin.HandlerFunc {
+func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
 			DeviceID  string `json:"deviceID" binding:"required"`
 			GatewayID string `json:"gatewayID" binding:"required"`
+			ConnID    string `json:"connID"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
 		}
 
-		registry.BindDevice(body.DeviceID, body.GatewayID)
+		oldGwID, oldConnID := registry.BindDevice(body.DeviceID, body.GatewayID, body.ConnID)
 		_ = deviceSvc.SetOnline(body.DeviceID)
+
+		// If the device was previously bound to a different gateway, close the old session
+		if oldGwID != "" && oldGwID != body.GatewayID {
+			if oldGw := registry.GetGatewayInfo(oldGwID); oldGw != nil {
+				go func() {
+					closeURL := fmt.Sprintf("%s/internal/device/%s/close", oldGw.InternalURL, body.DeviceID)
+					closeBody, _ := json.Marshal(map[string]string{"connID": oldConnID})
+					req, err := http.NewRequest(http.MethodPost, closeURL, bytes.NewReader(closeBody))
+					if err != nil {
+						logger.Error("[GatewayRegistry] failed to create close request for device %s on gateway %s: %v", body.DeviceID, oldGwID, err)
+						return
+					}
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-Internal-Secret", client.InternalSecret())
+					resp, err := closeHTTPClient.Do(req)
+					if err != nil {
+						logger.Warn("[GatewayRegistry] failed to close device %s on old gateway %s: %v", body.DeviceID, oldGwID, err)
+						return
+					}
+					resp.Body.Close()
+				}()
+			}
+		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
@@ -135,6 +164,15 @@ func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceS
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		// Only unbind if the device is currently bound to this gateway.
+		// This prevents a gateway from unbinding a device that has already
+		// reconnected to a different gateway.
+		currentGwID := registry.GetDeviceGatewayID(body.DeviceID)
+		if currentGwID != body.GatewayID {
+			c.JSON(http.StatusOK, gin.H{"success": true})
 			return
 		}
 
@@ -387,12 +425,12 @@ func ExtractBearerToken(r *http.Request) string {
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
-func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, deviceSvc *services.DeviceService) {
+func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
 	gatewayGroup.POST("/:gatewayID/heartbeat", GatewayHeartbeatHandler(registry))
 	gatewayGroup.DELETE("/:gatewayID", GatewayDeregisterHandler(registry))
-	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, deviceSvc))
+	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, client, deviceSvc))
 	gatewayGroup.POST("/device/offline", DeviceOfflineHandler(registry, deviceSvc))
 	gatewayGroup.POST("/device/verify-token", DeviceVerifyTokenHandler(deviceSvc))
 }

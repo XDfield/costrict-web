@@ -25,7 +25,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
@@ -36,6 +38,8 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wechat"
 	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
+	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
+	"github.com/costrict/costrict-web/server/internal/clawagent"
 	"github.com/costrict/costrict-web/server/internal/cloud"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -45,6 +49,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
+	"github.com/costrict/costrict-web/server/internal/leader"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/memory"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -98,6 +103,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	db, err := database.Initialize(cfg.DatabaseURL)
 	if err != nil {
@@ -175,11 +183,15 @@ func main() {
 		JobService: jobSvc,
 		DB:         db,
 	}
-	if err := sched.Start(); err != nil {
-		log.Fatalf("Failed to start scheduler: %v", err)
-	}
-	defer sched.Stop()
 	handlers.SyncScheduler = sched
+	// Only one API replica should run the scheduler.
+	go leader.NewElection(db, "costrict-scheduler", 10*time.Second).Run(ctx, func() {
+		if err := sched.Start(); err != nil {
+			log.Printf("Failed to start scheduler: %v", err)
+		}
+	}, func() {
+		sched.Stop()
+	})
 
 	// Initialize ItemHandler with parser
 	parserSvc := &services.ParserService{}
@@ -355,6 +367,8 @@ func main() {
 			authed.GET("/auth/me", handlers.GetCurrentUser)
 			authed.GET("/auth/identities", handlers.ListBoundIdentities)
 			authed.POST("/auth/bind/start", handlers.StartBindAuth)
+			authed.POST("/auth/bind/confirm-merge", handlers.ConfirmMergeIdentity)
+			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
 
 			usage := authed.Group("/usage")
@@ -466,6 +480,7 @@ func main() {
 				devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
 				devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 				devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
+				devices.PUT("/:deviceID/fingerprint", handlers.UpdateLegacyFingerprintHandler(deviceSvc))
 			}
 
 			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
@@ -488,7 +503,7 @@ func main() {
 
 			authzModule.RegisterAPIRoutes(authed)
 
-			notificationModule := notification.New(db, cfg.AppURL)
+			notificationModule := notification.New(db, cfg.AppURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 			systemRoleModule := systemrole.New(db)
 			systemRoleModule.RegisterRoutes(authed)
 			notificationModule.RegisterRoutes(authed)
@@ -528,8 +543,29 @@ func main() {
 
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
-			channelModule = channel.New(db, &channel.EchoMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
+			channel.RegisterAdapter(wecombot.NewWeComBotAdapter(cfg.Channels.WeComBot))
+			channelModule = channel.New(db, &channel.NoopMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled, cfg.Channels.WeComBotEnabled)
+			channelModule.Service.SetReplyContextStore(channel.NewPostgresReplyContextStore(db))
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
+
+			// Periodically clean up old channel reply contexts; only one replica runs this.
+			replyCtxStore := channelModule.Service.SessionStore()
+			go leader.NewElection(db, "costrict-reply-context-cleanup", 30*time.Second).Run(ctx, func() {
+				go func() {
+					ticker := time.NewTicker(1 * time.Hour)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							replyCtxStore.Cleanup(7 * 24 * time.Hour)
+						}
+					}
+				}()
+			}, func() {
+				// Inner goroutine observes ctx.Done() and exits.
+			})
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
@@ -555,6 +591,9 @@ func main() {
 		redisClient = redis.NewClient(opt)
 		store = gateway.NewRedisStore(redisClient)
 		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
+	} else if db != nil {
+		store = gateway.NewPostgresStore(db)
+		log.Printf("Gateway store: PostgreSQL")
 	} else {
 		store = gateway.NewMemoryStore()
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
@@ -564,28 +603,47 @@ func main() {
 			_ = deviceSvc.SetOffline(id)
 		}
 	})
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
-			if err != nil {
-				log.Printf("[stale-check] error: %v", err)
-			} else if n > 0 {
-				log.Printf("[stale-check] marked %d stale device(s) offline", n)
+	// Only one replica should run the stale-device checker.
+	go leader.NewElection(db, "costrict-stale-device-checker", 10*time.Second).Run(ctx, func() {
+		go func() {
+			ticker := time.NewTicker(2 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
+					if err != nil {
+						log.Printf("[stale-check] error: %v", err)
+					} else if n > 0 {
+						log.Printf("[stale-check] marked %d stale device(s) offline", n)
+					}
+				}
 			}
-		}
-	}()
+		}()
+	}, func() {
+		// Inner goroutine observes ctx.Done() and exits.
+	})
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
+// Initialize ClawAgent personal AI assistant
+	clawRT, err := clawagent.NewFromMain(db, cfg, gatewayRegistry, gatewayClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize ClawAgent: %v", err)
+	}
+	channelModule.Service.SetMessageHandler(clawRT)
+	clawRT.RegisterRoutes(r.Group("/api", middleware.RequireAuth(casdoorEndpoint, jwksProvider)))
+	// Setup OpenAI-compatible API endpoint
+	clawRT.SetupOpenAIHandler(r.Group("/"), middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
-	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, deviceSvc)
+	gateway.RegisterInternalRoutes(internalGroup, gatewayRegistry, gatewayClient, deviceSvc)
 	authzModule.RegisterInternalRoutes(internalGroup)
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
 
-	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL)
+	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
 
 	notificationStore := notification.NewStore(db)
@@ -596,7 +654,42 @@ func main() {
 		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, gatewayClient, gatewayRegistry)
+	// Get wecom-bot adapter if available
+	var wecomBotAdapterForDispatcher interface{}
+	if a, ok := channel.GetAdapter("wecom-bot"); ok {
+		wecomBotAdapterForDispatcher = a
+	}
+
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry)
+// Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
+	if clawRT != nil {
+		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
+			log.Printf("[clawagent] aiEventHandler callback invoked: eventType=%s sessionID=%s deviceID=%s", eventType, sessionID, deviceID)
+			req := clawagent.AIEventRequest{
+				UserID:     userID,
+				EventType:  eventType,
+				SessionID:  sessionID,
+				DeviceID:   deviceID,
+				Path:       path,
+				ActionData: actionData,
+			}
+
+			if channelModule != nil && cfg.Channels.WeComBotEnabled {
+				sender, err := channelModule.Service.CreateSenderForUser(userID, "wecom-bot")
+				if err != nil {
+					log.Printf("[clawagent] failed to create wecom-bot sender: %v", err)
+				} else {
+					req.Sender = sender
+				}
+			}
+
+			if err := clawRT.EventHandler.HandleAIEvent(context.Background(), req); err != nil {
+				log.Printf("[clawagent] AI event handler error: %v", err)
+				return false
+			}
+			return true
+		})
+	}
 
 	// Create cloud module before action handlers so closures can reference it
 	cloudModule = cloud.New(gatewayRegistry, gatewayClient)
@@ -666,10 +759,20 @@ func main() {
 	teamWSGroup.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
 	teamModule.RegisterRoutes(teamAPIGroup, teamWSGroup)
 
-	log.Printf("Server starting on port %s", cfg.Port)
-	if err := r.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
+	go func() {
+		log.Printf("Server starting on port %s", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("Server shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(shutdownCtx)
+	log.Printf("Server shutdown complete")
 }
 
 func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc {

@@ -88,7 +88,7 @@ func insertIDTrustIdentity(t *testing.T, db *gorm.DB, userSubjectID, providerUse
 
 func TestNewDispatcher(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
 	if d == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
@@ -96,7 +96,7 @@ func TestNewDispatcher(t *testing.T) {
 
 func TestDispatcher_Dispatch_UnsupportedEvent(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", nil, nil, nil)
+	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", nil, nil, false, false, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -111,7 +111,7 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, false, false, nil, nil)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -123,7 +123,7 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 
 func TestResolveWeComUserID(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
 
 	// No identity → empty
 	if got := d.resolveWeComUserID("user-none"); got != "" {
@@ -268,7 +268,7 @@ func TestNeedsInteraction(t *testing.T) {
 
 func TestDispatcher_NilStore(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
 
 	// Should not panic with nil store
 	d.Dispatch(DispatchInput{

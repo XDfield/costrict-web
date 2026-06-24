@@ -6,4 +6,5 @@ use (
 	./client/go
 	./gateway
 	./proxy
+	./wecom-bot-proxy
 )

@@ -117,6 +117,57 @@ type EnterpriseCustomer struct {
 
 func (EnterpriseCustomer) TableName() string { return "enterprise_customers" }
 
+// GatewayRegistry 存储已注册的 Gateway 实例信息，用于多副本共享 gateway 状态。
+type GatewayRegistry struct {
+	ID            string    `gorm:"primaryKey;type:text" json:"id"`
+	Endpoint      string    `gorm:"not null;type:text" json:"endpoint"`
+	InternalURL   string    `gorm:"not null;type:text" json:"internalUrl"`
+	Region        string    `gorm:"not null;type:text" json:"region"`
+	Capacity      int       `gorm:"not null;default:0" json:"capacity"`
+	CurrentConns  int       `gorm:"not null;default:0" json:"currentConns"`
+	LastHeartbeat int64     `gorm:"not null;default:0" json:"lastHeartbeat"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+func (GatewayRegistry) TableName() string { return "gateway_registry" }
+
+// GatewayDeviceBinding 存储 device 与 gateway 的绑定关系。
+type GatewayDeviceBinding struct {
+	DeviceID  string    `gorm:"primaryKey;type:text" json:"deviceId"`
+	GatewayID string    `gorm:"not null;type:text;index" json:"gatewayId"`
+	ConnID    string    `gorm:"type:text" json:"connId"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (GatewayDeviceBinding) TableName() string { return "gateway_device_bindings" }
+
+// ServerEpoch 用于集群范围内的 epoch 初始化与共享。
+type ServerEpoch struct {
+	SingletonKey string    `gorm:"primaryKey;type:text;default:'singleton'" json:"singletonKey"`
+	EpochValue   int64     `gorm:"not null" json:"epochValue"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+func (ServerEpoch) TableName() string { return "server_epoch" }
+
+// ChannelReplyContext 存储 Channel webhook 的回复上下文，用于多副本共享。
+type ChannelReplyContext struct {
+	ID              string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ChannelConfigID string    `gorm:"not null;type:text;uniqueIndex:uq_channel_reply_contexts_config_user" json:"channelConfigId"`
+	ExternalUserID  string    `gorm:"not null;type:text;uniqueIndex:uq_channel_reply_contexts_config_user" json:"externalUserId"`
+	UserID          string    `gorm:"not null;type:text;index" json:"userId"`
+	ChannelType     string    `gorm:"not null;type:text" json:"channelType"`
+	ExternalChatID  string    `gorm:"not null;type:text" json:"externalChatId"`
+	ContextToken    string    `gorm:"not null;type:text" json:"contextToken"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func (ChannelReplyContext) TableName() string { return "channel_reply_contexts" }
+
 // SystemSetting 系统级设置 / feature flags（平台管理员配置，全局单例 KV）。
 // 与 UserConfig（per-user KV）区分：此表为全局系统级配置（如维护模式、功能开关）。
 type SystemSetting struct {
@@ -185,6 +236,14 @@ type Device struct {
 	CreatedAt       time.Time      `                                                      json:"createdAt"`
 	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
 	DeletedAt       gorm.DeletedAt `gorm:"index:idx_device_id_deleted_at"                   json:"-"`
+}
+
+type DeviceMigration struct {
+	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	OldDeviceID  string    `gorm:"not null;index:idx_migration_old_user"          json:"oldDeviceId"`
+	NewDeviceID  string    `gorm:"not null;index"                                 json:"newDeviceId"`
+	UserID       string    `gorm:"not null;index:idx_migration_old_user"          json:"userId"`
+	CreatedAt    time.Time `                                                      json:"createdAt"`
 }
 
 type DeviceCommandResult struct {
