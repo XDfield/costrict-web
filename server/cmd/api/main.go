@@ -74,6 +74,7 @@ func main() {
 		MaxAgeDays: 7,
 		Console:    true,
 	})
+	logger.Info("[STATUS-DEBUG] diagnostic build loaded; device-status write tracing enabled (if you see this line, the new image IS running)")
 
 	// Redirect Gin's built-in output to our log files.
 	gin.DefaultWriter = logger.GinWriter()

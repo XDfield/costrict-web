@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*go
 	if err := configureConnectionPool(db); err != nil {
 		log.Printf("Warning: Failed to configure connection pool: %v (continuing with defaults)", err)
 	}
+
+	registerDeviceUpdateTrace(db)
 
 	DB = db
 	return db, nil
@@ -93,6 +96,44 @@ func configureConnectionPool(db *gorm.DB) error {
 
 	log.Printf("Database pool configured: max_open=%d max_idle=%d max_lifetime=%s", maxOpen, maxIdle, maxLifetime)
 	return nil
+}
+
+// registerDeviceUpdateTrace 注册排查用 GORM callback：拦截所有 devices 表的 UPDATE，
+// 打印最终 SQL（含 SET 子句和占位符）+ 业务调用栈。用于定位任何绕过 device_service
+// 已知方法的 device 字段修改（如 Save / struct Updates / 未知路径 / 后台任务）。
+// 排查专用，定位后可移除。
+func registerDeviceUpdateTrace(db *gorm.DB) {
+	db.Callback().Update().After("gorm:update").Register("costrict_trace_devices_update", func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Schema == nil {
+			return
+		}
+		if tx.Statement.Schema.Table != "devices" {
+			return
+		}
+		logger.Warn("[DEVICE-SQL-TRACE] devices UPDATE  sql=%q  vars=%v\n%s",
+			tx.Statement.SQL.String(), tx.Statement.Vars, deviceUpdateTraceStack())
+	})
+}
+
+// deviceUpdateTraceStack 返回过滤掉 gorm / runtime 之后的调用栈，定位 UPDATE 来源代码。
+func deviceUpdateTraceStack() string {
+	pcs := make([]uintptr, 32)
+	n := runtime.Callers(3, pcs)
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	var b strings.Builder
+	for {
+		f, more := frames.Next()
+		if f.File != "" && !strings.Contains(f.File, "gorm.io/") && !strings.Contains(f.File, "/runtime/") {
+			fmt.Fprintf(&b, "    %s:%d  %s\n", f.File, f.Line, f.Function)
+		}
+		if !more {
+			break
+		}
+	}
+	return b.String()
 }
 
 func GetDB() *gorm.DB {
