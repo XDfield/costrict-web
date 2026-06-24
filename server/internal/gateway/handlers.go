@@ -42,11 +42,12 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 		}
 
 		info := &GatewayInfo{
-			ID:          body.GatewayID,
-			Endpoint:    body.Endpoint,
-			InternalURL: body.InternalURL,
-			Region:      body.Region,
-			Capacity:    body.Capacity,
+			ID:            body.GatewayID,
+			Endpoint:      body.Endpoint,
+			InternalURL:   body.InternalURL,
+			Region:        body.Region,
+			Capacity:      body.Capacity,
+			LastHeartbeat: time.Now().UnixMilli(),
 		}
 		if err := registry.Register(info); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register gateway"})

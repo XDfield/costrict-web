@@ -136,6 +136,7 @@ func (GatewayRegistry) TableName() string { return "gateway_registry" }
 type GatewayDeviceBinding struct {
 	DeviceID  string    `gorm:"primaryKey;type:text" json:"deviceId"`
 	GatewayID string    `gorm:"not null;type:text;index" json:"gatewayId"`
+	ConnID    string    `gorm:"type:text" json:"connId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
