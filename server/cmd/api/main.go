@@ -755,10 +755,20 @@ func main() {
 	teamWSGroup.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
 	teamModule.RegisterRoutes(teamAPIGroup, teamWSGroup)
 
-	log.Printf("Server starting on port %s", cfg.Port)
-	if err := r.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
+	go func() {
+		log.Printf("Server starting on port %s", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("Server shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(shutdownCtx)
+	log.Printf("Server shutdown complete")
 }
 
 func requireUserOrDeviceAuth(deviceSvc *services.DeviceService) gin.HandlerFunc {
