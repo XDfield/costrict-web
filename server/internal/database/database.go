@@ -103,16 +103,24 @@ func configureConnectionPool(db *gorm.DB) error {
 // 已知方法的 device 字段修改（如 Save / struct Updates / 未知路径 / 后台任务）。
 // 排查专用，定位后可移除。
 func registerDeviceUpdateTrace(db *gorm.DB) {
-	db.Callback().Update().After("gorm:update").Register("costrict_trace_devices_update", func(tx *gorm.DB) {
-		if tx.Statement == nil || tx.Statement.Schema == nil {
-			return
+	err := db.Callback().Update().After("gorm:update").Register("costrict_trace_devices_update", func(tx *gorm.DB) {
+		table := ""
+		if tx.Statement != nil && tx.Statement.Schema != nil {
+			table = tx.Statement.Schema.Table
 		}
-		if tx.Statement.Schema.Table != "devices" {
+		// 无条件打一条：确认 callback 是否被触发 + 实际表名（排查注册是否生效）。
+		logger.Warn("[DEVICE-SQL-TRACE] UPDATE callback fired: table=%s", table)
+		if table != "devices" {
 			return
 		}
 		logger.Warn("[DEVICE-SQL-TRACE] devices UPDATE  sql=%q  vars=%v\n%s",
 			tx.Statement.SQL.String(), tx.Statement.Vars, deviceUpdateTraceStack())
 	})
+	if err != nil {
+		logger.Warn("[DEVICE-SQL-TRACE] callback register FAILED: %v", err)
+	} else {
+		logger.Info("[DEVICE-SQL-TRACE] callback registered OK on update:after(gorm:update)")
+	}
 }
 
 // deviceUpdateTraceStack 返回过滤掉 gorm / runtime 之后的调用栈，定位 UPDATE 来源代码。
