@@ -74,6 +74,26 @@ func (s *PostgresStore) ListGateways() ([]*GatewayInfo, error) {
 	return out, nil
 }
 
+func (s *PostgresStore) GetGateway(gatewayID string) (*GatewayInfo, error) {
+	var row models.GatewayRegistry
+	err := s.db.Where("id = ?", gatewayID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("gateway %s not found", gatewayID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &GatewayInfo{
+		ID:            row.ID,
+		Endpoint:      row.Endpoint,
+		InternalURL:   row.InternalURL,
+		Region:        row.Region,
+		Capacity:      row.Capacity,
+		CurrentConns:  row.CurrentConns,
+		LastHeartbeat: row.LastHeartbeat,
+	}, nil
+}
+
 func (s *PostgresStore) RemoveGateway(gatewayID string) error {
 	return s.db.Delete(&models.GatewayRegistry{ID: gatewayID}).Error
 }
@@ -94,14 +114,34 @@ func (s *PostgresStore) RemoveGatewayWithDevices(gatewayID string) ([]string, er
 	return deviceIDs, err
 }
 
-func (s *PostgresStore) BindDevice(deviceID, gatewayID string) error {
-	return s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "device_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"gateway_id", "updated_at"}),
-	}).Create(&models.GatewayDeviceBinding{
-		DeviceID:  deviceID,
-		GatewayID: gatewayID,
-	}).Error
+func (s *PostgresStore) BindDevice(deviceID, gatewayID, connID string) (string, string, error) {
+	var oldGatewayID, oldConnID string
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var existing models.GatewayDeviceBinding
+		err := tx.Where("device_id = ?", deviceID).First(&existing).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			oldGatewayID = ""
+			oldConnID = ""
+		} else {
+			oldGatewayID = existing.GatewayID
+			oldConnID = existing.ConnID
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "device_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"gateway_id", "conn_id", "updated_at"}),
+		}).Create(&models.GatewayDeviceBinding{
+			DeviceID:  deviceID,
+			GatewayID: gatewayID,
+			ConnID:    connID,
+		}).Error
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return oldGatewayID, oldConnID, nil
 }
 
 func (s *PostgresStore) UnbindDevice(deviceID string) error {

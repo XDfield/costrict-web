@@ -384,11 +384,15 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=conflict&state="+state, nil)
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "identity_already_bound") {
-		t.Fatalf("expected identity_already_bound error, got %s", w.Body.String())
+	location := w.Header().Get("Location")
+	if !strings.Contains(location, "bind=conflict") {
+		t.Fatalf("expected redirect with bind=conflict, got %q", location)
+	}
+	if !strings.Contains(location, "merge_token=") {
+		t.Fatalf("expected redirect with merge_token, got %q", location)
 	}
 }
 
@@ -413,8 +417,8 @@ func TestListRepositories_Empty(t *testing.T) {
 
 func TestListRepositories_WithData(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-l1", Name: "alpha", OwnerID: "u1"})
-	database.DB.Create(&models.Repository{ID: "repo-l2", Name: "beta", OwnerID: "u2"})
+	database.DB.Create(&models.Repository{ID: "repo-l1", Name: "alpha", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.Repository{ID: "repo-l2", Name: "beta", OwnerID: "u2", Visibility: "public"})
 
 	w := get(newRepoRouter(""), "/api/repositories")
 	if w.Code != http.StatusOK {
@@ -543,7 +547,7 @@ func TestCreateRepository_SyncType_Success(t *testing.T) {
 
 func TestGetRepository_Found(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-g1", Name: "get-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-g1", Name: "get-repo", OwnerID: "u1", Visibility: "public"})
 
 	w := get(newRepoRouter(""), "/api/repositories/repo-g1")
 	if w.Code != http.StatusOK {
@@ -571,6 +575,7 @@ func TestGetRepository_NotFound(t *testing.T) {
 func TestUpdateRepository_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-u1", Name: "old-name", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.RepoMember{ID: "mem-u1", RepoID: "repo-u1", UserID: "u1", Role: "owner"})
 
 	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u1", map[string]interface{}{
 		"name": "new-name", "visibility": "public",
@@ -593,14 +598,15 @@ func TestUpdateRepository_NotFound(t *testing.T) {
 	w := putJSON(newRepoRouter("u1"), "/api/repositories/no-such", map[string]interface{}{
 		"name": "x",
 	})
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
 	}
 }
 
 func TestUpdateRepository_PartialUpdate(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-u2", Name: "partial-repo", DisplayName: "Old Display", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-u2", RepoID: "repo-u2", UserID: "u1", Role: "owner"})
 
 	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u2", map[string]interface{}{
 		"displayName": "New Display",
@@ -625,6 +631,7 @@ func TestUpdateRepository_PartialUpdate(t *testing.T) {
 func TestDeleteRepository_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{ID: "repo-d1", Name: "del-repo", OwnerID: "u1"})
+	database.DB.Create(&models.RepoMember{ID: "mem-d1", RepoID: "repo-d1", UserID: "u1", Role: "owner"})
 
 	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-d1")
 	if w.Code != http.StatusOK {
@@ -644,6 +651,7 @@ func TestDeleteRepository_Success(t *testing.T) {
 
 func TestListRepositoryMembers_Empty(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-no-members", Name: "no-members-repo", OwnerID: "u1", Visibility: "public"})
 
 	w := get(newRepoRouter(""), "/api/repositories/repo-no-members/members")
 	if w.Code != http.StatusOK {
@@ -659,7 +667,7 @@ func TestListRepositoryMembers_Empty(t *testing.T) {
 
 func TestListRepositoryMembers_WithMembers(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-m1", Name: "member-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-m1", Name: "member-repo", OwnerID: "u1", Visibility: "public"})
 	database.DB.Create(&models.RepoMember{ID: "mem-m1", RepoID: "repo-m1", UserID: "u1", Role: "owner"})
 	database.DB.Create(&models.RepoMember{ID: "mem-m2", RepoID: "repo-m1", UserID: "u2", Role: "member"})
 
@@ -773,7 +781,7 @@ func TestRemoveRepositoryMember_Success(t *testing.T) {
 
 func TestGetRepositoryRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1", Visibility: "public"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", RepoID: "repo-gr1", OwnerID: "u1",
 	})
@@ -791,6 +799,7 @@ func TestGetRepositoryRegistry_Found(t *testing.T) {
 
 func TestGetRepositoryRegistry_NotFound(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "no-such-repo", Name: "no-repo", OwnerID: "u1", Visibility: "public"})
 	w := get(newRepoRouter(""), "/api/repositories/no-such-repo/registry")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
@@ -799,7 +808,7 @@ func TestGetRepositoryRegistry_NotFound(t *testing.T) {
 
 func TestGetRepositoryRegistry_ExternalRegistryNotReturned(t *testing.T) {
 	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1"})
+	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1", Visibility: "public"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", RepoID: "repo-gr2", OwnerID: "u1",
 	})

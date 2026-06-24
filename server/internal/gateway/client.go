@@ -30,6 +30,11 @@ func NewClient(internalSecret string) *Client {
 	}
 }
 
+// InternalSecret returns the shared secret used for gateway-to-server authentication.
+func (c *Client) InternalSecret() string {
+	return c.internalSecret
+}
+
 func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Request, w http.ResponseWriter) error {
 	target := fmt.Sprintf("%s/device/%s/proxy%s", gatewayInternalURL, deviceID, r.URL.Path)
 	if r.URL.RawQuery != "" {

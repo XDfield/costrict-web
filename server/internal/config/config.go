@@ -47,6 +47,25 @@ type Config struct {
 	// deployment only needs to set BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS. Empty
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
+	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
+}
+
+// ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
+type ClawAgentConfig struct {
+	EncryptionKey string // AES-256-GCM encryption key for API keys
+	Session       ClawAgentSessionConfig
+}
+
+type ClawAgentSessionConfig struct {
+	DailyResetHour               int // Daily reset hour for direct sessions (default 4)
+	GroupIdleMinutes             int // Idle timeout for group sessions in minutes (default 30)
+	EventIdleMinutes             int // Idle timeout for event sessions in minutes (default 60)
+	TaskIdleMinutes              int // Idle timeout for task sessions in minutes (default 120)
+	PruneAfterDays               int // Delete archived sessions after N days (default 30)
+	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
+	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
+	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
+	NotificationDelaySeconds    int // Delay before sending AI notification to user (default 30)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -63,9 +82,12 @@ type DeptSyncConfig struct {
 type ChannelSystemConfig struct {
 	EnabledTypes []string // Deprecated; use individual enabled flags below
 	WeCom        WeComSystemConfig
+	WeComBot     WeComBotSystemConfig
 	// Individual channel enable flags (system-level availability)
+	WebhookEnabled      bool `mapstructure:"CHANNEL_WEBHOOK_ENABLED"`
 	WeComEnabled        bool `mapstructure:"CHANNEL_WECOM_ENABLED"`
 	WeComWebhookEnabled bool `mapstructure:"CHANNEL_WECOM_WEBHOOK_ENABLED"`
+	WeComBotEnabled     bool `mapstructure:"CHANNEL_WECOM_BOT_ENABLED"`
 	WeChatEnabled       bool `mapstructure:"CHANNEL_WECHAT_ENABLED"`
 }
 
@@ -75,6 +97,11 @@ type WeComSystemConfig struct {
 	Secret         string
 	Token          string
 	EncodingAESKey string
+}
+
+type WeComBotSystemConfig struct {
+	ProxyURL  string
+	AuthToken string
 }
 
 type CasdoorConfig struct {
@@ -187,15 +214,35 @@ func Load() *Config {
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
-			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
-			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", true),
-			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", true),
+			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", false),
+				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
+			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", false),
+			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", false),
+			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
 			WeCom: WeComSystemConfig{
 				CorpID:         getEnv("WECOM_CORP_ID", ""),
 				AgentID:        getEnvInt("WECOM_AGENT_ID", 0),
 				Secret:         getEnv("WECOM_SECRET", ""),
 				Token:          getEnv("WECOM_TOKEN", ""),
 				EncodingAESKey: getEnv("WECOM_ENCODING_AES_KEY", ""),
+			},
+			WeComBot: WeComBotSystemConfig{
+				ProxyURL:  getEnv("WECOM_BOT_PROXY_URL", ""),
+				AuthToken: getEnv("WECOM_BOT_PROXY_AUTH_TOKEN", ""),
+			},
+		},
+		ClawAgent: ClawAgentConfig{
+			EncryptionKey: getEnv("CLAWAGENT_ENCRYPTION_KEY", ""),
+			Session: ClawAgentSessionConfig{
+				DailyResetHour:               getEnvInt("CLAWAGENT_SESSION_DAILY_RESET_HOUR", 4),
+				GroupIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_GROUP_IDLE_MINUTES", 30),
+				EventIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_EVENT_IDLE_MINUTES", 60),
+				TaskIdleMinutes:              getEnvInt("CLAWAGENT_SESSION_TASK_IDLE_MINUTES", 120),
+				PruneAfterDays:               getEnvInt("CLAWAGENT_SESSION_PRUNE_AFTER_DAYS", 30),
+				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
+				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
+				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
+					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
 	}

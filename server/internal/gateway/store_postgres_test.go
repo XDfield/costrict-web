@@ -106,8 +106,21 @@ func TestPostgresStore_DeviceBinding(t *testing.T) {
 		t.Fatalf("RegisterGateway: %v", err)
 	}
 
-	if err := s.BindDevice("dev-1", "gw-bind"); err != nil {
+	oldGw, oldConn, err := s.BindDevice("dev-1", "gw-bind", "conn-1")
+	if err != nil {
 		t.Fatalf("BindDevice: %v", err)
+	}
+	if oldGw != "" || oldConn != "" {
+		t.Fatalf("first bind should return empty old values, got gw=%q conn=%q", oldGw, oldConn)
+	}
+
+	// Rebind to verify old values are returned.
+	oldGw2, oldConn2, err := s.BindDevice("dev-1", "gw-bind", "conn-2")
+	if err != nil {
+		t.Fatalf("BindDevice rebind: %v", err)
+	}
+	if oldGw2 != "gw-bind" || oldConn2 != "conn-1" {
+		t.Fatalf("rebind should return old values gw=gw-bind conn=conn-1, got gw=%q conn=%q", oldGw2, oldConn2)
 	}
 
 	gwID, err := s.GetDeviceGateway("dev-1")
@@ -142,10 +155,10 @@ func TestPostgresStore_RemoveGatewayWithDevices(t *testing.T) {
 	if err := s.RegisterGateway(gw); err != nil {
 		t.Fatalf("RegisterGateway: %v", err)
 	}
-	if err := s.BindDevice("dev-rm-1", "gw-rm"); err != nil {
+	if _, _, err := s.BindDevice("dev-rm-1", "gw-rm", "conn-rm-1"); err != nil {
 		t.Fatalf("BindDevice: %v", err)
 	}
-	if err := s.BindDevice("dev-rm-2", "gw-rm"); err != nil {
+	if _, _, err := s.BindDevice("dev-rm-2", "gw-rm", "conn-rm-2"); err != nil {
 		t.Fatalf("BindDevice: %v", err)
 	}
 

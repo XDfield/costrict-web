@@ -136,6 +136,7 @@ func (GatewayRegistry) TableName() string { return "gateway_registry" }
 type GatewayDeviceBinding struct {
 	DeviceID  string    `gorm:"primaryKey;type:text" json:"deviceId"`
 	GatewayID string    `gorm:"not null;type:text;index" json:"gatewayId"`
+	ConnID    string    `gorm:"type:text" json:"connId"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -235,6 +236,14 @@ type Device struct {
 	CreatedAt       time.Time      `                                                      json:"createdAt"`
 	UpdatedAt       time.Time      `                                                      json:"updatedAt"`
 	DeletedAt       gorm.DeletedAt `gorm:"index:idx_device_id_deleted_at"                   json:"-"`
+}
+
+type DeviceMigration struct {
+	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	OldDeviceID  string    `gorm:"not null;index:idx_migration_old_user"          json:"oldDeviceId"`
+	NewDeviceID  string    `gorm:"not null;index"                                 json:"newDeviceId"`
+	UserID       string    `gorm:"not null;index:idx_migration_old_user"          json:"userId"`
+	CreatedAt    time.Time `                                                      json:"createdAt"`
 }
 
 type DeviceCommandResult struct {

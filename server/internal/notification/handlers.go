@@ -2,6 +2,7 @@ package notification
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -324,6 +325,12 @@ func ListMyChannelsHandler(svc *NotificationService) gin.HandlerFunc {
 		if userID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 			return
+		}
+
+		// Ensure wecom-bot channel exists (getOrCreate logic)
+		if err := svc.ensureWeComBotChannel(userID); err != nil {
+			// Log error but don't fail the request - this is a nice-to-have feature
+			log.Printf("Failed to ensure wecom-bot channel for user %s: %v", userID, err)
 		}
 
 		var channels []models.UserNotificationChannel

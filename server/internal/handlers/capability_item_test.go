@@ -1786,13 +1786,8 @@ func TestCreateItemDirect_AnonymousCreatedBy(t *testing.T) {
 	w := postJSON(newItemRouter(""), "/api/items", map[string]interface{}{
 		"itemType": "skill", "name": "Anon Skill",
 	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var item map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&item)
-	if item["createdBy"] != "anonymous" {
-		t.Fatalf("expected createdBy=anonymous, got %v", item["createdBy"])
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -2947,3 +2942,126 @@ func TestTransferItemFromPublicToRepo_ThenVisibleInMyItems(t *testing.T) {
 
 // ensure fmt is used
 var _ = fmt.Sprintf
+
+// --- Ownership protection tests (IDOR fix) ---
+
+func TestUpdateItem_NonOwner_Forbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idor1", Name: "idor-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idor1", RegistryID: "reg-idor1", RepoID: "repo-1", Slug: "victim-item", ItemType: "skill",
+		Name: "Victim", Status: "active", CreatedBy: "owner1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
+	})
+
+	// Different user attempts to update
+	w := putJSON(newItemRouter("attacker"), "/api/items/item-idor1", map[string]interface{}{
+		"name": "Hacked Name",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateItem_Owner_Allowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idor2", Name: "idor-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idor2", RegistryID: "reg-idor2", RepoID: "repo-1", Slug: "owner-item", ItemType: "skill",
+		Name: "Original", Status: "active", CreatedBy: "owner1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
+	})
+	database.DB.Create(&models.CapabilityVersion{
+		ID: "ver-idor2-1", ItemID: "item-idor2", Revision: 1, Content: "", ContentMD5: "", CreatedBy: "owner1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := putJSON(newItemRouter("owner1"), "/api/items/item-idor2", map[string]interface{}{
+		"name": "Updated By Owner",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteItem_NonOwner_Forbidden(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idor3", Name: "idor-reg3", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idor3", RegistryID: "reg-idor3", RepoID: "repo-1", Slug: "delete-victim", ItemType: "skill",
+		Name: "Victim", Status: "active", CreatedBy: "owner1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := deleteReq(newItemRouter("attacker"), "/api/items/item-idor3")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteItem_Owner_Allowed(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idor4", Name: "idor-reg4", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idor4", RegistryID: "reg-idor4", RepoID: "repo-1", Slug: "owner-delete", ItemType: "skill",
+		Name: "Delete Me", Status: "active", CreatedBy: "owner1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := deleteReq(newItemRouter("owner1"), "/api/items/item-idor4")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateItem_NonOwner_CannotInjectContent(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-idor5", Name: "idor-reg5", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-idor5", RegistryID: "reg-idor5", RepoID: "repo-1", Slug: "content-victim", ItemType: "skill",
+		Name: "Victim", Status: "active", CreatedBy: "owner1", Metadata: datatypes.JSON([]byte("{}")),
+		Content: "original content", CurrentRevision: 1,
+	})
+
+	// Attacker tries to inject malicious content
+	w := putJSON(newItemRouter("attacker"), "/api/items/item-idor5", map[string]interface{}{
+		"content": "MALICIOUS CODE INJECTED",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify content was not changed
+	var item models.CapabilityItem
+	database.DB.First(&item, "id = ?", "item-idor5")
+	if item.Content != "original content" {
+		t.Fatalf("content should not have changed, got: %s", item.Content)
+	}
+}
+
+func TestCreateItem_ServerEnforcesCreatedBy(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-cb1", Name: "cb-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "owner1",
+	})
+
+	// User tries to set createdBy to a different user
+	w := postJSON(newItemRouter("realuser"), "/api/registries/reg-cb1/items", map[string]interface{}{
+		"slug": "spoofed-item", "itemType": "skill", "name": "Spoofed", "createdBy": "someone-else",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var item map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&item)
+	// createdBy should be the authenticated user, not the client-provided value
+	if item["createdBy"] != "realuser" {
+		t.Fatalf("expected createdBy=realuser, got %v", item["createdBy"])
+	}
+}

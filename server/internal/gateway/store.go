@@ -10,10 +10,11 @@ type Store interface {
 	RegisterGateway(info *GatewayInfo) error
 	HeartbeatGateway(gatewayID string, currentConns int) error
 	ListGateways() ([]*GatewayInfo, error)
+	GetGateway(gatewayID string) (*GatewayInfo, error)
 	RemoveGateway(gatewayID string) error
 	RemoveGatewayWithDevices(gatewayID string) ([]string, error)
 
-	BindDevice(deviceID, gatewayID string) error
+	BindDevice(deviceID, gatewayID, connID string) (oldGatewayID, oldConnID string, err error)
 	UnbindDevice(deviceID string) error
 	GetDeviceGateway(deviceID string) (string, error)
 	ListDevicesByGateway(gatewayID string) ([]string, error)
@@ -29,6 +30,7 @@ type MemoryStore struct {
 	gateways      map[string]*GatewayInfo
 	heartbeats    map[string]int64
 	deviceGateway map[string]string
+	deviceConnID  map[string]string
 	epoch         int64
 }
 
@@ -37,6 +39,7 @@ func NewMemoryStore() Store {
 		gateways:      make(map[string]*GatewayInfo),
 		heartbeats:    make(map[string]int64),
 		deviceGateway: make(map[string]string),
+		deviceConnID:  make(map[string]string),
 	}
 }
 
@@ -77,6 +80,20 @@ func (s *MemoryStore) ListGateways() ([]*GatewayInfo, error) {
 	return result, nil
 }
 
+func (s *MemoryStore) GetGateway(gatewayID string) (*GatewayInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	gw, ok := s.gateways[gatewayID]
+	if !ok {
+		return nil, fmt.Errorf("gateway %s not found", gatewayID)
+	}
+	copy := *gw
+	if hb, ok := s.heartbeats[gatewayID]; ok {
+		copy.LastHeartbeat = hb
+	}
+	return &copy, nil
+}
+
 func (s *MemoryStore) RemoveGateway(gatewayID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,22 +112,27 @@ func (s *MemoryStore) RemoveGatewayWithDevices(gatewayID string) ([]string, erro
 		if gwID == gatewayID {
 			deviceIDs = append(deviceIDs, devID)
 			delete(s.deviceGateway, devID)
+			delete(s.deviceConnID, devID)
 		}
 	}
 	return deviceIDs, nil
 }
 
-func (s *MemoryStore) BindDevice(deviceID, gatewayID string) error {
+func (s *MemoryStore) BindDevice(deviceID, gatewayID, connID string) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldGw := s.deviceGateway[deviceID]
+	oldConn := s.deviceConnID[deviceID]
 	s.deviceGateway[deviceID] = gatewayID
-	return nil
+	s.deviceConnID[deviceID] = connID
+	return oldGw, oldConn, nil
 }
 
 func (s *MemoryStore) UnbindDevice(deviceID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.deviceGateway, deviceID)
+	delete(s.deviceConnID, deviceID)
 	return nil
 }
 

@@ -86,7 +86,7 @@ func countNotifications(t *testing.T, db *gorm.DB) int64 {
 
 func TestBroadcast_AllScope(t *testing.T) {
 	db := setupBroadcastTestDB(t)
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", false, false, false, "", "")
 
 	sent, err := svc.Broadcast(BroadcastScope{Type: "all"}, "Hi", "Body", false, "operator")
 	if err != nil {
@@ -102,7 +102,7 @@ func TestBroadcast_AllScope(t *testing.T) {
 
 func TestBroadcast_OrganizationScope(t *testing.T) {
 	db := setupBroadcastTestDB(t)
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", false, false, false, "", "")
 
 	sent, err := svc.Broadcast(BroadcastScope{Type: "organization", TargetID: "acme"}, "Hi", "Body", false, "operator")
 	if err != nil {
@@ -118,7 +118,7 @@ func TestBroadcast_OrganizationScope(t *testing.T) {
 
 func TestBroadcast_UserScope(t *testing.T) {
 	db := setupBroadcastTestDB(t)
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", false, false, false, "", "")
 
 	sent, err := svc.Broadcast(BroadcastScope{Type: "user", TargetID: "u3"}, "Hi", "Body", false, "operator")
 	if err != nil {
@@ -134,7 +134,7 @@ func TestBroadcast_UserScope(t *testing.T) {
 
 func TestBroadcast_InvalidScope(t *testing.T) {
 	db := setupBroadcastTestDB(t)
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", false, false, false, "", "")
 
 	if _, err := svc.Broadcast(BroadcastScope{Type: "bogus"}, "Hi", "Body", false, "operator"); err == nil {
 		t.Fatalf("expected error for invalid scope")
@@ -146,7 +146,7 @@ func TestBroadcast_InvalidScope(t *testing.T) {
 
 func TestBroadcast_EmptyOrganizationReturnsZero(t *testing.T) {
 	db := setupBroadcastTestDB(t)
-	svc := NewNotificationService(db, "")
+	svc := NewNotificationService(db, "", false, false, false, "", "")
 
 	sent, err := svc.Broadcast(BroadcastScope{Type: "organization", TargetID: "nonexistent"}, "Hi", "Body", false, "operator")
 	if err != nil {

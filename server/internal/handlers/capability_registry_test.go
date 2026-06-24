@@ -61,6 +61,8 @@ func TestListRegistries_Anonymous_OnlyPublic(t *testing.T) {
 
 func TestListRegistries_FilterByRepoId(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-filter", Name: "filter-repo", OwnerID: "u1", Visibility: "public"})
+	database.DB.Create(&models.Repository{ID: "repo-other", Name: "other-repo", OwnerID: "u1", Visibility: "private"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "repo-r2", Name: "repo-reg2", SourceType: "internal", RepoID: "repo-filter", OwnerID: "u1",
 	})
@@ -69,6 +71,9 @@ func TestListRegistries_FilterByRepoId(t *testing.T) {
 	})
 
 	w := get(newRegistryRouter(""), "/api/registries?repoId=repo-filter")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	var body map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&body)
 	regs := body["registries"].([]interface{})
@@ -201,6 +206,7 @@ func TestCreateRegistry_MissingRequired(t *testing.T) {
 
 func TestGetRegistry_Found(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-1", Name: "test-repo", OwnerID: "u1", Visibility: "public"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-get1", Name: "get-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -230,6 +236,8 @@ func TestGetRegistry_NotFound(t *testing.T) {
 
 func TestUpdateRegistry_Success(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-1", Name: "test-repo", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.RepoMember{ID: "mem-repo1", RepoID: "repo-1", UserID: "u1", Role: "owner"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-upd1", Name: "old-name", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -264,6 +272,8 @@ func TestUpdateRegistry_NotFound(t *testing.T) {
 
 func TestDeleteRegistry_Success(t *testing.T) {
 	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{ID: "repo-1", Name: "test-repo", OwnerID: "u1", Visibility: "private"})
+	database.DB.Create(&models.RepoMember{ID: "mem-repo1", RepoID: "repo-1", UserID: "u1", Role: "owner"})
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-del1", Name: "del-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})

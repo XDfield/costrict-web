@@ -48,6 +48,9 @@ func SetupRouter(manager *TunnelManager, cfg *Config) *gin.Engine {
 	// Device tunnel: authenticated by device token
 	r.GET("/device/:deviceID/tunnel", DeviceTunnelHandler(manager, cfg))
 
+	// Device close: called by API server via internal secret
+	r.POST("/internal/device/:deviceID/close", InternalSecretAuth(cfg.InternalSecret), DeviceCloseHandler(manager))
+
 	// Device proxy: only callable by API server via internal secret
 	r.Any("/device/:deviceID/proxy/*path", InternalSecretAuth(cfg.InternalSecret), DeviceProxyHandler(manager))
 
