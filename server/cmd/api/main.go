@@ -480,6 +480,7 @@ func main() {
 				devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
 				devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 				devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
+				devices.PUT("/:deviceID/fingerprint", handlers.UpdateLegacyFingerprintHandler(deviceSvc))
 			}
 
 			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))

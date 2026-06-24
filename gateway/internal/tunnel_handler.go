@@ -81,21 +81,39 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 			}
 		}()
 
-		manager.Register(deviceID, session)
+		connID := manager.Register(deviceID, session)
 
 		go func() {
-			if err := NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
+			if err := NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID, connID, cfg.InternalSecret); err != nil {
 				logger.Error("[Gateway] notify online failed for device %s: %v", deviceID, err)
 			}
 		}()
 
 		<-session.CloseChan()
 
-		manager.UnregisterIf(deviceID, session)
-		go func() {
-			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
-				logger.Error("[Gateway] notify offline failed for device %s: %v", deviceID, err)
-			}
-		}()
+		if manager.UnregisterIf(deviceID, session) {
+			go func() {
+				if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {
+					logger.Error("[Gateway] notify offline failed for device %s: %v", deviceID, err)
+				}
+			}()
+		}
+	}
+}
+
+// DeviceCloseHandler closes a device's tunnel session.
+// Called by the API server when a device reconnects to a different gateway.
+// The request body may include a connID to ensure only the matching session
+// is closed (prevents killing a reconnected session).
+func DeviceCloseHandler(manager *TunnelManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		deviceID := c.Param("deviceID")
+		var body struct {
+			ConnID string `json:"connID"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		logger.Info("[Gateway] closing device session %s (connID=%s, requested by server)", deviceID, body.ConnID)
+		manager.CloseIfConnID(deviceID, body.ConnID)
+		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
 }

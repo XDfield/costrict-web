@@ -25,6 +25,7 @@ import (
 // @Failure      401   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string,device=object,token=string}  "Same user: returns existing device and token"
 // @Failure      409   {object}  object{error=string,deviceId=string}             "Different user: unauthorized device registration"
+// @Failure      409   {object}  object{error=string,recoveryAvailable=bool,recoverableDevice=object} "Recovery available: user must decide"
 // @Failure      500   {object}  object{error=string}
 // @Router       /devices [post]
 func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
@@ -43,6 +44,20 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 
 		device, token, err := svc.RegisterDevice(userID, req)
 		if err != nil {
+			var recoveryErr *services.RecoveryError
+			if errors.As(err, &recoveryErr) {
+				c.JSON(http.StatusConflict, gin.H{
+					"error":             "device recovery available",
+					"recoveryAvailable": true,
+					"recoverableDevice": gin.H{
+						"deviceId":        recoveryErr.RecoverableDeviceID,
+						"displayName":     recoveryErr.DisplayName,
+						"platform":        recoveryErr.Platform,
+						"lastConnectedAt": recoveryErr.LastConnectedAt,
+					},
+				})
+				return
+			}
 			if errors.Is(err, services.ErrDeviceOwnedByCaller) {
 				// Same user re-registering: return existing device info with token
 				c.JSON(http.StatusConflict, gin.H{
@@ -177,8 +192,46 @@ func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 	}
 }
 
+// UpdateLegacyFingerprintHandler godoc
+// @Summary      Update legacy fingerprint
+// @Description  Record the current machine fingerprint (MAC-based hash) for a device, enabling recovery when hardware changes
+// @Tags         devices
+// @Accept       json
+// @Produce      json
+// @Param        deviceID  path      string  true  "Device ID"
+// @Param        body      body      object{legacyDeviceId=string}  true  "Legacy fingerprint"
+// @Success      200   {object}  object{ok=bool}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /devices/{deviceID}/fingerprint [put]
+func UpdateLegacyFingerprintHandler(svc *services.DeviceService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString(middleware.UserIDKey)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		deviceID := c.Param("deviceID")
+		var req struct {
+			LegacyDeviceID string `json:"legacyDeviceId"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		if err := svc.UpdateLegacyFingerprint(deviceID, userID, req.LegacyDeviceID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update fingerprint"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
 // UpdateDeviceHandler godoc
-// @Summary      Update device
 // @Description  Update device information
 // @Tags         devices
 // @Accept       json

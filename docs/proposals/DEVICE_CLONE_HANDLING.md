@@ -3,7 +3,7 @@
 > - 状态：✅ 已完成
 > - 涉及仓库：
 >   - `cs-cloud`：`internal/provider/machine.go`，`internal/provider/machine_test.go`，`internal/device/client.go`，`internal/device/storage.go`
->   - `costrict-web/gateway`：`gateway/internal/manager.go`，`gateway/internal/tunnel_handler.go`，`gateway/internal/router.go`
+>   - `costrict-web/gateway`：`gateway/internal/manager.go`，`gateway/internal/tunnel_handler.go`，`gateway/internal/router.go`，`gateway/internal/registration.go`
 >   - `costrict-web/server`：`server/internal/gateway/store.go`，`server/internal/gateway/store_redis.go`，`server/internal/gateway/registry.go`，`server/internal/gateway/handlers.go`，`server/internal/gateway/client.go`，`server/cmd/api/main.go`
 > - 说明：克隆设备处理方案已完整实现并验证通过。
 
@@ -64,15 +64,20 @@ cs-cloud 设备端通过 `device_id` 标识设备身份，`device_id` 存储在 
 │  GenerateOldMachineID()      │  UnregisterIf 返回 bool       │
 │  └─ 复刻旧哈希算法            │  └─ 仅活跃 session 发离线通知   │
 │     用于新注册的 legacyDeviceId│                               │
-│                              │                               │
-│  device_v2.json 分文件管理     │  适用：共享 device.json 的克隆   │
-│  └─ 新设备 → device_v2.json   │  效果：后启动踢先启动，单点在线    │
-│  └─ 旧设备 → device.json     │                               │
-│      + 迁移到 device_v2.json  │                               │
+│                              │  connID 连接身份链             │
+│  device_v2.json 分文件管理     │  └─ Register 生成唯一 connID   │
+│  └─ 新设备 → device_v2.json   │  └─ NotifyOnline 携带 connID   │
+│  └─ 旧设备 → device.json     │  └─ BindDevice 存储/返回 connID │
+│      + 迁移到 device_v2.json  │  └─ CloseIfConnID 精准关闭     │
 │  └─ 文件存在性 → 迁移检测     │                               │
-│                              │                               │
-│  适用：所有设备                │                               │
+│                              │  BindDevice Lua 原子操作       │
+│  Register() auth 前置校验     │  └─ read+write 单次 EVAL       │
+│  └─ 已迁移设备也检查用户凭证   │                               │
+│                              │  DeviceOffline 归属校验        │
+│  适用：所有设备                │  └─ unbind 前验证 gateway 归属 │
 │  效果：统一随机 ID，消除碰撞    │                               │
+│                              │  适用：共享 device.json 的克隆   │
+│                              │  效果：后启动踢先启动，单点在线    │
 └──────────────────────────────┴───────────────────────────────┘
 ```
 
@@ -191,17 +196,20 @@ Register():
 │   │   ├─ 是 → **已迁移/新设备**
 │   │   │      └─ owner 变更?
 │   │   │          ├─ 是 → ClearDeviceV2() → 继续到首次注册
-│   │   │          └─ 否 → 返回 existing ✅
+│   │   │          └─ 否 → auth() 校验用户凭证
+│   │   │                 ├─ 成功 → 返回 existing ✅
+│   │   │                 └─ 失败 → 返回 error（触发重新登录）
 │   │   │
 │   │   └─ 否 → **旧设备，需迁移**
-│   │          ├─ auth()
+│   │          ├─ auth()（失败 → 返回 error，触发重新登录）
 │   │          ├─ newID = GenerateMachineID()
 │   │          ├─ enroll(deviceId=newID, legacyDeviceId=existing.DeviceID)
 │   │          │   └─ Server: migrateFromLegacyDeviceID → 更新记录
 │   │          ├─ 成功 → SaveDevice(info) → 写入 device_v2.json
 │   │          │      → ClearDevice() → 删除旧 device.json
 │   │          │      → 返回
-│   │          └─ 失败 → log warning → 返回 existing（回退旧 device.json）
+│   │          └─ 失败 → auth 错误? → 返回 existing + error（触发登录）
+│   │                   瞬态错误? → log warning → 返回 existing（降级）
 │   │
 │   └─ nil → **首次注册**
 │          ├─ auth()
@@ -211,6 +219,14 @@ Register():
 │          ├─ SaveDevice(info) → 写入 device_v2.json
 │          └─ 返回
 ```
+
+**关键设计决策：**
+
+1. **已迁移设备增加 auth 前置校验**：device_v2.json 存在且 owner 匹配时，不再直接返回缓存信息，而是先调用 `auth()` 验证用户凭证。若凭证无效（token 过期且 refresh 失败），返回 error 触发重新登录，而非静默继续。
+
+2. **迁移失败区分错误类型**：
+   - **auth 错误**（401/403/token refresh failed）：上抛 error，上层捕获后触发重新登录。
+   - **瞬态错误**（Server 500、网络超时）：`logger.Warn` + 返回 existing，设备继续工作，下次启动重试。
 
 关键变化：**不再使用 `GenerateOldMachineID()` 做迁移判断**。迁移检测改为文件存在性检查——`device_v2.json` 是否存在。旧 ID 从 `device.json` 文件中直接读取（而非重新计算），因此 MAC 变化不影响迁移：
 
@@ -226,8 +242,7 @@ Register():
 func (c *Client) migrateDeviceID(ctx context.Context, existing *DeviceInfo) (*DeviceInfo, error) {
     creds, err := auth(ctx, c.cloud)
     if err != nil {
-        logger.Warn("[device] migration auth failed, using existing device: %v", err)
-        return existing, nil
+        return nil, err
     }
 
     base := c.cloud.CloudBaseURL(creds.BaseURL)
@@ -235,7 +250,10 @@ func (c *Client) migrateDeviceID(ctx context.Context, existing *DeviceInfo) (*De
 
     info, err := enroll(ctx, c.cloud, creds, base, newID, existing.DeviceID)
     if err != nil {
-        logger.Warn("[device] migration failed, using existing device: %v", err)
+        if IsAuthError(err) {
+            return existing, err
+        }
+        logger.Warn("[device] migration failed (transient), using existing device: %v", err)
         return existing, nil
     }
 
@@ -249,7 +267,7 @@ func (c *Client) migrateDeviceID(ctx context.Context, existing *DeviceInfo) (*De
 }
 ```
 
-迁移失败时保持现有 device.json 不变，下次启动重试。迁移成功后自动删除旧 device.json，此后 `LoadDevice()` 直接读取 `device_v2.json`。
+迁移失败时根据错误类型采取不同策略：auth 错误上抛触发重新登录，瞬态错误保持现有 device.json 不变（下次启动重试）。迁移成功后自动删除旧 device.json，此后 `LoadDevice()` 直接读取 `device_v2.json`。
 
 ### Server 侧迁移链路
 
@@ -288,8 +306,9 @@ RegisterDevice() → 未找到 deviceId "rand_xyz"
 
 第二次启动（及以后）：
   1. LoadDevice → 查 device_v2.json（存在）→ 直接返回随机 ID
-  2. 无需任何哈希比对 → 跳过迁移 → 返回 existing
-  3. 正常使用
+  2. auth() 校验用户凭证 → 通过
+  3. 返回 existing
+  4. 正常使用
 ```
 
 ### 兼容性
@@ -298,7 +317,8 @@ RegisterDevice() → 未找到 deviceId "rand_xyz"
 |------|------|------|
 | 稳定机器升级（旧 device.json） | 一次迁移到 device_v2.json，获得新随机 ID | ✅ 消除碰撞 |
 | 笔记本电脑升级（MAC 变化） | v2 文件检测 → 从 device.json 读取旧哈希 → 正常迁移 | ✅ 设备被正确迁移 ✅ |
-| 已迁移设备再次启动 | device_v2.json 存在 → 直接返回 | ✅ |
+| 已迁移设备再次启动 | device_v2.json 存在 → auth 校验通过 → 返回 | ✅ |
+| 已迁移设备凭证过期 | device_v2.json 存在 → auth 校验失败 → 返回 error → 触发重新登录 | ✅ 身份安全 |
 | 全新安装（无任何设备文件） | 随机 ID 写入 device_v2.json + 旧哈希作为 legacyDeviceId | ✅ 新设备附加上一次迁移能力 |
 | Server 上旧记录属不同用户 | `createDeviceFromLegacyConflict` → 创建新设备 | ✅ 安全隔离 |
 | Server 上旧记录属同一用户 | `migrateDeviceID` → 更新 device_id | ✅ |
@@ -319,41 +339,97 @@ RegisterDevice() → 未找到 deviceId "rand_xyz"
 
 #### 1. Gateway 侧 — TunnelManager
 
-**`gateway/internal/manager.go`**：`UnregisterIf()` 返回 `bool`
+**`gateway/internal/manager.go`**：引入 `managedSession` 结构体，`Register()` 返回 `connID`，新增 `CloseIfConnID()` 方法。
 
 ```go
+type managedSession struct {
+    session *yamux.Session
+    connID  string
+}
+
+type TunnelManager struct {
+    mu       sync.RWMutex
+    sessions map[string]*managedSession
+}
+
+// Register 创建新隧道 session，生成唯一 connID。
+// 如果已有旧 session 存在，关闭旧 session（同 gateway 替换）。
+// 返回 connID 供调用方传递给 NotifyOnline。
+func (m *TunnelManager) Register(deviceID string, session *yamux.Session) string {
+    connID := nextConnID()
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    if old, ok := m.sessions[deviceID]; ok {
+        old.session.Close()
+    }
+    m.sessions[deviceID] = &managedSession{session: session, connID: connID}
+    return connID
+}
+
+// CloseIfConnID 仅当 connID 匹配时关闭 session。
+// connID 为空时无条件关闭（向后兼容）。
+func (m *TunnelManager) CloseIfConnID(deviceID, connID string) bool {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    ms, ok := m.sessions[deviceID]
+    if !ok {
+        return false
+    }
+    if connID != "" && ms.connID != connID {
+        return false
+    }
+    ms.session.Close()
+    delete(m.sessions, deviceID)
+    return true
+}
+
+// UnregisterIf 仅当 session 匹配时移除并返回 true。
 func (m *TunnelManager) UnregisterIf(deviceID string, session *yamux.Session) bool {
     m.mu.Lock()
     defer m.mu.Unlock()
-    if s, ok := m.sessions[deviceID]; ok && s == session {
-        s.Close()
+    if ms, ok := m.sessions[deviceID]; ok && ms.session == session {
+        ms.session.Close()
         delete(m.sessions, deviceID)
-        return true  // ← 新增：返回是否实际移除了 session
+        return true
     }
     return false
 }
 ```
 
-**意义**：当 session 关闭时，只有**当前活跃的 session** 才发送 `NotifyOffline`。如果 session 已被新连接替换（`Register` 中关闭旧 session），旧 session 的 close 事件不会触发离线通知。
+**意义**：
+
+- **`UnregisterIf`**：当 session 关闭时，只有**当前活跃的 session** 才发送 `NotifyOffline`。如果 session 已被新连接替换（`Register` 中关闭旧 session），旧 session 的 close 事件不会触发离线通知。
+- **`CloseIfConnID`**：跨 gateway close 请求携带 connID，只有 connID 匹配的 session 才被关闭。防止"close 请求到达前设备已闪断重连，误杀新 session"的竞态。
+- **`connID`**：通过原子递增计数器生成，每次 `Register` 生成唯一值，贯穿 Register → NotifyOnline → BindDevice → close 请求 → CloseIfConnID 完整链路。
 
 #### 2. Gateway 侧 — TunnelHandler
 
 **`gateway/internal/tunnel_handler.go`**：
 
 ```go
-// DeviceTunnelHandler — 连接结束时
+// DeviceTunnelHandler — 连接建立时
+connID := manager.Register(deviceID, session)
+
+go func() {
+    NotifyOnline(cfg.ServerURL, cfg.GatewayID, deviceID, connID, cfg.InternalSecret)
+}()
+
+// 连接结束时
 if manager.UnregisterIf(deviceID, session) {
     // 只有当前活跃 session 关闭才发离线通知
     go NotifyOffline(...)
 }
 
-// DeviceCloseHandler — 新增端点
-// POST /internal/device/:deviceID/close
-// 由 API Server 调用，关闭指定设备的 session
+// DeviceCloseHandler — 由 API Server 调用，关闭指定设备的 session
+// 请求体可包含 connID，确保只关闭匹配的 session（防止误杀重连后的新 session）
 func DeviceCloseHandler(manager *TunnelManager) gin.HandlerFunc {
     return func(c *gin.Context) {
         deviceID := c.Param("deviceID")
-        manager.Close(deviceID)
+        var body struct {
+            ConnID string `json:"connID"`
+        }
+        _ = c.ShouldBindJSON(&body)
+        manager.CloseIfConnID(deviceID, body.ConnID)
         c.JSON(http.StatusOK, gin.H{"success": true})
     }
 }
@@ -371,68 +447,128 @@ r.POST("/internal/device/:deviceID/close",
 
 #### 4. Server 侧 — Store 接口
 
-**`server/internal/gateway/store.go`**：`BindDevice()` 返回旧 gateway ID
+**`server/internal/gateway/store.go`**：`BindDevice()` 新增 `connID` 参数，返回旧 gateway ID 和旧 connID。新增 `GetGateway()` 方法。
 
 ```go
 type Store interface {
-    BindDevice(deviceID, gatewayID string) (oldGatewayID string, err error)
+    // ... 新增 GetGateway，O(1) 单条查询替代 ListGateways 遍历
+    GetGateway(gatewayID string) (*GatewayInfo, error)
+
+    // connID 参数 + 返回旧 connID，用于跨 gateway close 请求的身份链
+    BindDevice(deviceID, gatewayID, connID string) (oldGatewayID, oldConnID string, err error)
     // ...
 }
 ```
 
-**`server/internal/gateway/store_redis.go`**：Redis 实现在覆盖前通过 `HGet` 读取旧值。
+**`server/internal/gateway/store_redis.go`**：Redis 实现使用 **Lua 脚本**原子完成 read-then-write，消除 HGet+HSet 之间的竞态窗口。新增 `device:connID` Redis hash key 存储 connID 映射。
 
-**`server/internal/gateway/store.go`（MemoryStore）**：在覆盖前读取已有映射。
+```go
+var bindDeviceScript = redis.NewScript(`
+local oldGw = redis.call('HGET', KEYS[1], ARGV[1])
+if oldGw == false then oldGw = '' end
+local oldConn = redis.call('HGET', KEYS[2], ARGV[1])
+if oldConn == false then oldConn = '' end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
+return {oldGw, oldConn}
+`)
+```
+
+**`server/internal/gateway/store.go`（MemoryStore）**：在覆盖前读取已有映射，同步维护 `deviceConnID` map。
 
 #### 5. Server 侧 — GatewayRegistry
 
 **`server/internal/gateway/registry.go`**：
 
 ```go
-func (r *GatewayRegistry) BindDevice(deviceID, gatewayID string) string {
-    old, err := r.store.BindDevice(deviceID, gatewayID)
-    // ...
-    return old  // 返回旧 gateway ID（可能为空）
+// BindDevice 返回旧 gateway ID 和旧 connID
+func (r *GatewayRegistry) BindDevice(deviceID, gatewayID, connID string) (string, string) {
+    oldGw, oldConn, err := r.store.BindDevice(deviceID, gatewayID, connID)
+    if err != nil {
+        logger.Error("[GatewayRegistry] BindDevice failed: %v", err)
+        return "", ""
+    }
+    return oldGw, oldConn
 }
 
+// GetGatewayInfo 使用 store.GetGateway() O(1) 查询，替代 O(n) 遍历
 func (r *GatewayRegistry) GetGatewayInfo(gatewayID string) *GatewayInfo {
-    // 按 ID 查找 gateway 的 InternalURL
-    for _, gw := range gateways {
-        if gw.ID == gatewayID {
-            return gw
-        }
+    gw, err := r.store.GetGateway(gatewayID)
+    if err != nil {
+        return nil
     }
-    return nil
+    return gw
+}
+
+// GetDeviceGatewayID 返回设备当前绑定的 gateway ID（轻量查询，用于 Offline 归属校验）
+func (r *GatewayRegistry) GetDeviceGatewayID(deviceID string) string {
+    gwID, err := r.store.GetDeviceGateway(deviceID)
+    if err != nil {
+        return ""
+    }
+    return gwID
 }
 ```
 
 #### 6. Server 侧 — DeviceOnlineHandler
 
-**`server/internal/gateway/handlers.go`**：
+**`server/internal/gateway/handlers.go`**：接收 connID，绑定后通知旧 gateway 关闭时携带旧 connID。使用带 5s 超时的 `closeHTTPClient` 替代 `http.DefaultClient`。
 
 ```go
+var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
 func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) gin.HandlerFunc {
     return func(c *gin.Context) {
-        // ... 绑定设备到新 gateway
-        oldGwID := registry.BindDevice(body.DeviceID, body.GatewayID)
+        var body struct {
+            DeviceID  string `json:"deviceID" binding:"required"`
+            GatewayID string `json:"gatewayID" binding:"required"`
+            ConnID    string `json:"connID"`
+        }
+        // ...
+
+        oldGwID, oldConnID := registry.BindDevice(body.DeviceID, body.GatewayID, body.ConnID)
         _ = deviceSvc.SetOnline(body.DeviceID)
 
-        // 如果之前绑定在另一个 gateway，通知旧 gateway 关闭 session
         if oldGwID != "" && oldGwID != body.GatewayID {
             if oldGw := registry.GetGatewayInfo(oldGwID); oldGw != nil {
                 go func() {
                     closeURL := fmt.Sprintf("%s/internal/device/%s/close", oldGw.InternalURL, body.DeviceID)
-                    req, _ := http.NewRequest(http.MethodPost, closeURL, nil)
+                    closeBody, _ := json.Marshal(map[string]string{"connID": oldConnID})
+                    req, _ := http.NewRequest(http.MethodPost, closeURL, bytes.NewReader(closeBody))
+                    req.Header.Set("Content-Type", "application/json")
                     req.Header.Set("X-Internal-Secret", client.InternalSecret())
-                    http.DefaultClient.Do(req)
+                    resp, err := closeHTTPClient.Do(req)
+                    // ...
                 }()
             }
         }
+        // ...
     }
 }
 ```
 
-#### 7. Server 侧 — Client & main.go
+#### 7. Server 侧 — DeviceOfflineHandler
+
+**`server/internal/gateway/handlers.go`**：unbind 前校验设备当前是否绑定在本 gateway，防止行为异常的 gateway 恶意下线不属于它的设备。
+
+```go
+func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceService) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // ...
+        // 只有设备当前绑定在本 gateway 时才 unbind
+        currentGwID := registry.GetDeviceGatewayID(body.DeviceID)
+        if currentGwID != body.GatewayID {
+            c.JSON(http.StatusOK, gin.H{"success": true})
+            return
+        }
+        registry.UnbindDevice(body.DeviceID)
+        _ = deviceSvc.SetOffline(body.DeviceID)
+        // ...
+    }
+}
+```
+
+#### 8. Server 侧 — Client & main.go
 
 **`server/internal/gateway/client.go`**：新增 `InternalSecret()` 公开方法。
 
@@ -442,8 +578,8 @@ func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *s
 
 ```
 克隆 A (已连接)
-  └─ GatewayA:   yamux session (deviceX)
-  └─ Server:     device:gateway → { deviceX: GatewayA }
+  └─ GatewayA:   yamux session (deviceX, connID=1)
+  └─ Server:     device:gateway → { deviceX: GatewayA }, device:connID → { deviceX: 1 }
 
 克隆 B (启动)
   └─ GatewayAssign → 分配到 GatewayB
@@ -453,23 +589,25 @@ GatewayB:
   └─ DeviceTunnelHandler
      └─ 验证 deviceX 的 token → 有效
      └─ 创建 yamux session
+     └─ manager.Register(deviceX, session) → connID=2
      └─ POST /internal/gateway/device/online
-        Body: { deviceID: "deviceX", gatewayID: "GatewayB" }
+        Body: { deviceID: "deviceX", gatewayID: "GatewayB", connID: "2" }
 
 Server:
   └─ DeviceOnlineHandler
-     └─ BindDevice("deviceX", "GatewayB")
-        └─ 返回 oldGwID = "GatewayA"
+     └─ BindDevice("deviceX", "GatewayB", "2")
+        └─ 返回 oldGwID = "GatewayA", oldConnID = "1"
      └─ oldGwID ≠ "" 且 oldGwID ≠ GatewayB
         └─ GetGatewayInfo("GatewayA") → { InternalURL: "http://gateway-a:8081" }
         └─ POST http://gateway-a:8081/internal/device/deviceX/close
            Header: X-Internal-Secret: xxx
+           Body: { "connID": "1" }
 
 GatewayA:
   └─ DeviceCloseHandler
-     └─ manager.Close("deviceX")
-        └─ 关闭 yamux session
-        └─ 从 sessions map 中删除
+     └─ manager.CloseIfConnID("deviceX", "1")
+        └─ sessions["deviceX"].connID == "1"? → YES → 关闭 session
+        └─ （若 A 已闪断重连为 connID=3，则 1 ≠ 3 → 不关闭 ✅）
 
 克隆 A:
   └─ yamux session 断开
@@ -499,8 +637,8 @@ GatewayA:
 | 1 | Clone A 持有 device.json，已连接 | session(deviceX) on GatewayA |
 | 2 | Clone B 启动（共享磁盘/cow 快照） | 读取相同 device.json → 相同 device_id |
 | 3 | Clone B 连接 GatewayB | WebSocket 升级成功（token 有效） |
-| 4 | GatewayB 发 NotifyOnline | 服务器绑定 deviceX → GatewayB |
-| 5 | Server 发现旧绑定 GatewayA | 通知 GatewayA 关闭 session |
+| 4 | GatewayB 发 NotifyOnline（携带 connID） | 服务器绑定 deviceX → GatewayB |
+| 5 | Server 发现旧绑定 GatewayA | 通知 GatewayA 关闭 session（携带旧 connID） |
 | 6 | Clone A session 断开 | 数据写入停止，触发重连 |
 | **结论** | 后启动的克隆踢掉先启动的，单点在线 | ✅ |
 
@@ -548,12 +686,14 @@ GatewayA:
 ```
 LoadDevice() 返回非 nil 且 deviceV2FileExists() = false?
   ├─ 是 → 触发 migrateDeviceID()
+  │      ├─ auth()（失败 → 返回 error，触发重新登录）
   │      ├─ 从 device.json 读出旧 ID（文件原始值，非重算）
   │      ├─ 用 crypto/rand 生成新 ID
   │      ├─ enroll(deviceId=newID, legacyDeviceId=oldID)
   │      ├─ 成功 → SaveDevice 到 device_v2.json
   │      │      → ClearDevice() 删除旧 device.json
-  │      └─ 失败 → log warning → 返回 existing（回退）
+  │      └─ 失败 → auth 错误? → 返回 existing + error（触发登录）
+  │               瞬态错误? → log warning → 返回 existing（降级，下次重试）
   │
   └─ 否（v2 存在或设备不存在）→ 跳过迁移
 ```
@@ -568,6 +708,7 @@ LoadDevice() 返回非 nil 且 deviceV2FileExists() = false?
   ├─ LoadDevice() → 从 device.json      │
   │  读到旧哈希 ID                       │
   ├─ deviceV2FileExists() = false → 需迁移 │
+  ├─ auth() 校验用户凭证                 │
   ├─ 生成新随机 ID                     │
   ├─ POST /devices ──────────────────► │
   │  { deviceId: "rand_new",          │
@@ -595,8 +736,9 @@ LoadDevice() 返回非 nil 且 deviceV2FileExists() = false?
 | 场景 | 行为 | 数据安全 |
 |------|------|---------|
 | 迁移成功 | device_v2.json 写入新 ID + 删除旧 device.json + Server 数据更新 | ✅ |
-| 迁移失败（auth 失败） | 返回现有 device.json 数据，下次重试 | ✅ 设备继续工作 |
-| 迁移失败（enroll 失败） | 返回现有 device.json 数据，下次重试 | ✅ 设备继续工作 |
+| 迁移失败（auth 失败） | 返回 error → 上层触发重新登录 → 登录后重试迁移 | ⚠️ 设备启动暂停，需重新登录 |
+| 迁移失败（enroll auth 错误） | 返回 existing + error → 触发重新登录 | ⚠️ 设备启动暂停，需重新登录 |
+| 迁移失败（瞬态错误，如 Server 500） | 返回现有 device.json 数据，下次重试 | ✅ 设备继续工作 |
 | 迁移中 Server 旧记录属不同用户 | `createDeviceFromLegacyConflict` 创建新设备 | ✅ 数据隔离 |
 | Workspace 关联 | 通过 Device UUID 主键关联 | ✅ 不受影响 |
 | 回滚二进制 | 旧代码读不到 device_v2.json → 用哈希注册 → 新设备记录 | ⚠️ 需重新注册 |
@@ -616,6 +758,9 @@ LoadDevice() 返回非 nil 且 deviceV2FileExists() = false?
 ```
 POST /internal/device/deviceX/close HTTP/1.1
 X-Internal-Secret: shared-secret
+Content-Type: application/json
+
+{"connID": "1"}
 ```
 
 响应：
@@ -631,7 +776,13 @@ X-Internal-Secret: shared-secret
 | 版本 | 签名 | 说明 |
 |------|------|------|
 | 改前 | `BindDevice(deviceID, gatewayID string) error` | 覆盖旧绑定，丢失旧 gateway 信息 |
-| 改后 | `BindDevice(deviceID, gatewayID string) (oldGatewayID string, err error)` | 返回旧 gateway ID |
+| 改后 | `BindDevice(deviceID, gatewayID, connID string) (oldGatewayID, oldConnID string, err error)` | 原子操作返回旧 gateway ID 和旧 connID |
+
+#### Store.GetGateway（新增）
+
+| 签名 | 说明 |
+|------|------|
+| `GetGateway(gatewayID string) (*GatewayInfo, error)` | O(1) 单条查询，替代 ListGateways 遍历 |
 
 ---
 
@@ -643,38 +794,56 @@ X-Internal-Secret: shared-secret
 Clone B                 GatewayB                Server                  GatewayA                Clone A
   │                       │                       │                       │                       │
   ├─ ws tunnel ──────────►│                       │                       │                       │
+  │                       ├─ Register → connID=2  │                       │                       │
   │                       ├─ NotifyOnline ───────►│                       │                       │
+  │                       │  {deviceID, gwID,     │                       │                       │
+  │                       │   connID:"2"}         │                       │                       │
   │                       │                       ├─ BindDevice ──┐       │                       │
-  │                       │                       │              │       │                       │
-  │                       │                       │◄─ old=GwA ───┘       │                       │
+  │                       │                       │  (Lua atomic) │       │                       │
+  │                       │                       │◄─ old=GwA,    ┘       │                       │
+  │                       │                       │   oldConn=1          │                       │
   │                       │                       │                       │                       │
-  │                       │                       ├─ GET /GwA/info        │                       │
+  │                       │                       ├─ GetGateway(GwA)     │                       │
   │                       │                       │◄─ {InternalURL}       │                       │
   │                       │                       │                       │                       │
   │                       │                       ├─ POST /device/close ──►│                       │
-  │                       │                       │                       ├─ manager.Close ──────►│
+  │                       │                       │  Body: {connID:"1"}   │                       │
+  │                       │                       │  (5s timeout)         ├─ CloseIfConnID ──────►│
+  │                       │                       │                       │  connID 1==1? YES     │
   │                       │                       │                       │                 session 断开
-  │                       │                       │                       │◄───── 断开确认 ───────┤
-  │                       │◄── {success} ─────────┤                       │                       │
+  │                       │◄── {success} ─────────┤                       │◄───── 断开确认 ───────┤
   │◄── tunnel ok ─────────┤                       │                       │                       │
 ```
 
 ### NotifyOffline 防误报
 
 ```
-时序：             Register(deviceX, sessionB)
+时序：             Register(deviceX, sessionB, connID=2)
                     │
 sessionA close ─────┤
                     │
                     ▼
-              sessions["deviceX"] = sessionB
+              sessions["deviceX"] = {sessionB, connID=2}
 
 sessionA 的 goroutine:
   ←CloseChan()
   UnregisterIf("deviceX", sessionA)
-    └─ sessions["deviceX"] == sessionA?  →  NO (现在是 sessionB)
+    └─ sessions["deviceX"].session == sessionA?  →  NO (现在是 sessionB)
     └─ return false
   → 不发送 NotifyOffline ✅
+```
+
+### DeviceOfflineHandler 防误下线
+
+```
+时序：             Device 已从 GatewayA 重连到 GatewayB
+                  device:gateway → { deviceX: GatewayB }
+
+GatewayA 残留的 NotifyOffline:
+  DeviceOfflineHandler
+    ├─ GetDeviceGatewayID("deviceX") → "GatewayB"
+    ├─ "GatewayB" != body.GatewayID("GatewayA") → 不匹配
+    └─ 直接返回 success，不 unbind ✅
 ```
 
 ---
@@ -756,7 +925,7 @@ go vet ./gateway/internal/...
 - 测试：全部通过
 - Vet：无警告
 - 调用链分析：所有调用方签名匹配
-- 并发场景探测：`BindDevice`/`UnregisterIf` 在竞态下的行为符合预期
+- 并发场景探测：`BindDevice`（Lua 原子）/`UnregisterIf`/`CloseIfConnID` 在竞态下的行为符合预期
 
 ### 场景验证矩阵
 
@@ -766,7 +935,7 @@ go vet ./gateway/internal/...
 
 | 编号 | 场景 | 前置条件 | 操作 | 预期结果 | 风险点 |
 |------|------|---------|------|---------|--------|
-| V001 | 跨 gateway 接管 | 设备 A 在 GatewayA 在线 | 设备 B（同 device.json）连 GatewayB | A 的 session 被关闭，B 正常在线 | 接管链路完整 |
+| V001 | 跨 gateway 接管 | 设备 A 在 GatewayA 在线 | 设备 B（同 device.json）连 GatewayB | A 的 session 被关闭（CloseIfConnID 匹配），B 正常在线 | 接管链路完整 |
 | V002 | 同 gateway 接管 | 设备 A 在 GatewayA 在线 | 设备 B（同 device.json）连 GatewayA | Gateway 的 `Register` 关闭旧 session，两个 NotifyOnline 合并成一次 BindDevice | 同一 gateway 内不触发跨 gateway 关闭 |
 | V003 | 接管后 NotifyOffline 不误报 | 设备 A 在 GatewayA，被 B 接管 | A 的旧 session 关闭 goroutine 执行 `UnregisterIf` | `UnregisterIf` 返回 false，不发送 NotifyOffline | 数据流中的防误报逻辑 |
 | V004 | device_v2.json 权威性 | device_v2.json 已存在有 `device_id="X"` | 调用 `GetDeviceID()` | 返回 `"X"`，不调用 `GenerateMachineID()` | 身份持久化 |
@@ -776,11 +945,16 @@ go vet ./gateway/internal/...
 
 | 编号 | 场景 | 前置条件 | 操作 | 预期结果 | 风险点 |
 |------|------|---------|------|---------|--------|
-| V006 | 旧 gateway 关闭请求超时 | A 在 GatewayA，B 连 GatewayB，GatewayA 已宕机 | Server 向 GatewayA 发 `/close` | `http.DefaultClient.Do` 超时（默认无 timeout），但 Server 已绑定到 B，B 不受影响 | 旧 gateway 不可达时不阻塞 |
+| V006 | 旧 gateway 关闭请求超时 | A 在 GatewayA，B 连 GatewayB，GatewayA 已宕机 | Server 向 GatewayA 发 `/close` | `closeHTTPClient`（5s timeout）超时，但 Server 已绑定到 B，B 不受影响 | 旧 gateway 不可达时不阻塞 |
 | V007 | 旧 gateway 的 close 返回非 200 | A 在 GatewayA，B 连 GatewayB，GatewayA 异常 | Server 通知 GatewayA 关闭，返回 500 | Server log warning，B 不受影响 | 非 200 响应不中断流程 |
 | V008 | 旧 gateway 的 InternalURL 不可达（网络分区） | A 在 GatewayA，B 连 GatewayB，GatewayA 的网络隔离 | Server 通知 GatewayA 关闭 | DNS 解析失败或 TCP 连接失败，Server log warning，B 不受影响 | 网络分区不阻塞接管 |
-| V009 | 并发同时接管（双克隆同时上线） | 克隆 A、B 同时启动，同时连不同 gateway | 两个 NotifyOnline 同时到达 Server | `BindDevice` 串行化执行（Redis/Memory 锁保证），最终只有一个 session 存活 | 并发安全 |
+| V009 | 并发同时接管（双克隆同时上线） | 克隆 A、B 同时启动，同时连不同 gateway | 两个 NotifyOnline 同时到达 Server | `BindDevice` Lua 脚本原子执行，最终只有一个 session 存活 | 并发安全 |
 | V010 | 同一设备快速重连同 gateway | 设备 A 在线，网络闪断（< 1s） | A 重新连同一个 Gateway | Gateway 的 `Register` 关闭旧 session，`UnregisterIf` 返回 false（新 session 已替换），不发送 NotifyOffline | 闪断重连的数据连续性 |
+| V030 | device_v2.json 损坏 | device_v2.json 内容为无效 JSON，旧 device.json 已删除 | `LoadDevice()` | 解析失败返回 nil → 走首次注册流程（生成新随机 ID + legacyDeviceId 旧哈希）。**注意：旧 device_id 丢失，Server 上旧记录成为孤儿** | 容错但数据孤儿 |
+| V031 | 迁移部分写入（device_v2.json 写成功，device.json 删除失败） | 迁移过程中 `ClearDevice()` 失败（权限/锁） | 下次启动 | `LoadDevice()` 优先读 device_v2.json → 跳过迁移，旧 device.json 残留无害 | 残留文件清理 |
+| V032 | 迁移后克隆用旧 token 连接 | A、B 共享同一 device.json；A 升级后迁移成功（获得新 device_id + 新 token），B 仍持旧 device.json（旧 device_id + 旧 token） | B 用旧 device.json 连接 gateway | Server 迁移后旧 device_id 已 UPDATE 为新值 → B 的旧 device_id 在 Server 上不存在 → token 验证失败 → B 需重新注册（注册时 legacyDeviceId 查不到旧记录 → 创建全新设备） | 迁移后克隆隔离 |
+| V033 | 活跃 workspace 会话期间迁移 | 设备有活跃的 tunnel/workspace 连接 | `Register()` 触发迁移，device_id 变更 | 迁移后旧 device_id 的路由绑定失效 → 活跃 session 断开或路由错误 | 迁移时机安全性 |
+| V034 | MAC 碰撞迁移（原始问题复现） | 两台**不同物理机**因相同 MAC + username 生成相同旧哈希，各自有独立 device.json（相同 device_id） | 两台机器同时从旧 device.json 迁移，legacyDeviceId 相同 | A 先迁移 → Server UPDATE device_id；B 后到 → legacyDeviceId 查不到旧记录 → `createDeviceFromLegacyConflict` 创建新设备 | 碰撞场景的迁移正确性 |
 
 #### P2 — 边缘情况（应覆盖）
 
@@ -792,18 +966,32 @@ go vet ./gateway/internal/...
 | V014 | 旧 device.json 升级兼容 | 仅 device.json 存在（旧格式，无 device_v2.json） | `Register()` | `deviceV2FileExists() = false` → 触发迁移，从 device.json 读取旧 ID 发送到 Server | 向后兼容 |
 | V015 | device.json 损坏 | device.json 内容为无效 JSON，无 device_v2.json | `Register()` → `LoadDevice()` | `LoadDevice()` 解析失败返回 nil（空的 device.json）→ 走到首次注册流程 | 容错 |
 | V016 | 重复 NotifyOnline（幂等） | 设备 A 已在 GatewayA 在线 | Server 再次收到同一 NotifyOnline（device= X, gateway= GatewayA） | `BindDevice` 返回 `"GatewayA"` → `oldGwID == body.GatewayID` → 不触发关闭 | 幂等性 |
-| V017 | 重复 NotifyOffline（幂等） | 设备 A 已离线（device:gateway 无绑定） | Gateway 发 NotifyOffline | `UnbindDevice` 在 Redis 中是 HDel，对不存在的 key 返回 nil | 幂等性 |
+| V017 | 重复 NotifyOffline（幂等） | 设备 A 已离线（device:gateway 无绑定） | Gateway 发 NotifyOffline | `GetDeviceGatewayID` 返回空 → `"" != body.GatewayID` → 不 unbind | 幂等性 |
 | V018 | Gateway 重启后 session 丢失 | GatewayA 重启，所有 yamux session 丢失 | 设备 WebSocket 断开，重连 GatewayA | 旧 session 在 manager 中已不存在，`Register` 创建新 session | 进程重启不残留 |
 | V019 | 设备注册时 device_id 冲突 | 克隆 B 注册到 Server（POST /devices），device_id 已存在 | Server 的 `RegisterDevice` 处理 | 同 user → 返回已有设备；不同 user → 拒绝除非原 user 已删除 | DB 唯一约束 |
 | V020 | cs-cloud 旧版本升级后首次运行 | 旧版本 device.json 中 device_id 由哈希生成，无 device_v2.json | `Register()` | `deviceV2FileExists() = false` → 触发迁移，写入 device_v2.json，删除 device.json | 升级迁移 |
+| V024 | close 请求携带旧 connID，设备已重连 | A 被 B 接管，A 在原 gateway 闪断重连为新 connID | Server close 请求到达原 gateway，connID 为旧值 | `CloseIfConnID` 比对 connID 不匹配 → 不关闭新 session | close 精准定位 |
+| V025 | NotifyOffline 归属不匹配 | 设备已从 GatewayA 重连到 GatewayB | GatewayA 残留发送 NotifyOffline | `GetDeviceGatewayID` 返回 GatewayB ≠ GatewayA → 不 unbind | 防误下线 |
+| V026 | 迁移并发（双克隆同时迁移） | 克隆 A、B 共享同一 device.json，同时首次启动 | 两者同时 POST /devices 带 legacyDeviceId | A 先到 → Server 迁移成功（UPDATE device_id）；B 后到 → legacyDeviceId 查不到旧记录 → 创建全新设备（无 workspace 关联）。consume-once 语义保证无数据损坏 | 并发迁移隔离 |
+| V027 | 迁移瞬态失败后重试成功 | 旧设备迁移，enroll 返回 500 | 第一次启动：迁移失败 → 降级使用旧 device.json；第二次启动：Server 恢复 → 迁移成功 | 第一次：设备正常工作（旧身份）；第二次：device_v2.json 写入，旧 device.json 删除 | 瞬态降级 + 重试 |
+| V028 | 已迁移设备 auth 失败 | device_v2.json 存在，用户 access_token 过期且 refresh_token 失效 | `Register()` → auth 校验 | 返回 error → `registerWithLogin` 捕获 → 弹出浏览器登录 → 重新登录后设备正常启动 | 凭证前置校验 |
+| V029 | NotifyOnline 缺少 connID（旧 gateway 兼容） | 旧版本 gateway 未升级，NotifyOnline body 不含 connID 字段 | Server 收到 NotifyOnline，connID 为空 → BindDevice 存储 connID="" → close 请求 body connID="" | `CloseIfConnID` 收到空 connID → 无条件关闭（向后兼容 fallback） | 滚动升级兼容 |
+| V035 | 二进制回滚后重新升级（二次迁移） | 设备已迁移（device_v2.json 存在）→ 回滚旧二进制（读不到 device_v2.json，用哈希重新注册，产生新记录）→ 再次升级新二进制 | 新二进制 `Register()` | device_v2.json 存在 → 跳过迁移。但 Server 上可能有多条记录（v2 对应的 + 回滚期间哈希注册的） | 多记录一致性 |
+| V036 | Owner 变更后迁移 | 用户 A 的设备已迁移到 device_v2.json；用户 B 在同一台机器登录 | `Register()` → `ClearDeviceV2()` → 首次注册 | 新设备 ID + 用户 B 的 legacyDeviceId（旧哈希）→ Server 查到旧记录属用户 A → `createDeviceFromLegacyConflict` 创建新设备 | 跨用户身份隔离 |
+| V037 | Server 重启发生在 BindDevice 与 close 请求之间 | A 在 GatewayA，B 连 GatewayB，BindDevice 成功（Redis 持久化），Server 进程在发 close 请求前重启 | Server 重启后恢复 | Redis 中绑定已持久化 → B 在线正常。GatewayA 上 A 的 session 未被关闭 → A 可能仍在处理数据直到 A 的连接自然断开或下次接管 | Redis 持久化 vs MemoryStore 差异 |
+| V038 | NotifyOnline 网络失败（Gateway 与 Server 分区） | B 连上 GatewayB，WebSocket 建立成功 | GatewayB 发 NotifyOnline 到 Server，网络分区 | BindDevice 未执行 → Server 仍认为 A 在 GatewayA → A 不被踢。B 在 GatewayB 上有 session 但 Server 不知道 → B 的请求路由失败 | 分区期间路由不一致 |
+| V039 | 磁盘满/IO 错误写 device_v2.json | 旧设备迁移，磁盘空间不足 | `SaveDevice()` 写 device_v2.json 失败 | 迁移中断：Server 已 UPDATE device_id（新值），但本地无 device_v2.json → 下次启动 LoadDevice 读 device.json → 旧 ID 在 Server 上不存在 → **需要重新注册** | Server-本地状态不一致 |
+| V040 | MemoryStore 模式下 Server 重启 | Server 使用 MemoryStore（非 Redis），A 在 GatewayA 在线 | Server 重启 | 所有 device:gateway 绑定丢失 → 设备重连时 BindDevice 返回空 oldGwID → 不触发 close → GatewayA 上旧 session 残留 | 内存存储的持久性限制 |
 
 #### 并发安全专项场景
 
 | 编号 | 场景 | 验证要点 |
 |------|------|---------|
-| V021 | gw1 的 UnregisterIf 与 gw2 的 Register 在 Server 侧并发 | `BindDevice` 串行化 → 要么 gw1 先绑定（被 gw2 覆盖 + 通知关闭），要么 gw2 先绑定（gw1 绑定被覆盖） |
+| V021 | gw1 的 UnregisterIf 与 gw2 的 Register 在 Server 侧并发 | `BindDevice` Lua 脚本原子执行 → 要么 gw1 先绑定（被 gw2 覆盖 + 通知关闭），要么 gw2 先绑定（gw1 绑定被覆盖） |
 | V022 | Gateway 的 Register() 与 UnregisterIf() 并发执行 | Register 持锁写入 map，UnregisterIf 持锁读取+删除，两个操作互斥，不会出现双方都以为是活跃 session |
-| V023 | Server 的 DeviceOnlineHandler 并发调用 | Store.BindDevice 是原子操作（Redis HSet 或 MemoryStore 持锁），后到的覆盖先到的，旧 gateway 关闭非阻塞（goroutine） |
+| V023 | Server 的 DeviceOnlineHandler 并发调用 | Store.BindDevice 使用 Lua 脚本原子 read-then-write（Redis）或互斥锁（MemoryStore），后到的覆盖先到的，旧 gateway 关闭非阻塞（goroutine + 5s timeout） |
+| V041 | 迁移期间并发接管 | 设备正在执行 `migrateDeviceID()`（POST /devices 进行中），同时另一克隆用旧 device.json 连接 gateway 触发 NotifyOnline → Server 旧 device_id 正在被 UPDATE 的竞态 | 验证 Server 的 `migrateFromLegacyDeviceID` 与 `BindDevice` 是否存在竞态窗口：迁移期间 NotifyOnline 可能绑定到即将被 UPDATE 的旧 device_id → 迁移完成后绑定丢失 |
+| V042 | close 请求与设备多级重连的竞态 | B 接管 A → Server 发 close(connID=1) → A 在 close 到达前已重连为 connID=3 → close 到达 → connID 1≠3 不关闭 ✅。但如果 A 重连时又被 C 接管为 connID=4？ | connID 1≠4 仍不关闭（正确），但 connID=4 的 session 也不会被 connID=1 的 close 请求影响。需验证：C 的接管流程会独立发 close(connID=3) → 关闭 A 的 connID=3 session ✅。最终状态：只有 C 在线 |
 
 ### 验证脚本
 

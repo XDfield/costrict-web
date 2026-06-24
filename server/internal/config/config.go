@@ -65,6 +65,7 @@ type ClawAgentSessionConfig struct {
 	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
 	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
 	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
+	NotificationDelaySeconds    int // Delay before sending AI notification to user (default 30)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -241,6 +242,7 @@ func Load() *Config {
 				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
 				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
 				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
+					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
 	}
