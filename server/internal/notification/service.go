@@ -128,6 +128,93 @@ func (s *NotificationService) TriggerMessage(userID, eventType string, msg sende
 	go s.send(userID, eventType, msg)
 }
 
+// BroadcastScope selects the recipients of an announcement.
+//   - "all":          every user with a subject_id
+//   - "organization": every user whose organization == TargetID
+//   - "user":         the single user TargetID
+type BroadcastScope struct {
+	Type     string
+	TargetID string
+}
+
+// resolveBroadcastRecipients expands a BroadcastScope into a list of recipient
+// subject_ids. Mirrors the distribution service's org→subject_id expansion.
+func (s *NotificationService) resolveBroadcastRecipients(scope BroadcastScope) ([]string, error) {
+	switch scope.Type {
+	case "user":
+		if scope.TargetID == "" {
+			return nil, fmt.Errorf("targetId is required for user scope")
+		}
+		return []string{scope.TargetID}, nil
+	case "organization":
+		if scope.TargetID == "" {
+			return nil, fmt.Errorf("targetId is required for organization scope")
+		}
+		var userIDs []string
+		if err := s.db.Model(&models.User{}).
+			Where("organization = ? AND subject_id <> ''", scope.TargetID).
+			Pluck("subject_id", &userIDs).Error; err != nil {
+			return nil, err
+		}
+		return userIDs, nil
+	case "all":
+		var userIDs []string
+		if err := s.db.Model(&models.User{}).
+			Where("subject_id <> ''").
+			Pluck("subject_id", &userIDs).Error; err != nil {
+			return nil, err
+		}
+		return userIDs, nil
+	default:
+		return nil, fmt.Errorf("unsupported broadcast scope: %s", scope.Type)
+	}
+}
+
+// Broadcast sends an in-app announcement to every user matched by scope. For
+// each recipient it writes one per-user system_notification (in-app inbox) and,
+// when pushExternal is set, also fires the user's configured external channels
+// via the standard send path. Returns the number of recipients reached.
+func (s *NotificationService) Broadcast(scope BroadcastScope, title, content string, pushExternal bool, operatorID string) (int, error) {
+	recipients, err := s.resolveBroadcastRecipients(scope)
+	if err != nil {
+		return 0, err
+	}
+	if len(recipients) == 0 {
+		return 0, nil
+	}
+
+	store := NewStore(s.db)
+
+	deliver := func() {
+		for _, uid := range recipients {
+			if _, err := store.Create(CreateNotificationInput{
+				UserID:  uid,
+				Type:    EventSystemNotification,
+				Title:   title,
+				Content: content,
+			}); err != nil {
+				slog.Warn("broadcast: failed to create in-app notification", "userID", uid, "error", err)
+				continue
+			}
+			if pushExternal {
+				s.send(uid, EventSystemNotification, sender.NotificationMessage{
+					Title:     title,
+					Body:      content,
+					EventType: EventSystemNotification,
+				})
+			}
+		}
+	}
+
+	if pushExternal || len(recipients) > 50 {
+		go deliver()
+	} else {
+		deliver()
+	}
+
+	return len(recipients), nil
+}
+
 // getWorkspaceID 根据设备标识符和路径查找工作空间ID。
 // 注意：传入的 deviceID 是 devices.device_id（外部设备标识符），
 // 而 workspaces.device_id 存储的是 devices.id（UUID主键），
