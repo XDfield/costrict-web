@@ -20,8 +20,8 @@ func NewFromMain(
 	gwRegistry *gateway.GatewayRegistry,
 	gwClient *gateway.Client,
 ) (*ClawAgentRuntime, error) {
-	if cfg.ClawAgent.EncryptionKey == "" {
-		return nil, fmt.Errorf("CLAWAGENT_ENCRYPTION_KEY is required")
+	if cfg.ClawAgent.EncryptionKey == "" && anyChannelEnabled(cfg.Channels) {
+		return nil, fmt.Errorf("CLAWAGENT_ENCRYPTION_KEY is required when notification channels are enabled")
 	}
 
 	return New(db, cfg, gwRegistry, gwClient)

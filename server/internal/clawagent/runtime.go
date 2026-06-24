@@ -63,11 +63,17 @@ type ClawAgentRuntime struct {
 }
 
 
+// anyChannelEnabled returns true if any notification channel is enabled.
+func anyChannelEnabled(ch config.ChannelSystemConfig) bool {
+	return ch.WeComEnabled || ch.WeComWebhookEnabled || ch.WeComBotEnabled ||
+		ch.WeChatEnabled || ch.WebhookEnabled || len(ch.EnabledTypes) > 0
+}
+
 // New creates a new ClawAgentRuntime.
 func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, gwClient *gateway.Client) (*ClawAgentRuntime, error) {
 	encryptionKey := cfg.ClawAgent.EncryptionKey
-	if encryptionKey == "" {
-		return nil, fmt.Errorf("CLAWAGENT_ENCRYPTION_KEY is required")
+	if encryptionKey == "" && anyChannelEnabled(cfg.Channels) {
+		return nil, fmt.Errorf("CLAWAGENT_ENCRYPTION_KEY is required when notification channels are enabled")
 	}
 
 	agentCfg := ClawAgentConfig{

@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wecom-bot-proxy.fullname" . }}
+  namespace: {{ include "wecom-bot-proxy.namespace" . }}
+  labels:
+    {{- include "wecom-bot-proxy.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    bot:
+      bot_id: "${BOT_ID}"
+      secret: "${BOT_SECRET}"
+      ws_url: {{ .Values.bot.wsUrl | quote }}
+      heartbeat_interval: {{ .Values.bot.heartbeatInterval | quote }}
+      reconnect_initial_backoff: {{ .Values.bot.reconnectInitialBackoff | quote }}
+      reconnect_max_backoff: {{ .Values.bot.reconnectMaxBackoff | quote }}
+
+    server:
+      listen: ":9090"
+
+    backends:
+      backend-a:
+        url: {{ .Values.backend.url | quote }}
+        auth_token: "${BACKEND_AUTH_TOKEN}"
+        hmac_secret: "${BACKEND_HMAC_SECRET}"
+        timeout: {{ .Values.backend.timeout | quote }}
+        retry: {{ .Values.backend.retry }}
+
+    routing:
+      default_backend: {{ .Values.routing.defaultBackend | quote }}
+      task_route_ttl: {{ .Values.routing.taskRouteTtl | quote }}
+
+    dedup:
+      enabled: {{ .Values.dedup.enabled }}
+      max_entries: {{ .Values.dedup.maxEntries }}
+      ttl_seconds: {{ .Values.dedup.ttlSeconds }}
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}

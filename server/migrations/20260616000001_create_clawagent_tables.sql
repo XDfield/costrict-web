@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS agent_memories (
 
 CREATE TABLE IF NOT EXISTS agent_workspace_tasks (
     id                     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id                VARCHAR(64)  NOT NULL UNIQUE,
+    task_id                VARCHAR(64)  NOT NULL,
     user_id                VARCHAR(255) NOT NULL,
     workspace_id           VARCHAR(255) NOT NULL,
     device_id              VARCHAR(255) NOT NULL,
@@ -66,6 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_tasks_device       ON agent_workspace_t
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_status       ON agent_workspace_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_conversation ON agent_workspace_tasks(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_tasks_base_key     ON agent_workspace_tasks(agent_session_base_key);
+CREATE UNIQUE INDEX IF NOT EXISTS uni_agent_workspace_tasks_task_id ON agent_workspace_tasks(task_id);
 
 CREATE TABLE IF NOT EXISTS agent_session_meta (
     session_id      VARCHAR(255) PRIMARY KEY,
