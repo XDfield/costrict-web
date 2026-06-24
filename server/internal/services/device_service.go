@@ -99,6 +99,7 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 	if err := s.DB.Create(device).Error; err != nil {
 		return nil, "", err
 	}
+	logger.Info("[STATUS-DEBUG] device %s created (new registration), status=offline (initial)", req.DeviceID)
 
 	return device, token, nil
 }
@@ -160,6 +161,7 @@ func (s *DeviceService) restoreSoftDeletedDevice(softDeleted models.Device, user
 	if err := s.DB.Unscoped().Model(&softDeleted).Updates(updates).Error; err != nil {
 		return nil, "", err
 	}
+	logger.Warn("[STATUS-DEBUG] device %s restored from soft-deleted, status reset to offline", req.DeviceID)
 	s.ownershipCache.Delete(softDeleted.DeviceID + ":" + softDeleted.UserID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&softDeleted)
 	return &softDeleted, token, nil
@@ -183,6 +185,7 @@ func (s *DeviceService) migrateDeviceID(existing models.Device, userID string, r
 	}).Error; err != nil {
 		return nil, "", err
 	}
+	logger.Warn("[STATUS-DEBUG] device migrated %s -> %s, status reset to offline", req.LegacyDeviceID, req.DeviceID)
 	s.ownershipCache.Delete(req.LegacyDeviceID + ":" + userID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	return &existing, token, nil
@@ -205,6 +208,7 @@ func (s *DeviceService) createDeviceFromLegacyConflict(userID string, req Regist
 	if err := s.DB.Create(device).Error; err != nil {
 		return nil, "", err
 	}
+	logger.Warn("[STATUS-DEBUG] device %s created (legacy conflict), status=offline", req.DeviceID)
 	return device, token, nil
 }
 
@@ -231,6 +235,7 @@ func (s *DeviceService) rebindDevice(existing models.Device, userID string, req 
 	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", lookupID).Updates(updates).Error; err != nil {
 		return nil, "", err
 	}
+	logger.Warn("[STATUS-DEBUG] rebindDevice: device %s status reset to offline (existing.UserID=%s -> new userID=%s)", lookupID, existing.UserID, userID)
 	s.ownershipCache.Delete(lookupID + ":" + existing.UserID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	return &existing, token, nil
@@ -395,12 +400,24 @@ func (s *DeviceService) VerifyDeviceToken(token string) (*models.Device, error) 
 
 func (s *DeviceService) SetOnline(deviceID string) error {
 	now := time.Now()
-	return s.DB.Model(&models.Device{}).
+	res := s.DB.Model(&models.Device{}).
 		Where("device_id = ?", deviceID).
 		Updates(map[string]any{
 			"status":            "online",
 			"last_connected_at": now,
-		}).Error
+		})
+	if res.Error != nil {
+		logger.Warn("[STATUS-DEBUG] SetOnline DB error: deviceID=%s err=%v", deviceID, res.Error)
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		// 0 rows：deviceID 在 DB 没匹配上（大小写/格式不一致，或设备未注册）。
+		// 此时 status 不会翻成 online，但 MemoryStore 绑定可能已建立 → 代理能通却显示离线。
+		logger.Warn("[STATUS-DEBUG] SetOnline matched 0 rows: deviceID=%s not found in DB; status stays unchanged (suspect: proxy-ok-but-offline)", deviceID)
+	} else {
+		logger.Info("[STATUS-DEBUG] device %s -> ONLINE (rows=%d)", deviceID, res.RowsAffected)
+	}
+	return nil
 }
 
 func (s *DeviceService) SetOffline(deviceID string) error {
