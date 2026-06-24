@@ -30,6 +30,13 @@ data:
         lua_package_path "/usr/local/openresty/site/lualib/?.lua;;";
 
         init_worker_by_lua_block {
+            -- Only worker 0 performs discovery; the result is shared with all
+            -- workers via the router_state dict. This avoids N concurrent DNS
+            -- queries (one per worker) on every refresh.
+            if ngx.worker.id() ~= 0 then
+                return
+            end
+
             local router = require "router"
             local state = ngx.shared.router_state
 
@@ -37,6 +44,12 @@ data:
             local gateway_port = {{ .Values.nginxRouter.discovery.gatewayPort }}
             local refresh_ms = {{ .Values.nginxRouter.discovery.refreshIntervalMs }}
             local resolver_addr = "{{ .Values.nginxRouter.resolver }}"
+
+            -- Refresh at least once per second; never 0 (which would busy-loop).
+            local refresh_interval = math.max(refresh_ms / 1000, 1)
+            -- Expire the cached pod list if discovery stops succeeding, so we
+            -- stop routing to a stale set rather than holding it forever.
+            local ttl_seconds = math.max(refresh_interval * 3, 30)
 
             local function discover_and_update(premature)
                 if premature then return end
@@ -46,6 +59,8 @@ data:
                     return
                 end
                 if #ips == 0 then
+                    -- Do not overwrite the last-known-good list with an empty
+                    -- one; let the TTL expire it if this persists.
                     ngx.log(ngx.WARN, "no gateway pods discovered from ", headless_fqdn)
                     return
                 end
@@ -56,12 +71,11 @@ data:
                     return
                 end
 
-                state:set("ips", encoded)
-                -- each worker rebuilds its own ring on demand from the sorted list
+                state:set("ips", encoded, ttl_seconds)
             end
 
             discover_and_update()
-            local ok, err = ngx.timer.every(refresh_ms / 1000, discover_and_update)
+            local ok, err = ngx.timer.every(refresh_interval, discover_and_update)
             if not ok then
                 ngx.log(ngx.ERR, "failed to create discovery timer: ", err)
             end
@@ -98,6 +112,8 @@ data:
                     return ngx.exit(502)
                 end
 
+                -- peer is "ip:port"; assumes IPv4 (the only address family used
+                -- by the Gateway headless Service in this deployment).
                 local host, port = peer:match("^(.+):(%d+)$")
                 local ok, err = balancer.set_current_peer(host, tonumber(port))
                 if not ok then
@@ -111,6 +127,8 @@ data:
             listen 8080;
 
             location ~ ^/device/(?P<device_id>[^/]+)/ {
+                # The named capture must be explicitly assigned to a variable so
+                # it is visible inside balancer_by_lua_block.
                 set $device_id $device_id;
 
                 proxy_http_version 1.1;
@@ -152,13 +170,18 @@ data:
     local cjson = require "cjson.safe"
     local ngx_crc32_long = ngx.crc32_long
     local table_sort = table.sort
+    local table_concat = table.concat
     local ipairs = ipairs
-    local pairs = pairs
     local floor = math.floor
 
     local _M = {
         cjson = cjson,
     }
+
+    -- Worker-local cache of the most recently built ring, so we rebuild only
+    -- when the discovered pod set actually changes (not on every request).
+    local _ring_cache = nil
+    local _ring_cache_key = nil
 
     -- Resolve all A records for a headless Service and return sorted "ip:port" list.
     function _M.resolve_ips(fqdn, port, nameserver)
@@ -181,7 +204,8 @@ data:
 
         local ips = {}
         for _, ans in ipairs(answers) do
-            if ans.address then
+            -- Only A records carry a usable IP; skip CNAME/other record types.
+            if ans.address and ans.type == r.TYPE_A then
                 ips[#ips + 1] = ans.address .. ":" .. tostring(port)
             end
         end
@@ -190,7 +214,9 @@ data:
     end
 
     -- Build ketama ring points deterministically from sorted node list.
-    -- Returns a flat array of {hash=uint32, id=string}, already sorted by hash.
+    -- Returns a flat array of {hash=uint32, id=string}, sorted by hash with a
+    -- stable tie-break on id so all workers/replicas agree on ordering even
+    -- when two points hash to the same value.
     local function build_ring(ips, replicas)
         replicas = replicas or 160
         local points = {}
@@ -203,7 +229,12 @@ data:
                 }
             end
         end
-        table_sort(points, function(a, b) return a.hash < b.hash end)
+        table_sort(points, function(a, b)
+            if a.hash ~= b.hash then
+                return a.hash < b.hash
+            end
+            return a.id < b.id
+        end)
         return points
     end
 
@@ -213,7 +244,13 @@ data:
             return nil, "empty node list"
         end
 
-        local ring = build_ring(ips)
+        local cache_key = table_concat(ips, "\0")
+        if _ring_cache_key ~= cache_key then
+            _ring_cache = build_ring(ips)
+            _ring_cache_key = cache_key
+        end
+        local ring = _ring_cache
+
         local hash = ngx_crc32_long(key)
 
         -- binary search for first point >= hash
