@@ -13,7 +13,7 @@ FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 
 COPY --from=builder /wecom-bot-proxy /usr/local/bin/wecom-bot-proxy
-COPY config.yaml /etc/wecom-bot-proxy/config.yaml
+COPY config.yaml.example /etc/wecom-bot-proxy/config.yaml
 
 EXPOSE 9090
 
