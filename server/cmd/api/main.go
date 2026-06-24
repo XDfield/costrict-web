@@ -25,7 +25,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
@@ -45,6 +47,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
+	"github.com/costrict/costrict-web/server/internal/leader"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/memory"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -98,6 +101,9 @@ func main() {
 	}
 
 	cfg := config.Load()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	db, err := database.Initialize(cfg.DatabaseURL)
 	if err != nil {
@@ -175,11 +181,15 @@ func main() {
 		JobService: jobSvc,
 		DB:         db,
 	}
-	if err := sched.Start(); err != nil {
-		log.Fatalf("Failed to start scheduler: %v", err)
-	}
-	defer sched.Stop()
 	handlers.SyncScheduler = sched
+	// Only one API replica should run the scheduler.
+	go leader.NewElection(db, "costrict-scheduler", 10*time.Second).Run(ctx, func() {
+		if err := sched.Start(); err != nil {
+			log.Printf("Failed to start scheduler: %v", err)
+		}
+	}, func() {
+		sched.Stop()
+	})
 
 	// Initialize ItemHandler with parser
 	parserSvc := &services.ParserService{}
@@ -529,7 +539,27 @@ func main() {
 			channel.RegisterAdapter(wechat.NewWeChatAdapter())
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
 			channelModule = channel.New(db, &channel.EchoMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled)
+			channelModule.Service.SetReplyContextStore(channel.NewPostgresReplyContextStore(db))
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
+
+			// Periodically clean up old channel reply contexts; only one replica runs this.
+			replyCtxStore := channelModule.Service.SessionStore()
+			go leader.NewElection(db, "costrict-reply-context-cleanup", 30*time.Second).Run(ctx, func() {
+				go func() {
+					ticker := time.NewTicker(1 * time.Hour)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							replyCtxStore.Cleanup(7 * 24 * time.Hour)
+						}
+					}
+				}()
+			}, func() {
+				// Inner goroutine observes ctx.Done() and exits.
+			})
 
 			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
@@ -555,6 +585,9 @@ func main() {
 		redisClient = redis.NewClient(opt)
 		store = gateway.NewRedisStore(redisClient)
 		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
+	} else if db != nil {
+		store = gateway.NewPostgresStore(db)
+		log.Printf("Gateway store: PostgreSQL")
 	} else {
 		store = gateway.NewMemoryStore()
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
@@ -564,18 +597,28 @@ func main() {
 			_ = deviceSvc.SetOffline(id)
 		}
 	})
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
-			if err != nil {
-				log.Printf("[stale-check] error: %v", err)
-			} else if n > 0 {
-				log.Printf("[stale-check] marked %d stale device(s) offline", n)
+	// Only one replica should run the stale-device checker.
+	go leader.NewElection(db, "costrict-stale-device-checker", 10*time.Second).Run(ctx, func() {
+		go func() {
+			ticker := time.NewTicker(2 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
+					if err != nil {
+						log.Printf("[stale-check] error: %v", err)
+					} else if n > 0 {
+						log.Printf("[stale-check] marked %d stale device(s) offline", n)
+					}
+				}
 			}
-		}
-	}()
+		}()
+	}, func() {
+		// Inner goroutine observes ctx.Done() and exits.
+	})
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
 
 	internalGroup := r.Group("/internal")

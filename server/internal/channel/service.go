@@ -24,7 +24,7 @@ type ChannelService struct {
 	adapters       map[string]ChannelAdapter
 	messageHandler MessageHandler
 	cloudBaseURL   string
-	sessionStore   *ReplyContextStore
+	sessionStore   ReplyContextStore
 	enabledTypes   map[string]bool
 	// System-level availability controls (platform admin configuration)
 	weComEnabled        bool
@@ -37,6 +37,10 @@ type ActionCallbackHandler func(ctx context.Context, action, token, responseCode
 
 func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
 	s.actionHandler = h
+}
+
+func (s *ChannelService) SetReplyContextStore(store ReplyContextStore) {
+	s.sessionStore = store
 }
 
 func NewChannelService(db *gorm.DB, handler MessageHandler, cloudBaseURL string, enabledTypes []string, weComEnabled, weComWebhookEnabled, weChatEnabled bool) *ChannelService {
@@ -370,7 +374,7 @@ func (s *ChannelService) SendMessage(ctx context.Context, userID string, channel
 	})
 }
 
-func (s *ChannelService) SessionStore() *ReplyContextStore {
+func (s *ChannelService) SessionStore() ReplyContextStore {
 	return s.sessionStore
 }
 
