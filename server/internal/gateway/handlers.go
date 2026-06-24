@@ -340,6 +340,91 @@ func DeviceVerifyTokenHandler(deviceSvc *services.DeviceService) gin.HandlerFunc
 	}
 }
 
+// SessionProxyHandler proxies a request to a CSC session running on a device.
+// Unlike DeviceProxyHandler, it resolves the device via a Multica session_id and
+// checks workspace-level permission (not device ownership). This is the cloud-side
+// seam for Design Two real-time collaboration around workflow node-runs.
+func SessionProxyHandler(registry *GatewayRegistry, client *Client, multicaBaseURL string) gin.HandlerFunc {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	return func(c *gin.Context) {
+		sessionID := c.Param("sessionID")
+		if sessionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+			return
+		}
+
+		userToken := ExtractBearerToken(c.Request)
+		if userToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+			return
+		}
+
+		if multicaBaseURL == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "multica integration not configured"})
+			return
+		}
+
+		// Ask Multica whether this user may access the session.
+		permURL := fmt.Sprintf("%s/api/sessions/%s/permission", strings.TrimRight(multicaBaseURL, "/"), sessionID)
+		permReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, permURL, nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build permission request"})
+			return
+		}
+		permReq.Header.Set("Authorization", "Bearer "+userToken)
+
+		permResp, err := httpClient.Do(permReq)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to contact multica"})
+			return
+		}
+		defer permResp.Body.Close()
+
+		if permResp.StatusCode != http.StatusOK {
+			c.JSON(http.StatusForbidden, gin.H{"error": "session access denied"})
+			return
+		}
+
+		var perm struct {
+			WorkspaceID string `json:"workspace_id"`
+			NodeRunID   string `json:"node_run_id"`
+			DeviceID    string `json:"device_id"`
+			SessionID   string `json:"session_id"`
+			HasAccess   bool   `json:"has_access"`
+		}
+		if err := json.NewDecoder(permResp.Body).Decode(&perm); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "invalid permission response from multica"})
+			return
+		}
+		if !perm.HasAccess || perm.DeviceID == "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "session access denied"})
+			return
+		}
+
+		// Route to the device via its connected gateway.
+		gw, err := registry.GetDeviceGateway(perm.DeviceID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
+			return
+		}
+
+		// Preserve the original request path (after /cloud/sessions/:sessionID/proxy).
+		c.Request.URL.Path = c.Param("path")
+		if err := client.ProxyRequest(gw.InternalURL, perm.DeviceID, c.Request, c.Writer); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		}
+	}
+}
+
+func ExtractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
 func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
