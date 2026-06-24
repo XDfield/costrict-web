@@ -567,18 +567,24 @@ func main() {
 			_ = deviceSvc.SetOfflineReason(id, "gateway_timeout_removed (doCleanup)")
 		}
 	})
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.DeviceBoundReason)
-			if err != nil {
-				log.Printf("[stale-check] error: %v", err)
-			} else if n > 0 {
-				log.Printf("[stale-check] marked %d stale device(s) offline", n)
-			}
-		}
-	}()
+	// [DISABLED] 2分钟兜底机制：每 2 分钟扫描所有 online 设备，把没绑定到活跃
+	// gateway 的设备强制置 offline。
+	// 排查发现：客户端到 gateway 的隧道实际仍连着，但该兜底扫描会在绑定/心跳状态
+	// 短暂"看着 stale"时把设备错误地标记下线（API 误判连接断开）。先注释掉以验证。
+	// 真正的下线检测仍由 gateway 端 tunnel 心跳（tunnel_handler.go）+ gateway
+	// 心跳超时清理（registry.go doCleanup）负责，二者已带详细日志。
+	// go func() {
+	// 	ticker := time.NewTicker(2 * time.Minute)
+	// 	defer ticker.Stop()
+	// 	for range ticker.C {
+	// 		n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.DeviceBoundReason)
+	// 		if err != nil {
+	// 			log.Printf("[stale-check] error: %v", err)
+	// 		} else if n > 0 {
+	// 			log.Printf("[stale-check] marked %d stale device(s) offline", n)
+	// 		}
+	// 	}
+	// }()
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
 
 	internalGroup := r.Group("/internal")
