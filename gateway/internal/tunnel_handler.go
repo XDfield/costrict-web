@@ -91,6 +91,12 @@ func DeviceTunnelHandler(manager *TunnelManager, cfg *Config) gin.HandlerFunc {
 
 		<-session.CloseChan()
 
+		// 排查用：session 关闭原因诊断。failedHeartbeats 由 ping ticker 协程写入，
+		// 此处读取可能有轻微数据竞争，但足以区分关闭类型：
+		//   值≈4  → ping/pong 连续失败判死（device 不回 pong）
+		//   值较小 → yamux 写超时静默关、ping 写失败、或对端正常关闭
+		logger.Warn("[TUNNEL-CLOSE] device %s tunnel closed (failedHeartbeats=%d)", deviceID, failedHeartbeats)
+
 		manager.UnregisterIf(deviceID, session)
 		go func() {
 			if err := NotifyOffline(cfg.ServerURL, cfg.GatewayID, deviceID, cfg.InternalSecret); err != nil {

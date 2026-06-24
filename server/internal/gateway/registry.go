@@ -143,6 +143,30 @@ func (r *GatewayRegistry) IsDeviceBound(deviceID string) bool {
 	return false
 }
 
+// DeviceBoundReason reports whether a device is bound to a live gateway, plus
+// a human-readable reason. 排查专用：让 stale-check 日志说明“为什么判它没绑定”。
+func (r *GatewayRegistry) DeviceBoundReason(deviceID string) (bool, string) {
+	gwID, err := r.store.GetDeviceGateway(deviceID)
+	if err != nil {
+		return false, fmt.Sprintf("no device->gateway binding (%v)", err)
+	}
+	gateways, err := r.store.ListGateways()
+	if err != nil {
+		return false, fmt.Sprintf("ListGateways error (gw=%s): %v", gwID, err)
+	}
+	now := time.Now().UnixMilli()
+	for _, gw := range gateways {
+		if gw.ID == gwID {
+			diff := now - gw.LastHeartbeat
+			if diff <= GatewayHeartbeatTimeoutMs {
+				return true, fmt.Sprintf("bound to gateway=%s, last heartbeat %dms ago (within %dms timeout)", gwID, diff, GatewayHeartbeatTimeoutMs)
+			}
+			return false, fmt.Sprintf("gateway=%s heartbeat stale: %dms ago (timeout=%dms)", gwID, diff, GatewayHeartbeatTimeoutMs)
+		}
+	}
+	return false, fmt.Sprintf("gateway=%s in binding but not found in gateway registry list", gwID)
+}
+
 func (r *GatewayRegistry) startCleanup() {
 	ticker := time.NewTicker(GatewayCleanupIntervalMs * time.Millisecond)
 	defer ticker.Stop()

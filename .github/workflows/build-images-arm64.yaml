@@ -1,0 +1,102 @@
+name: Build ARM64 Images (Hotfix)
+
+# 仅构建 linux/arm64 的热修复镜像。与 build-images.yaml 的区别：
+#   1) 只构建后端服务 gateway/api/worker；
+#   2) platforms 仅 linux/arm64；
+#   3) push 到 hot-fix 分支即自动触发（无需打 tag）。
+# 后端 Dockerfile 使用 --platform=$BUILDPLATFORM + GOARCH 交叉编译，
+# builder 阶段在 amd64 runner 上原生执行，不依赖 QEMU 跑 Go 编译器，构建较快。
+
+on:
+  push:
+    branches:
+      - hot-fix
+      - 'hotfix/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像 tag（留空则用 hotfix-<短SHA>）"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io/xdfield
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway, api, worker]
+      fail-fast: false
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="hotfix-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Set image info
+        id: image
+        run: |
+          case "${{ matrix.service }}" in
+            gateway) CONTEXT="./gateway"; DOCKERFILE="./gateway/Dockerfile";          IMAGE_NAME="costrict-web-gateway" ;;
+            api)     CONTEXT="./server";  DOCKERFILE="./server/Dockerfile";           IMAGE_NAME="costrict-web-api" ;;
+            worker)  CONTEXT="./server";  DOCKERFILE="./server/Dockerfile.worker";    IMAGE_NAME="costrict-web-worker" ;;
+          esac
+          echo "context=$CONTEXT" >> $GITHUB_OUTPUT
+          echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ steps.image.outputs.context }}
+          file: ${{ steps.image.outputs.dockerfile }}
+          push: true
+          # 不覆盖主线的 :latest（那是双架构 manifest），用 hotfix-arm64 滚动 + hotfix-<sha> 唯一
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:hotfix-arm64
+          cache-from: type=gha,scope=arm64-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=arm64-${{ matrix.service }}
+          platforms: linux/arm64
+
+      - name: Image digest
+        run: |
+          echo "### ${{ matrix.service }} (arm64) Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY

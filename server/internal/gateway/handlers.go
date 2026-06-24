@@ -136,7 +136,7 @@ func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceS
 		}
 
 		registry.UnbindDevice(body.DeviceID)
-		_ = deviceSvc.SetOffline(body.DeviceID)
+		_ = deviceSvc.SetOfflineReason(body.DeviceID, "gateway_notify_offline (gateway="+body.GatewayID+")")
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

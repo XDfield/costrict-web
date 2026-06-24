@@ -62,7 +62,7 @@ func DeviceHeartbeatHandler(deviceSvc *services.DeviceService) gin.HandlerFunc {
 			if *body.TunnelConnected && device.Status != "online" {
 				_ = deviceSvc.SetOnline(device.DeviceID)
 			} else if !*body.TunnelConnected && device.Status == "online" {
-				_ = deviceSvc.SetOffline(device.DeviceID)
+				_ = deviceSvc.SetOfflineReason(device.DeviceID, "device_report_tunnel_disconnected (tunnelConnected=false)")
 			}
 		}
 

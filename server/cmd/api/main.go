@@ -560,15 +560,17 @@ func main() {
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
 	}
 	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
+		// doCleanup 移除心跳超时的 gateway 时，连带其名下设备下线。
+		// 下线日志统一由 SetOfflineReason 用 logger 打印（[OFFLINE-DEBUG] + reason）。
 		for _, id := range deviceIDs {
-			_ = deviceSvc.SetOffline(id)
+			_ = deviceSvc.SetOfflineReason(id, "gateway_timeout_removed (doCleanup)")
 		}
 	})
 	go func() {
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.IsDeviceBound)
+			n, err := deviceSvc.MarkStaleDevicesOffline(gatewayRegistry.DeviceBoundReason)
 			if err != nil {
 				log.Printf("[stale-check] error: %v", err)
 			} else if n > 0 {

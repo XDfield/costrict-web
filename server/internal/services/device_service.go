@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
@@ -408,6 +409,22 @@ func (s *DeviceService) SetOffline(deviceID string) error {
 		Update("status", "offline").Error
 }
 
+// SetOfflineReason marks a device offline and logs WHY it went offline.
+// 排查专用：所有让设备下线的路径都应改用本方法，传入语义化 reason，
+// 这样日志里就能看到“设备为什么下线”。仅在 online -> offline 转变时打印，
+// 避免对已离线设备重复刷屏。
+func (s *DeviceService) SetOfflineReason(deviceID, reason string) error {
+	var cur models.Device
+	err := s.DB.Select("device_id, status").Where("device_id = ?", deviceID).First(&cur).Error
+	if err != nil {
+		// 查不到当前状态（设备可能未注册），仍尝试置 offline 并打一条诊断日志。
+		logger.Warn("[OFFLINE-DEBUG] device %s set offline (current status lookup failed: %v): reason=%s", deviceID, err, reason)
+	} else if cur.Status == "online" {
+		logger.Warn("[OFFLINE-DEBUG] device %s ONLINE->OFFLINE: reason=%s", deviceID, reason)
+	}
+	return s.SetOffline(deviceID)
+}
+
 func (s *DeviceService) UpdateLastSeen(deviceID string) error {
 	now := time.Now()
 	return s.DB.Model(&models.Device{}).
@@ -421,15 +438,19 @@ func (s *DeviceService) UpdateVersion(deviceID, version string) error {
 		Update("version", version).Error
 }
 
-func (s *DeviceService) MarkStaleDevicesOffline(checkBound func(deviceID string) bool) (int, error) {
+// checkBoundReason reports whether a device is bound to a live gateway and,
+// if not, a human-readable reason (排查用). 实现见 gateway.DeviceBoundReason。
+func (s *DeviceService) MarkStaleDevicesOffline(checkBound func(deviceID string) (bool, string)) (int, error) {
 	var devices []models.Device
 	if err := s.DB.Where("status = ?", "online").Find(&devices).Error; err != nil {
 		return 0, err
 	}
 	var count int
 	for _, d := range devices {
-		if !checkBound(d.DeviceID) {
-			if err := s.SetOffline(d.DeviceID); err == nil {
+		bound, reason := checkBound(d.DeviceID)
+		if !bound {
+			// SetOfflineReason 会在 online->offline 转变时打印 reason。
+			if err := s.SetOfflineReason(d.DeviceID, "stale-check: "+reason); err == nil {
 				count++
 			}
 		}
