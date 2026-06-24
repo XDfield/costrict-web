@@ -619,6 +619,10 @@ func main() {
 	// Device proxy: require user auth + device ownership check
 	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
 
+		// Session proxy for Design Two: resolve session_id via Multica and proxy to
+		// the device that owns the bound CSC session. Requires user auth.
+		r.Any("/cloud/sessions/:sessionID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.SessionProxyHandler(gatewayRegistry, gatewayClient, cfg.MulticaAPIURL))
+
 	// Cloud Team module
 	teamModule := teampkg.New(db, redisClient)
 	teamModule.Handler.SetAssignedTaskPusher(func(ctx context.Context, sessionID string, machineID string, userID string, task teampkg.TeamTask) error {

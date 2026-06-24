@@ -26,6 +26,7 @@ type Config struct {
 	CloudBaseURL              string
 	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
 	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
+	MulticaAPIURL             string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
 	ReleaseDownloadBaseURL    string
 	SystemToken               string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -143,6 +144,7 @@ func Load() *Config {
 		CloudBaseURL:              cloudBaseURL,
 		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
 		AppURL:                    getEnv("APP_URL", cloudBaseURL),
+		MulticaAPIURL:             getEnv("MULTICA_API_URL", ""),
 		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
 		FrontendURLs:              frontendURLs,
