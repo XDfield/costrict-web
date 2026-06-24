@@ -13,6 +13,7 @@ type SessionMeta struct {
 	LastMessageAt time.Time  `gorm:"not null;autoUpdateTime"`
 	MessageCount  int        `gorm:"not null;default:0"`
 	TokenEstimate int        `gorm:"not null;default:0"`
+	EventData     string     `gorm:"type:text"` // JSON-serialized EventContext for pending events
 	IsArchived    bool       `gorm:"not null;default:false;index:,name:idx_session_meta_base_active,where:is_archived = FALSE"`
 	ArchivedAt    *time.Time
 	CreatedAt     time.Time  `gorm:"autoCreateTime"`

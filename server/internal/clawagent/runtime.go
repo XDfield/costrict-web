@@ -3,6 +3,7 @@ package clawagent
 import (
 	"context"
 	"log"
+	"log/slog"
 	"fmt"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ type ClawAgentConfig struct {
 	SessionMaxPerUser       int
 	SessionMaxTokens        int
 	CompactionKeepRecent    int
+	NotificationDelay       time.Duration
 }
 
 // ClawAgentRuntime is the main entry point for the ClawAgent system.
@@ -43,6 +45,7 @@ type ClawAgentRuntime struct {
 	MemoryMgr    *MemoryManager
 	ProviderMgr  *ProviderManager
 	SessionMeta  *SessionMetaManager
+	MsgMgr       *MessageManager
 	DeviceProxy  *DeviceProxyClient
 	EventBus     *EventBus
 	TaskRegistry *TaskRegistry
@@ -56,6 +59,7 @@ type ClawAgentRuntime struct {
 	bgCtx       context.Context
 	bgCancel    context.CancelFunc
 	startedAt   time.Time
+
 }
 
 
@@ -80,6 +84,7 @@ func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, g
 		SessionMaxPerUser:       cfg.ClawAgent.Session.MaxSessionsPerUser,
 		SessionMaxTokens:        cfg.ClawAgent.Session.MaxSessionTokens,
 		CompactionKeepRecent:    cfg.ClawAgent.Session.CompactionKeepRecentMessages,
+			NotificationDelay:       time.Duration(cfg.ClawAgent.Session.NotificationDelaySeconds) * time.Second,
 	}
 
 	if agentCfg.SessionDailyResetHour == 0 {
@@ -125,15 +130,18 @@ func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, g
 	rt.MemoryMgr = NewMemoryManager(db)
 	rt.ProviderMgr = NewProviderManager(db, agentCfg)
 	rt.SessionMeta = NewSessionMetaManager(db)
+	rt.MsgMgr = NewMessageManager(db)
 	rt.DeviceProxy = NewDeviceProxyClient(gwRegistry, gwClient, db)
 	rt.EventBus = NewEventBus()
 	rt.TaskRegistry = NewTaskRegistry(db)
 	rt.EventHandler = NewEventHandler(rt)
 	rt.IntentHndlr = NewIntentHandler(rt.DeviceProxy)
 
+
 	// Initialize LLM client and runner
 	llmClient := NewLLMClient()
 	rt.runner = NewAgentRunner(rt, llmClient)
+	rt.runner.SetMsgMgr(rt.MsgMgr)
 
 	// AutoMigrate tables
 	if err := rt.autoMigrate(); err != nil {
@@ -157,6 +165,7 @@ func (rt *ClawAgentRuntime) autoMigrate() error {
 		&Memory{},
 		&WorkspaceTask{},
 		&SessionMeta{},
+		&SessionMessage{},
 	)
 }
 
@@ -215,8 +224,10 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 		return sender.Send(ctx, "抱歉，无法识别您的身份。")
 	}
 
-	baseKey := fmt.Sprintf("agent:clawagent:%s:%s:%s",
-		msg.ExternalChatType, msg.ExternalChatID, userID)
+	// BaseKey 使用平台 userID（而非 ExternalChatID）确保发送端（corp userID）和
+	// 接收端（openID）使用一致的 session key。ExternalChatID 随发送/接收方向不同格式各异。
+	baseKey := fmt.Sprintf("agent:clawagent:%s:%s",
+		msg.ExternalChatType, userID)
 	resetType := "direct"
 	if msg.ExternalChatType == "group" {
 		resetType = "group"
@@ -230,6 +241,50 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 
 	// Use background context for async LLM calls (request ctx may be cancelled after response)
 	runCtx := rt.bgCtx
+
+	// Check if this session has a pending event that needs tool-based processing
+	sess := rt.runner.GetSession(sessionID)
+	if sess != nil {
+		slog.Info("[runtime] Handle: session state", "sessionID", sessionID, "hasEventData", sess.EventData != nil)
+	}
+	// If no pending EventData in memory, try loading from DB (horizontal scaling support)
+	if sess != nil && (sess.EventData == nil || sess.EventData.IsProcessed) {
+		ec, err := rt.SessionMeta.GetEventData(runCtx, sessionID)
+		if err == nil && ec != nil && !ec.IsProcessed {
+			slog.Info("[runtime] Handle: loaded EventData from DB", "sessionID", sessionID, "eventType", ec.EventType)
+			rt.runner.SetEventData(sessionID, ec)
+			sess = rt.runner.GetSession(sessionID)
+		}
+	}
+	if sess != nil && sess.EventData != nil && !sess.EventData.IsProcessed {
+		slog.Info("[runtime] Handle: pending event found, using RunEventReply", "sessionID", sessionID, "eventType", sess.EventData.EventType)
+
+		// Cancel the deferred notification immediately — the user has responded.
+		// This must happen before RunEventReply (which may take seconds for LLM processing)
+		// to prevent the 30s deferred timer from firing before tool execution completes.
+		// Use sess.EventData.SessionID (device session ID) since the dispatcher's
+		// deferred timer is keyed by device session ID, not the agent session ID.
+		if rt.runner.OnEventProcessed != nil {
+			deviceSessionID := sess.EventData.SessionID
+			if deviceSessionID == "" {
+				deviceSessionID = sessionID // fallback
+			}
+			slog.Info("[runtime] Handle: user responded, notifying dispatcher", "agentSessionID", sessionID, "deviceSessionID", deviceSessionID)
+			rt.runner.OnEventProcessed(deviceSessionID)
+		}
+
+		// Event context found: add user message to session and use RunEventReply (with tools)
+		rt.runner.AddUserMessage(runCtx, sessionID, msg.Content)
+		eventCh, runErr := rt.runner.RunEventReply(runCtx, userID, sessionID)
+		if runErr != nil {
+			return fmt.Errorf("agent event reply failed: %w", runErr)
+		}
+		go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID)
+		return nil
+	}
+
+	slog.Info("[runtime] Handle: no pending event, using normal Run", "sessionID", sessionID)
+
 	var eventCh <-chan AgentEvent
 	var runErr error
 	if msg.ExternalChatType == "group" {
@@ -277,6 +332,14 @@ func (rt *ClawAgentRuntime) streamResponse(
 	}
 
 	for evt := range eventCh {
+		if evt.Type == "tool_call" {
+			slog.Debug("[runtime] streamResponse: tool_call", "tool", evt.Tool, "sessionID", sessionID)
+			continue
+		}
+		if evt.Type == "tool_result" {
+			slog.Debug("[runtime] streamResponse: tool_result", "tool", evt.Tool, "sessionID", sessionID)
+			continue
+		}
 		if evt.Error != "" {
 			if hasStream {
 				_ = streamSender.SendStream(ctx, fmt.Sprintf("⚠️ %s", evt.Error), true)
@@ -287,6 +350,8 @@ func (rt *ClawAgentRuntime) streamResponse(
 		}
 		if evt.IsFinal {
 			flush(true)
+			// Clear EventData from DB (horizontal scaling)
+			go rt.SessionMeta.ClearEventData(rt.bgCtx, sessionID)
 			// Async memory refresh
 			reply := assistantReply.String()
 			if reply != "" {

@@ -4,11 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
-
 )
 
-
-func TestPersonaManager_Load_CreatesDefault(t *testing.T) {
+func TestPersonaManager_Load_ReturnsHardcoded(t *testing.T) {
 	db := setupTestDB(t)
 	mgr := NewPersonaManager(db, ClawAgentConfig{})
 
@@ -28,14 +26,15 @@ func TestPersonaManager_Load_CreatesDefault(t *testing.T) {
 	if p.SoulContent == "" {
 		t.Error("default persona should have SoulContent")
 	}
-	if strings.Contains(p.SoulContent, "Behavioral Rules") {
-		// Good: default prompt is loaded
-	} else {
-		t.Error("default persona missing Behavioral Rules")
+	if !strings.Contains(p.SoulContent, "秘书助理") {
+		t.Error("default persona missing expected content")
+	}
+	if p.IdentityContent != defaultIdentityContent {
+		t.Errorf("persona.IdentityContent = %q, want %q", p.IdentityContent, defaultIdentityContent)
 	}
 }
 
-func TestPersonaManager_CreateAndLoad(t *testing.T) {
+func TestPersonaManager_CreateAndLoadByID(t *testing.T) {
 	db := setupTestDB(t)
 	mgr := NewPersonaManager(db, ClawAgentConfig{})
 
@@ -58,9 +57,9 @@ func TestPersonaManager_CreateAndLoad(t *testing.T) {
 		t.Fatal("Create should populate ID")
 	}
 
-	loaded, err := mgr.Load(ctx, "user-1")
+	loaded, err := mgr.LoadByID(ctx, p.ID)
 	if err != nil {
-		t.Fatalf("Load after create failed: %v", err)
+		t.Fatalf("LoadByID failed: %v", err)
 	}
 	if loaded.Name != "tech-advisor" {
 		t.Errorf("loaded.Name = %q, want %q", loaded.Name, "tech-advisor")
@@ -70,7 +69,7 @@ func TestPersonaManager_CreateAndLoad(t *testing.T) {
 	}
 }
 
-func TestPersonaManager_MultiplePersonas(t *testing.T) {
+func TestPersonaManager_ListByUser(t *testing.T) {
 	db := setupTestDB(t)
 	mgr := NewPersonaManager(db, ClawAgentConfig{})
 	ctx := context.Background()
@@ -91,15 +90,6 @@ func TestPersonaManager_MultiplePersonas(t *testing.T) {
 	}
 	if len(list) != 2 {
 		t.Errorf("len(list) = %d, want 2", len(list))
-	}
-
-	// Load should return the default persona
-	loaded, err := mgr.Load(ctx, "user-1")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if loaded.Name != "default" {
-		t.Errorf("Load returned %q, want %q", loaded.Name, "default")
 	}
 }
 
@@ -122,16 +112,14 @@ func TestPersonaManager_SetDefault(t *testing.T) {
 		t.Fatalf("SetDefault: %v", err)
 	}
 
-	loaded, _ := mgr.Load(ctx, "user-1")
-	if loaded.Name != "b" {
-		t.Errorf("after SetDefault, Load returned %q, want %q", loaded.Name, "b")
-	}
-
-	// Original default should no longer be default
-	var p1Reloaded Persona
+	var p1Reloaded, p2Reloaded Persona
 	db.First(&p1Reloaded, "id = ?", p1.ID)
+	db.First(&p2Reloaded, "id = ?", p2.ID)
 	if p1Reloaded.IsDefault {
 		t.Error("original default persona should no longer be IsDefault")
+	}
+	if !p2Reloaded.IsDefault {
+		t.Error("new persona should be IsDefault after SetDefault")
 	}
 }
 

@@ -83,6 +83,7 @@ func createTestTables(db *gorm.DB) error {
 			last_message_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			message_count INTEGER NOT NULL DEFAULT 0,
 			token_estimate INTEGER NOT NULL DEFAULT 0,
+			event_data TEXT DEFAULT '',
 			is_archived INTEGER NOT NULL DEFAULT 0,
 			archived_at DATETIME,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

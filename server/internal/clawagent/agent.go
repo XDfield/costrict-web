@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"log/slog"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/clawagent/tools"
 	"github.com/google/uuid"
 )
 
@@ -24,28 +26,77 @@ type AgentEvent struct {
 
 // AgentRunner orchestrates the conversation flow with LLM.
 type AgentRunner struct {
-	rt        *ClawAgentRuntime
-	llmClient *LLMClient
-	mu        sync.Mutex
-	sessions  map[string]*ConversationSession
+	rt           *ClawAgentRuntime
+	llmClient    *LLMClient
+	msgMgr       *MessageManager
+	mu           sync.Mutex
+	sessions     map[string]*ConversationSession
+	toolRegistry *tools.Registry
+
+	// OnEventProcessed is called when a pending event (permission/question) is
+	// successfully processed via tool execution. The sessionID is passed as argument.
+	// Used by the dispatcher to cancel deferred notifications.
+	OnEventProcessed func(sessionID string)
 }
 
-// ConversationSession holds the in-memory state of a conversation.
+// ConversationSession holds the in-memory state of a conversation (metadata only, messages are in DB).
 type ConversationSession struct {
 	SessionID string
 	UserID    string
-	Messages  []ChatMessage
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// EventData holds pending event context for tool execution (permission/question).
+	// When non-nil and IsProcessed is false, Handle() uses RunEventReply instead of Run().
+	EventData *EventContext
+}
+
+// EventContext holds pending event data for AI tool execution.
+type EventContext struct {
+	EventType  string         `json:"eventType"`    // "permission" or "question"
+	SessionID  string         `json:"sessionId"`    // device-side session ID from the dispatcher
+	DeviceID   string         `json:"deviceId"`
+	Path       string         `json:"path"`         // workspace directory for device proxy routing
+	ActionData map[string]any `json:"actionData"`   // raw action data from dispatcher
+
+	// Resolved fields extracted from ActionData
+	PermissionID string         `json:"permissionId,omitempty"` // for permission events
+	Questions    []QuestionItem `json:"questions,omitempty"`    // for question events
+	IsProcessed  bool           `json:"isProcessed"`            // marked true after successful tool call
+}
+
+// QuestionItem represents a single question from a device event.
+type QuestionItem struct {
+	ID       string           `json:"id,omitempty"`
+	Question string           `json:"question"`
+	Header   string           `json:"header,omitempty"`
+	Multiple bool             `json:"multiple"`
+	Options  []QuestionOption `json:"options,omitempty"`
+}
+
+// QuestionOption represents an option in a question.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // NewAgentRunner creates a new AgentRunner.
 func NewAgentRunner(rt *ClawAgentRuntime, llmClient *LLMClient) *AgentRunner {
-	return &AgentRunner{
+	r := &AgentRunner{
 		rt:        rt,
 		llmClient: llmClient,
 		sessions:  make(map[string]*ConversationSession),
 	}
+
+	// Initialize and register event tools
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewPermissionTool())
+	reg.Register(tools.NewQuestionTool())
+	reg.Register(tools.NewSessionInfoTool())
+	reg.Register(tools.NewRecentMessagesTool())
+	r.toolRegistry = reg
+
+	return r
 }
 
 // Run starts or continues a conversation.
@@ -62,7 +113,7 @@ func (r *AgentRunner) Run(ctx context.Context, userID, sessionID, message string
 			promptUserID = senderUserID[0]
 		}
 
-		sess := r.getOrCreateSession(sessionID, userID)
+		r.getOrCreateSession(sessionID, userID)
 
 		// Build system prompt with persona + memory
 		systemPrompt, err := r.buildSystemPrompt(ctx, promptUserID)
@@ -78,8 +129,17 @@ func (r *AgentRunner) Run(ctx context.Context, userID, sessionID, message string
 			return
 		}
 
+		// Save user message to DB
+		if err := r.msgMgr.AppendMessage(ctx, sessionID, ChatMessage{Role: "user", Content: message}); err != nil {
+			slog.Error("[agent] Run: failed to save user message", "sessionID", sessionID, "error", err)
+		}
+
 		// Build messages array with system prompt + history + new message
-		messages := r.buildMessages(sess, systemPrompt, message)
+		messages, err := r.buildMessages(ctx, sessionID, systemPrompt)
+		if err != nil {
+			eventCh <- AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to build messages: %v", err), IsError: true, IsFinal: true}
+			return
+		}
 
 		// Stream the response
 		streamCh, errCh := r.llmClient.GenerateStream(ctx, *provCfg, messages)
@@ -95,8 +155,8 @@ func (r *AgentRunner) Run(ctx context.Context, userID, sessionID, message string
 					}
 				}
 				if choice.FinishReason != "" {
-					// Save assistant message to session
-					r.addAssistantMessage(sessionID, fullResponse)
+					// Save assistant message to DB
+					r.addAssistantMessage(ctx, sessionID, fullResponse)
 					eventCh <- AgentEvent{
 						Type:    "done",
 						IsFinal: true,
@@ -123,21 +183,26 @@ func (r *AgentRunner) Run(ctx context.Context, userID, sessionID, message string
 	return eventCh, nil
 }
 
+// SetMsgMgr sets the MessageManager after construction (called during runtime init).
+func (r *AgentRunner) SetMsgMgr(mgr *MessageManager) {
+	r.msgMgr = mgr
+}
+
 func (r *AgentRunner) getOrCreateSession(sessionID, userID string) *ConversationSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if sess, ok := r.sessions[sessionID]; ok {
 		sess.UpdatedAt = time.Now()
+		if sess.UserID == "" {
+			sess.UserID = userID
+		}
 		return sess
 	}
 
 	sess := &ConversationSession{
 		SessionID: sessionID,
 		UserID:    userID,
-		Messages: []ChatMessage{
-			{Role: "system", Content: "You are a helpful AI assistant."},
-		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -189,40 +254,49 @@ func (r *AgentRunner) resolveProvider(ctx context.Context, userID string) (*Prov
 	}, nil
 }
 
-func (r *AgentRunner) buildMessages(sess *ConversationSession, systemPrompt, userMessage string) []ChatMessage {
+func (r *AgentRunner) buildMessages(ctx context.Context, sessionID, systemPrompt string) ([]ChatMessage, error) {
 	// Start with system prompt
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
 	}
 
-	// Add conversation history (skip first system message)
-	r.mu.Lock()
-	for i, msg := range sess.Messages {
-		if i == 0 {
-			continue // skip default system message
-		}
-		messages = append(messages, msg)
+	// Load conversation history from DB
+	history, err := r.msgMgr.LoadMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
 	}
-	// Add new user message
-	sess.Messages = append(sess.Messages, ChatMessage{Role: "user", Content: userMessage})
-	r.mu.Unlock()
 
-	messages = append(messages, ChatMessage{Role: "user", Content: userMessage})
-	return messages
+	// Append history (all messages already saved, including the latest user message)
+	messages = append(messages, history...)
+	return messages, nil
 }
 
-func (r *AgentRunner) addAssistantMessage(sessionID, content string) {
+func (r *AgentRunner) addAssistantMessage(ctx context.Context, sessionID, content string) {
+	if err := r.msgMgr.AppendMessage(ctx, sessionID, ChatMessage{Role: "assistant", Content: content}); err != nil {
+		slog.Error("[agent] addAssistantMessage: failed to save", "sessionID", sessionID, "error", err)
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if sess, ok := r.sessions[sessionID]; ok {
-		sess.Messages = append(sess.Messages, ChatMessage{Role: "assistant", Content: content})
 		sess.UpdatedAt = time.Now()
 	}
+	r.mu.Unlock()
+}
+
+// AddUserMessage appends a user message to the session history in DB.
+func (r *AgentRunner) AddUserMessage(ctx context.Context, sessionID, content string) {
+	if err := r.msgMgr.AppendMessage(ctx, sessionID, ChatMessage{Role: "user", Content: content}); err != nil {
+		slog.Error("[agent] AddUserMessage: failed to save", "sessionID", sessionID, "error", err)
+	}
+	r.mu.Lock()
+	if sess, ok := r.sessions[sessionID]; ok {
+		sess.UpdatedAt = time.Now()
+	}
+	r.mu.Unlock()
 }
 
 // SummarizeSession compresses session data using LLM.
 func (r *AgentRunner) SummarizeSession(ctx context.Context, sessionID string, keepRecent int) (string, error) {
+	// Find the session in memory for userID
 	r.mu.Lock()
 	sess, ok := r.sessions[sessionID]
 	r.mu.Unlock()
@@ -236,30 +310,18 @@ func (r *AgentRunner) SummarizeSession(ctx context.Context, sessionID string, ke
 		return "", err
 	}
 
-	r.mu.Lock()
-	messages := sess.Messages
-	r.mu.Unlock()
+	// Load messages from DB
+	messages, err := r.msgMgr.LoadMessages(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
 
 	// Prepare messages for summarization
-	var promptBuilder string
-	promptBuilder = "请将以下对话历史压缩为一段简洁的摘要，保留关键信息和决策。\n\n"
+	summaryInput := formatMessagesForSummary(messages, keepRecent)
 
-	totalMsgs := len(messages)
-	keepStart := totalMsgs - keepRecent*2
-	if keepStart < 0 {
-		keepStart = 0
-	}
-
-	for i, msg := range messages {
-		if msg.Role == "system" {
-			continue
-		}
-		if i >= keepStart {
-			promptBuilder += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
-		}
-	}
-
-	promptBuilder += "\n请输出JSON格式：{\"summary\": \"摘要内容\", \"key_points\": [\"要点1\", \"要点2\"]}"
+	promptBuilder := "请将以下对话历史压缩为一段简洁的摘要，保留关键信息和决策。\n\n" +
+		summaryInput +
+		"\n请输出JSON格式：{\"summary\": \"摘要内容\", \"key_points\": [\"要点1\", \"要点2\"]}"
 
 	resp, err := r.llmClient.Generate(ctx, *provCfg, []ChatMessage{
 		{Role: "user", Content: promptBuilder},
@@ -275,7 +337,8 @@ func (r *AgentRunner) SummarizeSession(ctx context.Context, sessionID string, ke
 	return resp.Choices[0].Message.Content, nil
 }
 
-// GetSession returns a copy of the conversation session.
+// GetSession returns a copy of the conversation session (without messages — messages are in DB).
+// The caller should use MessageManager.LoadMessages() to retrieve messages separately.
 func (r *AgentRunner) GetSession(sessionID string) *ConversationSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -285,19 +348,256 @@ func (r *AgentRunner) GetSession(sessionID string) *ConversationSession {
 		return nil
 	}
 
-	// Return a copy
-	msgs := make([]ChatMessage, len(sess.Messages))
-	copy(msgs, sess.Messages)
 	return &ConversationSession{
 		SessionID: sess.SessionID,
 		UserID:    sess.UserID,
-		Messages:  msgs,
 		CreatedAt: sess.CreatedAt,
 		UpdatedAt: sess.UpdatedAt,
+		EventData: sess.EventData,
 	}
 }
 
-// NewSessionID generates a new session ID with version suffix.
+// Tool names for event handling
+const (
+	ToolReplyPermission = "reply_permission"
+	ToolReplyQuestion   = "reply_question"
+)
+
+// toolDefinitions converts tools.Definition to []ToolDefinition for the LLM API.
+func (r *AgentRunner) toolDefinitions() []ToolDefinition {
+	all := r.toolRegistry.All()
+	defs := make([]ToolDefinition, len(all))
+	for i, t := range all {
+		d := t.Definition()
+		defs[i] = ToolDefinition{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters:  d.Parameters,
+			},
+		}
+	}
+	return defs
+}
+
+
+// RunEventReply runs a tool-capable LLM call for handling event replies (permission/question).
+// Unlike Run(), this uses non-streaming GenerateWithTools and handles tool execution.
+func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID string) (<-chan AgentEvent, error) {
+	eventCh := make(chan AgentEvent, 128)
+
+	go func() {
+		defer close(eventCh)
+
+		slog.Debug("[agent] RunEventReply: starting", "sessionID", sessionID, "userID", userID)
+
+		sess := r.getOrCreateSession(sessionID, userID)
+
+		// Build system prompt with event context + tools
+		systemPrompt, err := r.buildSystemPrompt(ctx, userID)
+		if err != nil {
+			eventCh <- AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to build context: %v", err), IsError: true, IsFinal: true}
+			return
+		}
+
+		// Append event-specific instructions based on EventData
+		if sess.EventData != nil && !sess.EventData.IsProcessed {
+			eventInstructions := tools.BuildInstructions(sess.EventData.EventType)
+			systemPrompt += eventInstructions
+		}
+
+		// Resolve provider config
+		provCfg, err := r.resolveProvider(ctx, userID)
+		if err != nil {
+			eventCh <- AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to resolve provider: %v", err), IsError: true, IsFinal: true}
+			return
+		}
+
+		toolDefs := r.toolDefinitions()
+		maxToolIterations := 10
+
+		for iter := 0; iter < maxToolIterations; iter++ {
+			// Load messages from DB
+			history, err := r.msgMgr.LoadMessages(ctx, sessionID)
+			if err != nil {
+				eventCh <- AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to load messages: %v", err), IsError: true, IsFinal: true}
+				return
+			}
+
+			// Build messages array
+			messages := []ChatMessage{
+				{Role: "system", Content: systemPrompt},
+			}
+			messages = append(messages, history...)
+
+			slog.Debug("[agent] RunEventReply: LLM call", "sessionID", sessionID, "iter", iter)
+			resp, err := r.llmClient.GenerateWithTools(ctx, *provCfg, messages, toolDefs)
+			if err != nil {
+				eventCh <- AgentEvent{Type: "error", Error: fmt.Sprintf("LLM call failed: %v", err), IsError: true, IsFinal: true}
+				return
+			}
+
+			if len(resp.Choices) == 0 {
+				eventCh <- AgentEvent{Type: "error", Error: "LLM returned no choices", IsError: true, IsFinal: true}
+				return
+			}
+
+			choice := resp.Choices[0]
+
+			// Save assistant message to DB
+			r.addAssistantMessage(ctx, sessionID, choice.Message.Content)
+
+			// Check for tool calls
+			if len(choice.Message.ToolCalls) > 0 {
+				for _, tc := range choice.Message.ToolCalls {
+					eventCh <- AgentEvent{
+						Type: "tool_call",
+						Tool: tc.Function.Name,
+						Args: tc.Function.Arguments,
+					}
+
+					// Execute tool via registry
+					deviceID := ""
+					directory := ""
+					deviceSessionID := ""
+					if sess.EventData != nil {
+						deviceID = sess.EventData.DeviceID
+						directory = sess.EventData.Path
+						deviceSessionID = sess.EventData.SessionID
+					}
+					if deviceID == "" {
+						slog.Error("[agent] RunEventReply: empty deviceID for tool execution", "sessionID", sessionID, "tool", tc.Function.Name)
+					}
+					toolCtx := &tools.Context{
+						DeviceID:      deviceID,
+						Directory:     directory,
+						SessionID:     deviceSessionID,
+						DeviceProxy:   r.rt.DeviceProxy,
+						MarkProcessed: func() { r.markEventProcessed(sessionID) },
+					}
+					result, execErr := r.toolRegistry.Execute(ctx, tc.Function.Name, tc.Function.Arguments, toolCtx)
+					slog.Debug("[agent] RunEventReply: tool executed", "sessionID", sessionID, "tool", tc.Function.Name, "error", execErr)
+					if execErr != nil {
+						result = fmt.Sprintf("工具执行失败: %v", execErr)
+					}
+
+					eventCh <- AgentEvent{
+						Type:   "tool_result",
+						Tool:   tc.Function.Name,
+						Result: result,
+					}
+
+					// Add tool call + result to DB
+					r.addToolResult(ctx, sessionID, tc, result)
+				}
+				// Continue loop to let LLM process tool results
+				continue
+			}
+
+			// No tool calls — this is the final response
+			fullResponse := choice.Message.Content
+			if fullResponse != "" {
+				eventCh <- AgentEvent{Type: "token", Content: fullResponse}
+			}
+			eventCh <- AgentEvent{Type: "done", IsFinal: true}
+			return
+		}
+
+		slog.Error("[agent] RunEventReply: tool call iteration limit reached", "sessionID", sessionID)
+		eventCh <- AgentEvent{Type: "error", Error: "Tool call iteration limit reached", IsError: true, IsFinal: true}
+	}()
+
+	return eventCh, nil
+}
+
+// resolveDeviceIDFromSession finds the device ID from the user's active session EventData.
+func (r *AgentRunner) resolveDeviceIDFromSession(userID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, sess := range r.sessions {
+		if sess.UserID == userID && sess.EventData != nil && sess.EventData.DeviceID != "" {
+			return sess.EventData.DeviceID
+		}
+	}
+	return ""
+}
+
+// SetEventData sets the EventContext on a specific session.
+// If the session doesn't exist in memory yet, it pre-creates it with EventData.
+// This handles the case where SetEventData is called before Run() (which creates
+// the in-memory session via getOrCreateSession).
+func (r *AgentRunner) SetEventData(sessionID string, ec *EventContext) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sess, ok := r.sessions[sessionID]; ok {
+		sess.EventData = ec
+	} else {
+		// Pre-create session so EventData survives until Run() fills in remaining fields
+		r.sessions[sessionID] = &ConversationSession{
+			SessionID: sessionID,
+			EventData: ec,
+		}
+	}
+}
+
+// markEventProcessed sets IsProcessed on the session's EventData.
+// Also calls OnEventProcessed callback if set (for deferred notification cancellation).
+func (r *AgentRunner) markEventProcessed(sessionID string) {
+	slog.Debug("[agent] markEventProcessed", "sessionID", sessionID)
+
+	r.mu.Lock()
+	sess, ok := r.sessions[sessionID]
+	hasCallback := r.OnEventProcessed != nil
+	r.mu.Unlock()
+
+	if ok && sess.EventData != nil {
+		r.mu.Lock()
+		sess.EventData.IsProcessed = true
+		r.mu.Unlock()
+
+		if hasCallback {
+			r.OnEventProcessed(sessionID)
+		}
+	}
+}
+
+// addToolResult adds a tool call + result to the session history in DB.
+func (r *AgentRunner) addToolResult(ctx context.Context, sessionID string, tc ToolCall, result string) {
+	msgs := []ChatMessage{
+		{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []ToolCall{tc},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			Content:    result,
+		},
+	}
+	if err := r.msgMgr.AppendMessages(ctx, sessionID, msgs); err != nil {
+		slog.Error("[agent] addToolResult: failed to save", "sessionID", sessionID, "error", err)
+	}
+}
+
+// GetSessionByBaseKey retrieves the latest session for a given user and base key pattern.
+func (r *AgentRunner) GetSessionByBaseKey(userID, baseKeyPrefix string) *ConversationSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var latest *ConversationSession
+	for _, sess := range r.sessions {
+		if sess.UserID == userID && strings.HasPrefix(sess.SessionID, baseKeyPrefix) {
+			if latest == nil || sess.UpdatedAt.After(latest.UpdatedAt) {
+				s := *sess
+				latest = &s
+			}
+		}
+	}
+	return latest
+}
 func NewSessionID(baseKey string, version int) string {
 	return fmt.Sprintf("%s:v%d", baseKey, version)
 }

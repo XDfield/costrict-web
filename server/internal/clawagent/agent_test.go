@@ -84,12 +84,6 @@ func TestConversationSession_Creation(t *testing.T) {
 	if sess.UserID != "user-1" {
 		t.Errorf("UserID = %q", sess.UserID)
 	}
-	if len(sess.Messages) == 0 {
-		t.Error("new session should have at least the system message")
-	}
-	if sess.Messages[0].Role != "system" {
-		t.Errorf("first message role = %q, want %q", sess.Messages[0].Role, "system")
-	}
 
 	// Same session should be reused
 	sess2 := runner.getOrCreateSession("test-sid:v1", "user-1")
@@ -106,29 +100,6 @@ func TestConversationSession_MultipleSessions(t *testing.T) {
 
 	if s1 == s2 {
 		t.Error("different session IDs should return different sessions")
-	}
-}
-
-func TestAddAssistantMessage(t *testing.T) {
-	runner := NewAgentRunner(nil, nil)
-	runner.getOrCreateSession("test-sid", "user-1")
-
-	runner.addAssistantMessage("test-sid", "Hello, how can I help?")
-
-	sess := runner.GetSession("test-sid")
-	if sess == nil {
-		t.Fatal("GetSession returned nil")
-	}
-
-	found := false
-	for _, msg := range sess.Messages {
-		if msg.Role == "assistant" && msg.Content == "Hello, how can I help?" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("assistant message not found in session")
 	}
 }
 

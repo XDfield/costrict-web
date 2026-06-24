@@ -175,8 +175,8 @@ func TestParseUserIntent_Question(t *testing.T) {
 	ctx := &EventContext{
 		EventType:  "question",
 		DeviceID:   "dev-001",
-		QuestionID: "q-789",
-		Data:       map[string]any{"question": "选择部署环境", "options": []string{"生产", "测试"}},
+		Questions:  []QuestionItem{{ID: "q-789", Question: "选择部署环境"}},
+		ActionData: map[string]any{},
 	}
 
 	intent := h.parseUserIntent("用生产环境", ctx)

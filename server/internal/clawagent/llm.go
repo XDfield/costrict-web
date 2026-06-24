@@ -18,17 +18,46 @@ type LLMClient struct {
 
 // ChatMessage represents a message in the chat completion request.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// ToolCall represents a function call from the LLM.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction represents the function details in a tool call.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolDefinition defines a tool that the LLM can call.
+type ToolDefinition struct {
+	Type     string              `json:"type"`
+	Function ToolFunctionDef     `json:"function"`
+}
+
+// ToolFunctionDef defines the function signature for a tool.
+type ToolFunctionDef struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Parameters  any         `json:"parameters"`
 }
 
 // ChatCompletionRequest is the request body for chat completions.
 type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model       string            `json:"model"`
+	Messages    []ChatMessage     `json:"messages"`
+	Temperature float64           `json:"temperature,omitempty"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Stream      bool              `json:"stream,omitempty"`
+	Tools       []ToolDefinition  `json:"tools,omitempty"`
 }
 
 // ChatCompletionResponse is the response from chat completions.
@@ -75,6 +104,46 @@ func (c *LLMClient) Generate(ctx context.Context, cfg ProviderConfig, messages [
 	req := ChatCompletionRequest{
 		Model:    cfg.ModelName,
 		Messages: messages,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", cfg.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var result ChatCompletionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
+// GenerateWithTools sends a non-streaming completion request with tool definitions.
+// The LLM can call tools defined in the request; tool calls are returned in the response.
+// This is separate from Generate to avoid breaking existing callers.
+func (c *LLMClient) GenerateWithTools(ctx context.Context, cfg ProviderConfig, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error) {
+	req := ChatCompletionRequest{
+		Model:    cfg.ModelName,
+		Messages: messages,
+		Tools:    tools,
 	}
 
 	body, err := json.Marshal(req)
