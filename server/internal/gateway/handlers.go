@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -177,7 +178,13 @@ func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceS
 		}
 
 		registry.UnbindDevice(body.DeviceID)
-		_ = deviceSvc.SetOffline(body.DeviceID)
+		if err := deviceSvc.SetOffline(body.DeviceID); err != nil {
+			slog.Error("[gateway] failed to mark device offline",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID, "error", err)
+		} else {
+			slog.Info("[gateway] device marked offline via disconnect notification",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID)
+		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}

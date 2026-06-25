@@ -26,10 +26,12 @@ var (
 	zapLogger *zap.Logger
 	// sugar is the sugared (printf-style) logger used by public helpers.
 	sugar *zap.SugaredLogger
-	// appWriter is exposed for GinWriter().
+	// appWriter is the writer for app.log (application logs only, no gin access logs).
 	appWriter io.Writer
 	// errWriter is exposed for GinErrorWriter().
 	errWriter io.Writer
+	// requestWriter is the writer for requests.log (gin access logs only).
+	requestWriter io.Writer
 )
 
 // Config controls log output behaviour.
@@ -116,9 +118,19 @@ func Init(cfg Config) {
 		Compress:   true,
 	}
 
-	// Keep references for GinWriter / GinErrorWriter.
+	reqRotator := &lumberjack.Logger{
+		Filename:   cfg.Dir + "/requests.log",
+		MaxSize:    cfg.MaxSizeMB,
+		MaxAge:     cfg.MaxAgeDays,
+		MaxBackups: cfg.MaxBackups,
+		LocalTime:  true,
+		Compress:   true,
+	}
+
+	// Keep references for GinWriter / GinErrorWriter / GinRequestWriter.
 	appWriter = appRotator
 	errWriter = errRotator
+	requestWriter = reqRotator
 
 	// --- zap cores ---
 	fileEncoder := zapcore.NewConsoleEncoder(fileEncoderCfg)
@@ -152,6 +164,7 @@ func Init(cfg Config) {
 		// Also let GinWriter/GinErrorWriter tee to console.
 		appWriter = io.MultiWriter(os.Stdout, appRotator)
 		errWriter = io.MultiWriter(os.Stderr, errRotator)
+		requestWriter = io.MultiWriter(os.Stdout, reqRotator)
 	}
 
 	core := zapcore.NewTee(cores...)
@@ -212,10 +225,10 @@ func Fatal(format string, args ...any) {
 }
 
 // GinWriter returns an io.Writer suitable for gin.DefaultWriter so that Gin
-// access logs also flow into app.log.
+// access logs flow into requests.log (separate from application logs).
 func GinWriter() io.Writer {
-	if appWriter != nil {
-		return appWriter
+	if requestWriter != nil {
+		return requestWriter
 	}
 	return os.Stdout
 }
@@ -246,6 +259,7 @@ func init() {
 	sugar = l.Sugar()
 	appWriter = os.Stdout
 	errWriter = os.Stderr
+	requestWriter = os.Stdout
 }
 
 // FormatError formats an error with a message prefix, useful for structured

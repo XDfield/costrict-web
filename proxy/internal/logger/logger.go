@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	zapLogger *zap.Logger
-	sugar     *zap.SugaredLogger
-	appWriter io.Writer
-	errWriter io.Writer
+	zapLogger    *zap.Logger
+	sugar        *zap.SugaredLogger
+	appWriter    io.Writer
+	errWriter    io.Writer
+	requestWriter io.Writer
 )
 
 type Config struct {
@@ -93,8 +94,18 @@ func Init(cfg Config) {
 		Compress:   true,
 	}
 
+	reqRotator := &lumberjack.Logger{
+		Filename:   cfg.Dir + "/requests.log",
+		MaxSize:    cfg.MaxSizeMB,
+		MaxAge:     cfg.MaxAgeDays,
+		MaxBackups: cfg.MaxBackups,
+		LocalTime:  true,
+		Compress:   true,
+	}
+
 	appWriter = appRotator
 	errWriter = errRotator
+	requestWriter = reqRotator
 
 	fileEncoder := zapcore.NewConsoleEncoder(fileEncoderCfg)
 
@@ -123,6 +134,7 @@ func Init(cfg Config) {
 
 		appWriter = io.MultiWriter(os.Stdout, appRotator)
 		errWriter = io.MultiWriter(os.Stderr, errRotator)
+		requestWriter = io.MultiWriter(os.Stdout, reqRotator)
 	}
 
 	core := zapcore.NewTee(cores...)
@@ -168,8 +180,8 @@ func Fatal(format string, args ...any) {
 }
 
 func GinWriter() io.Writer {
-	if appWriter != nil {
-		return appWriter
+	if requestWriter != nil {
+		return requestWriter
 	}
 	return os.Stdout
 }
@@ -195,6 +207,7 @@ func init() {
 	sugar = l.Sugar()
 	appWriter = os.Stdout
 	errWriter = os.Stderr
+	requestWriter = os.Stdout
 }
 
 func FormatError(msg string, err error) string {

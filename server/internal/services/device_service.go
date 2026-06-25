@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -509,7 +510,12 @@ func (s *DeviceService) MarkStaleDevicesOffline(checkBound func(deviceID string)
 	var count int
 	for _, d := range devices {
 		if !checkBound(d.DeviceID) {
-			if err := s.SetOffline(d.DeviceID); err == nil {
+			if err := s.SetOffline(d.DeviceID); err != nil {
+				slog.Error("[stale-check] failed to mark device offline",
+					"deviceID", d.DeviceID, "error", err)
+			} else {
+				slog.Warn("[stale-check] device no longer bound to any gateway, marked offline",
+					"deviceID", d.DeviceID)
 				count++
 			}
 		}

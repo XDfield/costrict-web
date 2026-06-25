@@ -600,7 +600,11 @@ func main() {
 	}
 	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
 		for _, id := range deviceIDs {
-			_ = deviceSvc.SetOffline(id)
+			if err := deviceSvc.SetOffline(id); err != nil {
+				log.Printf("[gateway-registry] failed to mark device offline: deviceID=%s error=%v", id, err)
+			} else {
+				log.Printf("[gateway-registry] device marked offline due to gateway heartbeat timeout: deviceID=%s", id)
+			}
 		}
 	})
 	// Only one replica should run the stale-device checker.
