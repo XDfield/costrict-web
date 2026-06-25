@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -66,13 +67,16 @@ func DeviceHeartbeatHandler(deviceSvc *services.DeviceService) gin.HandlerFunc {
 				} else {
 					slog.Info("[heartbeat] device marked online via heartbeat", "deviceID", device.DeviceID)
 				}
-			} else if !*body.TunnelConnected && device.Status == "online" {
-				if err := deviceSvc.SetOffline(device.DeviceID); err != nil {
-					slog.Error("[heartbeat] failed to set device offline", "deviceID", device.DeviceID, "error", err)
-				} else {
-					slog.Warn("[heartbeat] device marked offline via heartbeat", "deviceID", device.DeviceID)
-				}
+		} else if !*body.TunnelConnected && device.Status == "online" {
+			if device.LastConnectedAt != nil && time.Since(*device.LastConnectedAt) < 60*time.Second {
+				slog.Info("[heartbeat] ignoring tunnelConnected=false, device just came online",
+					"deviceID", device.DeviceID, "lastConnectedAt", device.LastConnectedAt)
+			} else if err := deviceSvc.SetOffline(device.DeviceID); err != nil {
+				slog.Error("[heartbeat] failed to set device offline", "deviceID", device.DeviceID, "error", err)
+			} else {
+				slog.Warn("[heartbeat] device marked offline via heartbeat", "deviceID", device.DeviceID)
 			}
+		}
 		}
 
 		if err := deviceSvc.UpdateLastSeen(device.DeviceID); err != nil {
