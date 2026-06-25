@@ -2,9 +2,8 @@ package clawagent
 
 import (
 	"context"
-	"log"
-	"log/slog"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -320,16 +319,19 @@ func (rt *ClawAgentRuntime) streamResponse(
 
 	streamSender, hasStream := sender.(channel.StreamSender)
 
+	slog.Info("[stream] starting", "sessionID", sessionID, "userID", userID, "hasStream", hasStream)
+
 	flush := func(finish bool) {
 		if buf.Len() > 0 || finish {
 			content := buf.String()
+			slog.Debug("[stream] flushing", "sessionID", sessionID, "contentLen", len(content), "finish", finish)
 			if hasStream {
 				if err := streamSender.SendStream(ctx, content, finish); err != nil {
-					log.Printf("[clawagent:stream] error: %v", err)
+					slog.Error("[stream] SendStream error", "sessionID", sessionID, "error", err)
 				}
 			} else {
 				if err := sender.Send(ctx, content); err != nil {
-					log.Printf("[clawagent:send] error: %v", err)
+					slog.Error("[stream] Send error", "sessionID", sessionID, "error", err)
 				}
 			}
 			buf.Reset()
@@ -347,6 +349,7 @@ func (rt *ClawAgentRuntime) streamResponse(
 			continue
 		}
 		if evt.Error != "" {
+			slog.Error("[stream] LLM returned error", "sessionID", sessionID, "error", evt.Error)
 			if hasStream {
 				_ = streamSender.SendStream(ctx, fmt.Sprintf("⚠️ %s", evt.Error), true)
 			} else {
@@ -355,6 +358,7 @@ func (rt *ClawAgentRuntime) streamResponse(
 			continue
 		}
 		if evt.IsFinal {
+			slog.Info("[stream] final event received", "sessionID", sessionID, "replyLen", assistantReply.Len())
 			flush(true)
 			// Clear EventData from DB (horizontal scaling)
 			go rt.SessionMeta.ClearEventData(rt.bgCtx, sessionID)

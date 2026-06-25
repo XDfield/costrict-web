@@ -114,6 +114,7 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 	// available to tool calls when the user replies — no need to inject XML into
 	// the message content (that would leak raw metadata to the user via the channel).
 	if req.Sender != nil {
+		slog.Info("[event_handler] launching streamResponse", "sessionID", sessionID, "senderType", fmt.Sprintf("%T", req.Sender))
 		go h.runtime.streamResponse(ctx, eventCh, req.Sender, req.UserID, message, sessionID)
 	} else {
 		go func() {
