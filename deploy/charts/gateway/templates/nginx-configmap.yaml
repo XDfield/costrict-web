@@ -2,10 +2,13 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "gateway.nginxRouter.fullname" . }}-config
-  namespace: {{ include "gateway.namespace" . }}
+  name: {{ .Release.Name }}-nginx-router-config
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "gateway.nginxRouter.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ .Chart.Name }}-nginx-router
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
 data:
   nginx.conf: |
     worker_processes auto;
@@ -40,7 +43,7 @@ data:
             local router = require "router"
             local state = ngx.shared.router_state
 
-            local headless_fqdn = "{{ include "gateway.fullname" . }}-headless.{{ include "gateway.namespace" . }}.svc.cluster.local"
+            local headless_fqdn = "{{ .Release.Name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
             local gateway_port = {{ .Values.nginxRouter.discovery.gatewayPort }}
             local refresh_ms = {{ .Values.nginxRouter.discovery.refreshIntervalMs }}
             local resolver_addr = "{{ .Values.nginxRouter.resolver }}"

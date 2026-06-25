@@ -2,10 +2,13 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "api.fullname" . }}-artifacts
-  namespace: {{ include "api.namespace" . }}
+  name: {{ .Release.Name }}-artifacts
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "api.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
   annotations:
     helm.sh/resource-policy: keep
 spec:
@@ -14,7 +17,7 @@ spec:
   {{- if .Values.persistence.storageClass }}
   storageClassName: {{ .Values.persistence.storageClass | quote }}
   {{- else }}
-  storageClassName: {{ include "api.fullname" . | quote }}
+  storageClassName: {{ .Release.Name | quote }}
   {{- end }}
   resources:
     requests:
