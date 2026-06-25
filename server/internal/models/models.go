@@ -441,6 +441,7 @@ type CapabilityItem struct {
 	SourceSHA         string               `json:"sourceSha"`
 	SourceType        string               `gorm:"not null;default:'direct'" json:"sourceType"`                                  // direct | archive | fork
 	Source            string               `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
+	SourceURL         string               `gorm:"column:source_url" json:"sourceUrl"`                                           // 上游真实 clone URL（含 branch/subdir），如 https://github.com/owner/repo/tree/main/subdir;由 catalog source_url 持久化，用于后端 lazy clone 打 ZIP 整包（DB+HTTP 分发通道）
 	ForkedFromItemID  *string              `gorm:"type:uuid;index:idx_items_forked_from_item" json:"forkedFromItemId,omitempty"` // Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）
 	ForkedFromOwnerID *string              `json:"forkedFromOwnerId,omitempty"`                                                  // 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
 	ParentPluginID    *string              `gorm:"type:uuid;index:idx_item_parent_plugin" json:"parentPluginId,omitempty"`       // Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）

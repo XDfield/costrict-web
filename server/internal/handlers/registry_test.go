@@ -95,6 +95,7 @@ func setupTestDB(t *testing.T) func() {
 			source_sha           TEXT,
 			source_type          TEXT NOT NULL DEFAULT 'direct',
 			source               TEXT NOT NULL DEFAULT '',
+			source_url           TEXT DEFAULT '',
 			forked_from_item_id  TEXT,
 			forked_from_owner_id TEXT,
 			parent_plugin_id     TEXT,

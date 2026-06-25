@@ -189,6 +189,13 @@ type catalogEntry struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
 	Source        string                `json:"source"`
+	// SourceURL is the upstream repo URL with branch + subdir, e.g.
+	// "https://github.com/owner/repo/tree/main/subdir". Unlike Source (a
+	// provenance label like "claude-plugins-dev"), this is the real clone
+	// target. Persisted verbatim to capability_items.source_url so the backend
+	// can lazy-clone the plugin and pack a lossless ZIP bundle for the DB+HTTP
+	// distribution channel (csc "订阅即分发"). 1895/1895 catalog plugins carry it.
+	SourceURL     string                `json:"source_url"`
 	Description   string                `json:"description"`
 	DescriptionZh string                `json:"description_zh"`
 	Category      string                `json:"category"`
@@ -778,6 +785,13 @@ func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem,
 	if entry.Source != "" && item.Source != entry.Source {
 		return true
 	}
+	// source_url backfill: existing rows imported before this column existed (or
+	// when upstream first started emitting source_url) get it filled in on the
+	// metadata-only path, even when the primary file SHA is unchanged. Required
+	// for the lazy clone-and-pack bundle channel to find a clone target.
+	if entry.SourceURL != "" && item.SourceURL != entry.SourceURL {
+		return true
+	}
 	if entry.Description != "" && item.Description != entry.Description {
 		return true
 	}
@@ -882,6 +896,9 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 	if entry.Source != "" {
 		updates["source"] = entry.Source
 	}
+	if entry.SourceURL != "" {
+		updates["source_url"] = entry.SourceURL
+	}
 	if entry.Description != "" {
 		updates["description"] = entry.Description
 	}
@@ -970,6 +987,7 @@ func (s *CatalogIngestService) updateItem(
 	existing.Version = parsed.Version
 	existing.Content = parsed.Content
 	existing.Source = source
+	existing.SourceURL = entry.SourceURL
 	existing.ExperienceScore = experienceScore
 	existing.Health = healthJSON(entry.Health)
 	existing.Evaluation = evaluationJSON(entry.Evaluation)
@@ -1078,6 +1096,7 @@ func (s *CatalogIngestService) insertItem(
 		CatalogEntryDir: entryDir,
 		SourceSHA:       fileSHA,
 		Source:          source,
+		SourceURL:       entry.SourceURL,
 		ExperienceScore: experienceScore,
 		Status:          "active",
 		CreatedBy:       triggerUser,

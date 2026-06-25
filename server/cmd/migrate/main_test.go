@@ -36,7 +36,7 @@ func newMigrateTestDB(t *testing.T) *gorm.DB {
 			owner_id TEXT NOT NULL,
 			created_at DATETIME,
 			updated_at DATETIME
-		)` ,
+		)`,
 		`CREATE TABLE IF NOT EXISTS capability_items (
 			id TEXT PRIMARY KEY,
 			registry_id TEXT NOT NULL,
@@ -56,6 +56,7 @@ func newMigrateTestDB(t *testing.T) *gorm.DB {
 			source_sha TEXT,
 			source_type TEXT NOT NULL DEFAULT 'direct',
 			source TEXT DEFAULT '',
+			source_url TEXT DEFAULT '',
 			experience_score REAL DEFAULT 0,
 			status TEXT DEFAULT 'active',
 			security_status TEXT DEFAULT 'unscanned',
@@ -178,7 +179,6 @@ func TestBackfillUserAuthIdentities(t *testing.T) {
 		t.Fatalf("expected 1 backfilled identity, got %d", count)
 	}
 }
-
 
 func TestBackfillCapabilityContentVersioning_SingleFile(t *testing.T) {
 	db := newMigrateTestDB(t)
