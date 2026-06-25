@@ -1,5 +1,4 @@
 # Default values for costrict-web-worker
-namespace: costrict-web
 
 replicaCount: 1
 
