@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -60,9 +61,17 @@ func DeviceHeartbeatHandler(deviceSvc *services.DeviceService) gin.HandlerFunc {
 
 		if body.TunnelConnected != nil {
 			if *body.TunnelConnected && device.Status != "online" {
-				_ = deviceSvc.SetOnline(device.DeviceID)
+				if err := deviceSvc.SetOnline(device.DeviceID); err != nil {
+					slog.Error("[heartbeat] failed to set device online", "deviceID", device.DeviceID, "error", err)
+				} else {
+					slog.Info("[heartbeat] device marked online via heartbeat", "deviceID", device.DeviceID)
+				}
 			} else if !*body.TunnelConnected && device.Status == "online" {
-				_ = deviceSvc.SetOffline(device.DeviceID)
+				if err := deviceSvc.SetOffline(device.DeviceID); err != nil {
+					slog.Error("[heartbeat] failed to set device offline", "deviceID", device.DeviceID, "error", err)
+				} else {
+					slog.Warn("[heartbeat] device marked offline via heartbeat", "deviceID", device.DeviceID)
+				}
 			}
 		}
 
