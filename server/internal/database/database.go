@@ -33,9 +33,12 @@ func Initialize(databaseURL string) (*gorm.DB, error) {
 func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*gorm.DB, error) {
 	gormLogger := logger.GormLoggerConsoleWarn(slowThreshold)
 
-	logMode := gormlogger.Warn
-	if os.Getenv("GORM_SQL_LOG") == "all" {
-		logMode = gormlogger.Info
+	logMode := gormlogger.Info
+	switch os.Getenv("GORM_SQL_LOG") {
+	case "off", "silent":
+		logMode = gormlogger.Silent
+	case "warn":
+		logMode = gormlogger.Warn
 	}
 
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
