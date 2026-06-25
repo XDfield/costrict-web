@@ -33,8 +33,13 @@ func Initialize(databaseURL string) (*gorm.DB, error) {
 func InitializeWithOptions(databaseURL string, slowThreshold time.Duration) (*gorm.DB, error) {
 	gormLogger := logger.GormLoggerConsoleWarn(slowThreshold)
 
+	logMode := gormlogger.Warn
+	if os.Getenv("GORM_SQL_LOG") == "all" {
+		logMode = gormlogger.Info
+	}
+
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
-		Logger:         gormLogger.LogMode(gormlogger.Silent),
+		Logger:         gormLogger.LogMode(logMode),
 		TranslateError: true,
 	})
 	if err != nil {

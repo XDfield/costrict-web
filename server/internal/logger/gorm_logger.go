@@ -84,9 +84,11 @@ func GormLoggerConsoleWarn(slowThreshold time.Duration) gormlogger.Interface {
 // separate log calls that map to different zap levels.
 type gormAdapterWarnConsole struct {
 	slowThreshold time.Duration
+	logMode       gormlogger.LogLevel
 }
 
 func (g *gormAdapterWarnConsole) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
+	g.logMode = level
 	return g
 }
 
@@ -100,13 +102,15 @@ func (g *gormAdapterWarnConsole) Error(ctx context.Context, msg string, data ...
 	getSugar().Errorf("[gorm] "+msg, data...)
 }
 
-// Trace only logs slow queries (WARN) and errors (ERROR).
+// Trace is called for every SQL statement.
+//
+// When logMode is Info or above, all SQL statements are logged at INFO level.
+// Slow queries and errors are always logged regardless of the log mode.
 func (g *gormAdapterWarnConsole) Trace(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
 	elapsed := time.Since(begin)
 	sql, rows := fc()
 
 	if err != nil && err.Error() != "record not found" {
-		// ERROR → goes to both file and console.
 		getSugar().Errorf("[gorm] err=%v elapsed=%s rows=%d sql=%s", err, elapsed, rows, sql)
 		return
 	}
@@ -114,5 +118,9 @@ func (g *gormAdapterWarnConsole) Trace(ctx context.Context, begin time.Time, fc 
 	if elapsed >= g.slowThreshold {
 		getSugar().Warnf("[gorm] SLOW elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 		return
+	}
+
+	if g.logMode >= gormlogger.Info {
+		getSugar().Infof("[gorm] elapsed=%s rows=%d sql=%s", elapsed, rows, sql)
 	}
 }
