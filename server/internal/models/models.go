@@ -606,6 +606,32 @@ type ScanJob struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// BundleJob is the async queue entry that drives the DB+HTTP "subscribe-to-distribute"
+// channel: a worker picks it up, lazily clones the plugin's upstream source, packs a
+// lossless ZIP, and upserts a clone_pack CapabilityArtifact. It mirrors ScanJob's
+// per-item background-task shape (FOR UPDATE SKIP LOCKED + exponential backoff retry).
+//
+// Duplicate-clone prevention: a partial unique index allows at most one
+// pending-or-running BundleJob per item (idx_bundle_jobs_active_item,
+// WHERE status IN ('pending','running')). The goose migration adds it explicitly
+// because GORM cannot express a partial index from struct tags.
+type BundleJob struct {
+	ID          string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID      string     `gorm:"not null;index" json:"itemId"`
+	TriggerType string     `gorm:"not null;default:'sync'" json:"triggerType"` // sync | manual | subscribe
+	TriggerUser string     `json:"triggerUser"`
+	Status      string     `gorm:"not null;default:'pending';index" json:"status"` // pending | running | success | failed
+	RetryCount  int        `gorm:"default:0" json:"retryCount"`
+	MaxAttempts int        `gorm:"default:3" json:"maxAttempts"`
+	LastError   string     `gorm:"type:text" json:"lastError"`
+	ArtifactID  *string    `gorm:"type:uuid" json:"artifactId"` // the clone_pack artifact produced on success
+	ScheduledAt time.Time  `gorm:"not null;index" json:"scheduledAt"`
+	StartedAt   *time.Time `json:"startedAt"`
+	FinishedAt  *time.Time `json:"finishedAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
 // Workspace 工作空间
 // 用户可以创建多个工作空间，每个工作空间可以绑定多个设备和多个工作目录
 type Workspace struct {

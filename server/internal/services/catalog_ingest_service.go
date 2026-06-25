@@ -90,6 +90,31 @@ type CatalogIngestService struct {
 	TagSvc         *TagService
 	CategorySvc    *CategoryService
 	ScanJobService *ScanJobService
+	// BundleJobService, when set, gets a refresh enqueue for every plugin row whose
+	// content changed this ingest (insert or content-changed update). This is the
+	// "simple trigger" update mechanism (design D / §5): re-ingest drives re-pack; a
+	// later worker run clones the new commit → new clone_pack artifact (IsLatest
+	// flips) → csc reconcile compares bundleVersion and pulls. No polling scheduler.
+	// Optional — nil leaves the lazy-on-first-request path as the sole trigger.
+	BundleJobService *BundleJobService
+}
+
+// enqueueBundleRefresh queues a lazy clone-and-pack refresh for a plugin item whose
+// content changed this ingest round. No-op for non-plugin items, when no
+// BundleJobService is wired, or when the item lacks a source_url to clone from.
+// De-dup and errors are swallowed: a missed refresh is recovered on the next ingest
+// or the next on-demand bundle request, so it must never fail the ingest.
+func (s *CatalogIngestService) enqueueBundleRefresh(item *models.CapabilityItem, triggerUser string) {
+	if s.BundleJobService == nil || item == nil {
+		return
+	}
+	if item.ItemType != "plugin" || item.SourceURL == "" {
+		return
+	}
+	_, _ = s.BundleJobService.Enqueue(item.ID, BundleEnqueueOptions{
+		TriggerType: "sync",
+		TriggerUser: triggerUser,
+	})
 }
 
 // IngestSource carries exactly one of URL / Tarball / Dir. The other two
@@ -1041,6 +1066,7 @@ func (s *CatalogIngestService) updateItem(
 	if s.ScanJobService != nil {
 		_, _ = s.ScanJobService.Enqueue(existing.ID, maxRevision+1, "sync", triggerUser, ScanEnqueueOptions{})
 	}
+	s.enqueueBundleRefresh(existing, triggerUser)
 
 	return nil
 }
@@ -1148,6 +1174,7 @@ func (s *CatalogIngestService) insertItem(
 	if s.ScanJobService != nil {
 		_, _ = s.ScanJobService.Enqueue(newItem.ID, 1, "sync", triggerUser, ScanEnqueueOptions{})
 	}
+	s.enqueueBundleRefresh(newItem, triggerUser)
 
 	return newItem, nil
 }

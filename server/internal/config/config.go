@@ -27,18 +27,22 @@ type Config struct {
 	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
 	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
 	ReleaseDownloadBaseURL    string
-	SystemToken               string
-	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
-	InternalSecret            string
-	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
-	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
-	Casdoor                   CasdoorConfig
-	Channels                  ChannelSystemConfig
-	LLM                       LLMConfig
-	Embedding                 EmbeddingConfig
-	Search                    SearchConfig
-	DeptSync                  DeptSyncConfig
-	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	// GitMirrorBase optionally rewrites backend lazy-clone URLs from github.com to a
+	// self-hosted Gitea mirror (in-China reachable) for the DB+HTTP plugin bundle
+	// channel. Empty (default) = clone source_url directly from GitHub.
+	GitMirrorBase           string
+	SystemToken             string
+	FrontendURLs            []string // Allowed frontend origins for OAuth redirects; first entry is the default
+	InternalSecret          string
+	CookieSecure            bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CORSAllowedOrigins      []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	Casdoor                 CasdoorConfig
+	Channels                ChannelSystemConfig
+	LLM                     LLMConfig
+	Embedding               EmbeddingConfig
+	Search                  SearchConfig
+	DeptSync                DeptSyncConfig
+	UserSyncIntervalMinutes int // User sync interval in minutes, default 15
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -144,6 +148,7 @@ func Load() *Config {
 		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
 		AppURL:                    getEnv("APP_URL", cloudBaseURL),
 		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
+		GitMirrorBase:             getEnv("GIT_MIRROR_BASE", ""),
 		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
 		FrontendURLs:              frontendURLs,
 		InternalSecret:            getEnv("INTERNAL_SECRET", ""),

@@ -537,6 +537,11 @@ type ItemResponse struct {
 	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
 	MyForkItemID        *string                     `json:"myForkItemId,omitempty"` // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
 	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`    // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
+	// Bundle distribution (DB+HTTP channel, plugin only). csc reads these to fetch
+	// the lossless ZIP bundle and to compare versions for update detection.
+	BundleURL     string `json:"bundleUrl,omitempty"`     // GET endpoint for the plugin's ZIP bundle; present even before the bundle is ready so csc can trigger the first pull (202)
+	BundleVersion string `json:"bundleVersion,omitempty"` // version key of the latest packed bundle (commit SHA for catalog plugins, content hash for uploads); empty until ready
+	BundleReady   bool   `json:"bundleReady"`             // true once a clone_pack/upload_pack artifact exists; false means a pull will 202 + enqueue
 }
 
 type ItemAssetsResponse struct {
@@ -693,6 +698,18 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		ExperienceScore:     item.ExperienceScore,
 		Tags:                item.Tags,
 		CurrentVersionLabel: services.NewContentHashService().BuildVersionLabel(item.CurrentRevision),
+	}
+	// Bundle distribution metadata (plugin only). csc compares BundleVersion to
+	// detect upstream updates and uses BundleURL to fetch the lossless ZIP. The URL
+	// is advertised even when no artifact exists yet — the first pull returns 202
+	// and enqueues a lazy clone-and-pack (single-item GetItem preloads Artifacts; the
+	// list path does not, so it leaves these empty to avoid an N+1).
+	if item.ItemType == "plugin" && item.Slug != "" {
+		resp.BundleURL = fmt.Sprintf("%s/api/plugins/%s/bundle", origin(c), item.Slug)
+		if a, ok := latestBundleArtifactFrom(item.Artifacts); ok {
+			resp.BundleVersion = a.ArtifactVersion
+			resp.BundleReady = true
+		}
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)

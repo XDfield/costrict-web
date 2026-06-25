@@ -19,6 +19,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/worker"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -74,6 +75,7 @@ func runWorker() {
 		&models.CapabilityAsset{},
 		&models.SecurityScan{},
 		&models.ScanJob{},
+		&models.BundleJob{},
 	)
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
@@ -118,6 +120,45 @@ func runWorker() {
 		SyncService:  syncSvc,
 		Concurrency:  concurrency,
 		PollInterval: pollInterval,
+	}
+
+	// Bundle worker pool: drains bundle_jobs (lazy clone-and-pack) for the DB+HTTP
+	// plugin distribution channel. Enabled by default; set BUNDLE_ENABLED=false to
+	// disable. Needs a storage backend to persist packed ZIPs and a GitService to
+	// clone upstream plugin sources.
+	var bundlePool *worker.BundleWorkerPool
+	if os.Getenv("BUNDLE_ENABLED") != "false" {
+		storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
+		if storagePath == "" {
+			storagePath = "./data/artifacts"
+		}
+		storageBackend, err := storage.NewLocalBackend(storagePath)
+		if err != nil {
+			log.Fatalf("Failed to initialize storage backend for bundle worker: %v", err)
+		}
+
+		bundlePackSvc := services.NewBundlePackService(
+			db,
+			&services.GitService{TempBaseDir: tmpDir},
+			storageBackend,
+			cfg.GitMirrorBase,
+		)
+
+		bundleConcurrency, _ := strconv.Atoi(os.Getenv("BUNDLE_WORKER_CONCURRENCY"))
+		if bundleConcurrency <= 0 {
+			bundleConcurrency = 2
+		}
+
+		bundlePool = &worker.BundleWorkerPool{
+			DB:           db,
+			PackService:  bundlePackSvc,
+			Concurrency:  bundleConcurrency,
+			PollInterval: 5 * time.Second,
+		}
+		bundlePool.Start()
+		log.Printf("Bundle worker pool started with %d workers", bundleConcurrency)
+	} else {
+		log.Println("Bundle worker pool disabled (BUNDLE_ENABLED=false)")
 	}
 
 	scanEnabled := os.Getenv("SCAN_ENABLED")
@@ -175,6 +216,9 @@ func runWorker() {
 	pool.Stop()
 	if scanPool != nil {
 		scanPool.Stop()
+	}
+	if bundlePool != nil {
+		bundlePool.Stop()
 	}
 	log.Println("Worker pools stopped")
 }

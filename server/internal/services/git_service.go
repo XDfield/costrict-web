@@ -1,11 +1,15 @@
 package services
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,7 +94,14 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0644)
+		// Preserve the source file's mode bits (notably the executable bit) so a
+		// copied-from-local-dir clone is byte-and-mode identical to the source. The
+		// bundle pipeline relies on this to keep plugin hooks/scripts executable.
+		mode := fs.FileMode(0644)
+		if fi, statErr := d.Info(); statErr == nil {
+			mode = fi.Mode().Perm()
+		}
+		return os.WriteFile(target, data, mode)
 	})
 }
 
@@ -189,6 +200,136 @@ func (s *GitService) ReadFile(localPath, relPath string) ([]byte, error) {
 func (s *GitService) ContentHash(content []byte) string {
 	h := sha256.Sum256(content)
 	return fmt.Sprintf("%x", h)
+}
+
+// PackZip walks the subtree rooted at localPath/subPath and produces a lossless
+// ZIP of every regular file (and symlink), returning the ZIP bytes and their
+// sha256 hex digest.
+//
+// Behaviour required by the DB+HTTP bundle distribution channel:
+//   - `.git` and `node_modules` directories are excluded (same skip rule as
+//     ListFiles) so the archive is the equivalent of a fresh git clone with `.git`
+//     stripped — never re-pack VCS metadata or dependency caches.
+//   - File mode bits are preserved via SetMode(fi.Mode()); in particular the
+//     executable bit on plugin hooks/scripts survives, otherwise extracted hooks
+//     lose +x and fail to run.
+//   - Paths inside the ZIP are relative to subPath (the plugin root), so extracting
+//     yields the plugin directory directly with no extra prefix.
+//   - Entries are written in deterministic (sorted) order with a fixed modtime so
+//     the same input tree always yields the same ZIP bytes and therefore the same
+//     sha256.
+//
+// subPath may be empty (pack the whole repo root). An empty subtree yields a valid
+// empty ZIP rather than an error.
+func (s *GitService) PackZip(localPath, subPath string) ([]byte, string, error) {
+	root := localPath
+	if subPath != "" {
+		root = filepath.Join(localPath, filepath.FromSlash(subPath))
+	}
+
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, "", fmt.Errorf("pack root %q: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil, "", fmt.Errorf("pack root %q is not a directory", root)
+	}
+
+	// Collect (relPath, absPath) for every file first so we can emit them in a
+	// deterministic order -> deterministic ZIP bytes -> deterministic sha256.
+	type entry struct {
+		rel string
+		abs string
+	}
+	var entries []entry
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		entries = append(entries, entry{rel: filepath.ToSlash(rel), abs: path})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, "", fmt.Errorf("walk %q: %w", root, walkErr)
+	}
+
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+
+	// Fixed modtime keeps the archive byte-for-byte reproducible.
+	fixedTime := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		fi, statErr := os.Lstat(e.abs)
+		if statErr != nil {
+			zw.Close()
+			return nil, "", fmt.Errorf("stat %q: %w", e.abs, statErr)
+		}
+
+		hdr, hdrErr := zip.FileInfoHeader(fi)
+		if hdrErr != nil {
+			zw.Close()
+			return nil, "", fmt.Errorf("zip header %q: %w", e.rel, hdrErr)
+		}
+		hdr.Name = e.rel
+		hdr.Method = zip.Deflate
+		hdr.Modified = fixedTime
+		hdr.SetMode(fi.Mode()) // preserve exec bit + symlink mode
+
+		w, createErr := zw.CreateHeader(hdr)
+		if createErr != nil {
+			zw.Close()
+			return nil, "", fmt.Errorf("create zip entry %q: %w", e.rel, createErr)
+		}
+
+		if fi.Mode()&os.ModeSymlink != 0 {
+			// Store the link target as the entry content (matches archive/zip's
+			// representation of symlinks).
+			target, linkErr := os.Readlink(e.abs)
+			if linkErr != nil {
+				zw.Close()
+				return nil, "", fmt.Errorf("readlink %q: %w", e.abs, linkErr)
+			}
+			if _, wErr := io.WriteString(w, target); wErr != nil {
+				zw.Close()
+				return nil, "", fmt.Errorf("write symlink %q: %w", e.rel, wErr)
+			}
+			continue
+		}
+
+		f, openErr := os.Open(e.abs)
+		if openErr != nil {
+			zw.Close()
+			return nil, "", fmt.Errorf("open %q: %w", e.abs, openErr)
+		}
+		if _, copyErr := io.Copy(w, f); copyErr != nil {
+			f.Close()
+			zw.Close()
+			return nil, "", fmt.Errorf("copy %q: %w", e.rel, copyErr)
+		}
+		f.Close()
+	}
+
+	if closeErr := zw.Close(); closeErr != nil {
+		return nil, "", fmt.Errorf("finalize zip: %w", closeErr)
+	}
+
+	data := buf.Bytes()
+	return data, s.ContentHash(data), nil
 }
 
 func (s *GitService) Cleanup(localPath string) error {

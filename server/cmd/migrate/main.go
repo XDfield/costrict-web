@@ -206,6 +206,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.ItemFavorite{},
 		&models.SecurityScan{},
 		&models.ScanJob{},
+		&models.BundleJob{},
 		&models.Device{},
 		&models.Workspace{},
 		&models.WorkspaceDirectory{},
@@ -301,6 +302,10 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) err
 		TagSvc:         &services.TagService{DB: db},
 		CategorySvc:    &services.CategoryService{DB: db},
 		ScanJobService: &services.ScanJobService{DB: db},
+		// Refresh-enqueue plugin bundle jobs on content change (simple-trigger
+		// update mechanism). The migrate process only writes the queue row; the
+		// worker process performs the clone-and-pack.
+		BundleJobService: &services.BundleJobService{DB: db},
 	}
 
 	src := services.IngestSource{}

@@ -141,6 +141,23 @@ func main() {
 	jobSvc := &services.JobService{DB: db}
 	handlers.JobService = jobSvc
 
+	// DB+HTTP plugin bundle distribution channel. In the API process the pack
+	// service serves only the synchronous upload-plugin path (asset reconstruction,
+	// no git); catalog plugins are packed by the worker process. BundleJobService
+	// enqueues lazy clone-and-pack jobs for catalog plugins on a bundle cache miss.
+	bundleTmpDir := os.Getenv("SYNC_TMP_DIR")
+	if bundleTmpDir == "" {
+		bundleTmpDir = os.TempDir() + "/costrict-sync"
+	}
+	bundlePackSvc := services.NewBundlePackService(
+		db,
+		&services.GitService{TempBaseDir: bundleTmpDir},
+		storageBackend,
+		cfg.GitMirrorBase,
+	)
+	handlers.BundlePackSvc = bundlePackSvc
+	handlers.BundleJobSvc = &services.BundleJobService{DB: db}
+
 	// Search Service
 	searchSvc := services.NewSearchService(db, &cfg.Search)
 
@@ -285,6 +302,7 @@ func main() {
 		api.GET("/registry/:repo/index.json", handlers.RegistryIndex)
 		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
 		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
+		api.GET("/plugins/:slug/bundle", handlers.DownloadPluginBundle)
 		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
