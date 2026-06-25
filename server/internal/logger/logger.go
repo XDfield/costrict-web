@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 
 	"go.uber.org/zap"
@@ -183,6 +184,13 @@ func Init(cfg Config) {
 		log.SetOutput(stdWriter.Writer())
 		log.SetFlags(0) // zap handles timestamps and formatting
 	}
+
+	// Redirect slog's default handler so slog.Info / slog.Error / etc.
+	// throughout the codebase also flow into app.log.
+	slogHandler := slog.NewJSONHandler(appWriter, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	slog.SetDefault(slog.New(slogHandler))
 }
 
 // Sync flushes any buffered log entries. Call before application exit.
