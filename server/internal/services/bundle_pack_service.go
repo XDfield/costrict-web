@@ -31,13 +31,30 @@ const BundleSourceTypeClonePack = "clone_pack"
 // lossless and on-demand — the bundle HTTP endpoint can serve them immediately.
 const BundleSourceTypeUploadPack = "upload_pack"
 
+// BundleSourceTypeSeeded marks bundle artifacts written directly from a pre-packed
+// plugin ZIP carried inside an offline / air-gap catalog bundle (PR5, design §12 +
+// ADR-8). The ingest reads the ZIP and version key straight out of the bundle and
+// writes the artifact, SKIPPING the lazy clone-and-pack entirely. A seeded artifact
+// is a terminal state for that version: no clone, no refresh enqueue. It is served
+// by the bundle endpoint IDENTICALLY to clone_pack/upload_pack (it is in
+// BundleSourceTypes), so csc sees zero difference between online and offline modes.
+const BundleSourceTypeSeeded = "seeded"
+
 const bundleArtifactSourceType = BundleSourceTypeClonePack
 const uploadBundleSourceType = BundleSourceTypeUploadPack
 
 // BundleSourceTypes is the set of source types the DB+HTTP distribution channel
-// serves. Both produce a lossless ZIP; clone_pack is for catalog-ingested plugins
-// (lazy clone), upload_pack is for user-uploaded plugins (asset reconstruction).
-var BundleSourceTypes = []string{BundleSourceTypeClonePack, BundleSourceTypeUploadPack}
+// serves. All three produce a lossless ZIP: clone_pack is for catalog-ingested
+// plugins (lazy clone), upload_pack is for user-uploaded plugins (asset
+// reconstruction), and seeded is for offline-seeded plugins (pre-packed ZIP from
+// an air-gap bundle). Adding seeded here is what makes the bundle endpoint and
+// ItemResponse treat it as a valid bundle WITHOUT any endpoint-side special case.
+var BundleSourceTypes = []string{BundleSourceTypeClonePack, BundleSourceTypeUploadPack, BundleSourceTypeSeeded}
+
+// seedBundleUploader is the synthetic "uploader" recorded on offline-seeded bundle
+// artifacts (UploadedBy is NOT NULL on the model). Distinct from the lazy-clone
+// uploader so the provenance is greppable.
+const seedBundleUploader = "system:seed"
 
 // bundleArtifactUploader is the synthetic "uploader" recorded on system-produced
 // bundle artifacts (UploadedBy is NOT NULL on the model).
@@ -136,47 +153,78 @@ func (s *BundlePackService) PackItemBundle(ctx context.Context, item *models.Cap
 
 	repoID := s.resolveRepoID(item)
 	storageKey := bundleStorageKey(repoID, item.ID, commitSHA)
-	filename := bundleFilename(item.Slug)
 
-	if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(zipBytes), int64(len(zipBytes))); err != nil {
-		return nil, fmt.Errorf("bundle pack: store bundle for item %s: %w", item.ID, err)
+	artifact, err := s.storeBundleArtifact(ctx, storeBundleArtifactInput{
+		item:       item,
+		zipBytes:   zipBytes,
+		zipSHA:     zipSHA,
+		version:    commitSHA,
+		storageKey: storageKey,
+		sourceType: bundleArtifactSourceType,
+		uploadedBy: bundleArtifactUploader,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bundle pack: %w", err)
+	}
+
+	logger.Info("[bundle-pack] packed item %s slug=%s sha=%s size=%d bytes", item.ID, item.Slug, commitSHA, len(zipBytes))
+	return artifact, nil
+}
+
+// storeBundleArtifactInput carries everything storeBundleArtifact needs to write a
+// bundle artifact. The three callers (clone_pack, upload_pack, seeded) differ only
+// in the source type, version key, and storage key — the storage Put + IsLatest
+// demote/create transaction + orphan cleanup is identical, so it lives here once.
+type storeBundleArtifactInput struct {
+	item       *models.CapabilityItem
+	zipBytes   []byte
+	zipSHA     string
+	version    string
+	storageKey string
+	sourceType string
+	uploadedBy string
+}
+
+// storeBundleArtifact puts the ZIP bytes into the storage backend, then upserts a
+// CapabilityArtifact in one transaction that first demotes any previous IsLatest
+// artifact for this item+source_type so only the new bundle is IsLatest (mirrors the
+// is_latest mutual-exclusion update in UploadArtifact, scoped to bundle artifacts).
+// On a failed DB write it best-effort deletes the orphaned stored file.
+func (s *BundlePackService) storeBundleArtifact(ctx context.Context, in storeBundleArtifactInput) (*models.CapabilityArtifact, error) {
+	if err := s.Storage.Put(ctx, in.storageKey, bytes.NewReader(in.zipBytes), int64(len(in.zipBytes))); err != nil {
+		return nil, fmt.Errorf("store bundle for item %s: %w", in.item.ID, err)
 	}
 
 	artifact := &models.CapabilityArtifact{
 		ID:              uuid.New().String(),
-		ItemID:          item.ID,
-		Filename:        filename,
-		FileSize:        int64(len(zipBytes)),
-		ChecksumSHA256:  zipSHA,
+		ItemID:          in.item.ID,
+		Filename:        bundleFilename(in.item.Slug),
+		FileSize:        int64(len(in.zipBytes)),
+		ChecksumSHA256:  in.zipSHA,
 		MimeType:        bundleMimeType,
 		StorageBackend:  "local",
-		StorageKey:      storageKey,
-		ArtifactVersion: commitSHA,
+		StorageKey:      in.storageKey,
+		ArtifactVersion: in.version,
 		IsLatest:        true,
-		SourceType:      bundleArtifactSourceType,
-		UploadedBy:      bundleArtifactUploader,
+		SourceType:      in.sourceType,
+		UploadedBy:      in.uploadedBy,
 		CreatedAt:       time.Now(),
 	}
 
 	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Demote previous clone_pack artifacts for this item so only the freshly
-		// packed bundle is IsLatest (mirrors the is_latest mutual-exclusion update
-		// in UploadArtifact, scoped to bundle artifacts).
 		if err := tx.Model(&models.CapabilityArtifact{}).
-			Where("item_id = ? AND source_type = ?", item.ID, bundleArtifactSourceType).
+			Where("item_id = ? AND source_type = ?", in.item.ID, in.sourceType).
 			Update("is_latest", false).Error; err != nil {
 			return err
 		}
 		return tx.Create(artifact).Error
 	}); err != nil {
 		// Best-effort cleanup of the orphaned stored file.
-		if delErr := s.Storage.Delete(context.Background(), storageKey); delErr != nil {
-			logger.Warn("[bundle-pack] orphan bundle cleanup %s failed: %v", storageKey, delErr)
+		if delErr := s.Storage.Delete(context.Background(), in.storageKey); delErr != nil {
+			logger.Warn("[bundle-pack] orphan bundle cleanup %s failed: %v", in.storageKey, delErr)
 		}
-		return nil, fmt.Errorf("bundle pack: persist artifact for item %s: %w", item.ID, err)
+		return nil, fmt.Errorf("persist artifact for item %s: %w", in.item.ID, err)
 	}
-
-	logger.Info("[bundle-pack] packed item %s slug=%s sha=%s size=%d bytes", item.ID, item.Slug, commitSHA, len(zipBytes))
 	return artifact, nil
 }
 
@@ -268,40 +316,18 @@ func (s *BundlePackService) PackUploadBundle(ctx context.Context, item *models.C
 
 	repoID := s.resolveRepoID(item)
 	storageKey := uploadBundleStorageKey(repoID, item.ID, zipSHA)
-	filename := bundleFilename(item.Slug)
 
-	if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(zipBytes), int64(len(zipBytes))); err != nil {
-		return nil, fmt.Errorf("upload bundle: store bundle for item %s: %w", item.ID, err)
-	}
-
-	artifact := &models.CapabilityArtifact{
-		ID:              uuid.New().String(),
-		ItemID:          item.ID,
-		Filename:        filename,
-		FileSize:        int64(len(zipBytes)),
-		ChecksumSHA256:  zipSHA,
-		MimeType:        bundleMimeType,
-		StorageBackend:  "local",
-		StorageKey:      storageKey,
-		ArtifactVersion: zipSHA,
-		IsLatest:        true,
-		SourceType:      uploadBundleSourceType,
-		UploadedBy:      bundleArtifactUploader,
-		CreatedAt:       time.Now(),
-	}
-
-	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.CapabilityArtifact{}).
-			Where("item_id = ? AND source_type = ?", item.ID, uploadBundleSourceType).
-			Update("is_latest", false).Error; err != nil {
-			return err
-		}
-		return tx.Create(artifact).Error
-	}); err != nil {
-		if delErr := s.Storage.Delete(context.Background(), storageKey); delErr != nil {
-			logger.Warn("[bundle-pack] orphan upload bundle cleanup %s failed: %v", storageKey, delErr)
-		}
-		return nil, fmt.Errorf("upload bundle: persist artifact for item %s: %w", item.ID, err)
+	artifact, err := s.storeBundleArtifact(ctx, storeBundleArtifactInput{
+		item:       item,
+		zipBytes:   zipBytes,
+		zipSHA:     zipSHA,
+		version:    zipSHA,
+		storageKey: storageKey,
+		sourceType: uploadBundleSourceType,
+		uploadedBy: bundleArtifactUploader,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload bundle: %w", err)
 	}
 
 	logger.Info("[bundle-pack] packed upload item %s slug=%s hash=%s size=%d bytes", item.ID, item.Slug, zipSHA, len(zipBytes))
@@ -405,4 +431,81 @@ func uploadBundleStorageKey(repoID, itemID, contentHash string) string {
 		repoID = "public"
 	}
 	return fmt.Sprintf("%s/%s/bundle/upload-%s.zip", repoID, itemID, contentHash)
+}
+
+// SeedItemBundle writes a pre-packed plugin ZIP (carried inside an offline / air-gap
+// catalog bundle) straight into storage + a `seeded` CapabilityArtifact, SKIPPING the
+// lazy clone-and-pack. It is the air-gap counterpart of PackItemBundle: the bytes and
+// the version key come from the offline bundle rather than from a server-side clone.
+//
+//   - version MUST be the whole-bundle truth (upstream commit SHA or content hash),
+//     never the catalog semver / item.SourceSHA, so csc caches deterministically by
+//     version key (design ADR-3).
+//   - It is idempotent on (item, version): if a `seeded` artifact already exists for
+//     this version and its stored file is present, the existing artifact is returned
+//     without re-writing. This makes re-importing the same offline bundle a no-op.
+//   - On success the produced artifact is IsLatest=true and any older `seeded`
+//     artifact for the same item is demoted.
+//
+// The zip bytes are stored verbatim — the offline-bake side is responsible for
+// producing a lossless ZIP (equivalent to a git clone). zipSHA, when non-empty, was
+// already verified by the caller against the declared sha256; SeedItemBundle records
+// it as the artifact checksum (computing it here when empty).
+func (s *BundlePackService) SeedItemBundle(ctx context.Context, item *models.CapabilityItem, zipBytes []byte, version, zipSHA string) (*models.CapabilityArtifact, error) {
+	if item == nil {
+		return nil, fmt.Errorf("seed bundle: item is nil")
+	}
+	if version == "" {
+		return nil, fmt.Errorf("seed bundle: item %s missing bundle version key", item.ID)
+	}
+	if len(zipBytes) == 0 {
+		return nil, fmt.Errorf("seed bundle: item %s has empty bundle zip", item.ID)
+	}
+	if zipSHA == "" {
+		sum := sha256.Sum256(zipBytes)
+		zipSHA = fmt.Sprintf("%x", sum)
+	}
+
+	// Idempotency: a seeded bundle for this exact version already cached?
+	if existing, ok := s.findCachedSeedBundle(ctx, item.ID, version); ok {
+		logger.Info("[bundle-pack] seed item %s already seeded at %s, reusing artifact %s", item.ID, version, existing.ID)
+		return existing, nil
+	}
+
+	repoID := s.resolveRepoID(item)
+	storageKey := bundleStorageKey(repoID, item.ID, version)
+
+	artifact, err := s.storeBundleArtifact(ctx, storeBundleArtifactInput{
+		item:       item,
+		zipBytes:   zipBytes,
+		zipSHA:     zipSHA,
+		version:    version,
+		storageKey: storageKey,
+		sourceType: BundleSourceTypeSeeded,
+		uploadedBy: seedBundleUploader,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("seed bundle: %w", err)
+	}
+
+	logger.Info("[bundle-pack] seeded item %s slug=%s version=%s size=%d bytes", item.ID, item.Slug, version, len(zipBytes))
+	return artifact, nil
+}
+
+// findCachedSeedBundle returns the existing seeded artifact for the given version
+// when its stored file is still present.
+func (s *BundlePackService) findCachedSeedBundle(ctx context.Context, itemID, version string) (*models.CapabilityArtifact, bool) {
+	var existing models.CapabilityArtifact
+	err := s.DB.WithContext(ctx).
+		Where("item_id = ? AND source_type = ? AND artifact_version = ?", itemID, BundleSourceTypeSeeded, version).
+		Order("created_at DESC").
+		First(&existing).Error
+	if err != nil {
+		return nil, false
+	}
+	present, existsErr := s.Storage.Exists(ctx, existing.StorageKey)
+	if existsErr != nil || !present {
+		return nil, false
+	}
+	return &existing, true
 }

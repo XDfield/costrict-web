@@ -243,6 +243,38 @@ func TestGetItem_PluginBundleFieldsReady(t *testing.T) {
 	}
 }
 
+// TestGetItem_PluginBundleFieldsReady_Seeded is the regression guard for the
+// offline-seed cross-layer contract: a plugin whose only IsLatest bundle artifact is
+// `seeded` (air-gap path) MUST be advertised to csc as bundleReady=true with the
+// bundle version, exactly like an online clone_pack artifact. Before the fix,
+// latestBundleArtifactFrom hard-coded clone_pack|upload_pack and silently dropped
+// seeded, so GetItem reported bundleReady=false and an empty bundleVersion for
+// offline-seeded plugins — csc could never deterministically detect/cache them.
+func TestGetItem_PluginBundleFieldsReady_Seeded(t *testing.T) {
+	defer setupTestDB(t)()
+
+	seedPublicPlugin(t, "item-resp-seed", "seeded-plugin", "https://github.com/owner/repo/tree/main")
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "art-resp-seed", ItemID: "item-resp-seed", Filename: "seeded-plugin.zip", FileSize: 100,
+		ChecksumSHA256: "zsha", StorageKey: "k", ArtifactVersion: "offline-bundle-sha",
+		IsLatest: true, SourceType: services.BundleSourceTypeSeeded, UploadedBy: "system:seed", CreatedAt: time.Now(),
+	})
+
+	rec := get(newItemRouter(""), "/api/items/item-resp-seed")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(rec.Body).Decode(&resp)
+
+	if resp["bundleReady"] != true {
+		t.Errorf("bundleReady = %v, want true (seeded artifact must be advertised as ready)", resp["bundleReady"])
+	}
+	if resp["bundleVersion"] != "offline-bundle-sha" {
+		t.Errorf("bundleVersion = %v, want offline-bundle-sha", resp["bundleVersion"])
+	}
+}
+
 func TestGetItem_PluginBundleFieldsNotReady(t *testing.T) {
 	defer setupTestDB(t)()
 

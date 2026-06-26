@@ -14,6 +14,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
 	"github.com/google/uuid"
@@ -90,7 +91,7 @@ func main() {
 			if source == "" {
 				log.Fatalf("Missing source. Use --source=<url|tarball|dir>")
 			}
-			if err := ingestUpstreamCatalog(db, source, dryRun, reparse); err != nil {
+			if err := ingestUpstreamCatalog(cfg, db, source, dryRun, reparse); err != nil {
 				log.Fatalf("Failed to ingest upstream catalog: %v", err)
 			}
 			return
@@ -259,7 +260,7 @@ func printMigrateHelp() {
 // importEverythingAICoding + backfillCatalogMetadata combo. It dispatches
 // to services.CatalogIngestService which understands the bundle format
 // directly (no git, no fake registry).
-func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) error {
+func ingestUpstreamCatalog(cfg *config.Config, db *gorm.DB, source string, dryRun, reparse bool) error {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		return fmt.Errorf("source is empty")
@@ -306,6 +307,29 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) err
 		// update mechanism). The migrate process only writes the queue row; the
 		// worker process performs the clone-and-pack.
 		BundleJobService: &services.BundleJobService{DB: db},
+	}
+
+	// Offline / air-gap seed wiring (PR5, design §12 + ADR-8). When a plugin entry
+	// in the bundle carries a pre-packed ZIP (`bundle` block), the ingest writes a
+	// `seeded` CapabilityArtifact directly into the storage backend, skipping git
+	// clone. This is auto-selected per entry: plugins WITHOUT a `bundle` block keep
+	// the online lazy-clone path unchanged. We skip the wiring under --dry-run so the
+	// preview stays fully non-mutating (no storage writes); seeding is a content
+	// write, not a schema change, so a dry-run never seeds.
+	if !dryRun {
+		storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
+		if storagePath == "" {
+			storagePath = "./data/artifacts"
+		}
+		storageBackend, err := storage.NewLocalBackend(storagePath)
+		if err != nil {
+			return fmt.Errorf("init storage backend for offline seed: %w", err)
+		}
+		svc.Store = storageBackend
+		// A GitService is supplied for service-construction symmetry with cmd/api; the
+		// seed path never clones, so its TempBaseDir is unused here.
+		svc.Git = &services.GitService{}
+		svc.MirrorBase = cfg.GitMirrorBase
 	}
 
 	src := services.IngestSource{}
@@ -471,17 +495,17 @@ func backfillUserExternalIdentities(db *gorm.DB, dryRun bool) error {
 	}
 
 	type userIdentityRow struct {
-		ID                uint
-		SubjectID         string
-		Username          string
-		Email             *string
-		Phone             *string
-		AuthProvider      *string
-		ExternalKey       *string
-		ProviderUserID    *string
-		CasdoorID         *string
+		ID                 uint
+		SubjectID          string
+		Username           string
+		Email              *string
+		Phone              *string
+		AuthProvider       *string
+		ExternalKey        *string
+		ProviderUserID     *string
+		CasdoorID          *string
 		CasdoorUniversalID *string
-		CasdoorSub        *string
+		CasdoorSub         *string
 	}
 
 	var users []userIdentityRow
@@ -594,20 +618,20 @@ func backfillUserAuthIdentities(db *gorm.DB, dryRun bool) error {
 				continue
 			}
 			if err := tx.Table("user_auth_identities").Create(map[string]any{
-				"user_subject_id": user.SubjectID,
-				"provider":        provider,
-				"external_key":    externalKey,
+				"user_subject_id":  user.SubjectID,
+				"provider":         provider,
+				"external_key":     externalKey,
 				"external_subject": coalesceStringPtr(user.CasdoorUniversalID, user.CasdoorSub),
 				"external_user_id": user.CasdoorID,
 				"provider_user_id": user.ProviderUserID,
-				"display_name":    user.DisplayName,
-				"email":           user.Email,
-				"phone":           user.Phone,
-				"avatar_url":      user.AvatarURL,
-				"organization":    user.Organization,
-				"is_primary":      true,
-				"created_at":      time.Now(),
-				"updated_at":      time.Now(),
+				"display_name":     user.DisplayName,
+				"email":            user.Email,
+				"phone":            user.Phone,
+				"avatar_url":       user.AvatarURL,
+				"organization":     user.Organization,
+				"is_primary":       true,
+				"created_at":       time.Now(),
+				"updated_at":       time.Now(),
 			}).Error; err != nil {
 				return fmt.Errorf("create backfilled auth identity for %s: %w", user.SubjectID, err)
 			}
@@ -644,8 +668,8 @@ func backfillProviderAwareExternalKeys(db *gorm.DB, dryRun bool) error {
 	}
 
 	type userRow struct {
-		ID          uint
-		ExternalKey *string
+		ID           uint
+		ExternalKey  *string
 		AuthProvider *string
 	}
 	var users []userRow
@@ -842,7 +866,6 @@ func hashCurrentItemContent(hashSvc *services.ContentHashService, item models.Ca
 
 	return hashSvc.HashTextContent(item.ItemType, item.Content)
 }
-
 
 func runGooseMigrations(db *gorm.DB) error {
 	sqlDB, err := db.DB()

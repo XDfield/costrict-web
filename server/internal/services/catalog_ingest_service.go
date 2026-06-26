@@ -56,10 +56,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
 	"gorm.io/datatypes"
@@ -97,6 +99,100 @@ type CatalogIngestService struct {
 	// flips) → csc reconcile compares bundleVersion and pulls. No polling scheduler.
 	// Optional — nil leaves the lazy-on-first-request path as the sole trigger.
 	BundleJobService *BundleJobService
+	// Store + Git back the OFFLINE SEED path (PR5, design §12 + ADR-8). When Store is
+	// set AND a plugin entry carries a `bundle` block (pre-packed ZIP in an air-gap
+	// catalog bundle), the ingest reads the ZIP and writes a `seeded`
+	// CapabilityArtifact directly, SKIPPING git clone + the refresh enqueue. When
+	// Store is nil, or a plugin entry has no `bundle` block, the plugin keeps the
+	// default online lazy-clone behavior (zero regression). Git is reused by the
+	// constructed BundlePackService for its artifact-write helpers; it never clones in
+	// the seed path, so a bare GitService (no network) is fine.
+	Store storage.Backend
+	Git   *GitService
+	// MirrorBase is forwarded to the seed BundlePackService for consistency; the seed
+	// path does not clone, so it has no effect today, but keeps the wiring uniform if a
+	// future hybrid (seed + occasional lazy) reuses the same service.
+	MirrorBase string
+
+	// bundleSeedSvc lazily caches the BundlePackService built from Store/Git so the
+	// seed path doesn't reconstruct it per entry. Guarded by bundleSeedSvcOnce.
+	bundleSeedSvc     *BundlePackService
+	bundleSeedSvcOnce sync.Once
+}
+
+// seedService returns the BundlePackService used by the offline seed path, building
+// it once from the injected Store/Git. Returns nil when no Store is wired (seed
+// disabled → plugins fall back to online lazy clone).
+func (s *CatalogIngestService) seedService() *BundlePackService {
+	if s.Store == nil {
+		return nil
+	}
+	s.bundleSeedSvcOnce.Do(func() {
+		git := s.Git
+		if git == nil {
+			// The seed path never clones, so a bare GitService (no TempBaseDir use) is
+			// sufficient for its artifact-write helpers; provide one so the service is
+			// fully constructed.
+			git = &GitService{}
+		}
+		s.bundleSeedSvc = NewBundlePackService(s.DB, git, s.Store, s.MirrorBase)
+	})
+	return s.bundleSeedSvc
+}
+
+// seedBundleForPlugin writes a `seeded` CapabilityArtifact for a plugin item from the
+// pre-packed ZIP carried in an offline catalog bundle, then returns true if it seeded
+// (so the caller skips the lazy-clone refresh enqueue). It is the offline-mode
+// counterpart of enqueueBundleRefresh and is auto-selected: only fires when a Store is
+// wired AND the entry carries a `bundle` block AND the ZIP exists in the bundle dir.
+// In every other case it returns false and the plugin keeps the online lazy-clone
+// path. All errors are logged and swallowed (a failed seed degrades to lazy clone on
+// the next bundle request), so seeding never breaks the ingest.
+func (s *CatalogIngestService) seedBundleForPlugin(ctx context.Context, bundleDir string, item *models.CapabilityItem, entry catalogEntry) bool {
+	if item == nil || item.ItemType != "plugin" || entry.Bundle == nil {
+		return false
+	}
+	svc := s.seedService()
+	if svc == nil {
+		// No storage backend wired (e.g. dry-run preview or a caller that didn't inject
+		// Store) → cannot seed; fall back to lazy clone.
+		return false
+	}
+	ref := entry.Bundle
+	if strings.TrimSpace(ref.File) == "" || strings.TrimSpace(ref.Version) == "" {
+		logger.Warn("[catalog-ingest] plugin %s has a bundle block missing file/version; falling back to lazy clone", item.ID)
+		return false
+	}
+
+	// ref.File is index-controlled (untrusted, like the file:// SSRF guard on clone
+	// targets): a tampered offline bundle could set it to "../../etc/passwd" and have
+	// the ingest read an arbitrary server file into the artifact store. Confine the
+	// resolved path under bundleDir before reading.
+	absPath, ok := resolveUnderBundleDir(bundleDir, ref.File)
+	if !ok {
+		logger.Warn("[catalog-ingest] plugin %s seed file %q escapes the bundle dir; falling back to lazy clone", item.ID, ref.File)
+		return false
+	}
+	zipBytes, err := readBundleFile(absPath)
+	if err != nil {
+		// File declared in index.json but missing on disk → offline bake gap. Degrade
+		// to lazy clone rather than failing the whole ingest entry.
+		logger.Warn("[catalog-ingest] plugin %s seed zip %q not readable (%v); falling back to lazy clone", item.ID, ref.File, err)
+		return false
+	}
+
+	zipSHA := sha256Hex(zipBytes)
+	if want := strings.TrimSpace(ref.SHA256); want != "" && !strings.EqualFold(want, zipSHA) {
+		logger.Warn("[catalog-ingest] plugin %s seed zip sha mismatch (want=%s got=%s); falling back to lazy clone", item.ID, want, zipSHA)
+		return false
+	}
+
+	if _, err := svc.SeedItemBundle(ctx, item, zipBytes, ref.Version, zipSHA); err != nil {
+		logger.Warn("[catalog-ingest] plugin %s seed write failed (%v); falling back to lazy clone", item.ID, err)
+		return false
+	}
+	logger.Info("[catalog-ingest] plugin %s seeded from offline bundle (version=%s, %d bytes), skipping clone", item.ID, ref.Version, len(zipBytes))
+	return true
 }
 
 // enqueueBundleRefresh queues a lazy clone-and-pack refresh for a plugin item whose
@@ -211,9 +307,9 @@ type catalogBundleManifest struct {
 // decision 1 ("store the whole upstream JSON shape"). Other top-level fields
 // index.json carries (e.g. weak_dims) remain intentionally unmapped.
 type catalogEntry struct {
-	ID            string                `json:"id"`
-	Type          string                `json:"type"`
-	Source        string                `json:"source"`
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Source string `json:"source"`
 	// SourceURL is the upstream repo URL with branch + subdir, e.g.
 	// "https://github.com/owner/repo/tree/main/subdir". Unlike Source (a
 	// provenance label like "claude-plugins-dev"), this is the real clone
@@ -243,6 +339,35 @@ type catalogEntry struct {
 	// bundle's physical "<type-dir>/<id>/<file>" location regardless of this
 	// field. NOT used for MCP children, which keep their "<path>#<key>" form.
 	SourcePath string `json:"source_path,omitempty"`
+	// Bundle, when present on a plugin entry, points at a PRE-PACKED plugin ZIP
+	// shipped inside an offline / air-gap catalog bundle (PR5, design §12 + ADR-8).
+	// Its presence is what switches the ingest from online lazy-clone to offline
+	// seed for that plugin: the ingest reads the ZIP + version key straight out of
+	// the bundle and writes a `seeded` CapabilityArtifact, skipping git clone. When
+	// absent the plugin keeps the default request-time lazy-clone behavior. Only
+	// honored for entry.Type == "plugin". Produced by the offline-bake side (vendor
+	// runs lazy clone-pack, or upstream build_catalog_bundle.py emits the ZIP);
+	// consuming it is all this backend does — bake is cross-repo, out of scope here.
+	Bundle *catalogBundleRef `json:"bundle,omitempty"`
+}
+
+// catalogBundleRef is the offline-bundle plugin-ZIP reference (PR5). It lives under a
+// plugin entry's "bundle" key in index.json:
+//
+//	"bundle": {
+//	  "file":    "catalog-download/plugins/<id>/bundle.zip",  // bundle-relative ZIP path
+//	  "version": "<upstream commit SHA or content hash>",     // whole-bundle truth, NOT semver
+//	  "sha256":  "<sha256 of the ZIP>"                          // optional integrity check
+//	}
+//
+// File is resolved relative to the materialized bundle directory (same root as the
+// per-entry primary files), so it can sit alongside catalog-download/. Version is the
+// artifact version key (design ADR-3: deterministic, never item.SourceSHA). SHA256 is
+// optional; when set the ingest verifies the ZIP bytes before seeding.
+type catalogBundleRef struct {
+	File    string `json:"file"`
+	Version string `json:"version"`
+	SHA256  string `json:"sha256,omitempty"`
 }
 
 // catalogSecurityBlock mirrors the schema written by the upstream LLM
@@ -650,14 +775,14 @@ func (s *CatalogIngestService) applyChangedEntry(
 		}
 
 		if exists {
-			if err := s.updateItem(existing, parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser); err != nil {
+			if err := s.updateItem(ctx, bundleDir, existing, parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser); err != nil {
 				failed++
 				errs = append(errs, fmt.Sprintf("update %s: %v", existing.ID, err))
 				continue
 			}
 			updated++
 		} else {
-			newItem, err := s.insertItem(parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser)
+			newItem, err := s.insertItem(ctx, bundleDir, parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser)
 			if err != nil {
 				failed++
 				errs = append(errs, fmt.Sprintf("insert %s: %v", parsed.Slug, err))
@@ -965,6 +1090,8 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 // updateItem applies content+metadata changes to an existing row and
 // bumps the capability_versions revision.
 func (s *CatalogIngestService) updateItem(
+	ctx context.Context,
+	bundleDir string,
 	existing *models.CapabilityItem,
 	parsed *ParsedItem,
 	fileSHA, primaryPath, entryDir string,
@@ -1066,12 +1193,20 @@ func (s *CatalogIngestService) updateItem(
 	if s.ScanJobService != nil {
 		_, _ = s.ScanJobService.Enqueue(existing.ID, maxRevision+1, "sync", triggerUser, ScanEnqueueOptions{})
 	}
-	s.enqueueBundleRefresh(existing, triggerUser)
+	// Offline seed takes precedence over the online lazy-clone refresh: if this
+	// plugin entry carries a pre-packed ZIP (air-gap bundle) and seeding succeeds,
+	// the artifact is terminal — no clone, no refresh enqueue. Otherwise the plugin
+	// keeps the online lazy-clone trigger.
+	if !s.seedBundleForPlugin(ctx, bundleDir, existing, entry) {
+		s.enqueueBundleRefresh(existing, triggerUser)
+	}
 
 	return nil
 }
 
 func (s *CatalogIngestService) insertItem(
+	ctx context.Context,
+	bundleDir string,
 	parsed *ParsedItem,
 	fileSHA, primaryPath, entryDir string,
 	entry catalogEntry,
@@ -1174,7 +1309,10 @@ func (s *CatalogIngestService) insertItem(
 	if s.ScanJobService != nil {
 		_, _ = s.ScanJobService.Enqueue(newItem.ID, 1, "sync", triggerUser, ScanEnqueueOptions{})
 	}
-	s.enqueueBundleRefresh(newItem, triggerUser)
+	// Offline seed takes precedence over the online lazy-clone refresh (see updateItem).
+	if !s.seedBundleForPlugin(ctx, bundleDir, newItem, entry) {
+		s.enqueueBundleRefresh(newItem, triggerUser)
+	}
 
 	return newItem, nil
 }
@@ -1802,6 +1940,27 @@ func mustMarshalJSON(v any) datatypes.JSON {
 // sporsmaç, …). Upstream build_catalog_bundle.py also normalizes member
 // names to NFC, so this fallback is purely defensive for older bundles
 // that pre-date that fix.
+// resolveUnderBundleDir joins a bundle-relative file path onto bundleDir and returns
+// the absolute path only if it stays inside bundleDir (after cleaning ".." segments).
+// It rejects absolute refFile values and any path that escapes the bundle root. ok is
+// false when the path would escape; callers treat that as "no seed, fall back to lazy".
+func resolveUnderBundleDir(bundleDir, refFile string) (string, bool) {
+	rel := filepath.FromSlash(strings.TrimSpace(refFile))
+	if rel == "" || filepath.IsAbs(rel) {
+		return "", false
+	}
+	baseAbs, err := filepath.Abs(bundleDir)
+	if err != nil {
+		return "", false
+	}
+	joined := filepath.Clean(filepath.Join(baseAbs, rel))
+	// Must be the base itself or a descendant (base + separator prefix).
+	if joined != baseAbs && !strings.HasPrefix(joined, baseAbs+string(os.PathSeparator)) {
+		return "", false
+	}
+	return joined, true
+}
+
 func readBundleFile(absPath string) ([]byte, error) {
 	b, err := os.ReadFile(absPath)
 	if err == nil {

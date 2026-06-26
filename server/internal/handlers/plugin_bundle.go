@@ -134,17 +134,25 @@ func latestBundleArtifact(db *gorm.DB, itemID string) (*models.CapabilityArtifac
 	return &artifact, true
 }
 
-// latestBundleArtifactFrom picks the IsLatest clone_pack|upload_pack artifact out of
-// an already-loaded slice (e.g. GetItem's Preload("Artifacts")), avoiding an extra
-// query in buildItemResponse. Returns the newest IsLatest bundle artifact if any.
+// latestBundleArtifactFrom picks the IsLatest bundle artifact (clone_pack,
+// upload_pack, or seeded) out of an already-loaded slice (e.g. GetItem's
+// Preload("Artifacts")), avoiding an extra query in buildItemResponse. The
+// accepted source types MUST stay in lockstep with services.BundleSourceTypes
+// (the same set the latestBundleArtifact DB query filters on), so offline-seeded
+// plugins are advertised as bundleReady to csc exactly like online clone_pack ones.
+// Returns the newest IsLatest bundle artifact if any.
 func latestBundleArtifactFrom(artifacts []models.CapabilityArtifact) (*models.CapabilityArtifact, bool) {
+	isBundleType := make(map[string]bool, len(services.BundleSourceTypes))
+	for _, st := range services.BundleSourceTypes {
+		isBundleType[st] = true
+	}
 	var best *models.CapabilityArtifact
 	for i := range artifacts {
 		a := &artifacts[i]
 		if !a.IsLatest {
 			continue
 		}
-		if a.SourceType != services.BundleSourceTypeClonePack && a.SourceType != services.BundleSourceTypeUploadPack {
+		if !isBundleType[a.SourceType] {
 			continue
 		}
 		if best == nil || a.CreatedAt.After(best.CreatedAt) {
