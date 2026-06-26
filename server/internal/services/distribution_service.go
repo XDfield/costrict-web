@@ -338,8 +338,15 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 				if s.behaviorSvc != nil {
 					// Same tx as the status update, so the readonly guard sees this
 					// distribution as already revoked/paused and removes the favorite
-					// instead of treating the skill as still-required.
-					_, _, _ = s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID)
+					// instead of treating the skill as still-required. ErrSkillRequired
+					// (another active readonly distribution still needs it) is an
+					// expected, non-fatal outcome — keep the favorite and continue. Any
+					// OTHER error is a real failure: propagate it so the whole tx
+					// (including the revoked/paused status change) rolls back rather than
+					// committing a status that's out of sync with the favorite.
+					if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil && !errors.Is(err, ErrSkillRequired) {
+						return err
+					}
 				}
 			}
 			if *status == "revoked" {
@@ -357,7 +364,11 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.FavoriteItemTx(tx, dist.ItemID, receipt.UserID)
+					// Re-favorite within the same tx; a real failure must roll back the
+					// resume so status and favorite stay consistent.
+					if _, _, err := s.behaviorSvc.FavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil {
+						return err
+					}
 				}
 			}
 		}

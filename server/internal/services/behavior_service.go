@@ -23,6 +23,13 @@ func NewBehaviorService(db *gorm.DB) *BehaviorService {
 	return &BehaviorService{db: db}
 }
 
+// ErrSkillRequired is returned by the unfavorite path when the item is still
+// required by an active readonly distribution. It is an EXPECTED outcome (keep
+// the favorite), not a failure — callers running inside a transaction (the
+// distribution revoke/pause path) tolerate it while still propagating real
+// DB errors so the surrounding status change can roll back.
+var ErrSkillRequired = errors.New("cannot unfavorite a required skill")
+
 // LogBehaviorRequest represents a behavior log request
 type LogBehaviorRequest struct {
 	UserID      string                 `json:"userId"`
@@ -249,7 +256,7 @@ func (s *BehaviorService) unfavoriteItemTx(tx *gorm.DB, itemID, userID string) (
 		return 0, false, err
 	}
 	if readonlyCount > 0 {
-		return 0, false, errors.New("cannot unfavorite a required skill")
+		return 0, false, ErrSkillRequired
 	}
 
 	result := tx.Where("item_id = ? AND user_id = ?", itemID, userID).Delete(&models.ItemFavorite{})
