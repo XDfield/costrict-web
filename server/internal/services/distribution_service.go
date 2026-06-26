@@ -336,7 +336,10 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.UnfavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					// Same tx as the status update, so the readonly guard sees this
+					// distribution as already revoked/paused and removes the favorite
+					// instead of treating the skill as still-required.
+					_, _, _ = s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID)
 				}
 			}
 			if *status == "revoked" {
@@ -354,7 +357,7 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.FavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					_, _, _ = s.behaviorSvc.FavoriteItemTx(tx, dist.ItemID, receipt.UserID)
 				}
 			}
 		}
