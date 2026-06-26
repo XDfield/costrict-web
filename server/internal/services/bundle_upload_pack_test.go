@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -110,6 +111,65 @@ func TestPackUploadBundle_FromTextAndBinaryAssets(t *testing.T) {
 	}
 	if string(got[".plugin.json"]) != item.Content {
 		t.Errorf("fallback main file = %q, want %q", string(got[".plugin.json"]), item.Content)
+	}
+}
+
+// TestPackUploadBundle_ExecBitHeuristic is the #5 regression guard: CapabilityAsset
+// stores no Unix mode, so upload_pack must approximate the exec bit — files under
+// scripts/ or hooks/, OR files whose content starts with a `#!` shebang, get 0755;
+// everything else 0644. Without this the clone-path's faithful exec bit was lost and
+// uploaded plugin hooks/scripts extracted as non-executable (0644) and failed to run.
+func TestPackUploadBundle_ExecBitHeuristic(t *testing.T) {
+	db := setupBundleTestDB(t)
+	addAssetsSchema(t, db)
+	svc := newBundleService(t, db)
+	ctx := context.Background()
+
+	shebang := "#!/usr/bin/env python3\nprint('hi')\n"
+	plainInScripts := "config data, not a script\n"
+	plainReadme := "# readme\n"
+	scriptNoShebang := "echo hello\n" // under hooks/ -> exec by directory rule
+	assets := []models.CapabilityAsset{
+		{ID: "a1", ItemID: "item-1", RelPath: "scripts/run.py", TextContent: &shebang},
+		{ID: "a2", ItemID: "item-1", RelPath: "scripts/data.txt", TextContent: &plainInScripts},
+		{ID: "a3", ItemID: "item-1", RelPath: "hooks/pre.sh", TextContent: &scriptNoShebang},
+		{ID: "a4", ItemID: "item-1", RelPath: "README.md", TextContent: &plainReadme},
+	}
+	if err := db.Create(&assets).Error; err != nil {
+		t.Fatalf("seed assets: %v", err)
+	}
+
+	item := &models.CapabilityItem{ID: "item-1", Slug: "p", ItemType: "plugin"}
+	art, err := svc.PackUploadBundle(ctx, item)
+	if err != nil {
+		t.Fatalf("PackUploadBundle: %v", err)
+	}
+
+	reader, _, err := svc.Storage.Get(ctx, art.StorageKey)
+	if err != nil {
+		t.Fatalf("get stored bundle: %v", err)
+	}
+	data, _ := io.ReadAll(reader)
+	reader.Close()
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("read stored zip: %v", err)
+	}
+	modes := map[string]os.FileMode{}
+	for _, f := range zr.File {
+		modes[f.Name] = f.Mode().Perm()
+	}
+
+	wantExec := []string{"scripts/run.py", "scripts/data.txt", "hooks/pre.sh"}
+	for _, name := range wantExec {
+		if modes[name]&0o100 == 0 {
+			t.Errorf("%s expected executable (0755), got %v", name, modes[name])
+		}
+	}
+	// scripts/run.py also has a shebang; both directory-rule and shebang-rule agree.
+	if modes["README.md"]&0o100 != 0 {
+		t.Errorf("README.md expected non-executable (0644), got %v", modes["README.md"])
 	}
 }
 

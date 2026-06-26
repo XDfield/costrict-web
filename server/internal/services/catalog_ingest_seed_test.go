@@ -362,6 +362,103 @@ func TestIngest_SeedIsIdempotent_OnReimport(t *testing.T) {
 	}
 }
 
+// TestIngest_MetadataOnly_ReseedsChangedBundleVersion is the #4 regression guard: an
+// offline plugin whose pre-packed bundle changed (new version) while its primary file
+// SHA stayed identical routes through the METADATA-ONLY path. Without the re-seed,
+// air-gap clients stall on the old bundle. This verifies the metadata-only path
+// detects the version drift and writes a new seeded artifact (IsLatest flips).
+func TestIngest_MetadataOnly_ReseedsChangedBundleVersion(t *testing.T) {
+	db := newSeedIngestDB(t)
+	createBundleJobsTable(t, db)
+	svc, _ := seedTestService(t, db)
+	ctx := context.Background()
+
+	// First ingest: version v1 (same primary .plugin.json content as v2 below).
+	dir1, _, _, _ := writePluginSeedBundle(t, "demo", "v1", true, "")
+	if _, err := svc.Ingest(ctx, IngestSource{Dir: dir1}, IngestOptions{TriggerUser: "tester"}); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	item := loadItemBySlug(t, db, "demo")
+	arts := loadArtifacts(t, db, item.ID)
+	if len(arts) != 1 || arts[0].ArtifactVersion != "v1" || !arts[0].IsLatest {
+		t.Fatalf("after v1 ingest expected 1 IsLatest seeded artifact at v1, got %+v", arts)
+	}
+
+	// Second ingest: SAME primary .plugin.json (unchanged SHA → metadata-only path),
+	// but the bundle block declares a NEW version v2.
+	dir2, _, _, _ := writePluginSeedBundle(t, "demo", "v2", true, "")
+	res, err := svc.Ingest(ctx, IngestSource{Dir: dir2}, IngestOptions{TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	// The entry must NOT have gone through the content-changed path (primary SHA same).
+	if res.Added != 0 {
+		t.Fatalf("v2 re-ingest should not Add (primary file unchanged); added=%d", res.Added)
+	}
+
+	arts = loadArtifacts(t, db, item.ID)
+	if len(arts) != 2 {
+		t.Fatalf("expected 2 seeded artifacts after re-seed (v1 demoted, v2 latest), got %d: %+v", len(arts), arts)
+	}
+
+	// Exactly one IsLatest seeded artifact, and it is v2.
+	best, ok := pickLatestBundleArtifact(arts)
+	if !ok {
+		t.Fatal("expected a latest bundle artifact after re-seed")
+	}
+	if best.ArtifactVersion != "v2" {
+		t.Errorf("latest seeded version = %q, want v2 (the re-seed must flip IsLatest)", best.ArtifactVersion)
+	}
+	var latestCount int64
+	db.Model(&models.CapabilityArtifact{}).
+		Where("item_id = ? AND source_type = ? AND is_latest = ?", item.ID, BundleSourceTypeSeeded, true).
+		Count(&latestCount)
+	if latestCount != 1 {
+		t.Errorf("expected exactly 1 IsLatest seeded artifact after re-seed, got %d", latestCount)
+	}
+
+	// Re-importing v2 again must be a no-op (idempotent: same version → no new row).
+	dir3, _, _, _ := writePluginSeedBundle(t, "demo", "v2", true, "")
+	if _, err := svc.Ingest(ctx, IngestSource{Dir: dir3}, IngestOptions{TriggerUser: "tester"}); err != nil {
+		t.Fatalf("third ingest: %v", err)
+	}
+	if got := len(loadArtifacts(t, db, item.ID)); got != 2 {
+		t.Errorf("re-importing the same v2 must not duplicate; expected 2 artifacts, got %d", got)
+	}
+}
+
+// TestIngest_MetadataOnly_NoStore_DoesNotReseed verifies the nil-guard: when no Store
+// is wired the metadata-only path must NOT attempt to seed (no panic, no artifact).
+func TestIngest_MetadataOnly_NoStore_DoesNotReseed(t *testing.T) {
+	db := newSeedIngestDB(t)
+	createBundleJobsTable(t, db)
+	// Service WITHOUT a Store (seed disabled). Provide a BundleJobService so the lazy
+	// path's enqueue doesn't blow up.
+	svc := newIngestService(db)
+	svc.BundleJobService = &BundleJobService{DB: db}
+	ctx := context.Background()
+
+	dir, _, _, _ := writePluginSeedBundle(t, "demo", "v1", true, "")
+	if _, err := svc.Ingest(ctx, IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"}); err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	item := loadItemBySlug(t, db, "demo")
+	// No Store -> no seeded artifact at all (stays lazy).
+	if arts := loadArtifacts(t, db, item.ID); len(arts) != 0 {
+		t.Fatalf("without a Store no seeded artifact should exist, got %d", len(arts))
+	}
+
+	// Re-ingest with a new bundle version; the metadata-only re-seed must be a safe
+	// no-op (nil-guard), not a panic.
+	dir2, _, _, _ := writePluginSeedBundle(t, "demo", "v2", true, "")
+	if _, err := svc.Ingest(ctx, IngestSource{Dir: dir2}, IngestOptions{TriggerUser: "tester"}); err != nil {
+		t.Fatalf("second ingest (no store): %v", err)
+	}
+	if arts := loadArtifacts(t, db, item.ID); len(arts) != 0 {
+		t.Errorf("metadata-only re-seed without a Store must remain a no-op, got %d artifacts", len(arts))
+	}
+}
+
 // TestIngest_NoBundleBlock_StaysLazy is the zero-regression guard: a plugin entry
 // WITHOUT a `bundle` block writes NO seeded artifact (it keeps the online lazy-clone
 // path) and DOES enqueue a refresh job.

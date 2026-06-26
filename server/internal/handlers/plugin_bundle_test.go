@@ -214,11 +214,11 @@ func TestDownloadPluginBundle_NotFound(t *testing.T) {
 	}
 }
 
-// TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud guards against silent
-// corruption: a plugin with NEITHER a source_url NOR any real assets (e.g. an
-// un-backfilled catalog plugin) must NOT be packed into a truncated 200 ZIP. The
-// endpoint returns an explicit 422 instead.
-func TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud(t *testing.T) {
+// TestDownloadPluginBundle_NoSourceNoAssetsNoContentFailsLoud guards against silent
+// corruption: a TRULY empty plugin row — NO source_url, NO assets, AND NO main-file
+// content (e.g. an un-backfilled legacy catalog plugin) — must NOT be packed into an
+// empty/truncated 200 ZIP. The endpoint returns an explicit 422 instead.
+func TestDownloadPluginBundle_NoSourceNoAssetsNoContentFailsLoud(t *testing.T) {
 	defer setupTestDB(t)()
 	addBundleJobsTable(t)
 	backend := newMemBackend()
@@ -227,12 +227,11 @@ func TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud(t *testing.T) {
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-pub", Name: "pub-reg", SourceType: "internal", RepoID: "repo-pub", OwnerID: "owner",
 	})
-	// No source_url, no assets, only a synthetic Content/SourcePath (which the old
-	// path would have packed into a near-empty ZIP).
+	// No source_url, no assets, and no content -> nothing to pack -> fail loud.
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-empty", RegistryID: "reg-pub", RepoID: "repo-pub", Slug: "empty-plugin",
 		ItemType: "plugin", Name: "Empty", Status: "active", CreatedBy: "owner",
-		Content: "# synthetic summary", SourcePath: ".plugin.json",
+		Content: "", SourcePath: "",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -244,6 +243,55 @@ func TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&body)
 	if body["error"] == nil || body["error"] == "" {
 		t.Errorf("expected an explicit error message, got %v", body["error"])
+	}
+}
+
+// TestDownloadPluginBundle_SingleFileContentPacks is the regression guard for the #1
+// fix: a single-file plugin (real main-file content in item.Content, NO source_url,
+// NO assets) must pack into a real 200 ZIP via PackUploadBundle's content fallback —
+// the earlier hardening wrongly 422'd it. Distinguishes "real direct/upload plugin"
+// from "truly empty legacy row" (which still fails loud, above).
+func TestDownloadPluginBundle_SingleFileContentPacks(t *testing.T) {
+	defer setupTestDB(t)()
+	addBundleJobsTable(t)
+	backend := newMemBackend()
+
+	database.DB.Create(&models.Repository{ID: "repo-pub", Name: "public-repo", Visibility: "public", OwnerID: "owner"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-pub", Name: "pub-reg", SourceType: "internal", RepoID: "repo-pub", OwnerID: "owner",
+	})
+	// JSON-created / single-file plugin: only the main file lives in item.Content.
+	mainContent := `{"name":"single-file-plugin"}`
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-single", RegistryID: "reg-pub", RepoID: "repo-pub", Slug: "single-plugin",
+		ItemType: "plugin", Name: "Single", Status: "active", CreatedBy: "owner",
+		Content: mainContent, SourcePath: ".plugin.json",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	rec := get(newBundleRouter("", backend), "/api/plugins/single-plugin/bundle")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (single-file plugin packs via content fallback), got %d: %s", rec.Code, rec.Body.String())
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("response is not a valid zip: %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range zr.File {
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		got[f.Name] = string(b)
+	}
+	if got[".plugin.json"] != mainContent {
+		t.Errorf(".plugin.json = %q, want %q", got[".plugin.json"], mainContent)
+	}
+
+	// An upload_pack artifact must have been persisted as latest.
+	var art models.CapabilityArtifact
+	if err := database.DB.Where("item_id = ? AND source_type = ? AND is_latest = ?", "item-single", "upload_pack", true).First(&art).Error; err != nil {
+		t.Fatalf("expected an upload_pack artifact for the single-file plugin: %v", err)
 	}
 }
 
@@ -309,6 +357,58 @@ func TestDownloadPluginBundle_FailedJobPastCooldownReEnqueues(t *testing.T) {
 	database.DB.Model(&models.BundleJob{}).Where("item_id = ? AND status IN ('pending','running')", "item-retry").Count(&inflight)
 	if inflight != 1 {
 		t.Errorf("expected 1 newly enqueued job past cooldown, got %d", inflight)
+	}
+}
+
+// TestUpdateItemFromJSON_InvalidatesUploadPackArtifact is the #2 regression guard:
+// after a plugin's content/assets are edited via the JSON PUT path, any previously
+// packed upload_pack bundle artifact must be demoted (is_latest=false) so the bundle
+// endpoint re-packs from the new content instead of forever serving the stale ZIP.
+func TestUpdateItemFromJSON_InvalidatesUploadPackArtifact(t *testing.T) {
+	defer setupTestDB(t)()
+
+	database.DB.Create(&models.Repository{ID: "repo-pub", Name: "public-repo", Visibility: "public", OwnerID: "owner"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-pub", Name: "pub-reg", SourceType: "internal", RepoID: "repo-pub", OwnerID: "owner",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-edit", RegistryID: "reg-pub", RepoID: "repo-pub", Slug: "edit-plugin",
+		ItemType: "plugin", Name: "Editable", Status: "active", CreatedBy: "owner",
+		Content: `{"name":"v1"}`, ContentMD5: "old-md5", SourcePath: ".plugin.json",
+		CurrentRevision: 1, Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// A previously-packed upload_pack bundle marked latest.
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "art-edit", ItemID: "item-edit", Filename: "edit-plugin.zip", FileSize: 10,
+		ChecksumSHA256: "oldsha", StorageKey: "k-old", ArtifactVersion: "oldsha",
+		IsLatest: true, SourceType: services.BundleSourceTypeUploadPack, UploadedBy: "system:bundle-pack",
+		CreatedAt: time.Now(),
+	})
+
+	// Edit the plugin's content via the JSON PUT path (owner is the caller).
+	rec := putJSON(newItemRouter("owner"), "/api/items/item-edit", map[string]any{
+		"content": `{"name":"v2-with-new-hook"}`,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The old upload_pack artifact must no longer be latest.
+	var art models.CapabilityArtifact
+	if err := database.DB.First(&art, "id = ?", "art-edit").Error; err != nil {
+		t.Fatalf("load artifact: %v", err)
+	}
+	if art.IsLatest {
+		t.Error("upload_pack artifact should have been demoted (is_latest=false) after a content edit")
+	}
+
+	// No IsLatest bundle artifact remains, so the bundle endpoint will re-pack.
+	var latestCount int64
+	database.DB.Model(&models.CapabilityArtifact{}).
+		Where("item_id = ? AND source_type = ? AND is_latest = ?", "item-edit", services.BundleSourceTypeUploadPack, true).
+		Count(&latestCount)
+	if latestCount != 0 {
+		t.Errorf("expected no latest upload_pack artifact after edit, got %d", latestCount)
 	}
 }
 

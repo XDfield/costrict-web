@@ -201,6 +201,80 @@ func TestPackItemBundle_Idempotent(t *testing.T) {
 	}
 }
 
+// TestPackItemBundle_ReuseRepromotesNonLatest is the #3 regression guard: when the
+// idempotent path reuses a cached clone_pack artifact that is NOT IsLatest (e.g. the
+// upstream branch was reset/rolled back to a commit we packed before, so a
+// newer-but-now-stale artifact holds IsLatest), the reuse MUST promote the cached
+// artifact back to IsLatest (and demote the stale one) — otherwise list/detail keep
+// selecting the wrong latest and the client pulls the wrong bundle.
+func TestPackItemBundle_ReuseRepromotesNonLatest(t *testing.T) {
+	repoDir, wantSHA := initLocalGitRepo(t)
+	db := setupBundleTestDB(t)
+	svc := newBundleService(t, db)
+
+	item := &models.CapabilityItem{ID: "item-1", Slug: "demo", ItemType: "plugin", SourceURL: "file://" + repoDir}
+
+	// First pack -> this commit's artifact, IsLatest=true.
+	first, err := svc.PackItemBundle(context.Background(), item)
+	if err != nil {
+		t.Fatalf("first pack: %v", err)
+	}
+	if first.ArtifactVersion != wantSHA {
+		t.Fatalf("first ArtifactVersion = %q, want %q", first.ArtifactVersion, wantSHA)
+	}
+
+	// Simulate a newer-but-stale clone_pack artifact taking over IsLatest (e.g. a
+	// later commit that has since been reverted upstream). This demotes `first`.
+	if err := db.Model(&models.CapabilityArtifact{}).
+		Where("id = ?", first.ID).Update("is_latest", false).Error; err != nil {
+		t.Fatalf("demote first: %v", err)
+	}
+	stale := &models.CapabilityArtifact{
+		ID: "art-stale", ItemID: item.ID, Filename: "demo.zip", FileSize: 10,
+		ChecksumSHA256: "stalesha", StorageKey: "k-stale", ArtifactVersion: "newer-but-reverted-sha",
+		IsLatest: true, SourceType: bundleArtifactSourceType, UploadedBy: "system", CreatedAt: time.Now(),
+	}
+	if err := db.Create(stale).Error; err != nil {
+		t.Fatalf("seed stale latest: %v", err)
+	}
+
+	// Re-pack at the SAME commit SHA as `first` -> idempotent reuse of `first`.
+	second, err := svc.PackItemBundle(context.Background(), item)
+	if err != nil {
+		t.Fatalf("second pack: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected idempotent reuse of %s, got %s", first.ID, second.ID)
+	}
+	if !second.IsLatest {
+		t.Error("reused artifact should have been re-promoted to IsLatest")
+	}
+
+	// The reused artifact is IsLatest in the DB; the stale one is demoted.
+	var reloadedFirst, reloadedStale models.CapabilityArtifact
+	if err := db.First(&reloadedFirst, "id = ?", first.ID).Error; err != nil {
+		t.Fatalf("reload first: %v", err)
+	}
+	if err := db.First(&reloadedStale, "id = ?", "art-stale").Error; err != nil {
+		t.Fatalf("reload stale: %v", err)
+	}
+	if !reloadedFirst.IsLatest {
+		t.Error("first (correct-version) artifact should be IsLatest after re-pack")
+	}
+	if reloadedStale.IsLatest {
+		t.Error("stale (reverted) artifact should have been demoted")
+	}
+
+	// Exactly one IsLatest clone_pack artifact for the item.
+	var latestCount int64
+	db.Model(&models.CapabilityArtifact{}).
+		Where("item_id = ? AND source_type = ? AND is_latest = ?", item.ID, bundleArtifactSourceType, true).
+		Count(&latestCount)
+	if latestCount != 1 {
+		t.Errorf("expected exactly 1 IsLatest clone_pack artifact, got %d", latestCount)
+	}
+}
+
 func TestPackItemBundle_NoSourceURLErrors(t *testing.T) {
 	db := setupBundleTestDB(t)
 	svc := newBundleService(t, db)

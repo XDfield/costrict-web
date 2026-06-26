@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -178,6 +180,14 @@ func (s *BundlePackService) PackItemBundle(ctx context.Context, item *models.Cap
 
 	// Idempotency: a fresh bundle for this exact commit SHA already cached?
 	if existing, ok := s.findCachedBundle(ctx, item.ID, commitSHA); ok {
+		// Re-promote on reuse: the cached artifact may NOT be IsLatest (e.g. the
+		// upstream branch was reset/rolled back to a commit we packed before, so a
+		// newer-but-now-stale artifact holds IsLatest). Without this, the worker
+		// reports success but list/detail still pick the wrong latest and the client
+		// pulls the wrong version. promoteToLatest is a no-op when it already is.
+		if err := s.promoteToLatest(ctx, existing); err != nil {
+			return nil, fmt.Errorf("bundle pack: re-promote cached artifact %s: %w", existing.ID, err)
+		}
 		logger.Info("[bundle-pack] item %s already packed at %s, reusing artifact %s", item.ID, commitSHA, existing.ID)
 		return existing, nil
 	}
@@ -271,6 +281,36 @@ func (s *BundlePackService) storeBundleArtifact(ctx context.Context, in storeBun
 	return artifact, nil
 }
 
+// promoteToLatest makes the given artifact the IsLatest one for its item+source_type,
+// demoting any sibling that currently holds IsLatest in the same transaction (mirrors
+// the demote/create in storeBundleArtifact). It is a no-op when the artifact is
+// already IsLatest, so the common idempotent-reuse path costs only a cheap read.
+//
+// This closes the gap where idempotent reuse returned a cached artifact that was NOT
+// IsLatest (e.g. the upstream ref was reset/rolled back to a previously-packed
+// version): without re-promotion the worker reports success but list/detail still
+// select the wrong (newer-but-stale) latest, so the client pulls the wrong bundle.
+func (s *BundlePackService) promoteToLatest(ctx context.Context, artifact *models.CapabilityArtifact) error {
+	if artifact == nil || artifact.IsLatest {
+		return nil
+	}
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Demote every other latest of the same item+source_type, then promote this one.
+		if err := tx.Model(&models.CapabilityArtifact{}).
+			Where("item_id = ? AND source_type = ? AND id <> ?", artifact.ItemID, artifact.SourceType, artifact.ID).
+			Update("is_latest", false).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.CapabilityArtifact{}).
+			Where("id = ?", artifact.ID).
+			Update("is_latest", true).Error
+	}); err != nil {
+		return err
+	}
+	artifact.IsLatest = true
+	return nil
+}
+
 // findCachedBundle returns the existing latest-or-versioned clone_pack artifact for
 // the given commit SHA when its stored file is still present.
 func (s *BundlePackService) findCachedBundle(ctx context.Context, itemID, commitSHA string) (*models.CapabilityArtifact, bool) {
@@ -359,6 +399,11 @@ func (s *BundlePackService) PackUploadBundle(ctx context.Context, item *models.C
 
 	// Idempotency: a bundle for this exact content hash already cached?
 	if existing, ok := s.findCachedUploadBundle(ctx, item.ID, zipSHA); ok {
+		// Re-promote on reuse (same reasoning as PackItemBundle): the cached artifact
+		// may have been demoted by a later pack that has since been removed/reverted.
+		if err := s.promoteToLatest(ctx, existing); err != nil {
+			return nil, fmt.Errorf("upload bundle: re-promote cached artifact %s: %w", existing.ID, err)
+		}
 		logger.Info("[bundle-pack] upload item %s already packed at %s, reusing artifact %s", item.ID, zipSHA, existing.ID)
 		return existing, nil
 	}
@@ -422,25 +467,41 @@ func (s *BundlePackService) packAssetsZip(ctx context.Context, item *models.Capa
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, e := range entries {
-		hdr := &zip.FileHeader{Name: e.rel, Method: zip.Deflate, Modified: fixedTime}
-		w, createErr := zw.CreateHeader(hdr)
-		if createErr != nil {
-			zw.Close()
-			return nil, "", fmt.Errorf("create zip entry %q: %w", e.rel, createErr)
-		}
 		if e.mode {
+			// Binary asset streamed from storage. We must read it first so the exec-bit
+			// heuristic can inspect the shebang, then write the buffered bytes.
 			reader, _, getErr := s.Storage.Get(ctx, e.key)
 			if getErr != nil {
 				zw.Close()
 				return nil, "", fmt.Errorf("read stored asset %q: %w", e.key, getErr)
 			}
-			if _, copyErr := io.Copy(w, reader); copyErr != nil {
-				reader.Close()
-				zw.Close()
-				return nil, "", fmt.Errorf("copy stored asset %q: %w", e.key, copyErr)
-			}
+			data, readErr := io.ReadAll(reader)
 			reader.Close()
-		} else if _, wErr := w.Write(e.text); wErr != nil {
+			if readErr != nil {
+				zw.Close()
+				return nil, "", fmt.Errorf("read stored asset %q: %w", e.key, readErr)
+			}
+			hdr := &zip.FileHeader{Name: e.rel, Method: zip.Deflate, Modified: fixedTime}
+			hdr.SetMode(uploadAssetMode(e.rel, data))
+			w, createErr := zw.CreateHeader(hdr)
+			if createErr != nil {
+				zw.Close()
+				return nil, "", fmt.Errorf("create zip entry %q: %w", e.rel, createErr)
+			}
+			if _, wErr := w.Write(data); wErr != nil {
+				zw.Close()
+				return nil, "", fmt.Errorf("write stored asset %q: %w", e.rel, wErr)
+			}
+			continue
+		}
+		hdr := &zip.FileHeader{Name: e.rel, Method: zip.Deflate, Modified: fixedTime}
+		hdr.SetMode(uploadAssetMode(e.rel, e.text))
+		w, createErr := zw.CreateHeader(hdr)
+		if createErr != nil {
+			zw.Close()
+			return nil, "", fmt.Errorf("create zip entry %q: %w", e.rel, createErr)
+		}
+		if _, wErr := w.Write(e.text); wErr != nil {
 			zw.Close()
 			return nil, "", fmt.Errorf("write text asset %q: %w", e.rel, wErr)
 		}
@@ -452,6 +513,51 @@ func (s *BundlePackService) packAssetsZip(ctx context.Context, item *models.Capa
 	data := buf.Bytes()
 	sum := sha256.Sum256(data)
 	return data, fmt.Sprintf("%x", sum), nil
+}
+
+// uploadAssetMode returns the file mode to record on an upload_pack ZIP entry.
+//
+// CapabilityAsset does NOT persist the original Unix file mode (no mode/perm column —
+// see models.go), so the clone path's faithful SetMode(fi.Mode()) is impossible here.
+// This is a best-effort APPROXIMATION for the upload path: a file is marked executable
+// (0755) when it lives under a conventional executable directory (scripts/ or hooks/)
+// OR its content begins with a `#!` shebang; everything else is 0644. This keeps
+// plugin hooks/scripts runnable after extraction without faithful metadata.
+//
+// True fidelity would require storing the mode at upload time (ParseArchive →
+// CapabilityAsset.Mode); recorded as a follow-up. Until then this heuristic matches
+// what an executable plugin file looks like in practice.
+func uploadAssetMode(relPath string, content []byte) os.FileMode {
+	const (
+		execMode os.FileMode = 0o755
+		fileMode os.FileMode = 0o644
+	)
+	if hasShebang(content) {
+		return execMode
+	}
+	// Normalize to forward slashes (ZIP rel paths are already slash-separated) and
+	// check for a leading or nested scripts//hooks/ segment.
+	p := relPath
+	if isUnderExecDir(p) {
+		return execMode
+	}
+	return fileMode
+}
+
+// hasShebang reports whether content starts with a "#!" interpreter directive.
+func hasShebang(content []byte) bool {
+	return len(content) >= 2 && content[0] == '#' && content[1] == '!'
+}
+
+// isUnderExecDir reports whether the slash-separated relPath has a scripts/ or hooks/
+// path segment (at the root or nested), i.e. a conventional executable location.
+func isUnderExecDir(relPath string) bool {
+	for _, seg := range strings.Split(relPath, "/") {
+		if seg == "scripts" || seg == "hooks" {
+			return true
+		}
+	}
+	return false
 }
 
 // findCachedUploadBundle returns the existing upload_pack artifact for the given
@@ -517,6 +623,11 @@ func (s *BundlePackService) SeedItemBundle(ctx context.Context, item *models.Cap
 
 	// Idempotency: a seeded bundle for this exact version already cached?
 	if existing, ok := s.findCachedSeedBundle(ctx, item.ID, version); ok {
+		// Re-promote on reuse (same reasoning as PackItemBundle): re-importing an older
+		// offline bundle must restore that version's artifact to IsLatest.
+		if err := s.promoteToLatest(ctx, existing); err != nil {
+			return nil, fmt.Errorf("seed bundle: re-promote cached artifact %s: %w", existing.ID, err)
+		}
 		logger.Info("[bundle-pack] seed item %s already seeded at %s, reusing artifact %s", item.ID, version, existing.ID)
 		return existing, nil
 	}

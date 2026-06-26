@@ -1390,6 +1390,14 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		}
 		if contentChanged {
 			enqueueScanAsync(itemID, newRevision, "update")
+			// A content/asset change invalidates any previously-packed upload_pack
+			// bundle: the DB+HTTP bundle endpoint reuses the IsLatest upload_pack
+			// artifact (cache hit) and would otherwise keep serving the stale ZIP with
+			// an unchanged bundleVersion forever. Demote it so the next bundle request
+			// re-packs from the new content/assets. (clone_pack/seeded artifacts are
+			// keyed on upstream commit SHA / offline version, not this edit, so they
+			// are intentionally untouched.)
+			invalidateUploadPackArtifact(db, itemID)
 		}
 	} else {
 		if result := db.Save(&item); result.Error != nil {
@@ -1399,6 +1407,19 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
+}
+
+// invalidateUploadPackArtifact demotes the item's IsLatest upload_pack bundle
+// artifact(s) so the DB+HTTP bundle endpoint no longer serves a stale ZIP after an
+// edit changed the item's content/assets. The next bundle request misses the cache
+// and re-packs from the current content. Best-effort: a failure here only means a
+// stale bundle lingers until the next pack, so it must not fail the update request.
+func invalidateUploadPackArtifact(db *gorm.DB, itemID string) {
+	if err := db.Model(&models.CapabilityArtifact{}).
+		Where("item_id = ? AND source_type = ? AND is_latest = ?", itemID, services.BundleSourceTypeUploadPack, true).
+		Update("is_latest", false).Error; err != nil {
+		log.Printf("[bundle] invalidate upload_pack artifact for item %s failed: %v", itemID, err)
+	}
 }
 
 // updateItemFromArchive handles multipart/form-data archive upload item update.

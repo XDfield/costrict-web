@@ -195,6 +195,55 @@ func (s *CatalogIngestService) seedBundleForPlugin(ctx context.Context, bundleDi
 	return true
 }
 
+// maybeReseedBundle re-seeds an offline plugin bundle on the metadata-only ingest
+// path when the entry's bundle version no longer matches the item's current IsLatest
+// seeded artifact. This is the air-gap incremental-update fix: a plugin's pre-packed
+// ZIP (hooks/scripts) can change without its primary-file SHA moving, which routes the
+// entry through applyMetadataOnly (not the content-changed path), so the seed must be
+// re-evaluated HERE or air-gap clients stall on the old bundle until a --reparse.
+//
+// It is a strict superset-safe guard: it only fires for plugins carrying a bundle
+// block, only when a Store is wired (else returns false → no-op, matching
+// seedBundleForPlugin's nil-guard), and only when the declared version differs from
+// the seeded artifact already on record (so a re-import of the same offline bundle is
+// a cheap no-op). seedBundleForPlugin itself is idempotent on (item, version) and
+// swallows all errors, so a failed re-seed degrades to the lazy-clone fallback without
+// breaking the ingest. Returns true when it actually wrote a new seeded artifact.
+func (s *CatalogIngestService) maybeReseedBundle(ctx context.Context, bundleDir string, item *models.CapabilityItem, entry catalogEntry) bool {
+	if item == nil || item.ItemType != "plugin" || entry.Bundle == nil {
+		return false
+	}
+	wantVersion := strings.TrimSpace(entry.Bundle.Version)
+	if wantVersion == "" {
+		return false
+	}
+	// nil-guard: no Store wired (dry-run / caller didn't inject Store) → cannot seed.
+	if s.seedService() == nil {
+		return false
+	}
+	// Compare against the version already seeded for this item. When they match, the
+	// offline bundle is unchanged and there is nothing to do.
+	if s.currentSeededVersion(ctx, item.ID) == wantVersion {
+		return false
+	}
+	return s.seedBundleForPlugin(ctx, bundleDir, item, entry)
+}
+
+// currentSeededVersion returns the ArtifactVersion of the item's current IsLatest
+// `seeded` bundle artifact, or "" when none exists. Used by maybeReseedBundle to
+// decide whether an offline bundle's declared version represents a real change.
+func (s *CatalogIngestService) currentSeededVersion(ctx context.Context, itemID string) string {
+	var existing models.CapabilityArtifact
+	err := s.DB.WithContext(ctx).
+		Where("item_id = ? AND source_type = ? AND is_latest = ?", itemID, BundleSourceTypeSeeded, true).
+		Order("created_at DESC").
+		First(&existing).Error
+	if err != nil {
+		return ""
+	}
+	return existing.ArtifactVersion
+}
+
 // enqueueBundleRefresh queues a lazy clone-and-pack refresh for a plugin item whose
 // content changed this ingest round. No-op for non-plugin items, when no
 // BundleJobService is wired, or when the item lacks a source_url to clone from.
@@ -538,7 +587,7 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			result.Updated += updated
 			classifyAndAccumulate(result, failed, errs)
 		} else {
-			updated, skipped, failed, errs := s.applyMetadataOnly(entry, relatedItems, paths.SourcePath, paths.EntryDir, opts.DryRun)
+			updated, skipped, failed, errs := s.applyMetadataOnly(ctx, bundleDir, entry, relatedItems, paths.SourcePath, paths.EntryDir, opts.DryRun)
 			result.MetadataUpdated += updated
 			result.Skipped += skipped
 			classifyAndAccumulate(result, failed, errs)
@@ -865,7 +914,15 @@ func scopeBundledMCPParsedItem(parsed *ParsedItem, entry catalogEntry) *ParsedIt
 // when only metadata changed — otherwise a first P3 rollout where existing
 // cospower skills are content-identical would keep their stale synthetic
 // source_path forever (the content-changed path never runs for them).
+//
+// ctx/bundleDir are forwarded so the metadata-only path can ALSO re-seed an offline
+// plugin bundle whose pre-packed ZIP changed (hooks/scripts edited) while the primary
+// file SHA stayed identical — that change drives the entry through THIS path, not the
+// content-changed one, so without the re-seed below an air-gap client would stay on
+// the old bundle (this closes the known incremental-update gap, no --reparse needed).
 func (s *CatalogIngestService) applyMetadataOnly(
+	ctx context.Context,
+	bundleDir string,
 	entry catalogEntry,
 	items []*models.CapabilityItem,
 	syntheticPath, entryDir string,
@@ -880,8 +937,21 @@ func (s *CatalogIngestService) applyMetadataOnly(
 		}
 
 		changed := s.computeMetadataDelta(item, entry, displayPath, entryDir)
+		// Re-seed an offline plugin bundle whose version moved even when no metadata
+		// column changed: the bundle ZIP can change (hooks/scripts) without touching
+		// any index.json metadata field, so this is independent of `changed`.
+		reseeded := false
+		if !dryRun {
+			reseeded = s.maybeReseedBundle(ctx, bundleDir, item, entry)
+		}
 		if !changed {
-			skipped++
+			if reseeded {
+				// A pure bundle refresh counts as an update, not a skip, so the ingest
+				// report reflects the work done.
+				updated++
+			} else {
+				skipped++
+			}
 			continue
 		}
 		if dryRun {

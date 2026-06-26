@@ -107,21 +107,27 @@ func DownloadPluginBundle(c *gin.Context) {
 		return
 	}
 
-	// No source_url: the upload path reconstructs the bundle from capability_assets.
-	// But a plugin with NEITHER a source_url NOR any real assets (e.g. a
-	// catalog-ingested plugin that was never backfilled — syncAssetsForItem is a
-	// no-op) would otherwise be packed into a near-empty / truncated 200 ZIP, a
-	// silent corruption the client cannot tell from a real bundle. Fail loud
-	// instead: return an explicit 422 so the operator knows source_url backfill is
-	// required, and never emit a truncated archive.
-	if !hasDistributableAssets(db, item.ID) {
+	// No source_url: the upload path reconstructs the bundle from capability_assets
+	// (and falls back to item.Content for the main file — see PackUploadBundle /
+	// packAssetsZip). A plugin is distributable on this path when it has EITHER any
+	// real asset OR a non-empty main-file content. Only a row with NEITHER (no
+	// source_url, no assets, AND no content — a legacy catalog plugin that was never
+	// backfilled, syncAssetsForItem being a no-op) would pack into a truly empty /
+	// truncated ZIP. That is a silent corruption the client cannot tell from a real
+	// bundle, so fail loud with an explicit 422; never emit an empty archive.
+	//
+	// A JSON-created or single-file uploaded plugin (only .plugin.json / CLAUDE.md in
+	// item.Content) must NOT be 422'd here — PackUploadBundle packs its main file via
+	// the content fallback, so it is a real, installable bundle.
+	if !hasDistributableContent(db, &item) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error": "plugin has no distributable content (source_url backfill needed)",
 		})
 		return
 	}
 
-	// Uploaded plugin (no source_url): its assets are complete, so pack now.
+	// Uploaded / direct plugin (no source_url): its assets and/or main-file content
+	// are complete, so pack now.
 	if BundlePackSvc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Bundle service not available"})
 		return
@@ -134,12 +140,29 @@ func DownloadPluginBundle(c *gin.Context) {
 	streamBundleArtifact(c, db, artifact)
 }
 
+// hasDistributableContent reports whether the item carries any bytes the upload
+// path can pack into a real bundle: either a real main-file content (item.Content
+// with a SourcePath, packed via PackUploadBundle's content fallback) OR at least one
+// real capability_asset (inline text or a storage key). It is the guard that keeps
+// the synchronous upload-pack path off plugins that are TRULY empty (no source_url,
+// no assets, AND no content) — packing those would yield a truncated/empty ZIP, a
+// silent corruption.
+//
+// A single-file plugin (just .plugin.json / CLAUDE.md in item.Content, no assets) is
+// distributable: PackUploadBundle writes the main file from item.Content, so this
+// returns true and the bundle endpoint serves a real, installable archive.
+func hasDistributableContent(db *gorm.DB, item *models.CapabilityItem) bool {
+	// Real main-file content is enough on its own (content fallback in
+	// packAssetsZip writes item.Content at item.SourcePath).
+	if item.Content != "" && item.SourcePath != "" {
+		return true
+	}
+	return hasDistributableAssets(db, item.ID)
+}
+
 // hasDistributableAssets reports whether the item has at least one real
-// capability_asset (a stored file with inline text or a storage key). This is the
-// guard that keeps the synchronous upload-pack path off plugins that have no real
-// file tree (no source_url + no assets) — packing those would yield a truncated
-// ZIP. An asset row with neither text_content nor storage_key carries no bytes and
-// does not count.
+// capability_asset (a stored file with inline text or a storage key). An asset row
+// with neither text_content nor storage_key carries no bytes and does not count.
 func hasDistributableAssets(db *gorm.DB, itemID string) bool {
 	var count int64
 	db.Model(&models.CapabilityAsset{}).
