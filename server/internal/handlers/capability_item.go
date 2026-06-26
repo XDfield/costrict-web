@@ -702,15 +702,10 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 	// Bundle distribution metadata (plugin only). csc compares BundleVersion to
 	// detect upstream updates and uses BundleURL to fetch the lossless ZIP. The URL
 	// is advertised even when no artifact exists yet — the first pull returns 202
-	// and enqueues a lazy clone-and-pack (single-item GetItem preloads Artifacts; the
-	// list path does not, so it leaves these empty to avoid an N+1).
-	if item.ItemType == "plugin" && item.Slug != "" {
-		resp.BundleURL = fmt.Sprintf("%s/api/plugins/%s/bundle", origin(c), item.Slug)
-		if a, ok := latestBundleArtifactFrom(item.Artifacts); ok {
-			resp.BundleVersion = a.ArtifactVersion
-			resp.BundleReady = true
-		}
-	}
+	// and enqueues a lazy clone-and-pack. Single-item GetItem preloads Artifacts, so
+	// item.Artifacts already carries the latest bundle here; the list path (ListAllItems)
+	// batch-fetches it instead, and both call pluginBundleFields so the contract matches.
+	resp.BundleURL, resp.BundleVersion, resp.BundleReady = pluginBundleFields(origin(c), item, item.Artifacts)
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
 		resp.RepoName = getRepoName(item.Registry.RepoID)
@@ -2150,6 +2145,18 @@ func ListAllItems(c *gin.Context) {
 	// Batch-fetch parent plugin name/slug for sub-skill rows (avoid N+1)
 	parentPluginMap := fetchParentPluginInfo(db, items)
 
+	// Batch-fetch the latest bundle artifact for plugin rows (avoid N+1). Only
+	// plugin items carry the DB+HTTP bundle, so the WHERE item_id IN (...) is scoped
+	// to plugin IDs and a large mostly-non-plugin page issues no extra work.
+	var pluginItemIDs []string
+	for _, item := range items {
+		if item.ItemType == "plugin" {
+			pluginItemIDs = append(pluginItemIDs, item.ID)
+		}
+	}
+	bundleArtifactMap := batchLatestBundleArtifacts(db, pluginItemIDs)
+	host := origin(c)
+
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
@@ -2158,6 +2165,12 @@ func ListAllItems(c *gin.Context) {
 		ForkCount        int    `json:"forkCount"`
 		ParentPluginName string `json:"parentPluginName,omitempty"`
 		ParentPluginSlug string `json:"parentPluginSlug,omitempty"`
+		// Bundle distribution fields (plugin only) — kept in lockstep with
+		// ItemResponse / buildItemResponse so csc reads the same contract from the
+		// list and detail endpoints. See pluginBundleFields.
+		BundleURL     string `json:"bundleUrl,omitempty"`
+		BundleVersion string `json:"bundleVersion,omitempty"`
+		BundleReady   bool   `json:"bundleReady"`
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
@@ -2174,6 +2187,14 @@ func ListAllItems(c *gin.Context) {
 				out[i].ParentPluginSlug = pp.Slug
 			}
 		}
+		// Derive bundle fields via the shared helper. Pass the pre-fetched latest
+		// bundle artifact (if any) so the helper's "ready/version" branch matches
+		// the single-item path without re-querying per row.
+		var artifacts []models.CapabilityArtifact
+		if a, ok := bundleArtifactMap[item.ID]; ok && a != nil {
+			artifacts = []models.CapabilityArtifact{*a}
+		}
+		out[i].BundleURL, out[i].BundleVersion, out[i].BundleReady = pluginBundleFields(host, item, artifacts)
 	}
 
 	hasMore := false

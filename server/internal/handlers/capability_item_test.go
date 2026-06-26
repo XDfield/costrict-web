@@ -606,6 +606,103 @@ func TestListAllItems_FavoritedFilter(t *testing.T) {
 	}
 }
 
+// TestListAllItems_PluginBundleFields is the regression guard for the cross-layer
+// contract bug: csc reconcileCloudPlugins reads bundleUrl/bundleVersion/bundleReady
+// off the FAVORITED LIST (ListAllItems), but the list path used to leave those three
+// null (only GetItem/buildItemResponse filled them). Because real catalog plugins
+// carry metadata.install (plugin_name/marketplace_name), csc's "fetch detail if
+// install metadata is missing" fallback never fired, so the bundle fields stayed
+// empty forever and csc fell back to git — the DB+HTTP channel never engaged in the
+// real world. The list path must now report the SAME bundle contract as the detail
+// path.
+func TestListAllItems_PluginBundleFields(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-bndl-list", Name: "bundle-list-reg", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+
+	// Plugin WITH an IsLatest bundle artifact -> ready=true + version + url.
+	// metadata.install mirrors a real catalog plugin (the case the csc fallback skips).
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-bndl-ready", RegistryID: "reg-bndl-list", RepoID: "public", Slug: "ready-plugin",
+		ItemType: "plugin", Name: "Ready Plugin", Status: "active", CreatedBy: "u1",
+		SourceURL: "https://github.com/owner/repo/tree/main",
+		Metadata:  datatypes.JSON([]byte(`{"install":{"method":"plugin_marketplace","plugin_name":"ready","marketplace_name":"mkt"}}`)),
+	})
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "art-list-ready", ItemID: "item-bndl-ready", Filename: "ready-plugin.zip", FileSize: 100,
+		ChecksumSHA256: "zsha", StorageKey: "k", ArtifactVersion: "7fd1a60bcommitsha",
+		IsLatest: true, SourceType: "clone_pack", UploadedBy: "system", CreatedAt: time.Now(),
+	})
+
+	// Plugin WITHOUT any bundle artifact -> ready=false but url still advertised.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-bndl-pending", RegistryID: "reg-bndl-list", RepoID: "public", Slug: "pending-plugin",
+		ItemType: "plugin", Name: "Pending Plugin", Status: "active", CreatedBy: "u1",
+		SourceURL: "https://github.com/owner/repo/tree/main",
+		Metadata:  datatypes.JSON([]byte("{}")),
+	})
+
+	// Non-plugin item -> bundle fields untouched (no url, ready=false).
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-bndl-skill", RegistryID: "reg-bndl-list", RepoID: "public", Slug: "a-skill",
+		ItemType: "skill", Name: "A Skill", Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newItemRouter(""), "/api/items")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	rawItems := body["items"].([]interface{})
+	byID := make(map[string]map[string]interface{}, len(rawItems))
+	for _, ri := range rawItems {
+		m := ri.(map[string]interface{})
+		byID[m["id"].(string)] = m
+	}
+
+	ready := byID["item-bndl-ready"]
+	if ready == nil {
+		t.Fatal("ready plugin missing from list")
+	}
+	if ready["bundleReady"] != true {
+		t.Errorf("ready plugin bundleReady = %v, want true", ready["bundleReady"])
+	}
+	if ready["bundleVersion"] != "7fd1a60bcommitsha" {
+		t.Errorf("ready plugin bundleVersion = %v, want 7fd1a60bcommitsha", ready["bundleVersion"])
+	}
+	if url, _ := ready["bundleUrl"].(string); !strings.Contains(url, "/api/plugins/ready-plugin/bundle") {
+		t.Errorf("ready plugin bundleUrl = %q, want it to contain /api/plugins/ready-plugin/bundle", url)
+	}
+
+	pending := byID["item-bndl-pending"]
+	if pending == nil {
+		t.Fatal("pending plugin missing from list")
+	}
+	if pending["bundleReady"] != false {
+		t.Errorf("pending plugin bundleReady = %v, want false", pending["bundleReady"])
+	}
+	if _, hasVersion := pending["bundleVersion"]; hasVersion {
+		t.Errorf("pending plugin bundleVersion should be omitted when not ready, got %v", pending["bundleVersion"])
+	}
+	if url, _ := pending["bundleUrl"].(string); url == "" {
+		t.Error("pending plugin bundleUrl should be advertised even before the bundle is ready")
+	}
+
+	skill := byID["item-bndl-skill"]
+	if skill == nil {
+		t.Fatal("skill item missing from list")
+	}
+	if skill["bundleReady"] != false {
+		t.Errorf("non-plugin bundleReady = %v, want false", skill["bundleReady"])
+	}
+	if url, _ := skill["bundleUrl"].(string); url != "" {
+		t.Errorf("non-plugin bundleUrl should be empty, got %q", url)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateItem
 // ---------------------------------------------------------------------------

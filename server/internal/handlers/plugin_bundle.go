@@ -134,6 +134,17 @@ func latestBundleArtifact(db *gorm.DB, itemID string) (*models.CapabilityArtifac
 	return &artifact, true
 }
 
+// bundleSourceTypeSet returns the accepted bundle source types as a lookup set.
+// Derived from services.BundleSourceTypes (clone_pack / upload_pack / seeded) so
+// the in-memory pickers and the DB query in latestBundleArtifact never drift.
+func bundleSourceTypeSet() map[string]bool {
+	set := make(map[string]bool, len(services.BundleSourceTypes))
+	for _, st := range services.BundleSourceTypes {
+		set[st] = true
+	}
+	return set
+}
+
 // latestBundleArtifactFrom picks the IsLatest bundle artifact (clone_pack,
 // upload_pack, or seeded) out of an already-loaded slice (e.g. GetItem's
 // Preload("Artifacts")), avoiding an extra query in buildItemResponse. The
@@ -142,10 +153,7 @@ func latestBundleArtifact(db *gorm.DB, itemID string) (*models.CapabilityArtifac
 // plugins are advertised as bundleReady to csc exactly like online clone_pack ones.
 // Returns the newest IsLatest bundle artifact if any.
 func latestBundleArtifactFrom(artifacts []models.CapabilityArtifact) (*models.CapabilityArtifact, bool) {
-	isBundleType := make(map[string]bool, len(services.BundleSourceTypes))
-	for _, st := range services.BundleSourceTypes {
-		isBundleType[st] = true
-	}
+	isBundleType := bundleSourceTypeSet()
 	var best *models.CapabilityArtifact
 	for i := range artifacts {
 		a := &artifacts[i]
@@ -163,6 +171,59 @@ func latestBundleArtifactFrom(artifacts []models.CapabilityArtifact) (*models.Ca
 		return nil, false
 	}
 	return best, true
+}
+
+// pluginBundleFields derives the (bundleUrl, bundleVersion, bundleReady) triple a
+// plugin item advertises to csc / the frontend over the DB+HTTP distribution
+// channel. It is the single source of truth shared by the single-item response
+// builder (buildItemResponse) and the list path (ListAllItems), so the two never
+// report a different bundle contract for the same plugin.
+//
+// The URL is advertised even before any artifact exists so csc can trigger the
+// first pull (which 202s + enqueues a lazy clone-and-pack). bundleReady/bundleVersion
+// are filled only when an IsLatest bundle artifact is already present in the passed
+// slice. Non-plugin items get the zero values.
+func pluginBundleFields(host string, item models.CapabilityItem, artifacts []models.CapabilityArtifact) (url, version string, ready bool) {
+	if item.ItemType != "plugin" || item.Slug == "" {
+		return "", "", false
+	}
+	url = fmt.Sprintf("%s/api/plugins/%s/bundle", host, item.Slug)
+	if a, ok := latestBundleArtifactFrom(artifacts); ok {
+		version = a.ArtifactVersion
+		ready = true
+	}
+	return url, version, ready
+}
+
+// batchLatestBundleArtifacts fetches, in a single query, the IsLatest bundle
+// artifacts (SourceType ∈ services.BundleSourceTypes) for the given item IDs and
+// maps each item ID to its newest such artifact. This keeps the list path (which
+// must not Preload Artifacts for every row — ListAllItems is a generic browse
+// endpoint that can page over large, mostly non-plugin result sets) free of N+1
+// while still surfacing the bundle contract for plugin rows.
+//
+// Callers should pass ONLY plugin item IDs so the WHERE item_id IN (...) stays
+// scoped to the rows that actually carry bundles.
+func batchLatestBundleArtifacts(db *gorm.DB, itemIDs []string) map[string]*models.CapabilityArtifact {
+	out := make(map[string]*models.CapabilityArtifact, len(itemIDs))
+	if len(itemIDs) == 0 {
+		return out
+	}
+	var artifacts []models.CapabilityArtifact
+	// Order ASC so that, when multiple IsLatest bundle artifacts share an item,
+	// the last-written (newest created_at) wins the map slot — matching
+	// latestBundleArtifactFrom's "newest IsLatest" selection.
+	err := db.Where("item_id IN ? AND is_latest = ? AND source_type IN ?", itemIDs, true, services.BundleSourceTypes).
+		Order("created_at ASC").
+		Find(&artifacts).Error
+	if err != nil {
+		return out
+	}
+	for i := range artifacts {
+		a := &artifacts[i]
+		out[a.ItemID] = a
+	}
+	return out
 }
 
 // streamBundleArtifact streams the artifact's stored ZIP, mirroring DownloadArtifact
