@@ -35,8 +35,17 @@ spec:
           env:
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
-            - name: CONCURRENCY
+            # cmd/worker reads WORKER_CONCURRENCY (the old CONCURRENCY name was dead).
+            - name: WORKER_CONCURRENCY
               value: {{ .Values.config.concurrency | quote }}
+            - name: WORKER_POLL_INTERVAL_SECONDS
+              value: {{ .Values.config.pollIntervalSeconds | quote }}
+            {{- if .Values.config.syncTmpDir }}
+            - name: SYNC_TMP_DIR
+              value: {{ .Values.config.syncTmpDir | quote }}
+            {{- end }}
+            # Split DB_* values are inputs to the assembled DATABASE_URL below; they
+            # MUST appear before DATABASE_URL so K8s $(VAR) expansion can resolve them.
             - name: DB_HOST
               value: {{ .Values.database.host | quote }}
             - name: DB_PORT
@@ -52,6 +61,11 @@ spec:
                   name: {{ .Values.database.existingSecret }}
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
+            # cmd/worker (config.Load) reads ONLY DATABASE_URL, not split DB_*.
+            # Assemble it from the DB_* vars above via K8s $(VAR) expansion. Order
+            # matters: this entry must follow every DB_* var it references.
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode={{ .Values.database.sslMode }}"
             - name: REDIS_HOST
               value: {{ .Values.redis.host | quote }}
             - name: REDIS_PORT
@@ -63,6 +77,25 @@ spec:
                   name: {{ .Values.redis.existingSecret }}
                   key: {{ .Values.redis.existingSecretKey }}
             {{- end }}
+            {{- if .Values.persistence.enabled }}
+            # Bundle worker writes packed plugin ZIPs here; must be the shared RWX
+            # volume the api serves bundles from (see persistence.existingClaim).
+            - name: ARTIFACT_STORAGE_PATH
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+            # Plugin DB+HTTP bundle distribution (lazy clone-and-pack) configuration.
+            - name: BUNDLE_ENABLED
+              value: {{ .Values.bundle.enabled | quote }}
+            - name: BUNDLE_WORKER_CONCURRENCY
+              value: {{ .Values.bundle.workerConcurrency | quote }}
+            - name: BUNDLE_PACK_TIMEOUT
+              value: {{ .Values.bundle.packTimeout | quote }}
+            - name: BUNDLE_MAX_BYTES
+              value: {{ .Values.bundle.maxBytes | quote }}
+            {{- if .Values.bundle.gitMirrorBase }}
+            - name: GIT_MIRROR_BASE
+              value: {{ .Values.bundle.gitMirrorBase | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -70,8 +103,31 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command:
+                {{- toYaml .Values.livenessProbe.exec.command | nindent 16 }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: artifacts-storage
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: artifacts-storage
+          persistentVolumeClaim:
+            # existingClaim is REQUIRED: it must point at the api chart's shared RWX
+            # artifacts PVC so worker-packed bundles are readable by the api.
+            claimName: {{ required "persistence.existingClaim is required: set it to the api chart's artifacts PVC name (shared RWX) so worker-packed bundles are served by the api" .Values.persistence.existingClaim }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

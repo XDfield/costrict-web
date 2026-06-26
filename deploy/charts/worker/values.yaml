@@ -46,9 +46,38 @@ affinity: {}
 # Worker specific configuration
 config:
   logLevel: "info"
+  # Repo-sync worker pool concurrency. Maps to WORKER_CONCURRENCY (cmd/worker reads
+  # WORKER_CONCURRENCY, NOT the old CONCURRENCY name). Default in code is 3.
   concurrency: "5"
+  # Repo-sync poll interval in seconds. Maps to WORKER_POLL_INTERVAL_SECONDS.
+  pollIntervalSeconds: "30"
+  # Temp dir used by GitService for lazy clone-and-pack and registry sync. Maps to
+  # SYNC_TMP_DIR. Leave empty to use the OS temp dir.
+  syncTmpDir: ""
 
-# Database configuration
+# Plugin DB+HTTP bundle distribution (lazy clone-and-pack) configuration.
+# The worker drains bundle_jobs: clone upstream plugin -> pack ZIP -> store under
+# ARTIFACT_STORAGE_PATH. The packed bundles MUST land on the SAME shared RWX volume
+# the api chart serves them from (see persistence below).
+bundle:
+  # BUNDLE_ENABLED: set to "false" to disable the bundle worker pool entirely.
+  enabled: "true"
+  # BUNDLE_WORKER_CONCURRENCY: number of concurrent clone-and-pack workers. Default 2.
+  workerConcurrency: "2"
+  # BUNDLE_PACK_TIMEOUT: per-job clone+pack timeout (Go duration, e.g. "5m", "90s").
+  packTimeout: "5m"
+  # BUNDLE_MAX_BYTES: max packed-bundle size in bytes (OOM guard). Default 100MB.
+  maxBytes: "104857600"
+  # GIT_MIRROR_BASE: optional base URL that rewrites github.com lazy-clone URLs to a
+  # self-hosted, in-China-reachable Gitea mirror (e.g. "https://gitea.costrict.ai").
+  # Empty = clone source_url directly from GitHub (may be unreachable from prod).
+  gitMirrorBase: ""
+
+# Database configuration.
+# NOTE: cmd/worker (config.Load) reads ONLY the DATABASE_URL env, NOT split DB_*.
+# The deployment template assembles DATABASE_URL from these split values using K8s
+# $(VAR) expansion, so the split fields below are the source of truth. To override
+# the assembled URL entirely (e.g. a managed DSN), set DATABASE_URL via .Values.env.
 database:
   host: postgres
   port: 5432
@@ -56,6 +85,8 @@ database:
   user: postgres
   existingSecret: ""
   existingSecretKey: password
+  # sslmode appended to the assembled DATABASE_URL (disable | require | verify-full).
+  sslMode: disable
 
 # Redis configuration
 redis:
@@ -64,11 +95,38 @@ redis:
   existingSecret: ""
   existingSecretKey: password
 
+# Artifact storage persistence.
+# CRITICAL: the worker packs plugin bundles to ARTIFACT_STORAGE_PATH and the api
+# serves them from the same path. The worker is a SEPARATE Helm release, so it
+# CANNOT derive the api's PVC name. existingClaim is therefore REQUIRED and MUST be
+# set to the api chart's artifacts PVC name (its "{api-release}-artifacts" RWX
+# claim). If existingClaim is empty, packed bundles land on a path the api cannot
+# read and the bundle download endpoint returns nothing.
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteMany
+  mountPath: /app/data/artifacts
+  # REQUIRED: name of the api chart's shared RWX artifacts PVC (e.g. "<api-release>-artifacts").
+  existingClaim: ""
+
 env: []
 envFrom: []
 
+# The worker has no HTTP server, so an httpGet probe is impossible. An exec
+# liveness probe checks the worker process is alive so a wedged pod is restarted
+# instead of silently sitting idle. Disabled by default; enable in prod.
 livenessProbe:
   enabled: false
+  exec:
+    command:
+      - /bin/sh
+      - -c
+      - "pgrep -f worker >/dev/null"
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
 
 readinessProbe:
   enabled: false
