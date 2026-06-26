@@ -309,7 +309,7 @@ type BundleJob struct {
 1. **catalog bundle**(`build_catalog_bundle.py` 产出,skill/mcp 内联 + plugin 元数据)——`everything-ai-coding`/`costrict-skills-repo`。
 2. **marketplace bundle**(`costrict-plugin-marketplace/build/costrict-marketplace-bundle-vX.Y.Z`)——每 plugin 一个 **bare git 仓** `repos/plugins/<owner>-<repo>-marketplace-<plugin>.git`;`manifest.json` 带 `plugins:[{id,name,version,size_bytes}]` + `catalog_source`/`catalog_sha`(两 bundle 同源)。
 
-**合成器(已实现:`costrict-plugin-marketplace/scripts/build_airgap_bundle.py`,不改 `build_catalog_bundle.py`/`build.py`):**
+**合成器(已实现:`everything-ai-coding/scripts/build_airgap_bundle.py` + `.md`,commit main `fd84d92`,不改 `build_catalog_bundle.py`/`build.py`):**
 > 实现要点:catalog `id` 与 marketplace bare 仓目录名**恒等**(marketplace build.py 用 entry id 原样建仓),无需 slug 化;catalog index 的 plugin 条目**本来就有 `bundle` 键**(子项计数+source_ref/plugin_root),合成器 **merge** 注入 `file/version/sha256` 而非覆盖,后端 `catalogBundleRef` 只读这三键、忽略其余,双向无损;CLI `--catalog-bundle/--marketplace-bundle/--output/--limit`;已对后端真实 Ingest 验证 seed 兼容。
 - 输入:catalog bundle + marketplace bundle。
 - 对每个 catalog plugin 条目 → 映射到 marketplace bare 仓(via `install.marketplace_repo`+`plugin_name` ↔ marketplace id)→ `git archive --format=zip HEAD`(出整包,含 exec 位,无 .git)→ `version=git rev-parse HEAD`,`sha256` of zip。
