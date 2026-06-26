@@ -261,9 +261,16 @@ API 侧 `ItemResponse.description` 字段会按请求 locale resolve：
 
 新增字段细节见 openspec change：`openspec/changes/add-item-description-i18n/`。
 
+## source_url 持久化与 Plugin 整包分发
+
+catalog 每条 entry 除 `source`（provenance 标签，如 `claude-plugins-dev`）外，还带 `source_url`（**真实 clone URL**，含 branch + 子目录，如 `https://github.com/owner/repo/tree/main/subdir`）。ingest 现在解析并写入 `capability_items.source_url`（`insertItem`/`updateItem`，以及 metadata-only 路径 `applyMetadataDelta` —— 保证存量行 re-ingest 时回填）。
+
+这个字段是 **Plugin DB+HTTP「订阅即分发」通道**的基石：后端据此 server-side lazy `git clone` → 打无损 ZIP 整包 → 经 `GET /api/plugins/:slug/bundle` 下发给 csc（替代客户端 git clone）。ingest 在 plugin 内容变更时还会 `enqueueBundleRefresh` 触发重新打包。完整设计见 [`proposals/PLUGIN_BUNDLE_DISTRIBUTION_DESIGN.md`](proposals/PLUGIN_BUNDLE_DISTRIBUTION_DESIGN.md)。
+
 ## 相关代码与文档
 
 - 下游 service：`server/internal/services/catalog_ingest_service.go`
 - 下游 CLI：`server/cmd/migrate/main.go` → `ingestUpstreamCatalog`
+- Plugin 整包分发设计：[`proposals/PLUGIN_BUNDLE_DISTRIBUTION_DESIGN.md`](proposals/PLUGIN_BUNDLE_DISTRIBUTION_DESIGN.md)
 - 上游 bundle 构造：`costrict-skills-repo/scripts/build_catalog_bundle.py` + `build_catalog_bundle.md`
 - 上游下载流程：`costrict-skills-repo/scripts/download_catalog.py` + `download_catalog.md`
