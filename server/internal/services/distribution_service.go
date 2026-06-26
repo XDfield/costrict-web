@@ -125,11 +125,6 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 					return err
 				}
 			}
-
-			// Auto-create favorite for the recipient
-			if s.behaviorSvc != nil {
-				_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
-			}
 		}
 
 		return nil
@@ -137,6 +132,18 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Auto-favorite each recipient AFTER the distribution has committed. This is
+	// best-effort: a favorite hiccup must not roll back an otherwise-valid
+	// distribution, and creating it post-commit avoids leaving an orphan favorite
+	// if the transaction had rolled back. (In-tx it can't be best-effort: any error
+	// inside the tx aborts the whole tx in Postgres.) The recipient is distributed
+	// regardless; the favorite is the auto-install convenience.
+	if s.behaviorSvc != nil {
+		for _, userID := range recipients {
+			_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
+		}
 	}
 
 	// Notify recipients
