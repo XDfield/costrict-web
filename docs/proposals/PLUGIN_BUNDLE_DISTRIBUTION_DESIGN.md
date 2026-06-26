@@ -273,6 +273,41 @@ type BundleJob struct {
 
 ---
 
+## 12. 离线 / 私有化部署（air-gap，可选）
+
+### 12.1 两种填充模式（同一套分发，种子来源不同）
+
+| 模式 | 适用 | artifact 怎么进 DB | 是否需外网 |
+|------|------|-------------------|-----------|
+| **online（默认，线上 SaaS）** | 公网环境 | lazy clone-and-pack（§5）：首次需要时 clone `source_url` → 打 ZIP → 缓存 | 后端需访问上游(GitHub/Gitea) |
+| **offline（air-gap 私有化）** | 内网/离线 | **不 clone**：一个**完整离线包**导入时,ingest 直接把 plugin 整包写成 `CapabilityArtifact` | 否 |
+
+两模式产出的 DB 形态、bundle 端点、csc 行为**完全一致** —— 区别只在「artifact 怎么进 DB」。
+
+### 12.2 为什么 air-gap 天然适配
+- 客户端(csc)连客户**内网** costrict-web 走纯 HTTP 取整包,**零 git、零外网**(PR3 已解决)。
+- 后端 serve 阶段只读 DB + 本地 artifact 存储,**零外网**。
+- 唯一需外网的 lazy clone,在 offline 模式被**离线种子**替代。
+
+### 12.3 离线包内容（全类型一次性）
+在现有 `catalog-bundle.tar.gz`(已含 skill/mcp 内联内容 + 元数据)基础上**追加 plugin 整包 ZIP + 版本键**,合成一个「**全类型完整离线包**」(skill + mcp + plugin 一起)。客户一次导入即全部入库。
+
+### 12.4 离线包怎么 bake（有外网的一方预先做）
+- 由 vendor 在联网环境跑一遍 lazy clone-pack(或上游 `build_catalog_bundle.py` 直接产出 plugin ZIP),把整包 + commit SHA 版本键打进离线包。
+- 客户通过既有离线导入入口 `migrate ingest-upstream --source=<offline-bundle>`(U 盘/内部镜像搬入)一键导入。
+
+### 12.5 后端改动（待实现,新 PR）
+- ingest 新增「**从 bundle 写 `CapabilityArtifact`**」路径:读离线包里的 plugin ZIP + 版本键 → 写 artifact(`SourceType` 新值如 `seeded`,IsLatest)→ **跳过 clone**。
+- 模式判定:**包里带整包就用包、否则 lazy**(自动);或显式 env 开关。
+- 存储:artifact 落客户 `StorageBackend`(本地盘 / 客户自有 MinIO·S3,接口已留)。
+
+### 12.6 关系小结
+- 线上 SaaS → online(lazy clone,不变)。
+- 私有化/air-gap → offline(完整离线包 seed,跳过 clone)。
+- 可共存:私有化若部分联网,可 offline 种子 + 个别 lazy 补充。
+
+---
+
 ## 附录:设计决策记录 (ADR)
 
 ### ADR-1:方案 B(整包无损)vs 从 DB 子项重建
@@ -302,3 +337,8 @@ type BundleJob struct {
 ### ADR-7:更新触发用简单方案(ingest enqueue)
 **决策**:上游更新经 ingest 内容变更 → enqueueBundleRefresh 重 pack;不做定时轮询调度器。
 **理由**:靠现有 ingest 节奏驱动,最快落地、满足 AC;定时轮询 HEAD 自动 refresh 留作未来项。
+
+### ADR-8:在线 lazy clone vs 离线 seed 双模式
+**决策**:线上 SaaS 用 lazy clone(§5);私有化 / air-gap 用「完整离线包(skill+mcp+plugin)直接 seed DB、跳过 clone」,作为**可选**模式(§12)。
+**理由**:DB+HTTP 架构使内容可完全驻留客户 DB;serve 与客户端均无需外网,唯一外网点(lazy clone)用离线种子替代即可 air-gap。两模式产出形态一致,bundle 端点 / csc 零差异。
+**待实现**:ingest 从 bundle 写 artifact 的路径 + 模式判定(新 PR);需上游离线包携带 plugin 整包 + 版本键。
