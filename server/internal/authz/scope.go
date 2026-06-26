@@ -24,6 +24,14 @@ const (
 	// user directly, or to a department (every member of that department, and its
 	// descendants, then inherits the extra visibility).
 	ScopeDeptPermission = "kanban.scope.dept"
+
+	// KanbanMenuCode is the resource_permissions menu code for the metrics
+	// dashboard (指标看板) sidebar entry. Its visibility is the union of two paths:
+	//   - role-based (menuRegistry: business_admin / platform_admin), resolved by
+	//     GetUserPermissions' generic menu loop; and
+	//   - grant-based (HasKanbanMenuAccess): a non-admin user holding an explicit
+	//     kanban scope grant.
+	KanbanMenuCode = "kanban"
 )
 
 // UserScope describes which departments a user may see metrics for in the
@@ -96,7 +104,11 @@ func (s *Service) ResolveUserScope(userID string) (*UserScope, error) {
 
 	// (2) AllAccess: admin role OR a direct ScopeAllPermission grant. Pure
 	// role/grant decision — independent of dept-sync availability.
-	allAccess, err := s.hasAllAccess(userID)
+	expandedRoles, err := s.roleProvider.GetExpandedRoles(userID)
+	if err != nil {
+		return nil, err
+	}
+	allAccess, err := s.hasAllAccess(userID, expandedRoles)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +148,10 @@ func (s *Service) ResolveUserScope(userID string) (*UserScope, error) {
 // hasAllAccess reports whether the user sees every department: either an admin
 // role (platform_admin / business_admin) or a direct user ScopeAllPermission
 // grant. Neither path touches dept-sync, so AllAccess is robust to dept-sync
-// being down.
-func (s *Service) hasAllAccess(userID string) (bool, error) {
-	roles, err := s.roleProvider.GetExpandedRoles(userID)
-	if err != nil {
-		return false, err
-	}
-	for _, r := range roles {
+// being down. The caller passes the user's already-expanded roles so this stays
+// a single role-expansion per request (the auth bootstrap path expands once).
+func (s *Service) hasAllAccess(userID string, expandedRoles []string) (bool, error) {
+	for _, r := range expandedRoles {
 		if r == systemrole.SystemRolePlatformAdmin || r == systemrole.SystemRoleBusinessAdmin {
 			return true, nil
 		}
@@ -201,6 +210,119 @@ func (s *Service) extraVisibleDeptPrefixes(userID string, userDeptPaths []string
 		}
 	}
 	return out, nil
+}
+
+// HasKanbanMenuAccess reports whether the kanban sidebar entry should be visible
+// to the user via an EXPLICIT metrics authorization:
+//   - an admin role or a direct ScopeAllPermission grant (hasAllAccess), or
+//   - any ScopeDeptPermission grant that applies to them (a direct user grant, or
+//     a department grant whose subtree contains one of their departments).
+//
+// It deliberately IGNORES the default "self department" scope that every employee
+// implicitly has (surfacing the entry from that would make it visible to everyone,
+// defeating the admin-authorized-only requirement). It is read-only and never
+// weakens the existing HasPermission / CheckGrant paths.
+//
+// Cost: this is reached from the hot /api/auth/permissions bootstrap path, so —
+// mirroring CheckGrant's fast path — it only consults dept-sync when a
+// department-subject grant actually exists. Admins, direct user grants, and the
+// common "no kanban grant yet" case all resolve without any dept-sync call.
+// dept-sync failures fail closed (a user with no resolvable departments inherits
+// no department grant; direct user/all grants still count).
+func (s *Service) HasKanbanMenuAccess(userID string) (bool, error) {
+	roles, err := s.roleProvider.GetExpandedRoles(userID)
+	if err != nil {
+		return false, err
+	}
+	return s.hasKanbanMenuAccess(userID, roles)
+}
+
+// hasKanbanMenuAccess is the role-aware core of HasKanbanMenuAccess. It takes the
+// user's already-expanded roles so the hot /api/auth/permissions path, which has
+// expanded them once for the menu loop, needn't expand again.
+func (s *Service) hasKanbanMenuAccess(userID string, expandedRoles []string) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false, nil
+	}
+
+	// (1) Admin role or a direct "see all" grant — no dept-sync needed.
+	allAccess, err := s.hasAllAccess(userID, expandedRoles)
+	if err != nil {
+		return false, err
+	}
+	if allAccess {
+		return true, nil
+	}
+
+	// (2) Load the scope.dept grants once. A direct user grant matches immediately
+	// (no dept-sync); dept-sync is consulted only when a department-subject grant
+	// exists. The loaded rows are reused for the inheritance match below, so this
+	// path issues a single grants query.
+	var grants []models.PermissionGrant
+	if err := s.db.Where("permission_code = ?", ScopeDeptPermission).Find(&grants).Error; err != nil {
+		return false, err
+	}
+	hasDeptSubjectGrant := false
+	for _, g := range grants {
+		if g.DeptPath == "" {
+			continue
+		}
+		switch g.SubjectType {
+		case models.PermissionSubjectUser:
+			if g.SubjectID == userID {
+				return true, nil
+			}
+		case models.PermissionSubjectDepartment:
+			hasDeptSubjectGrant = true
+		}
+	}
+	if !hasDeptSubjectGrant {
+		return false, nil
+	}
+
+	// (3) A department grant exists: resolve the user's own dept paths (fail
+	// closed) and match the already-loaded department grants by the same prefix
+	// rule as extraVisibleDeptPrefixes (shared pathHasPrefix primitive).
+	userDeptPaths := s.ownDeptPaths(userID)
+	for _, g := range grants {
+		if g.SubjectType != models.PermissionSubjectDepartment || g.DeptPath == "" {
+			continue
+		}
+		for _, ud := range userDeptPaths {
+			if pathHasPrefix(ud, g.DeptPath) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// ownDeptPaths resolves the user's own department materialized paths via dept-sync,
+// keyed by casdoor_universal_id. It fails closed: any missing universal id /
+// unavailable dept-sync / lookup error yields an empty slice (logged), never an
+// error, so callers degrade to "direct grants only". (Kept separate from
+// ResolveUserScope's inline step 3 so the data-scope path stays untouched.)
+func (s *Service) ownDeptPaths(userID string) []string {
+	paths := []string{}
+	if s.deptProvider == nil {
+		return paths
+	}
+	universalID, ok := s.universalIDFor(userID)
+	if !ok || universalID == "" {
+		return paths
+	}
+	userDepts, err := s.deptProvider.GetUserDepartments(universalID)
+	if err != nil {
+		logger.Warn("[authz] dept-sync lookup for kanban menu access failed (failing closed): %v", err)
+		return paths
+	}
+	for _, d := range userDepts {
+		if d.DeptPath != "" {
+			paths = appendUnique(paths, d.DeptPath)
+		}
+	}
+	return paths
 }
 
 // appendUnique appends v to s only if not already present, preserving order.
