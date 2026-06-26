@@ -16,12 +16,13 @@ import (
 
 // Proxy is the core orchestrator that wires together WS, router, dedup, and backends.
 type Proxy struct {
-	cfg      *config.Config
-	logger   *slog.Logger
-	sdk      *aibot.WSClient
-	routes   *router.Table
-	backends *backend.Manager
-	dedup    *dedup.Store
+	cfg        *config.Config
+	logger     *slog.Logger
+	sdk        *aibot.WSClient
+	routes     *router.Table
+	backends   *backend.Manager
+	dedup      *dedup.Store
+	userIDMap  *UserIDMapper
 }
 
 func NewProxy(
@@ -33,12 +34,13 @@ func NewProxy(
 	dedupStore *dedup.Store,
 ) *Proxy {
 	p := &Proxy{
-		cfg:      cfg,
-		logger:   logger,
-		sdk:      sdk,
-		routes:   routes,
-		backends: backends,
-		dedup:    dedupStore,
+		cfg:       cfg,
+		logger:    logger,
+		sdk:       sdk,
+		routes:    routes,
+		backends:  backends,
+		dedup:     dedupStore,
+		userIDMap: NewUserIDMapper(cfg.WecomAPI),
 	}
 	return p
 }
@@ -117,6 +119,36 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		}
 	}
 
+	// Resolve encrypted open_userid to plaintext userid
+	originalUserID := inbound.ExternalUserID
+	if p.userIDMap != nil && inbound.ExternalUserID != "" {
+		resolved := p.userIDMap.Resolve(inbound.ExternalUserID)
+		if resolved != inbound.ExternalUserID {
+			inbound.ExternalUserID = resolved
+			// For single chat, ExternalChatID was set to the encrypted userID — update it too
+			if inbound.ExternalChatType == "single" {
+				inbound.ExternalChatID = resolved
+			}
+			p.logger.Debug("resolved open_userid",
+				"openUserID", originalUserID,
+				"userID", resolved,
+			)
+		}
+	}
+
+	// Group chat is not supported — reply directly via aibot_send_msg and skip backend forwarding.
+	if inbound.ExternalChatType == "group" {
+		p.logger.Info("group chat rejected, replying directly",
+			"msgId", inbound.ExternalMessageID,
+			"chatID", inbound.ExternalChatID,
+			"userID", inbound.ExternalUserID,
+		)
+		if p.sdk != nil && p.sdk.IsConnected() {
+			_, _ = p.sdk.SendMarkdown(inbound.ExternalChatID, "当前不支持群聊功能，请进行私聊。")
+		}
+		return
+	}
+
 	// Route
 	targetBackend := p.resolveRoute(inbound)
 
@@ -124,6 +156,9 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		"msgId", inbound.ExternalMessageID,
 		"contentType", inbound.ContentType,
 		"backend", targetBackend,
+		"userID", inbound.ExternalUserID,
+		"chatID", inbound.ExternalChatID,
+		"chatType", inbound.ExternalChatType,
 	)
 
 	// Convert to backend.InboundMessage and forward

@@ -545,6 +545,7 @@ func main() {
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
 			channel.RegisterAdapter(wecombot.NewWeComBotAdapter(cfg.Channels.WeComBot))
 			channelModule = channel.New(db, &channel.NoopMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled, cfg.Channels.WeComBotEnabled)
+			channelModule.Service.SetWeComBotQRCode(cfg.Channels.WeComBot.BotQRCode)
 			channelModule.Service.SetReplyContextStore(channel.NewPostgresReplyContextStore(db))
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
@@ -664,9 +665,14 @@ func main() {
 		wecomBotAdapterForDispatcher = a
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry)
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry, time.Duration(cfg.ClawAgent.Session.NotificationDelaySeconds)*time.Second)
 // Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
 	if clawRT != nil {
+		// When the user replies before the deferred timer fires, cancel the
+		// pending card notification so the user doesn't get a redundant card.
+		clawRT.EventHandler.SetOnEventProcessed(func(sessionID string) {
+			disp.CancelDeferredNotification(sessionID)
+		})
 		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
 			log.Printf("[clawagent] aiEventHandler callback invoked: eventType=%s sessionID=%s deviceID=%s", eventType, sessionID, deviceID)
 			req := clawagent.AIEventRequest{

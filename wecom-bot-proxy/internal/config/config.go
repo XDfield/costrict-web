@@ -11,21 +11,29 @@ import (
 )
 
 type Config struct {
-	Bot     BotConfig    `yaml:"bot"`
-	Server  ServerConfig `yaml:"server"`
-	Backends BackendsMap `yaml:"backends"`
-	Routing RoutingConfig `yaml:"routing"`
-	Dedup   DedupConfig  `yaml:"dedup"`
-	Logging LoggingConfig `yaml:"logging"`
+	Bot      BotConfig      `yaml:"bot"`
+	WecomAPI WecomAPIConfig `yaml:"wecom_api"`
+	Server   ServerConfig   `yaml:"server"`
+	Backends BackendsMap    `yaml:"backends"`
+	Routing  RoutingConfig  `yaml:"routing"`
+	Dedup    DedupConfig    `yaml:"dedup"`
+	Logging  LoggingConfig  `yaml:"logging"`
 }
 
 type BotConfig struct {
-	BotID                  string        `yaml:"bot_id"`
-	Secret                 string        `yaml:"secret"`
-	WSURL                  string        `yaml:"ws_url"`
-	HeartbeatInterval      time.Duration `yaml:"heartbeat_interval"`
+	BotID                   string        `yaml:"bot_id"`
+	Secret                  string        `yaml:"secret"`
+	WSURL                   string        `yaml:"ws_url"`
+	HeartbeatInterval       time.Duration `yaml:"heartbeat_interval"`
 	ReconnectInitialBackoff time.Duration `yaml:"reconnect_initial_backoff"`
-	ReconnectMaxBackoff    time.Duration `yaml:"reconnect_max_backoff"`
+	ReconnectMaxBackoff     time.Duration `yaml:"reconnect_max_backoff"`
+}
+
+// WecomAPIConfig holds credentials for calling WeCom server APIs
+// (access_token + open_userid → userid conversion).
+type WecomAPIConfig struct {
+	CorpID      string `yaml:"corp_id"`
+	AgentSecret string `yaml:"agent_secret"`
 }
 
 type ServerConfig struct {
@@ -156,6 +164,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
+	}
+	// wecom_api is optional; if corp_id is set, agent_secret is required
+	if c.WecomAPI.CorpID != "" && c.WecomAPI.AgentSecret == "" {
+		return fmt.Errorf("wecom_api.agent_secret is required when wecom_api.corp_id is set")
 	}
 	return nil
 }

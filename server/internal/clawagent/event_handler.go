@@ -47,7 +47,29 @@ func (h *EventHandler) SetOnEventProcessed(f func(sessionID string)) {
 // default 30s). This gives the user processing time and allows event batching.
 // If the user replies before the timer fires, the deferred notification is cancelled.
 func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) error {
-	slog.Info("[event_handler] HandleAIEvent enter", "eventType", req.EventType, "sessionID", req.SessionID, "deviceID", req.DeviceID, "hasSender", req.Sender != nil)
+	slog.Info("[event_handler] HandleAIEvent enter",
+		"eventType", req.EventType,
+		"platformUserID", req.UserID,
+		"deviceSessionID", req.SessionID,
+		"deviceID", req.DeviceID,
+		"hasSender", req.Sender != nil,
+	)
+
+	var chatType string
+	var externalUserID string
+	if req.Sender != nil {
+		rc := req.Sender.ReplyContext()
+		chatType = rc.Target.ExternalChatType
+		externalUserID = rc.Target.ExternalUserID
+		if chatType == "" {
+			chatType = "single"
+		}
+		slog.Info("[event_handler] outbound route",
+			"platformUserID", req.UserID,
+			"externalUserID", externalUserID,
+			"chatType", chatType,
+		)
+	}
 
 	eventDesc := h.describeEvent(req)
 
@@ -65,17 +87,18 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 	var baseKey string
 	var resetType string
 	if req.Sender != nil {
-		rc := req.Sender.ReplyContext()
-		chatType := rc.Target.ExternalChatType
-		if chatType == "" {
-			chatType = "single"
-		}
 		baseKey = fmt.Sprintf("agent:clawagent:%s:%s", chatType, req.UserID)
 		resetType = "direct"
 	} else {
 		baseKey = fmt.Sprintf("agent:clawagent:event:%s:%s", req.EventType, req.SessionID)
 		resetType = "event"
 	}
+
+	slog.Info("[event_handler] session resolve",
+		"platformUserID", req.UserID,
+		"baseKey", baseKey,
+		"resetType", resetType,
+	)
 
 	sessionID, err := h.runtime.resolveActiveSession(req.UserID, baseKey, resetType)
 	if err != nil {

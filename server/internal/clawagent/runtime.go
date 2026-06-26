@@ -229,15 +229,19 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 		return sender.Send(ctx, "抱歉，无法识别您的身份。")
 	}
 
+	slog.Info("[clawagent] Handle",
+		"platformUserID", sender.ReplyContext().UserID,
+		"externalUserID", msg.ExternalUserID,
+		"resolvedUserID", userID,
+		"chatType", msg.ExternalChatType,
+		"chatID", msg.ExternalChatID,
+	)
+
 	// BaseKey 使用平台 userID（而非 ExternalChatID）确保发送端（corp userID）和
 	// 接收端（openID）使用一致的 session key。ExternalChatID 随发送/接收方向不同格式各异。
 	baseKey := fmt.Sprintf("agent:clawagent:%s:%s",
 		msg.ExternalChatType, userID)
 	resetType := "direct"
-	if msg.ExternalChatType == "group" {
-		resetType = "group"
-		baseKey = fmt.Sprintf("agent:clawagent:%s:%s:group", msg.ExternalChatType, msg.ExternalChatID)
-	}
 
 	sessionID, err := rt.resolveActiveSession(userID, baseKey, resetType)
 	if err != nil {

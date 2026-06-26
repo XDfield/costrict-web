@@ -107,6 +107,7 @@ type WeComSystemConfig struct {
 type WeComBotSystemConfig struct {
 	ProxyURL  string
 	AuthToken string
+	BotQRCode string
 }
 
 type CasdoorConfig struct {
@@ -237,6 +238,7 @@ func Load() *Config {
 			WeComBot: WeComBotSystemConfig{
 				ProxyURL:  getEnv("WECOM_BOT_PROXY_URL", ""),
 				AuthToken: getEnv("WECOM_BOT_PROXY_AUTH_TOKEN", ""),
+				BotQRCode: getEnv("WECOM_BOT_QR_CODE_URL", ""),
 			},
 		},
 		ClawAgent: ClawAgentConfig{
