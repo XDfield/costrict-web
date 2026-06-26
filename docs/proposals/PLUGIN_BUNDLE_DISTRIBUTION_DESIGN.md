@@ -296,15 +296,32 @@ type BundleJob struct {
 - 由 vendor 在联网环境跑一遍 lazy clone-pack(或上游 `build_catalog_bundle.py` 直接产出 plugin ZIP),把整包 + commit SHA 版本键打进离线包。
 - 客户通过既有离线导入入口 `migrate ingest-upstream --source=<offline-bundle>`(U 盘/内部镜像搬入)一键导入。
 
-### 12.5 后端改动（待实现,新 PR）
-- ingest 新增「**从 bundle 写 `CapabilityArtifact`**」路径:读离线包里的 plugin ZIP + 版本键 → 写 artifact(`SourceType` 新值如 `seeded`,IsLatest)→ **跳过 clone**。
-- 模式判定:**包里带整包就用包、否则 lazy**(自动);或显式 env 开关。
-- 存储:artifact 落客户 `StorageBackend`(本地盘 / 客户自有 MinIO·S3,接口已留)。
+### 12.5 后端改动（已实现 PR5 `dbe497c`）
+- ingest「**从 bundle 写 `CapabilityArtifact`**」路径(`seeded` SourceType,IsLatest,跳过 clone),模式自动判定(有整包就 seed、否则 lazy),seed 失败降级 lazy。**已真机验证**(离线 bundle → ingest seed → bundle 端点直出 ZIP → csc 装上,source_url 用假仓证 0-clone)。
 
-### 12.6 关系小结
-- 线上 SaaS → online(lazy clone,不变)。
-- 私有化/air-gap → offline(完整离线包 seed,跳过 clone)。
-- 可共存:私有化若部分联网,可 offline 种子 + 个别 lazy 补充。
+### 12.6 上游改动:air-gap 合成 bundle 构建器（待实现,跨仓上游）
+
+**决策(用户锁定):只两档,air-gap 不保留部分 lazy。**
+- **online**(有 git 仓库)→ lazy clone,**catalog bundle 不带 plugin 整包**(现状,不动)。
+- **air-gap**(内网完全无网)→ **一个更大的合成 bundle**,带全部 plugin 整包。
+
+**air-gap = 把"最新的两个 bundle"合成一个(单独新增路径,不破坏 online 链路):**
+1. **catalog bundle**(`build_catalog_bundle.py` 产出,skill/mcp 内联 + plugin 元数据)——`everything-ai-coding`/`costrict-skills-repo`。
+2. **marketplace bundle**(`costrict-plugin-marketplace/build/costrict-marketplace-bundle-vX.Y.Z`)——每 plugin 一个 **bare git 仓** `repos/plugins/<owner>-<repo>-marketplace-<plugin>.git`;`manifest.json` 带 `plugins:[{id,name,version,size_bytes}]` + `catalog_source`/`catalog_sha`(两 bundle 同源)。
+
+**合成器(已实现:`costrict-plugin-marketplace/scripts/build_airgap_bundle.py`,不改 `build_catalog_bundle.py`/`build.py`):**
+> 实现要点:catalog `id` 与 marketplace bare 仓目录名**恒等**(marketplace build.py 用 entry id 原样建仓),无需 slug 化;catalog index 的 plugin 条目**本来就有 `bundle` 键**(子项计数+source_ref/plugin_root),合成器 **merge** 注入 `file/version/sha256` 而非覆盖,后端 `catalogBundleRef` 只读这三键、忽略其余,双向无损;CLI `--catalog-bundle/--marketplace-bundle/--output/--limit`;已对后端真实 Ingest 验证 seed 兼容。
+- 输入:catalog bundle + marketplace bundle。
+- 对每个 catalog plugin 条目 → 映射到 marketplace bare 仓(via `install.marketplace_repo`+`plugin_name` ↔ marketplace id)→ `git archive --format=zip HEAD`(出整包,含 exec 位,无 .git)→ `version=git rev-parse HEAD`,`sha256` of zip。
+- 写 `catalog-download/plugins/<id>/bundle.zip` + 注入 `bundle:{file,version,sha256}` 块进 index.json(后端 PR5 消费此块)。
+- 重 tar → 更大的 air-gap bundle。
+- skill/mcp 原样内联(不需整包)。
+
+### 12.7 两档总结
+| 档 | 网络 | catalog bundle | plugin 内容 |
+|----|------|---------------|-------------|
+| **online** | 有 git | 不带整包 | lazy clone(运行时) |
+| **air-gap** | 完全无网 | 带全部 plugin 整包(合成 bundle) | seed 进 DB(导入时) |
 
 ---
 
