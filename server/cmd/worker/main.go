@@ -143,6 +143,10 @@ func runWorker() {
 			storageBackend,
 			cfg.GitMirrorBase,
 		)
+		// OOM guard + clone timeout for the lazy clone-and-pack pipeline.
+		packTimeout := bundlePackTimeout()
+		bundlePackSvc.MaxBundleBytes = bundleMaxBytes()
+		bundlePackSvc.CloneTimeout = packTimeout
 
 		bundleConcurrency, _ := strconv.Atoi(os.Getenv("BUNDLE_WORKER_CONCURRENCY"))
 		if bundleConcurrency <= 0 {
@@ -154,9 +158,11 @@ func runWorker() {
 			PackService:  bundlePackSvc,
 			Concurrency:  bundleConcurrency,
 			PollInterval: 5 * time.Second,
+			JobTimeout:   packTimeout,
 		}
 		bundlePool.Start()
-		log.Printf("Bundle worker pool started with %d workers", bundleConcurrency)
+		log.Printf("Bundle worker pool started with %d workers (packTimeout=%s, maxBytes=%d)",
+			bundleConcurrency, packTimeout, bundlePackSvc.MaxBundleBytes)
 	} else {
 		log.Println("Bundle worker pool disabled (BUNDLE_ENABLED=false)")
 	}
@@ -221,6 +227,33 @@ func runWorker() {
 		bundlePool.Stop()
 	}
 	log.Println("Worker pools stopped")
+}
+
+// bundlePackTimeout returns the per-job clone-and-pack timeout. Configurable via
+// BUNDLE_PACK_TIMEOUT (Go duration, e.g. "5m", "90s"); default 5 minutes. A hung
+// clone is aborted at this bound so it can't pin a worker goroutine.
+func bundlePackTimeout() time.Duration {
+	if v := os.Getenv("BUNDLE_PACK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Printf("Warning: invalid BUNDLE_PACK_TIMEOUT=%q, using default 5m", v)
+	}
+	return 5 * time.Minute
+}
+
+// bundleMaxBytes returns the maximum packed-bundle size in bytes. Configurable via
+// BUNDLE_MAX_BYTES (default 100MB). A bundle over this limit fails the job instead
+// of buffering a huge ZIP in memory (OOM guard). Non-positive disables the cap.
+func bundleMaxBytes() int64 {
+	const defaultMax = 100 * 1024 * 1024 // 100MB
+	if v := os.Getenv("BUNDLE_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+		log.Printf("Warning: invalid BUNDLE_MAX_BYTES=%q, using default %d", v, defaultMax)
+	}
+	return defaultMax
 }
 
 type latestRevisionRow struct {

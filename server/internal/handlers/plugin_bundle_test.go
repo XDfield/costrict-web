@@ -214,6 +214,104 @@ func TestDownloadPluginBundle_NotFound(t *testing.T) {
 	}
 }
 
+// TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud guards against silent
+// corruption: a plugin with NEITHER a source_url NOR any real assets (e.g. an
+// un-backfilled catalog plugin) must NOT be packed into a truncated 200 ZIP. The
+// endpoint returns an explicit 422 instead.
+func TestDownloadPluginBundle_NoSourceNoAssetsFailsLoud(t *testing.T) {
+	defer setupTestDB(t)()
+	addBundleJobsTable(t)
+	backend := newMemBackend()
+
+	database.DB.Create(&models.Repository{ID: "repo-pub", Name: "public-repo", Visibility: "public", OwnerID: "owner"})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-pub", Name: "pub-reg", SourceType: "internal", RepoID: "repo-pub", OwnerID: "owner",
+	})
+	// No source_url, no assets, only a synthetic Content/SourcePath (which the old
+	// path would have packed into a near-empty ZIP).
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-empty", RegistryID: "reg-pub", RepoID: "repo-pub", Slug: "empty-plugin",
+		ItemType: "plugin", Name: "Empty", Status: "active", CreatedBy: "owner",
+		Content: "# synthetic summary", SourcePath: ".plugin.json",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	rec := get(newBundleRouter("", backend), "/api/plugins/empty-plugin/bundle")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (fail loud), got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	json.NewDecoder(rec.Body).Decode(&body)
+	if body["error"] == nil || body["error"] == "" {
+		t.Errorf("expected an explicit error message, got %v", body["error"])
+	}
+}
+
+// TestDownloadPluginBundle_FailedJobInCooldownReturnsTerminal guards against the
+// infinite-202 loop: when the latest bundle job for a catalog plugin is a permanent
+// failure within the cooldown window, the endpoint returns a terminal 503 with the
+// recorded error and does NOT enqueue another doomed clone.
+func TestDownloadPluginBundle_FailedJobInCooldownReturnsTerminal(t *testing.T) {
+	defer setupTestDB(t)()
+	addBundleJobsTable(t)
+	backend := newMemBackend()
+
+	seedPublicPlugin(t, "item-doomed", "doomed-plugin", "https://github.com/owner/gone/tree/main")
+
+	// A recent permanent failure for this item.
+	finished := time.Now().Add(-1 * time.Minute)
+	database.DB.Create(&models.BundleJob{
+		ID: "job-doomed", ItemID: "item-doomed", Status: "failed", TriggerType: "subscribe",
+		MaxAttempts: 3, RetryCount: 3, LastError: "clone failed: repository not found",
+		ScheduledAt: time.Now().Add(-time.Hour), FinishedAt: &finished, CreatedAt: time.Now(),
+	})
+
+	rec := get(newBundleRouter("", backend), "/api/plugins/doomed-plugin/bundle")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 terminal, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	json.NewDecoder(rec.Body).Decode(&body)
+	if body["status"] != "failed" {
+		t.Errorf("status = %v, want failed", body["status"])
+	}
+
+	// No NEW job should have been enqueued (still exactly one job, still failed).
+	var inflight int64
+	database.DB.Model(&models.BundleJob{}).Where("item_id = ? AND status IN ('pending','running')", "item-doomed").Count(&inflight)
+	if inflight != 0 {
+		t.Errorf("expected no new in-flight job during cooldown, got %d", inflight)
+	}
+}
+
+// TestDownloadPluginBundle_FailedJobPastCooldownReEnqueues verifies that once the
+// cooldown elapses, a fresh clone job is enqueued (202) rather than wedged forever.
+func TestDownloadPluginBundle_FailedJobPastCooldownReEnqueues(t *testing.T) {
+	defer setupTestDB(t)()
+	addBundleJobsTable(t)
+	backend := newMemBackend()
+
+	seedPublicPlugin(t, "item-retry", "retry-plugin", "https://github.com/owner/repo/tree/main")
+
+	// A failure 20 minutes ago — past the default 10m cooldown.
+	finished := time.Now().Add(-20 * time.Minute)
+	database.DB.Create(&models.BundleJob{
+		ID: "job-old-fail", ItemID: "item-retry", Status: "failed", TriggerType: "subscribe",
+		MaxAttempts: 3, RetryCount: 3, LastError: "transient network error",
+		ScheduledAt: time.Now().Add(-time.Hour), FinishedAt: &finished, CreatedAt: time.Now(),
+	})
+
+	rec := get(newBundleRouter("", backend), "/api/plugins/retry-plugin/bundle")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 (re-enqueue past cooldown), got %d: %s", rec.Code, rec.Body.String())
+	}
+	var inflight int64
+	database.DB.Model(&models.BundleJob{}).Where("item_id = ? AND status IN ('pending','running')", "item-retry").Count(&inflight)
+	if inflight != 1 {
+		t.Errorf("expected 1 newly enqueued job past cooldown, got %d", inflight)
+	}
+}
+
 func TestGetItem_PluginBundleFieldsReady(t *testing.T) {
 	defer setupTestDB(t)()
 

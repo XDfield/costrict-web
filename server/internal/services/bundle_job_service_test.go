@@ -2,6 +2,7 @@ package services
 
 import (
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/driver/sqlite"
@@ -145,5 +146,86 @@ func TestBundleJobService_GetActiveCount(t *testing.T) {
 	}
 	if n, _ := svc.GetActiveCount("item-1"); n != 1 {
 		t.Errorf("active count after enqueue = %d, want 1", n)
+	}
+}
+
+func TestBundleJobService_LatestJobNoneReturnsNil(t *testing.T) {
+	db := setupBundleJobTestDB(t)
+	svc := &BundleJobService{DB: db}
+	job, err := svc.LatestJob("ghost")
+	if err != nil {
+		t.Fatalf("LatestJob: %v", err)
+	}
+	if job != nil {
+		t.Errorf("expected nil job for unknown item, got %+v", job)
+	}
+}
+
+// insertFailedJob inserts a failed bundle job whose finished_at is `ago` in the
+// past (negative ago => future). created_at is set so LatestJob picks it.
+func insertFailedJob(t *testing.T, db *gorm.DB, id, itemID, lastErr string, finishedAgo time.Duration) {
+	t.Helper()
+	finished := time.Now().Add(-finishedAgo)
+	job := &models.BundleJob{
+		ID: id, ItemID: itemID, Status: "failed", TriggerType: "subscribe",
+		MaxAttempts: 3, RetryCount: 3, LastError: lastErr,
+		ScheduledAt: time.Now().Add(-time.Hour), FinishedAt: &finished,
+		CreatedAt: time.Now(),
+	}
+	if err := db.Create(job).Error; err != nil {
+		t.Fatalf("insert failed job: %v", err)
+	}
+}
+
+func TestBundleJobService_FailedInCooldown_RecentFailureSuppresses(t *testing.T) {
+	db := setupBundleJobTestDB(t)
+	svc := &BundleJobService{DB: db}
+
+	insertFailedJob(t, db, "j-fail", "item-cool", "clone refused", 1*time.Minute)
+
+	suppressed, job, err := svc.FailedInCooldown("item-cool", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("FailedInCooldown: %v", err)
+	}
+	if !suppressed {
+		t.Error("expected suppression for a failure 1m ago within a 10m cooldown")
+	}
+	if job == nil || job.LastError != "clone refused" {
+		t.Errorf("expected the failed job with its last_error, got %+v", job)
+	}
+}
+
+func TestBundleJobService_FailedInCooldown_OldFailureAllowsRetry(t *testing.T) {
+	db := setupBundleJobTestDB(t)
+	svc := &BundleJobService{DB: db}
+
+	insertFailedJob(t, db, "j-old", "item-old", "transient", 20*time.Minute)
+
+	suppressed, _, err := svc.FailedInCooldown("item-old", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("FailedInCooldown: %v", err)
+	}
+	if suppressed {
+		t.Error("expected NO suppression for a failure 20m ago past a 10m cooldown")
+	}
+}
+
+func TestBundleJobService_FailedInCooldown_NonFailedLatestNotSuppressed(t *testing.T) {
+	db := setupBundleJobTestDB(t)
+	svc := &BundleJobService{DB: db}
+
+	// Latest job is a success -> never suppress.
+	now := time.Now()
+	db.Create(&models.BundleJob{
+		ID: "j-ok", ItemID: "item-ok", Status: "success", MaxAttempts: 3,
+		ScheduledAt: now, FinishedAt: &now, CreatedAt: now,
+	})
+
+	suppressed, _, err := svc.FailedInCooldown("item-ok", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("FailedInCooldown: %v", err)
+	}
+	if suppressed {
+		t.Error("a successful latest job must never suppress enqueue")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -206,6 +207,84 @@ func TestPackItemBundle_NoSourceURLErrors(t *testing.T) {
 	item := &models.CapabilityItem{ID: "item-1", Slug: "demo", ItemType: "plugin"}
 	if _, err := svc.PackItemBundle(context.Background(), item); err == nil {
 		t.Fatal("expected error when source_url is empty")
+	}
+}
+
+// TestPackItemBundle_ExceedsMaxSizeFails verifies the OOM guard: when a packed
+// bundle is larger than MaxBundleBytes the job fails with ErrBundleTooLarge and no
+// artifact is written (so a huge/malicious repo can't OOM the worker).
+func TestPackItemBundle_ExceedsMaxSizeFails(t *testing.T) {
+	repoDir, _ := initLocalGitRepo(t)
+	db := setupBundleTestDB(t)
+	svc := newBundleService(t, db)
+	svc.MaxBundleBytes = 1 // any real ZIP is larger than 1 byte
+
+	item := &models.CapabilityItem{ID: "item-big", Slug: "big", ItemType: "plugin", SourceURL: "file://" + repoDir}
+
+	_, err := svc.PackItemBundle(context.Background(), item)
+	if err == nil {
+		t.Fatal("expected an error when the bundle exceeds the size limit")
+	}
+	if !errors.Is(err, ErrBundleTooLarge) {
+		t.Errorf("expected ErrBundleTooLarge, got %v", err)
+	}
+	var count int64
+	db.Model(&models.CapabilityArtifact{}).Where("item_id = ?", "item-big").Count(&count)
+	if count != 0 {
+		t.Errorf("no artifact should be written when oversized, got %d", count)
+	}
+}
+
+// TestPackUploadBundle_ExceedsMaxSizeFails verifies the same OOM guard on the
+// synchronous upload-pack path (asset reconstruction, no clone).
+func TestPackUploadBundle_ExceedsMaxSizeFails(t *testing.T) {
+	db := setupBundleTestDB(t)
+	svc := newBundleService(t, db)
+	svc.MaxBundleBytes = 1
+
+	// Inline assets table so packAssetsZip has something to read.
+	if err := db.Exec(`CREATE TABLE capability_assets (
+		id TEXT PRIMARY KEY, item_id TEXT NOT NULL, rel_path TEXT NOT NULL,
+		text_content TEXT, storage_backend TEXT, storage_key TEXT, mime_type TEXT,
+		file_size INTEGER, content_sha TEXT, created_at DATETIME, updated_at DATETIME)`).Error; err != nil {
+		t.Fatalf("create capability_assets: %v", err)
+	}
+	text := "#!/bin/sh\necho hi\n"
+	db.Create(&models.CapabilityAsset{ID: "a1", ItemID: "item-u", RelPath: "hooks/run.sh", TextContent: &text})
+
+	item := &models.CapabilityItem{ID: "item-u", Slug: "u", ItemType: "plugin"}
+	_, err := svc.PackUploadBundle(context.Background(), item)
+	if err == nil {
+		t.Fatal("expected an error when the upload bundle exceeds the size limit")
+	}
+	if !errors.Is(err, ErrBundleTooLarge) {
+		t.Errorf("expected ErrBundleTooLarge, got %v", err)
+	}
+}
+
+// TestPackItemBundle_CloneTimeoutCancels verifies a clone context timeout aborts
+// the pack (the local-copy path ignores ctx, so we trip it with a remote URL and a
+// zero-deadline context-equivalent: a 1ns timeout that expires before the network
+// dial). Production sets CloneTimeout from BUNDLE_PACK_TIMEOUT.
+func TestPackItemBundle_CloneTimeoutCancels(t *testing.T) {
+	db := setupBundleTestDB(t)
+	svc := newBundleService(t, db)
+	svc.AllowLocalClone = false // force the remote PlainCloneContext path
+	svc.CloneTimeout = time.Nanosecond
+
+	item := &models.CapabilityItem{
+		ID: "item-to", Slug: "to", ItemType: "plugin",
+		// Unroutable test address; the 1ns timeout fires before any real network IO.
+		SourceURL: "https://github.com/owner/repo/tree/main",
+	}
+	_, err := svc.PackItemBundle(context.Background(), item)
+	if err == nil {
+		t.Fatal("expected clone to fail under a 1ns timeout")
+	}
+	var count int64
+	db.Model(&models.CapabilityArtifact{}).Where("item_id = ?", "item-to").Count(&count)
+	if count != 0 {
+		t.Errorf("no artifact should be written on a timed-out clone, got %d", count)
 	}
 }
 

@@ -3,6 +3,7 @@ package services
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -26,7 +27,16 @@ type CloneResult struct {
 	CommitSHA string
 }
 
+// Clone is the context-free entrypoint kept for existing callers (sync). It clones
+// with a background context (no timeout).
 func (s *GitService) Clone(repoURL, branch string) (*CloneResult, error) {
+	return s.CloneContext(context.Background(), repoURL, branch)
+}
+
+// CloneContext clones repoURL@branch, honouring ctx cancellation/timeout so a hung
+// or slow upstream aborts instead of pinning a worker goroutine indefinitely. The
+// local-directory copy path is fast and ignores ctx (no network).
+func (s *GitService) CloneContext(ctx context.Context, repoURL, branch string) (*CloneResult, error) {
 	localPath := filepath.Join(s.TempBaseDir, fmt.Sprintf("sync-%d", time.Now().UnixNano()))
 	if err := os.MkdirAll(localPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -62,7 +72,7 @@ func (s *GitService) Clone(repoURL, branch string) (*CloneResult, error) {
 		cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(branch)
 	}
 
-	repo, err := git.PlainClone(localPath, false, cloneOpts)
+	repo, err := git.PlainCloneContext(ctx, localPath, false, cloneOpts)
 	if err != nil {
 		os.RemoveAll(localPath)
 		return nil, fmt.Errorf("failed to clone repo: %w", err)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -83,11 +84,38 @@ type BundlePackService struct {
 	// file://-based SSRF/local-repo-disclosure via a tampered catalog entry) and is
 	// set true only by unit tests that clone from a temp git repo without network.
 	AllowLocalClone bool
+	// MaxBundleBytes caps the size of a packed ZIP. A clone is a shallow Depth=1
+	// fetch with no size guard, so a huge or malicious upstream repo could otherwise
+	// pack into a multi-hundred-MB ZIP held entirely in memory (plus a second copy
+	// while hashing) and OOM the worker. When a packed bundle exceeds this limit the
+	// job fails with a clear error and no artifact is written. Zero/negative = no
+	// limit (off).
+	MaxBundleBytes int64
+	// CloneTimeout bounds a single lazy clone-and-pack. A hung git clone would
+	// otherwise occupy a worker goroutine indefinitely; the context is propagated
+	// into go-git's PlainCloneContext so a timeout aborts the clone. Zero = no
+	// per-pack timeout (rely on the caller's context).
+	CloneTimeout time.Duration
 }
+
+// ErrBundleTooLarge is returned when a packed bundle exceeds MaxBundleBytes. It is
+// a terminal failure (the bundle will never fit) so the worker records it and stops
+// retrying once attempts are exhausted; the message is surfaced to the client.
+var ErrBundleTooLarge = errors.New("bundle exceeds max size")
 
 // NewBundlePackService constructs a BundlePackService with the given collaborators.
 func NewBundlePackService(db *gorm.DB, git *GitService, store storage.Backend, mirrorBase string) *BundlePackService {
 	return &BundlePackService{DB: db, Git: git, Storage: store, MirrorBase: mirrorBase}
+}
+
+// enforceBundleSize returns ErrBundleTooLarge (wrapped with context) when the
+// packed ZIP exceeds the configured cap. It is the single guard shared by the
+// clone-pack and upload-pack paths so neither can write an oversized artifact.
+func (s *BundlePackService) enforceBundleSize(itemID string, zipBytes []byte) error {
+	if s.MaxBundleBytes > 0 && int64(len(zipBytes)) > s.MaxBundleBytes {
+		return fmt.Errorf("%w: item %s packed to %d bytes (limit %d)", ErrBundleTooLarge, itemID, len(zipBytes), s.MaxBundleBytes)
+	}
+	return nil
 }
 
 // PackItemBundle clones the item's upstream source, packs the working tree into a
@@ -125,7 +153,15 @@ func (s *BundlePackService) PackItemBundle(ctx context.Context, item *models.Cap
 		return nil, fmt.Errorf("bundle pack: %w", err)
 	}
 
-	clone, err := s.Git.Clone(cloneURL, branch)
+	// Bound the clone so a hung/slow upstream cannot occupy a worker forever. The
+	// context is propagated into go-git so a timeout actually aborts the transfer.
+	if s.CloneTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.CloneTimeout)
+		defer cancel()
+	}
+
+	clone, err := s.Git.CloneContext(ctx, cloneURL, branch)
 	if err != nil {
 		return nil, fmt.Errorf("bundle pack: clone %s (branch=%q): %w", cloneURL, branch, err)
 	}
@@ -149,6 +185,13 @@ func (s *BundlePackService) PackItemBundle(ctx context.Context, item *models.Cap
 	zipBytes, zipSHA, err := s.Git.PackZip(clone.LocalPath, subPath)
 	if err != nil {
 		return nil, fmt.Errorf("bundle pack: pack zip for item %s: %w", item.ID, err)
+	}
+
+	// Guard against an oversized (or maliciously huge) repo OOMing the worker: the
+	// ZIP is fully buffered in memory and hashed, so refuse to store anything over
+	// the configured cap. Terminal failure — re-cloning will not shrink it.
+	if err := s.enforceBundleSize(item.ID, zipBytes); err != nil {
+		return nil, fmt.Errorf("bundle pack: %w", err)
 	}
 
 	repoID := s.resolveRepoID(item)
@@ -306,6 +349,12 @@ func (s *BundlePackService) PackUploadBundle(ctx context.Context, item *models.C
 	zipBytes, zipSHA, err := s.packAssetsZip(ctx, item, assets)
 	if err != nil {
 		return nil, fmt.Errorf("upload bundle: pack assets for item %s: %w", item.ID, err)
+	}
+
+	// Same OOM guard as the clone path: an uploaded plugin with very large assets
+	// must not be packed into an oversized in-memory ZIP.
+	if err := s.enforceBundleSize(item.ID, zipBytes); err != nil {
+		return nil, fmt.Errorf("upload bundle: %w", err)
 	}
 
 	// Idempotency: a bundle for this exact content hash already cached?

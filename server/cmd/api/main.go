@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,6 +156,9 @@ func main() {
 		storageBackend,
 		cfg.GitMirrorBase,
 	)
+	// OOM guard for the synchronous upload-pack path (same cap the worker applies to
+	// clone-pack). BUNDLE_MAX_BYTES (default 100MB); non-positive disables the cap.
+	bundlePackSvc.MaxBundleBytes = bundleMaxBytes()
 	handlers.BundlePackSvc = bundlePackSvc
 	handlers.BundleJobSvc = &services.BundleJobService{DB: db}
 
@@ -735,4 +739,18 @@ func (p deptSyncDepartmentProvider) GetUserDepartments(deptSyncUserID string) ([
 
 func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, error) {
 	return p.client.GetDepartmentPath(deptID)
+}
+
+// bundleMaxBytes returns the maximum packed-bundle size in bytes for the
+// synchronous upload-pack path. Configurable via BUNDLE_MAX_BYTES (default 100MB);
+// non-positive disables the cap. Mirrors the worker process's setting.
+func bundleMaxBytes() int64 {
+	const defaultMax = 100 * 1024 * 1024 // 100MB
+	if v := os.Getenv("BUNDLE_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+		log.Printf("Warning: invalid BUNDLE_MAX_BYTES=%q, using default %d", v, defaultMax)
+	}
+	return defaultMax
 }

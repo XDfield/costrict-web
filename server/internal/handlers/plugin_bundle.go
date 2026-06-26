@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -14,6 +16,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// bundleFailCooldown is how long a permanently-failed bundle job suppresses
+// re-enqueue for the same item. Within the window the bundle endpoint returns a
+// terminal failure (503) instead of queuing yet another doomed clone + returning
+// 202, which would make the client poll forever (P1:永久失败 job → 无限 202 +
+// 无限重排队). Configurable via BUNDLE_FAIL_COOLDOWN_MIN (minutes, default 10);
+// a non-positive value disables the suppression (always allow retry).
+func bundleFailCooldown() time.Duration {
+	mins := 10
+	if v := os.Getenv("BUNDLE_FAIL_COOLDOWN_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			mins = n
+		}
+	}
+	if mins <= 0 {
+		return 0
+	}
+	return time.Duration(mins) * time.Minute
+}
 
 // BundlePackSvc and BundleJobSvc back the DB+HTTP plugin distribution channel.
 // They are package-level (set in cmd/api/main.go) to match the existing
@@ -51,6 +72,8 @@ var (
 // @Success      200   {file}    binary
 // @Success      202   {object}  object{status=string,message=string}
 // @Failure      404   {object}  object{error=string}
+// @Failure      422   {object}  object{error=string}                  "plugin has no distributable content (no source_url and no assets)"
+// @Failure      503   {object}  object{status=string,error=string}    "bundle service unavailable, or a recent permanent failure is in cooldown"
 // @Router       /plugins/{slug}/bundle [get]
 func DownloadPluginBundle(c *gin.Context) {
 	db := database.GetDB()
@@ -84,6 +107,20 @@ func DownloadPluginBundle(c *gin.Context) {
 		return
 	}
 
+	// No source_url: the upload path reconstructs the bundle from capability_assets.
+	// But a plugin with NEITHER a source_url NOR any real assets (e.g. a
+	// catalog-ingested plugin that was never backfilled — syncAssetsForItem is a
+	// no-op) would otherwise be packed into a near-empty / truncated 200 ZIP, a
+	// silent corruption the client cannot tell from a real bundle. Fail loud
+	// instead: return an explicit 422 so the operator knows source_url backfill is
+	// required, and never emit a truncated archive.
+	if !hasDistributableAssets(db, item.ID) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "plugin has no distributable content (source_url backfill needed)",
+		})
+		return
+	}
+
 	// Uploaded plugin (no source_url): its assets are complete, so pack now.
 	if BundlePackSvc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Bundle service not available"})
@@ -95,6 +132,20 @@ func DownloadPluginBundle(c *gin.Context) {
 		return
 	}
 	streamBundleArtifact(c, db, artifact)
+}
+
+// hasDistributableAssets reports whether the item has at least one real
+// capability_asset (a stored file with inline text or a storage key). This is the
+// guard that keeps the synchronous upload-pack path off plugins that have no real
+// file tree (no source_url + no assets) — packing those would yield a truncated
+// ZIP. An asset row with neither text_content nor storage_key carries no bytes and
+// does not count.
+func hasDistributableAssets(db *gorm.DB, itemID string) bool {
+	var count int64
+	db.Model(&models.CapabilityAsset{}).
+		Where("item_id = ? AND (text_content IS NOT NULL OR (storage_key IS NOT NULL AND storage_key <> ''))", itemID).
+		Count(&count)
+	return count > 0
 }
 
 // bundleVisibilityOK enforces the same access policy as DownloadPluginZip. It
@@ -260,11 +311,34 @@ func streamBundleArtifact(c *gin.Context, db *gorm.DB, artifact *models.Capabili
 // enqueueBundleJobAndAccept queues a lazy clone-and-pack job (de-duplicated against
 // in-flight jobs) and returns 202 so the client can poll the bundle/item endpoint
 // until the artifact appears.
+//
+// Permanent-failure guard: if the item's most recent job is a permanent failure
+// within the cooldown window, it does NOT enqueue a new job — instead it returns a
+// terminal 503 carrying the recorded last_error so the client stops retrying. The
+// older behaviour (always enqueue + 202) combined with Enqueue only de-duplicating
+// pending|running jobs meant a doomed plugin re-cloned on every request and the
+// client polled 202 forever. Once the cooldown elapses, a fresh job is enqueued.
 func enqueueBundleJobAndAccept(c *gin.Context, itemID string) {
 	if BundleJobSvc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Bundle service not available"})
 		return
 	}
+
+	if cooldown := bundleFailCooldown(); cooldown > 0 {
+		failed, lastJob, err := BundleJobSvc.FailedInCooldown(itemID, cooldown)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect bundle job state"})
+			return
+		}
+		if failed {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status": "failed",
+				"error":  bundleFailureSummary(lastJob),
+			})
+			return
+		}
+	}
+
 	userID := c.GetString(middleware.UserIDKey)
 	_, err := BundleJobSvc.Enqueue(itemID, services.BundleEnqueueOptions{
 		TriggerType: "subscribe",
@@ -278,4 +352,19 @@ func enqueueBundleJobAndAccept(c *gin.Context, itemID string) {
 		"status":  "packing",
 		"message": "Plugin bundle is being prepared; retry shortly.",
 	})
+}
+
+// bundleFailureSummary returns a short, client-facing reason for a permanently
+// failed bundle job. It avoids leaking the full internal error chain (the detail
+// stays in the worker log) while still telling the client why it should stop.
+func bundleFailureSummary(job *models.BundleJob) string {
+	if job == nil || job.LastError == "" {
+		return "Plugin bundle could not be prepared."
+	}
+	const max = 200
+	msg := job.LastError
+	if len(msg) > max {
+		msg = msg[:max] + "…"
+	}
+	return msg
 }

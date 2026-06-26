@@ -108,3 +108,50 @@ func (s *BundleJobService) GetActiveCount(itemID string) (int64, error) {
 		Count(&count).Error
 	return count, err
 }
+
+// LatestJob returns the most recent bundle job (by created_at) for an item, or
+// (nil, nil) when none exists. The handler uses it to decide whether a fresh
+// enqueue is warranted: a *permanently failed* job inside the cooldown window
+// must NOT be re-enqueued (otherwise every client request spawns a new doomed
+// clone and the client 202-polls forever), so the handler returns a terminal
+// failure response instead.
+func (s *BundleJobService) LatestJob(itemID string) (*models.BundleJob, error) {
+	var job models.BundleJob
+	err := s.DB.Model(&models.BundleJob{}).
+		Where("item_id = ?", itemID).
+		Order("created_at DESC").
+		First(&job).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &job, nil
+}
+
+// FailedInCooldown reports whether the item's most recent job is a permanent
+// failure whose finished_at is within the cooldown window (so the handler should
+// return a terminal failure response rather than enqueue another doomed clone).
+// It also returns that job so the caller can surface the recorded last_error.
+//
+// A failed job whose finished_at is older than the cooldown — or a missing
+// finished_at — is treated as eligible for retry (returns false), so a transient
+// failure is automatically retried once enough time has passed.
+func (s *BundleJobService) FailedInCooldown(itemID string, cooldown time.Duration) (bool, *models.BundleJob, error) {
+	job, err := s.LatestJob(itemID)
+	if err != nil {
+		return false, nil, err
+	}
+	if job == nil || job.Status != "failed" {
+		return false, job, nil
+	}
+	if job.FinishedAt == nil {
+		// No finish timestamp recorded; allow a retry rather than wedge the item.
+		return false, job, nil
+	}
+	if time.Since(*job.FinishedAt) < cooldown {
+		return true, job, nil
+	}
+	return false, job, nil
+}
