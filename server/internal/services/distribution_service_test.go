@@ -2,14 +2,32 @@ package services
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/notification/sender"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+type fakeNotifier struct {
+	calls []struct {
+		userID    string
+		eventType string
+		msg       sender.NotificationMessage
+	}
+}
+
+func (f *fakeNotifier) TriggerMessage(userID, eventType string, msg sender.NotificationMessage) {
+	f.calls = append(f.calls, struct {
+		userID    string
+		eventType string
+		msg       sender.NotificationMessage
+	}{userID, eventType, msg})
+}
 
 func setupDistributionServiceDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -265,6 +283,56 @@ func TestRevokeReadonlyDistribution_KeepsFavoriteWhenAnotherActiveReadonlyExists
 	// d2 (still active + readonly) keeps requiring the item, so the favorite stays.
 	if got := countFavorites(t, db, "item-1", "u1"); got != 1 {
 		t.Fatalf("expected favorite kept (another active readonly distribution exists), got %d", got)
+	}
+}
+
+func TestDistributeItem_NotificationCarriesMessage(t *testing.T) {
+	db := setupDistributionServiceDB(t)
+	svc := NewDistributionService(db, nil)
+	notifier := &fakeNotifier{}
+	svc.SetNotificationService(notifier)
+	ctx := context.Background()
+
+	item := &models.CapabilityItem{ID: "item-1", Name: "Alpha Plugin"}
+
+	// With a message (附言), the recipient notification body must carry it.
+	_, err := svc.DistributeItem(ctx, item, "admin-a", DistributeItemRequest{
+		Targets:        []DistributionTarget{{ScopeType: "user", TargetID: "u1"}},
+		PermissionMode: "readonly",
+		Message:        "请尽快试用",
+	})
+	if err != nil {
+		t.Fatalf("distribute: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifier.calls))
+	}
+	got := notifier.calls[0]
+	if got.userID != "u1" {
+		t.Fatalf("expected notify u1, got %s", got.userID)
+	}
+	if !strings.Contains(got.msg.Body, "附言：请尽快试用") {
+		t.Fatalf("expected body to carry 附言, got %q", got.msg.Body)
+	}
+	if got.msg.Metadata["message"] != "请尽快试用" {
+		t.Fatalf("expected metadata.message=请尽快试用, got %v", got.msg.Metadata["message"])
+	}
+
+	// A blank/whitespace-only message must NOT add an 附言 line.
+	notifier.calls = nil
+	_, err = svc.DistributeItem(ctx, item, "admin-a", DistributeItemRequest{
+		Targets:        []DistributionTarget{{ScopeType: "user", TargetID: "u2"}},
+		PermissionMode: "readonly",
+		Message:        "   ",
+	})
+	if err != nil {
+		t.Fatalf("distribute (blank message): %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifier.calls))
+	}
+	if strings.Contains(notifier.calls[0].msg.Body, "附言") {
+		t.Fatalf("expected no 附言 line for blank message, got %q", notifier.calls[0].msg.Body)
 	}
 }
 

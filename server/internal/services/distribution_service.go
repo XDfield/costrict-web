@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -146,18 +147,25 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 		}
 	}
 
-	// Notify recipients
+	// Notify recipients. Carry the distributor's message (附言) into the body so
+	// recipients actually see the note written at distribution time, not just the
+	// generic "someone shared a skill" line.
 	if s.notificationSvc != nil {
+		body := fmt.Sprintf("有人向你下发了技能 **%s**（权限：%s）", item.Name, permissionMode)
+		if strings.TrimSpace(message) != "" {
+			body += fmt.Sprintf("\n\n附言：%s", message)
+		}
 		for _, userID := range recipients {
 			s.notificationSvc.TriggerMessage(userID, "item.distributed", sender.NotificationMessage{
 				Title:     "技能下发",
-				Body:      fmt.Sprintf("有人向你下发了技能 **%s**（权限：%s）", item.Name, permissionMode),
+				Body:      body,
 				EventType: "item.distributed",
 				Metadata: map[string]any{
 					"itemId":         item.ID,
 					"itemName":       item.Name,
 					"permissionMode": permissionMode,
 					"distributionId": dist.ID,
+					"message":        message,
 				},
 			})
 		}
