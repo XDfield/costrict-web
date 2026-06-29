@@ -29,7 +29,6 @@ type InboundMessage struct {
 
 type Client struct {
 	cfg    config.BackendConfig
-	name   string
 	logger *slog.Logger
 	http   *http.Client
 
@@ -37,11 +36,10 @@ type Client struct {
 	lastSuccess time.Time
 }
 
-func NewClient(name string, cfg config.BackendConfig, logger *slog.Logger) *Client {
+func NewClient(cfg config.BackendConfig, logger *slog.Logger) *Client {
 	return &Client{
-		name:    name,
 		cfg:     cfg,
-		logger:  logger.With("backend", name),
+		logger:  logger,
 		http:    &http.Client{Timeout: cfg.Timeout},
 		healthy: true,
 	}
@@ -85,7 +83,6 @@ func (c *Client) doForward(ctx context.Context, body []byte) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Bot-Proxy-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
-	req.Header.Set("X-Bot-Proxy-Msg-ID", "")
 
 	// HMAC signature
 	timestamp := req.Header.Get("X-Bot-Proxy-Timestamp")
@@ -122,42 +119,4 @@ func (c *Client) Healthy() bool {
 
 func (c *Client) LastSuccess() time.Time {
 	return c.lastSuccess
-}
-
-func (c *Client) Name() string {
-	return c.name
-}
-
-// Manager manages all backend clients.
-type Manager struct {
-	mu       map[string]*Client
-	logger   *slog.Logger
-}
-
-func NewManager(backends config.BackendsMap, logger *slog.Logger) *Manager {
-	clients := make(map[string]*Client, len(backends))
-	for name, cfg := range backends {
-		clients[name] = NewClient(name, cfg, logger)
-	}
-	return &Manager{
-		mu:     clients,
-		logger: logger,
-	}
-}
-
-func (m *Manager) Get(name string) (*Client, bool) {
-	c, ok := m.mu[name]
-	return c, ok
-}
-
-func (m *Manager) All() map[string]*Client {
-	return m.mu
-}
-
-func (m *Manager) Forward(ctx context.Context, backendName string, msg *InboundMessage) error {
-	client, ok := m.Get(backendName)
-	if !ok {
-		return fmt.Errorf("backend %q not found", backendName)
-	}
-	return client.Forward(ctx, msg)
 }

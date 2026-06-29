@@ -9,36 +9,32 @@ import (
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/backend"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/config"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/dedup"
-	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/router"
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/wecom-aibot-go-sdk/aibot"
 )
 
-// Proxy is the core orchestrator that wires together WS, router, dedup, and backends.
+// Proxy is the core orchestrator that wires together WS, dedup, and backend.
 type Proxy struct {
-	cfg        *config.Config
-	logger     *slog.Logger
-	sdk        *aibot.WSClient
-	routes     *router.Table
-	backends   *backend.Manager
-	dedup      *dedup.Store
-	userIDMap  *UserIDMapper
+	cfg       *config.Config
+	logger    *slog.Logger
+	sdk       *aibot.WSClient
+	backend   *backend.Client
+	dedup     *dedup.Store
+	userIDMap *UserIDMapper
 }
 
 func NewProxy(
 	cfg *config.Config,
 	logger *slog.Logger,
 	sdk *aibot.WSClient,
-	routes *router.Table,
-	backends *backend.Manager,
+	backend *backend.Client,
 	dedupStore *dedup.Store,
 ) *Proxy {
 	p := &Proxy{
 		cfg:       cfg,
 		logger:    logger,
 		sdk:       sdk,
-		routes:    routes,
-		backends:  backends,
+		backend:   backend,
 		dedup:     dedupStore,
 		userIDMap: NewUserIDMapper(cfg.WecomAPI),
 	}
@@ -86,7 +82,7 @@ func (p *Proxy) SetupSDKHandlers() {
 	})
 }
 
-// handleInbound translates a WS frame and forwards it to the appropriate backend.
+// handleInbound translates a WS frame and forwards it to the backend.
 func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 	var inbound *InboundMsg
 	var err error
@@ -149,13 +145,9 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		return
 	}
 
-	// Route
-	targetBackend := p.resolveRoute(inbound)
-
 	p.logger.Info("routing inbound",
 		"msgId", inbound.ExternalMessageID,
 		"contentType", inbound.ContentType,
-		"backend", targetBackend,
 		"userID", inbound.ExternalUserID,
 		"chatID", inbound.ExternalChatID,
 		"chatType", inbound.ExternalChatType,
@@ -172,22 +164,9 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		Metadata:          inbound.Metadata,
 	}
 
-	if err := p.backends.Forward(context.Background(), targetBackend, msg); err != nil {
-		p.logger.Error("failed to forward to backend",
-			"backend", targetBackend,
-			"error", err,
-		)
+	if err := p.backend.Forward(context.Background(), msg); err != nil {
+		p.logger.Error("failed to forward to backend", "error", err)
 	}
-}
-
-func (p *Proxy) resolveRoute(msg *InboundMsg) string {
-	if msg.ContentType == "action_callback" {
-		taskID, _ := msg.Metadata["taskId"].(string)
-		if taskID != "" {
-			return p.routes.RouteForCardEvent(taskID)
-		}
-	}
-	return p.routes.DefaultBackend()
 }
 
 // --- HTTP Handlers ---
@@ -212,17 +191,12 @@ func (p *Proxy) authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		backendName := p.cfg.FindBackendByToken(authHeader)
-		if backendName == "" {
-			p.logger.Warn("auth failed: no matching backend",
-				"received_token", authHeader,
-				"backends", p.cfg.BackendNames(),
-			)
+		if !p.cfg.ValidateAuthToken(authHeader) {
+			p.logger.Warn("auth failed: invalid token")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
 
-		c.Set("backend_name", backendName)
 		c.Next()
 	}
 }
@@ -239,13 +213,6 @@ func (p *Proxy) handleSend(c *gin.Context) {
 		return
 	}
 
-	// Register task route if task_id provided
-	backendName := c.GetString("backend_name")
-	if req.TaskID != "" {
-		p.routes.Register(req.TaskID, backendName)
-		p.logger.Info("registered task route", "taskId", req.TaskID, "backend", backendName)
-	}
-
 	if p.sdk == nil || !p.sdk.IsConnected() {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
 		return
@@ -259,7 +226,6 @@ func (p *Proxy) handleSend(c *gin.Context) {
 	case "markdown":
 		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
 	case "card":
-		// Send card content as markdown for now
 		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
 	default:
 		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
@@ -417,29 +383,16 @@ func (p *Proxy) handleCardUpdate(c *gin.Context) {
 }
 
 func (p *Proxy) handleHealth(c *gin.Context) {
-	backends := gin.H{}
-	for name, client := range p.backends.All() {
-		backends[name] = gin.H{
-			"healthy":      client.Healthy(),
-			"last_success": client.LastSuccess(),
-		}
-	}
-
 	connected := false
 	if p.sdk != nil {
 		connected = p.sdk.IsConnected()
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":     map[bool]string{true: "connected", false: "disconnected"}[connected],
-		"bot_id":     p.cfg.Bot.BotID,
-		"connected":  connected,
-		"backends":   backends,
+		"status":       map[bool]string{true: "connected", false: "disconnected"}[connected],
+		"bot_id":       p.cfg.Bot.BotID,
+		"connected":    connected,
+		"backend_healthy": p.backend.Healthy(),
+		"backend_last_success": p.backend.LastSuccess(),
 	})
-}
-
-type HealthStatus struct {
-	Status      string `json:"status"`
-	BotID       string `json:"bot_id"`
-	Connected   bool   `json:"connected"`
 }

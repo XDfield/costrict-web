@@ -6,8 +6,8 @@ services:
     environment:
       - WECOM_BOT_ID=${WECOM_BOT_ID}
       - WECOM_BOT_SECRET=${WECOM_BOT_SECRET}
-      - BACKEND_A_TOKEN=${BACKEND_A_TOKEN}
-      - BACKEND_A_HMAC_SECRET=${BACKEND_A_HMAC_SECRET}
+      - BACKEND_TOKEN=${BACKEND_TOKEN}
+      - BACKEND_HMAC_SECRET=${BACKEND_HMAC_SECRET:-}
       - CORICT_WEB_URL=${CORICT_WEB_URL:-http://host.docker.internal:8080}
     volumes:
       - ./config.yaml:/etc/wecom-bot-proxy/config.yaml:ro
@@ -18,7 +18,7 @@ services:
 # 2. 创建 .env 文件填入实际值:
 #    WECOM_BOT_ID=your_bot_id
 #    WECOM_BOT_SECRET=your_bot_secret
-#    BACKEND_A_TOKEN=your_backend_token
-#    BACKEND_A_HMAC_SECRET=your_hmac_secret
+#    BACKEND_TOKEN=your_backend_token
+#    BACKEND_HMAC_SECRET=your_hmac_secret
 #    CORICT_WEB_URL=http://costrict-web:8080
 # 3. 启动: docker-compose up -d

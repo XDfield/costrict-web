@@ -13,17 +13,12 @@ wecom_api:
 server:
   listen: ":9090"
 
-backends:
-  backend-a:
-    url: "${CORICT_WEB_URL:-http://127.0.0.1:8080}/api/webhooks/channels/wecom-bot"
-    auth_token: "${BACKEND_A_TOKEN}"
-    hmac_secret: "${BACKEND_A_HMAC_SECRET:-}"
-    timeout: 10s
-    retry: 3
-
-routing:
-  default_backend: backend-a
-  task_route_ttl: 24h
+backend:
+  url: "${CORICT_WEB_URL:-http://127.0.0.1:8080}/api/webhooks/channels/wecom-bot"
+  auth_token: "${BACKEND_TOKEN}"
+  hmac_secret: "${BACKEND_HMAC_SECRET:-}"
+  timeout: 10s
+  retry: 3
 
 dedup:
   enabled: true
