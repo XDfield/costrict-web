@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/backend"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/config"
@@ -115,6 +117,26 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		}
 	}
 
+	// Hard cap on user input length — reject oversized payloads before doing
+	// any backend work, and tell the user to shorten their message.
+	if p.cfg.Bot.InputMaxLength > 0 && inbound.ContentType == "text" {
+		contentLen := utf8.RuneCountInString(inbound.Content)
+		if contentLen > p.cfg.Bot.InputMaxLength {
+			p.logger.Info("input exceeded max length, rejected",
+				"msgId", inbound.ExternalMessageID,
+				"contentLen", contentLen,
+				"maxLength", p.cfg.Bot.InputMaxLength,
+			)
+			if p.sdk != nil && p.sdk.IsConnected() {
+				notice := fmt.Sprintf("消息太长了，目前单条最多支持 %d 个字，请精简后再发一次。", p.cfg.Bot.InputMaxLength)
+				if _, err := p.sdk.SendMarkdown(inbound.ExternalChatID, notice); err != nil {
+					p.logger.Warn("failed to send length-limit notice", "error", err)
+				}
+			}
+			return
+		}
+	}
+
 	// Resolve encrypted open_userid to plaintext userid
 	originalUserID := inbound.ExternalUserID
 	if p.userIDMap != nil && inbound.ExternalUserID != "" {
@@ -208,7 +230,6 @@ func (p *Proxy) RegisterRoutes(r *gin.Engine) {
 	{
 		bot.POST("/send", p.authMiddleware(), p.handleSend)
 		bot.POST("/reply", p.authMiddleware(), p.handleReply)
-		bot.POST("/reply/stream", p.authMiddleware(), p.handleStreamReply)
 		bot.POST("/welcome", p.authMiddleware(), p.handleWelcome)
 		bot.POST("/card/update", p.authMiddleware(), p.handleCardUpdate)
 		bot.GET("/health", p.handleHealth)
@@ -250,20 +271,47 @@ func (p *Proxy) handleSend(c *gin.Context) {
 		return
 	}
 
-	// Send via SDK
-	var err error
-	switch req.MsgType {
-	case "text":
-		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
-	case "markdown":
-		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
-	case "card":
-		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
-	default:
-		_, err = p.sdk.SendMarkdown(req.UserID, req.Content)
+	// card is structurally different: content is a JSON-marshaled template_card
+	// payload (card_type + main_title + button_list/checkbox/jump_list + task_id).
+	// Forward it to the SDK's SendTemplateCard so it renders as an interactive
+	// card instead of leaking raw JSON as text. session_ref does not apply to
+	// cards — interactive cards have their own jump_list / card_action for links.
+	if req.MsgType == "card" {
+		var templateCard aibot.TemplateCard
+		if err := json.Unmarshal([]byte(req.Content), &templateCard); err != nil {
+			p.logger.Warn("failed to parse card content as template_card", "error", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template_card json"})
+			return
+		}
+		if _, err := p.sdk.SendTemplateCard(req.UserID, templateCard); err != nil {
+			p.logger.Error("failed to send template card via sdk", "error", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "send failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+		return
 	}
 
-	if err != nil {
+	// text / markdown / default: compose final content. If session_ref is
+	// provided and link mode is enabled, append a markdown link so users can
+	// jump to the related CoStrict session. In restricted mode, session_ref is
+	// silently dropped — content is forwarded verbatim, allowing the same
+	// server payload to serve both modes.
+	//
+	// [disabled] 查看会话 link appending — commented out. To re-enable,
+	// uncomment the block below.
+	finalContent := req.Content
+	/*
+	if req.SessionRef != nil && req.SessionRef.URL != "" && p.cfg.Bot.SessionLinkMode != "restricted" {
+		title := truncateRunes(req.SessionRef.Title, p.cfg.Bot.SessionTitleMaxLength)
+		if title == "" {
+			title = "查看会话"
+		}
+		finalContent = fmt.Sprintf("%s\n\n[%s](%s)", finalContent, title, req.SessionRef.URL)
+	}
+	*/
+
+	if _, err := p.sdk.SendMarkdown(req.UserID, finalContent); err != nil {
 		p.logger.Error("failed to send via sdk", "error", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "send failed"})
 		return
@@ -308,37 +356,6 @@ func (p *Proxy) handleReply(c *gin.Context) {
 	if err != nil {
 		p.logger.Error("failed to reply via sdk", "error", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "reply failed"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"success": true})
-}
-
-func (p *Proxy) handleStreamReply(c *gin.Context) {
-	var req StreamReplyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	if req.ReqID == "" || req.StreamID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "req_id and stream_id are required"})
-		return
-	}
-
-	if p.sdk == nil || !p.sdk.IsConnected() {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
-		return
-	}
-
-	frame := &aibot.WsFrame{
-		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
-	}
-
-	_, err := p.sdk.ReplyStream(frame, req.StreamID, req.Content, req.Finish, nil, nil)
-	if err != nil {
-		p.logger.Error("failed to stream reply via sdk", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "stream reply failed"})
 		return
 	}
 
@@ -427,4 +444,25 @@ func (p *Proxy) handleHealth(c *gin.Context) {
 		"backend_healthy": p.backend.Healthy(),
 		"backend_last_success": p.backend.LastSuccess(),
 	})
+}
+
+// truncateRunes caps s at max runes, appending "…" when truncated. Returns s
+// unchanged if its rune count is already within the limit.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	n := utf8.RuneCountInString(s)
+	if n <= max {
+		return s
+	}
+	out := make([]rune, 0, max)
+	for i, r := range []rune(s) {
+		if i >= max-1 {
+			out = append(out, r)
+			break
+		}
+		out = append(out, r)
+	}
+	return string(out) + "…"
 }

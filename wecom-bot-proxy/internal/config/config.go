@@ -26,6 +26,14 @@ type BotConfig struct {
 	HeartbeatInterval       time.Duration `yaml:"heartbeat_interval"`
 	ReconnectInitialBackoff time.Duration `yaml:"reconnect_initial_backoff"`
 	ReconnectMaxBackoff     time.Duration `yaml:"reconnect_max_backoff"`
+	InputMaxLength          int           `yaml:"input_max_length"`
+	// SessionLinkMode controls whether session_ref is rendered as a clickable
+	// markdown link. "enabled" (default) appends the link; "restricted" ignores
+	// session_ref entirely and forwards content verbatim.
+	SessionLinkMode         string        `yaml:"session_link_mode"`
+	// SessionTitleMaxLength caps the session_ref title length (in runes) when
+	// rendered as link text, to avoid bloating the message bubble.
+	SessionTitleMaxLength   int           `yaml:"session_title_max_length"`
 }
 
 // WecomAPIConfig holds credentials for calling WeCom server APIs
@@ -113,6 +121,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Bot.ReconnectMaxBackoff == 0 {
 		c.Bot.ReconnectMaxBackoff = 60 * time.Second
+	}
+	if c.Bot.InputMaxLength == 0 {
+		c.Bot.InputMaxLength = 120
+	}
+	if c.Bot.SessionLinkMode == "" {
+		c.Bot.SessionLinkMode = "enabled"
+	}
+	if c.Bot.SessionTitleMaxLength == 0 {
+		c.Bot.SessionTitleMaxLength = 50
 	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":9090"

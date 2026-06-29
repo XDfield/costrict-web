@@ -9,25 +9,27 @@ import (
 
 // --- Business request types (costrict-web → proxy) ---
 
+// SessionRef carries an optional reference to a CoStrict session. The proxy
+// decides (based on bot.session_link_mode) whether to render it as a markdown
+// link appended to the content. Server provides title + url verbatim.
+type SessionRef struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
 type SendRequest struct {
-	UserID   string `json:"user_id"`
-	ChatType string `json:"chat_type"`
-	MsgType  string `json:"msg_type"`
-	Content  string `json:"content"`
-	TaskID   string `json:"task_id,omitempty"`
+	UserID     string       `json:"user_id"`
+	ChatType   string       `json:"chat_type"`
+	MsgType    string       `json:"msg_type"`
+	Content    string       `json:"content"`
+	TaskID     string       `json:"task_id,omitempty"`
+	SessionRef *SessionRef  `json:"session_ref,omitempty"`
 }
 
 type ReplyRequest struct {
 	ReqID   string `json:"req_id"`
 	MsgType string `json:"msg_type"`
 	Content string `json:"content"`
-}
-
-type StreamReplyRequest struct {
-	ReqID    string `json:"req_id"`
-	StreamID string `json:"stream_id"`
-	Finish   bool   `json:"finish"`
-	Content  string `json:"content"`
 }
 
 type WelcomeRequest struct {
