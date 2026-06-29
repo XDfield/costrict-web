@@ -183,6 +183,30 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		log.Printf("[inbound] session key userID=%s externalUserID=%s", resolvedUserID, msg.ExternalUserID)
 	}
 
+	// wecom-bot first-contact detection: when a user's first inbound message
+	// arrives, flip WebhookVerified to true so the UI can render the "bound"
+	// state. The proxy reads the returned JSON and sends a welcome message.
+	firstContact := false
+	bound := false
+	resolveErr := ""
+	if channelType == "wecom-bot" {
+		if msg.ExternalUserID != "" && resolvedUserID == "" {
+			resolveErr = "未找到企微账号绑定信息，请先在 CoStrict 控制台完成企微账号绑定后再试"
+		} else if resolvedUserID != "" {
+			var userCfg models.ChannelConfig
+			if err := s.db.Where("channel_type = ? AND user_id = ? AND deleted_at IS NULL", "wecom-bot", resolvedUserID).
+				First(&userCfg).Error; err == nil {
+				bound = true
+				if !userCfg.WebhookVerified {
+					firstContact = true
+					if err := s.db.Model(&userCfg).Update("webhook_verified", true).Error; err != nil {
+						log.Printf("[inbound] failed to set webhook_verified: %v", err)
+					}
+				}
+			}
+		}
+	}
+
 	for _, cfg := range configs {
 		rc := ReplyContext{
 			ChannelConfigID: cfg.ID,
@@ -206,6 +230,22 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 			"last_active_at": now,
 			"last_error":     "",
 		})
+	}
+
+	if channelType == "wecom-bot" {
+		resp := map[string]any{
+			"success":      true,
+			"firstContact": firstContact,
+			"bound":        bound,
+		}
+		if firstContact {
+			resp["welcome"] = "✅ 绑定成功！后续任务通知将通过此企微机器人推送给你。如需调整通知偏好，可在 CoStrict 控制台随时管理。"
+		}
+		if resolveErr != "" {
+			resp["error"] = resolveErr
+		}
+		body, _ := json.Marshal(resp)
+		return string(body), http.StatusOK, nil
 	}
 
 	return "success", http.StatusOK, nil
