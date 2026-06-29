@@ -126,9 +126,10 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 				}
 			}
 
-			// Auto-create favorite for the recipient
+			// Auto-create favorite for the recipient (distributed skills default to
+			// AI-auto-invokable, matching pre-invokeMode behavior).
 			if s.behaviorSvc != nil {
-				_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
+				_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID, "auto")
 			}
 		}
 
@@ -354,7 +355,7 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.FavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					_, _, _ = s.behaviorSvc.FavoriteItem(ctx, dist.ItemID, receipt.UserID, "auto")
 				}
 			}
 		}

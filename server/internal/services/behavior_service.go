@@ -135,7 +135,15 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 	}
 }
 
-func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID string) (int64, bool, error) {
+// FavoriteItem marks an item as favorited for the user (idempotent) and persists
+// the per-user invokeMode preference. invokeMode is "auto" or "manual"; an empty
+// value defaults to "auto". For an already-favorited item this upserts the mode
+// (so the user can switch auto/manual without unfavorite+refavorite).
+func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID, invokeMode string) (int64, bool, error) {
+	if invokeMode != "manual" {
+		invokeMode = "auto"
+	}
+
 	tx := s.db.WithContext(ctx).Begin()
 	if tx.Error != nil {
 		return 0, false, tx.Error
@@ -148,9 +156,10 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID strin
 	}()
 
 	favorite := models.ItemFavorite{
-		ID:     uuid.New().String(),
-		ItemID: itemID,
-		UserID: userID,
+		ID:         uuid.New().String(),
+		ItemID:     itemID,
+		UserID:     userID,
+		InvokeMode: invokeMode,
 	}
 	var existing models.ItemFavorite
 	err := tx.Where("item_id = ? AND user_id = ?", itemID, userID).First(&existing).Error
@@ -168,6 +177,14 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID strin
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
 			UpdateColumn("favorite_count", gorm.Expr("favorite_count + 1")).Error; err != nil {
+			tx.Rollback()
+			return 0, false, err
+		}
+	} else if existing.InvokeMode != invokeMode {
+		// Already favorited: update the per-user invoke mode in place (count unchanged).
+		if err := tx.Model(&models.ItemFavorite{}).
+			Where("id = ?", existing.ID).
+			UpdateColumn("invoke_mode", invokeMode).Error; err != nil {
 			tx.Rollback()
 			return 0, false, err
 		}
