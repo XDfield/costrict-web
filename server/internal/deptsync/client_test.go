@@ -138,6 +138,46 @@ func TestClient_GetDeptUsers_BareArray(t *testing.T) {
 	}
 }
 
+func TestClient_GetDeptUsersTree(t *testing.T) {
+	// Not configured → ErrNotConfigured (no fan-out to a nonexistent endpoint).
+	if _, err := New(config.DeptSyncConfig{}).GetDeptUsersTree("6560"); err != ErrNotConfigured {
+		t.Fatalf("unconfigured GetDeptUsersTree: expected ErrNotConfigured, got %v", err)
+	}
+
+	var gotPath, gotInclude string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotInclude = r.URL.Query().Get("include_children")
+		// Subtree members across two sub-departments, snake_case payload.
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"user_id":"u1","username":"朱海俊","universal_id":"uid-1","dept_id":"6571","dept_name":"开发组","is_main":1},
+			{"user_id":"u2","username":"韦体东","universal_id":"uid-2","dept_id":"6572","dept_name":"AI Native组","is_main":1}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "qk"})
+	users, err := c.GetDeptUsersTree("6560")
+	if err != nil {
+		t.Fatalf("GetDeptUsersTree: %v", err)
+	}
+	if gotPath != defaultPathPrefix+"/department/6560/users" {
+		t.Fatalf("expected subtree members path, got %q", gotPath)
+	}
+	if gotInclude != "true" {
+		t.Fatalf("expected include_children=true, got %q", gotInclude)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 subtree users, got %d", len(users))
+	}
+	if users[0].UniversalID != "uid-1" || users[0].DeptID != "6571" {
+		t.Fatalf("unexpected user[0]: %+v", users[0])
+	}
+	if users[1].UniversalID != "uid-2" {
+		t.Fatalf("unexpected user[1]: %+v", users[1])
+	}
+}
+
 func TestClient_NullData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":"0","success":true,"message":"empty","data":null}`))

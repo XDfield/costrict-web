@@ -232,6 +232,33 @@ func (c *Client) GetDeptUsers(deptID string) ([]DeptUser, error) {
 	return users, nil
 }
 
+// GetDeptUsersTree returns the members of a department AND every descendant
+// department (the whole subtree), via dept-sync's include_children flag. It backs
+// "distribute to a department": selecting a parent department fans out to every
+// sub-department's members. Cached under a distinct key ("deptUsersTree:<id>") so
+// it never clobbers GetDeptUsers (direct members only). A subtree may list the same
+// person under several sub-departments, so callers should de-duplicate on
+// universal_id.
+func (c *Client) GetDeptUsersTree(deptID string) ([]DeptUser, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	key := "deptUsersTree:" + deptID
+	if v, ok := c.cacheGet(key); ok {
+		return v.([]DeptUser), nil
+	}
+	raw, err := c.get("/department/" + url.PathEscape(deptID) + "/users?include_children=true")
+	if err != nil {
+		return nil, err
+	}
+	users, err := decodeDeptUserList(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.cacheSet(key, users)
+	return users, nil
+}
+
 // GetUserDepartments returns the departments a user belongs to (one user may be
 // in several). Cached per user id.
 func (c *Client) GetUserDepartments(userID string) ([]Dept, error) {

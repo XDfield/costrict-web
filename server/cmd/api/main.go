@@ -207,8 +207,18 @@ func main() {
 	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
 	usageHandler := handlers.NewUsageHandler(usageSvc)
 
+	// Shared dept-sync client: backs the admin department-tree proxy (M1 org view),
+	// the authz fine-grained grant engine (mentor RBAC department inheritance), and
+	// "distribute to a department" recipient resolution. Optional dependency — when
+	// unconfigured each consumer degrades safely (grants never match / department
+	// distributions resolve to an empty recipient set) while user/organization paths
+	// keep working. Constructed here, ahead of the distribution service that takes it
+	// as a dependency; the authz department provider is wired below once authzModule
+	// exists.
+	deptSyncClient := deptsync.New(cfg.DeptSync)
+
 	// Initialize Distribution handler
-	distSvc := services.NewDistributionService(db, behaviorSvc)
+	distSvc := services.NewDistributionService(db, behaviorSvc, deptSyncClient)
 	distHandler := handlers.NewDistributionHandler(db, distSvc)
 
 	r := gin.New()
@@ -286,12 +296,10 @@ func main() {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
 
-	// Shared dept-sync client: backs both the admin department-tree proxy (M1 org
-	// view) and the authz fine-grained grant engine (mentor RBAC department
-	// inheritance). Optional dependency — when unconfigured, department grants
-	// simply never match (CheckGrant fails closed) while user grants and the role
-	// path keep working.
-	deptSyncClient := deptsync.New(cfg.DeptSync)
+	// Wire the (already-constructed) shared dept-sync client into the authz
+	// fine-grained grant engine (mentor RBAC department inheritance). When dept-sync
+	// is unconfigured, department grants simply never match (CheckGrant fails closed)
+	// while user grants and the role path keep working.
 	authzModule.Service.SetDepartmentProvider(deptSyncDepartmentProvider{client: deptSyncClient})
 
 	var channelModule *channel.Module

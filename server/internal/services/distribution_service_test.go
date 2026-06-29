@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/deptsync"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
 	"gorm.io/driver/sqlite"
@@ -100,7 +101,7 @@ func seedDistributions(t *testing.T, db *gorm.DB) {
 func TestListAllDistributions_AcrossDistributors(t *testing.T) {
 	db := setupDistributionServiceDB(t)
 	seedDistributions(t, db)
-	svc := NewDistributionService(db, nil)
+	svc := NewDistributionService(db, nil, nil)
 
 	list, total, err := svc.ListAllDistributions(context.Background(), DistributionListFilter{})
 	if err != nil {
@@ -125,7 +126,7 @@ func TestListAllDistributions_AcrossDistributors(t *testing.T) {
 func TestListAllDistributions_FiltersAndPagination(t *testing.T) {
 	db := setupDistributionServiceDB(t)
 	seedDistributions(t, db)
-	svc := NewDistributionService(db, nil)
+	svc := NewDistributionService(db, nil, nil)
 	ctx := context.Background()
 
 	// status filter
@@ -218,7 +219,7 @@ func countFavorites(t *testing.T, db *gorm.DB, itemID, userID string) int64 {
 
 func TestRevokeReadonlyDistribution_RemovesRecipientFavorite(t *testing.T) {
 	db := setupRevokeFavoriteDB(t)
-	svc := NewDistributionService(db, NewBehaviorService(db))
+	svc := NewDistributionService(db, NewBehaviorService(db), nil)
 	ctx := context.Background()
 
 	if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',1)`).Error; err != nil {
@@ -252,7 +253,7 @@ func TestRevokeReadonlyDistribution_RemovesRecipientFavorite(t *testing.T) {
 
 func TestRevokeReadonlyDistribution_KeepsFavoriteWhenAnotherActiveReadonlyExists(t *testing.T) {
 	db := setupRevokeFavoriteDB(t)
-	svc := NewDistributionService(db, NewBehaviorService(db))
+	svc := NewDistributionService(db, NewBehaviorService(db), nil)
 	ctx := context.Background()
 
 	if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',1)`).Error; err != nil {
@@ -288,7 +289,7 @@ func TestRevokeReadonlyDistribution_KeepsFavoriteWhenAnotherActiveReadonlyExists
 
 func TestDistributeItem_NotificationCarriesMessage(t *testing.T) {
 	db := setupDistributionServiceDB(t)
-	svc := NewDistributionService(db, nil)
+	svc := NewDistributionService(db, nil, nil)
 	notifier := &fakeNotifier{}
 	svc.SetNotificationService(notifier)
 	ctx := context.Background()
@@ -336,6 +337,130 @@ func TestDistributeItem_NotificationCarriesMessage(t *testing.T) {
 	}
 }
 
+// fakeDeptResolver is a stand-in for the dept-sync client (deptMemberResolver) so
+// the department-scope recipient resolution can be tested without a live service.
+type fakeDeptResolver struct {
+	configured bool
+	members    []deptsync.DeptUser
+	err        error
+	calledWith string
+}
+
+func (f *fakeDeptResolver) GetDeptUsersTree(deptID string) ([]deptsync.DeptUser, error) {
+	f.calledWith = deptID
+	return f.members, f.err
+}
+
+func (f *fakeDeptResolver) Configured() bool { return f.configured }
+
+func setupDepartmentUsersDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Only the columns resolveRecipients' department case touches are needed.
+	if err := db.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		subject_id TEXT,
+		username TEXT,
+		casdoor_universal_id TEXT,
+		deleted_at DATETIME
+	)`).Error; err != nil {
+		t.Fatalf("create users table: %v", err)
+	}
+	return db
+}
+
+func assertSameStringSet(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("set length mismatch: got %v, want %v", got, want)
+	}
+	counts := make(map[string]int, len(got))
+	for _, g := range got {
+		counts[g]++
+	}
+	for _, w := range want {
+		if counts[w] == 0 {
+			t.Fatalf("missing %q in result %v", w, got)
+		}
+		counts[w]--
+	}
+}
+
+func TestResolveRecipients_Department(t *testing.T) {
+	db := setupDepartmentUsersDB(t)
+	// Local users. uid-1 -> s1, uid-2 -> s2. uid-blank has an empty subject_id
+	// (never resolved a subject -> excluded). uid-3 has NO local user at all
+	// (dept-sync member who never signed into costrict-web -> skipped silently).
+	seed := []struct{ subject, uid string }{
+		{"s1", "uid-1"},
+		{"s2", "uid-2"},
+		{"", "uid-blank"},
+	}
+	for _, u := range seed {
+		if err := db.Exec(`INSERT INTO users (subject_id, username, casdoor_universal_id) VALUES (?,?,?)`, u.subject, u.subject, u.uid).Error; err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
+
+	// Subtree members: uid-1 appears twice (same person under two sub-departments),
+	// uid-2 once, uid-3 has no local user, one blank universal_id, and uid-blank maps
+	// to a user whose subject_id is empty.
+	members := []deptsync.DeptUser{
+		{UserID: "a", UniversalID: "uid-1", DeptID: "6571"},
+		{UserID: "a", UniversalID: "uid-1", DeptID: "6572"},
+		{UserID: "b", UniversalID: "uid-2", DeptID: "6571"},
+		{UserID: "c", UniversalID: "uid-3", DeptID: "6573"},
+		{UserID: "d", UniversalID: "", DeptID: "6573"},
+		{UserID: "e", UniversalID: "uid-blank", DeptID: "6571"},
+	}
+
+	// Configured + members -> deduped subject ids for matched local users only.
+	resolver := &fakeDeptResolver{configured: true, members: members}
+	svc := NewDistributionService(db, nil, resolver)
+	got, err := svc.resolveRecipients(db, DistributionTarget{ScopeType: "department", TargetID: "6560"})
+	if err != nil {
+		t.Fatalf("resolveRecipients(department): %v", err)
+	}
+	if resolver.calledWith != "6560" {
+		t.Fatalf("expected GetDeptUsersTree called with dept 6560, got %q", resolver.calledWith)
+	}
+	// uid-1 dup collapsed, uid-3/blank skipped, uid-blank excluded by subject_id <> ''.
+	assertSameStringSet(t, got, []string{"s1", "s2"})
+
+	// dept-sync not configured -> empty recipients (must NOT mis-fire to everyone).
+	svcUnconfigured := NewDistributionService(db, nil, &fakeDeptResolver{configured: false, members: members})
+	got, err = svcUnconfigured.resolveRecipients(db, DistributionTarget{ScopeType: "department", TargetID: "6560"})
+	if err != nil {
+		t.Fatalf("resolveRecipients(unconfigured): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty recipients when dept-sync unconfigured, got %v", got)
+	}
+
+	// nil dept-sync client -> empty recipients.
+	svcNil := NewDistributionService(db, nil, nil)
+	got, err = svcNil.resolveRecipients(db, DistributionTarget{ScopeType: "department", TargetID: "6560"})
+	if err != nil {
+		t.Fatalf("resolveRecipients(nil deptSync): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty recipients with nil dept-sync, got %v", got)
+	}
+
+	// Empty subtree -> empty recipients.
+	svcEmpty := NewDistributionService(db, nil, &fakeDeptResolver{configured: true, members: nil})
+	got, err = svcEmpty.resolveRecipients(db, DistributionTarget{ScopeType: "department", TargetID: "6560"})
+	if err != nil {
+		t.Fatalf("resolveRecipients(empty members): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty recipients for empty subtree, got %v", got)
+	}
+}
+
 func TestListReceipts(t *testing.T) {
 	db := setupDistributionServiceDB(t)
 	now := time.Now()
@@ -349,7 +474,7 @@ func TestListReceipts(t *testing.T) {
 			t.Fatalf("seed receipt: %v", err)
 		}
 	}
-	svc := NewDistributionService(db, nil)
+	svc := NewDistributionService(db, nil, nil)
 
 	got, err := svc.ListReceipts(context.Background(), "d1")
 	if err != nil {
@@ -390,7 +515,7 @@ func TestGetEffectivePermission(t *testing.T) {
 			t.Fatalf("seed receipt: %v", err)
 		}
 	}
-	svc := NewDistributionService(db, nil)
+	svc := NewDistributionService(db, nil, nil)
 	ctx := context.Background()
 
 	// item-1: active + non-dismissed -> returns the actual permission_mode.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/deptsync"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ type DistributionService struct {
 	db              *gorm.DB
 	behaviorSvc     *BehaviorService
 	notificationSvc NotificationSender
+	deptSync        deptMemberResolver
 }
 
 // NotificationSender abstracts the notification service for distribution events.
@@ -25,9 +27,23 @@ type NotificationSender interface {
 	TriggerMessage(userID, eventType string, msg sender.NotificationMessage)
 }
 
-// NewDistributionService creates a new distribution service.
-func NewDistributionService(db *gorm.DB, behaviorSvc *BehaviorService) *DistributionService {
-	return &DistributionService{db: db, behaviorSvc: behaviorSvc}
+// deptMemberResolver is the narrow slice of the dept-sync client the distribution
+// service needs: resolving a department's whole-subtree membership (and reporting
+// whether dept-sync is configured at all). Abstracted to a small interface so the
+// "distribute to a department" path can be unit-tested with a fake and so the
+// service does not hard-depend on the concrete *deptsync.Client. The concrete
+// *deptsync.Client satisfies this interface.
+type deptMemberResolver interface {
+	GetDeptUsersTree(deptID string) ([]deptsync.DeptUser, error)
+	Configured() bool
+}
+
+// NewDistributionService creates a new distribution service. deptSync is optional;
+// pass nil (or an unconfigured client) when department-scope distribution is not
+// available — the department case then resolves to an empty recipient set rather
+// than mis-firing.
+func NewDistributionService(db *gorm.DB, behaviorSvc *BehaviorService, deptSync deptMemberResolver) *DistributionService {
+	return &DistributionService{db: db, behaviorSvc: behaviorSvc, deptSync: deptSync}
 }
 
 // SetNotificationService sets the notification service for distribution events.
@@ -37,7 +53,7 @@ func (s *DistributionService) SetNotificationService(svc NotificationSender) {
 
 // DistributionTarget represents a single target in a distribute request.
 type DistributionTarget struct {
-	ScopeType string `json:"scopeType" binding:"required"` // user | organization
+	ScopeType string `json:"scopeType" binding:"required"` // user | organization | department
 	TargetID  string `json:"targetId" binding:"required"`
 }
 
@@ -189,7 +205,51 @@ func (s *DistributionService) resolveRecipients(tx *gorm.DB, target Distribution
 			return nil, err
 		}
 		return userIDs, nil
-	case "department", "role":
+	case "department":
+		// dept-sync is the source of truth for fine-grained departments. When it is
+		// not injected/configured (or unreachable, surfaced as Configured()==false at
+		// construction time) we must NOT fall back to "everyone" — resolve to an empty
+		// recipient set so an unavailable dept-sync degrades to a no-op distribution
+		// rather than mis-firing to all users.
+		if s.deptSync == nil || !s.deptSync.Configured() {
+			return []string{}, nil
+		}
+		members, err := s.deptSync.GetDeptUsersTree(target.TargetID)
+		if err != nil {
+			return nil, err
+		}
+		// Collect distinct, non-empty universal ids. A subtree may list the same
+		// person under several sub-departments, so de-dup before the lookup.
+		seen := make(map[string]struct{}, len(members))
+		uids := make([]string, 0, len(members))
+		for _, m := range members {
+			if m.UniversalID == "" {
+				continue
+			}
+			if _, ok := seen[m.UniversalID]; ok {
+				continue
+			}
+			seen[m.UniversalID] = struct{}{}
+			uids = append(uids, m.UniversalID)
+		}
+		if len(uids) == 0 {
+			return []string{}, nil
+		}
+		// Bridge dept-sync universal_id -> local users.casdoor_universal_id ->
+		// subject_id (the same bridge the admin org view uses). dept-sync members with
+		// no matching local user (never signed into costrict-web) are silently skipped
+		// by the IN filter — not an error.
+		var subjectIDs []string
+		if err := tx.Model(&models.User{}).
+			Where("casdoor_universal_id IN ? AND subject_id <> ''", uids).
+			Pluck("subject_id", &subjectIDs).Error; err != nil {
+			return nil, err
+		}
+		// Pluck does not de-dup; guard against duplicate subject_ids (defensive — also
+		// covers any future many-universal-id-to-one-subject mapping) so we never
+		// create duplicate receipts.
+		return dedupeStrings(subjectIDs), nil
+	case "role":
 		// Reserved for future extension
 		return []string{}, nil
 	default:
@@ -510,6 +570,23 @@ func (s *DistributionService) canModifyDistribution(dist *models.ItemDistributio
 
 func strPtr(s string) *string {
 	return &s
+}
+
+// dedupeStrings returns in with duplicates removed, preserving first-seen order.
+func dedupeStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 
