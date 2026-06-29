@@ -281,8 +281,18 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc&state="+state, nil)
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "bind=provider_mismatch") {
+		t.Fatalf("expected redirect to contain bind=provider_mismatch, got %q", loc)
+	}
+	if !strings.Contains(loc, "expected_provider=github") {
+		t.Fatalf("expected redirect to contain expected_provider=github, got %q", loc)
+	}
+	if !strings.Contains(loc, "actual_provider=idtrust") {
+		t.Fatalf("expected redirect to contain actual_provider=idtrust, got %q", loc)
 	}
 }
 
@@ -329,8 +339,8 @@ func TestBindCallbackSuccess(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
 	}
-	if location := w.Header().Get("Location"); location != "https://example.test/account" {
-		t.Fatalf("expected redirect to account page, got %q", location)
+	if location := w.Header().Get("Location"); location != "https://example.test/account?bind=success" {
+		t.Fatalf("expected redirect to account page with bind=success, got %q", location)
 	}
 	identities, err := UserModule.Service.ListUserIdentities(currentUser.SubjectID)
 	if err != nil {
