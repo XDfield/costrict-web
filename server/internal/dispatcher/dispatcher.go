@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"log/slog"
 	"time"
 
@@ -43,20 +44,30 @@ type Dispatcher struct {
 	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
 	aiEventHandler  AIEventHandler
+
+	// Deferred notification timer system
+	notificationDelay time.Duration
+	deferredMu        sync.Mutex
+	deferredTimers    map[string]*time.Timer // keyed by sessionID
 }
 
-func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, wecomBotAdapter interface{}, weComEnabled, weComBotEnabled bool, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
+func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, wecomBotAdapter interface{}, weComEnabled, weComBotEnabled bool, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, notificationDelay time.Duration) *Dispatcher {
+	if notificationDelay <= 0 {
+		notificationDelay = 30 * time.Second
+	}
 	return &Dispatcher{
-		db:              db,
-		store:           store,
-		notificationSvc: notificationSvc,
-		wecomAdapter:    wecomAdapter,
-		wecomBotAdapter: wecomBotAdapter,
-		weComEnabled:    weComEnabled,
-		weComBotEnabled: weComBotEnabled,
-		gwClient:        gwClient,
-		gwRegistry:      gwRegistry,
-		appURL:          appURL,
+		db:                db,
+		store:             store,
+		notificationSvc:   notificationSvc,
+		wecomAdapter:      wecomAdapter,
+		wecomBotAdapter:   wecomBotAdapter,
+		weComEnabled:      weComEnabled,
+		weComBotEnabled:   weComBotEnabled,
+		gwClient:          gwClient,
+		gwRegistry:        gwRegistry,
+		appURL:            appURL,
+		notificationDelay: notificationDelay,
+		deferredTimers:    make(map[string]*time.Timer),
 	}
 }
 
@@ -65,6 +76,42 @@ func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationServic
 // only fall back to card dispatch if AI handler returns false or is nil.
 func (d *Dispatcher) SetAIEventHandler(h AIEventHandler) {
 	d.aiEventHandler = h
+}
+
+// CancelDeferredNotification cancels a pending deferred notification timer for
+// the given sessionID. Called by the ClawAgent runtime when the user replies
+// before the timer fires, so the card dispatch is suppressed.
+func (d *Dispatcher) CancelDeferredNotification(sessionID string) {
+	d.deferredMu.Lock()
+	defer d.deferredMu.Unlock()
+	if timer, ok := d.deferredTimers[sessionID]; ok {
+		timer.Stop()
+		delete(d.deferredTimers, sessionID)
+		slog.Info("[dispatcher] cancelled deferred notification", "sessionID", sessionID)
+	}
+}
+
+// startDeferredNotification starts a timer that will fire after notificationDelay
+// and dispatch a card notification for the given input. The timer is keyed by
+// sessionID so it can be cancelled if the user replies before it fires.
+func (d *Dispatcher) startDeferredNotification(input DispatchInput) {
+	d.deferredMu.Lock()
+	// Cancel any existing timer for the same session
+	if timer, ok := d.deferredTimers[input.SessionID]; ok {
+		timer.Stop()
+		delete(d.deferredTimers, input.SessionID)
+	}
+	d.deferredTimers[input.SessionID] = time.AfterFunc(d.notificationDelay, func() {
+		d.deferredMu.Lock()
+		delete(d.deferredTimers, input.SessionID)
+		d.deferredMu.Unlock()
+
+		slog.Info("[dispatcher] deferred timer fired, dispatching card notification", "eventType", input.EventType, "sessionID", input.SessionID)
+		channels := d.selectChannels(input.UserID)
+		d.dispatchNow(input, channels)
+	})
+	d.deferredMu.Unlock()
+	slog.Info("[dispatcher] started deferred notification", "eventType", input.EventType, "sessionID", input.SessionID, "delay", d.notificationDelay)
 }
 
 // --- WeCom UserID Resolution ---
@@ -98,29 +145,26 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
-	// Permission batch: try AI handler first, fall back to card dispatch
-	if input.EventType == "permission_batch" {
+	// Deferrable events: permission, permission_batch, question
+	// Start a deferred timer. If the user replies (via AI handler) before the
+	// timer fires, CancelDeferredNotification stops the timer and the card is
+	// never sent. If the timer fires, the card is dispatched as a fallback.
+	if isDeferrable(input.EventType) {
 		if d.aiEventHandler != nil {
 			handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
 			if handled {
-				slog.Info("[dispatcher] permission_batch handled by AI", "sessionID", input.SessionID)
+				slog.Info("[dispatcher] event handled by AI, starting deferred card timer", "eventType", input.EventType, "sessionID", input.SessionID)
+				d.startDeferredNotification(input)
 				return
 			}
+			slog.Info("[dispatcher] AI declined, starting deferred card timer", "eventType", input.EventType, "sessionID", input.SessionID)
 		}
-		d.dispatchPermissionBatch(input)
+		// No AI handler or AI declined: still defer the card dispatch
+		d.startDeferredNotification(input)
 		return
 	}
 
-	// Question: try AI handler first (bypass channel selection), fall back to dispatchNow
-	if input.EventType == "question" && d.aiEventHandler != nil {
-		handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
-		if handled {
-			slog.Info("[dispatcher] question handled by AI", "sessionID", input.SessionID)
-			return
-		}
-		slog.Info("[dispatcher] AI declined question, falling back to card dispatch", "sessionID", input.SessionID)
-	}
-
+	// Non-deferrable events: dispatch immediately
 	channels := d.selectChannels(input.UserID)
 	d.dispatchNow(input, channels)
 }
@@ -129,6 +173,12 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 
 func needsInteraction(eventType string) bool {
 	return eventType == "permission" || eventType == "question"
+}
+
+// isDeferrable returns true for events that should use the deferred
+// notification timer (permission, permission_batch, question).
+func isDeferrable(eventType string) bool {
+	return eventType == "permission" || eventType == "permission_batch" || eventType == "question"
 }
 
 // --- Channel Selection ---
@@ -149,20 +199,20 @@ func (d *Dispatcher) selectChannels(userID string) *SelectedChannels {
 // --- Dispatch Routing ---
 
 func (d *Dispatcher) dispatchNow(input DispatchInput, channels *SelectedChannels) {
-	// Try AI event handler first for actionable events
-	if needsInteraction(input.EventType) && d.aiEventHandler != nil {
-		handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
-		if handled {
-			slog.Info("[dispatcher] event handled by AI", "eventType", input.EventType, "sessionID", input.SessionID)
-			return
-		}
-		slog.Info("[dispatcher] AI declined, falling back to card dispatch", "eventType", input.EventType, "sessionID", input.SessionID)
-	}
-
+	// AI handler is already tried in Dispatch before the deferred timer is set.
+	// When this function runs (either immediately for non-deferrable events, or
+	// after the deferred timer fires), we go straight to card/notification dispatch.
 	if needsInteraction(input.EventType) && len(channels.Interactive) > 0 {
 		d.dispatchInteractive(input, channels)
 		return
 	}
+
+	// permission_batch goes through its own card path
+	if input.EventType == "permission_batch" {
+		d.dispatchPermissionBatch(input)
+		return
+	}
+
 	d.dispatchNotification(input)
 }
 
