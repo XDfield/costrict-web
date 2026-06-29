@@ -1,5 +1,5 @@
 // Package deptsync is a thin, config-driven HTTP client for the external
-// dept-sync service (real department / user tree, X-API-Key authenticated).
+// dept-sync service (real department / user tree, X-Query-Key authenticated).
 //
 // dept-sync is an OPTIONAL dependency: when it is not configured (no base URL or
 // no API key) or unreachable, the client degrades gracefully — every method
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -33,11 +34,18 @@ var ErrNotConfigured = errors.New("dept-sync service is not configured")
 const (
 	defaultTimeout  = 10 * time.Second
 	defaultCacheTTL = 60 * time.Second
-	apiKeyHeader    = "X-API-Key"
+	// dept-sync mounts its data endpoints under /costrict-dept-info/api/v1 and
+	// authenticates them with the X-Query-Key header (query_key table). Both are
+	// overridable via config (DEPT_SYNC_PATH_PREFIX / DEPT_SYNC_AUTH_HEADER) so a
+	// future service version can be targeted without a code change.
+	defaultPathPrefix = "/costrict-dept-info/api/v1"
+	defaultAuthHeader = "X-Query-Key"
 )
 
-// Dept is one node of the department tree. Children is populated only by the
-// tree endpoint (include_children=true); the flat endpoints leave it nil.
+// Dept is one node of the department tree. It is the response contract returned
+// verbatim to the admin frontend (camelCase AdminDept), so its tags stay camelCase;
+// dept-sync's snake_case payload is decoded via deptNode and mapped in. Children is
+// populated only by the tree endpoint; the flat endpoints leave it nil.
 type Dept struct {
 	DeptID         string `json:"deptId"`
 	DeptName       string `json:"deptName"`
@@ -50,14 +58,54 @@ type Dept struct {
 	Children       []Dept `json:"children,omitempty"`
 }
 
+// deptNode mirrors dept-sync's snake_case department node (the /department/tree and
+// /user/{id}/departments endpoints share this shape) for decoding only; toDept maps
+// it to the camelCase Dept contract. Keeping decode and frontend-output shapes
+// separate is what lets the upstream contract change without touching the frontend.
+type deptNode struct {
+	DeptID         string     `json:"dept_id"`
+	DeptName       string     `json:"dept_name"`
+	DeptPath       string     `json:"dept_path"`
+	ParentDeptID   string     `json:"parent_dept_id"`
+	DeptLevel      int        `json:"dept_level"`
+	OrderNum       int        `json:"order_num"`
+	LeaderID       string     `json:"leader_id"`
+	ChildDeptCount int        `json:"child_dept_count"`
+	Children       []deptNode `json:"children"`
+}
+
+func (n deptNode) toDept() Dept {
+	d := Dept{
+		DeptID:         n.DeptID,
+		DeptName:       n.DeptName,
+		DeptPath:       n.DeptPath,
+		ParentDeptID:   n.ParentDeptID,
+		DeptLevel:      n.DeptLevel,
+		ChildDeptCount: n.ChildDeptCount,
+		LeaderID:       n.LeaderID,
+		OrderNum:       n.OrderNum,
+	}
+	if len(n.Children) > 0 {
+		d.Children = make([]Dept, len(n.Children))
+		for i, c := range n.Children {
+			d.Children[i] = c.toDept()
+		}
+	}
+	return d
+}
+
 // DeptUser is one member of a department as reported by dept-sync. UniversalID
-// is the bridge to costrict-web users.casdoor_universal_id.
+// is the bridge to costrict-web users.casdoor_universal_id. Field tags match
+// dept-sync's snake_case data API; IsMain is an int flag (1 = primary membership).
 type DeptUser struct {
-	UserID      string `json:"userId"`
+	UserID      string `json:"user_id"`
 	Username    string `json:"username"`
-	UniversalID string `json:"universalId"`
-	IsMain      bool   `json:"isMain"`
+	UniversalID string `json:"universal_id"`
+	DeptID      string `json:"dept_id"`
+	DeptName    string `json:"dept_name"`
 	Position    string `json:"position"`
+	IsMain      int    `json:"is_main"`
+	Status      int    `json:"status"`
 }
 
 // Client talks to dept-sync over HTTP with a short-TTL in-memory cache. The
@@ -65,6 +113,8 @@ type DeptUser struct {
 type Client struct {
 	baseURL    string
 	apiKey     string
+	pathPrefix string
+	authHeader string
 	httpClient *http.Client
 	cacheTTL   time.Duration
 
@@ -89,9 +139,24 @@ func New(cfg config.DeptSyncConfig) *Client {
 	if ttl <= 0 {
 		ttl = defaultCacheTTL
 	}
+	// Normalize the prefix to exactly one leading slash and no trailing slash, so a
+	// misconfigured override (e.g. "costrict-dept-info/api/v1" without a leading
+	// slash) still yields a valid URL rather than "http://hostcostrict-...".
+	prefix := strings.Trim(strings.TrimSpace(cfg.PathPrefix), "/")
+	if prefix == "" {
+		prefix = defaultPathPrefix
+	} else {
+		prefix = "/" + prefix
+	}
+	authHeader := strings.TrimSpace(cfg.AuthHeader)
+	if authHeader == "" {
+		authHeader = defaultAuthHeader
+	}
 	return &Client{
 		baseURL:    strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		apiKey:     strings.TrimSpace(cfg.APIKey),
+		pathPrefix: prefix,
+		authHeader: authHeader,
 		httpClient: &http.Client{Timeout: timeout},
 		cacheTTL:   ttl,
 		cache:      make(map[string]cacheEntry),
@@ -104,11 +169,14 @@ func (c *Client) Configured() bool {
 	return c != nil && c.baseURL != "" && c.apiKey != ""
 }
 
-// envelope is the unified dept-sync response wrapper {code,message,data}. data is
-// kept raw so callers can decode it as either a bare array or a {list,total}
-// object (list endpoints differ).
+// envelope is the unified dept-sync response wrapper {code,success,message,data}.
+// dept-sync data endpoints return code as a string and a boolean success flag, so
+// Code is kept raw (tolerates string or number) and Success is a pointer (nil when
+// the endpoint omits it — then success is judged solely by HTTP status). data is
+// kept raw so callers can decode it as either a bare array or a {list,total} object.
 type envelope struct {
-	Code    int             `json:"code"`
+	Code    json.RawMessage `json:"code"`
+	Success *bool           `json:"success"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
 }
@@ -129,7 +197,9 @@ func (c *Client) GetTree() ([]Dept, error) {
 	if v, ok := c.cacheGet(key); ok {
 		return v.([]Dept), nil
 	}
-	raw, err := c.get("/api/department/tree?include_children=true")
+	// dept-sync's tree endpoint returns the full nested tree when no dept_id is given;
+	// it reads only dept_id, not include_children (that flag is for the users endpoint).
+	raw, err := c.get("/department/tree")
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +220,7 @@ func (c *Client) GetDeptUsers(deptID string) ([]DeptUser, error) {
 	if v, ok := c.cacheGet(key); ok {
 		return v.([]DeptUser), nil
 	}
-	raw, err := c.get("/api/department/" + urlPathEscape(deptID) + "/users")
+	raw, err := c.get("/department/" + url.PathEscape(deptID) + "/users")
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +242,9 @@ func (c *Client) GetUserDepartments(userID string) ([]Dept, error) {
 	if v, ok := c.cacheGet(key); ok {
 		return v.([]Dept), nil
 	}
-	raw, err := c.get("/api/user/" + urlPathEscape(userID) + "/departments")
+	// authz passes a universal_id, so query by universal; dept-sync's user-departments
+	// endpoint defaults to type=user_id (工号) and would otherwise not match.
+	raw, err := c.get("/user/" + url.PathEscape(userID) + "/departments?type=universal")
 	if err != nil {
 		return nil, err
 	}
@@ -219,17 +291,18 @@ func findDeptPath(nodes []Dept, deptID string) (string, bool) {
 	return "", false
 }
 
-// get performs an authenticated GET and unwraps the {code,message,data}
-// envelope, returning the raw data payload for the caller to decode.
+// get performs an authenticated GET (base URL + configured path prefix), sends the
+// configured auth header, and unwraps the {code,success,data} envelope, returning
+// the raw data payload for the caller to decode.
 func (c *Client) get(path string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.httpClient.Timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+c.pathPrefix+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dept-sync: build request: %w", err)
 	}
-	req.Header.Set(apiKeyHeader, c.apiKey)
+	req.Header.Set(c.authHeader, c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -252,10 +325,13 @@ func (c *Client) get(path string) (json.RawMessage, error) {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("dept-sync: decode envelope: %w", err)
 	}
-	// Treat a non-zero application code as an upstream error. dept-sync uses 0 or
-	// 200 for success depending on the endpoint; both are accepted.
-	if env.Code != 0 && env.Code != http.StatusOK {
-		return nil, fmt.Errorf("dept-sync: upstream code %d: %s", env.Code, env.Message)
+	// Only an explicit success:false is treated as an application error. The string
+	// "code" is informational (it varies across endpoints) and is not used as a
+	// gate, avoiding brittle code-value comparisons; transport/auth failures already
+	// surface as a non-200 status above.
+	if env.Success != nil && !*env.Success {
+		return nil, fmt.Errorf("dept-sync: upstream reported failure (code=%s message=%s)",
+			strings.TrimSpace(string(env.Code)), env.Message)
 	}
 	if len(env.Data) == 0 {
 		return json.RawMessage("null"), nil
@@ -270,9 +346,13 @@ func decodeDeptList(raw json.RawMessage) ([]Dept, error) {
 	if isNull(inner) {
 		return []Dept{}, nil
 	}
-	var depts []Dept
-	if err := json.Unmarshal(inner, &depts); err != nil {
+	var nodes []deptNode
+	if err := json.Unmarshal(inner, &nodes); err != nil {
 		return nil, fmt.Errorf("dept-sync: decode departments: %w", err)
+	}
+	depts := make([]Dept, len(nodes))
+	for i, n := range nodes {
+		depts[i] = n.toDept()
 	}
 	return depts, nil
 }
@@ -334,12 +414,6 @@ func (c *Client) InvalidateCache() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cache = make(map[string]cacheEntry)
-}
-
-// urlPathEscape escapes a path segment while keeping it readable; dept ids /
-// user ids are simple tokens but may contain special characters.
-func urlPathEscape(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "?", "%3F"), "#", "%23")
 }
 
 func truncate(s string, n int) string {
