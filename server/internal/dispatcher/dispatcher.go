@@ -138,10 +138,17 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
-	// Auto-accept permission requests when workspace has autoAccept enabled
-	if input.EventType == "permission" && d.isAutoAccept(input) {
-		slog.Info("[dispatcher] auto-accept enabled, auto-approving permission", "sessionID", input.SessionID)
-		d.autoApprovePermission(input)
+	// Auto-accept permission requests when workspace has autoAccept enabled.
+	// Both single permission and permission_batch short-circuit here: skip the
+	// AI handler and the deferred notification timer entirely — the user has
+	// already opted into auto-approval, so there's nothing to notify about.
+	if (input.EventType == "permission" || input.EventType == "permission_batch") && d.isAutoAccept(input) {
+		slog.Info("[dispatcher] auto-accept enabled, auto-approving permission(s)", "eventType", input.EventType, "sessionID", input.SessionID)
+		if input.EventType == "permission" {
+			d.autoApprovePermission(input)
+		} else {
+			d.batchApprovePermissions(input)
+		}
 		return
 	}
 
