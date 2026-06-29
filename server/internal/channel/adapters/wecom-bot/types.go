@@ -4,12 +4,22 @@ import "encoding/json"
 
 // --- Proxy API request types ---
 
+// proxySessionRef is an optional reference to a CoStrict session. The proxy
+// decides (based on its bot.session_link_mode config) whether to render it as
+// a clickable markdown link appended to the content. Server provides the title
+// (already event-appropriate) and the absolute URL verbatim — no markdown here.
+type proxySessionRef struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
 type proxySendRequest struct {
-	UserID   string `json:"user_id"`
-	ChatType string `json:"chat_type"`
-	MsgType  string `json:"msg_type"`
-	Content  string `json:"content"`
-	TaskID   string `json:"task_id,omitempty"`
+	UserID     string             `json:"user_id"`
+	ChatType   string             `json:"chat_type"`
+	MsgType    string             `json:"msg_type"`
+	Content    string             `json:"content"`
+	TaskID     string             `json:"task_id,omitempty"`
+	SessionRef *proxySessionRef   `json:"session_ref,omitempty"`
 }
 
 type proxyReplyRequest struct {
@@ -23,13 +33,6 @@ type proxyCardUpdateRequest struct {
 	CardType string `json:"card_type,omitempty"`
 	Content  string `json:"content"`
 	TaskID   string `json:"task_id,omitempty"`
-}
-
-type proxyStreamReplyRequest struct {
-	ReqID    string `json:"req_id"`
-	StreamID string `json:"stream_id"`
-	Content  string `json:"content"`
-	Finish   bool   `json:"finish"`
 }
 
 type proxyResponse struct {

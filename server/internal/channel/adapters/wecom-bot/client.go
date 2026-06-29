@@ -28,12 +28,20 @@ func NewBotProxyClient(baseURL, authToken string) *BotProxyClient {
 }
 
 func (c *BotProxyClient) Send(ctx context.Context, userID, chatType, msgType, content, taskID string) error {
+	return c.SendWithSessionRef(ctx, userID, chatType, msgType, content, taskID, nil)
+}
+
+// SendWithSessionRef is like Send but optionally attaches a session_ref the
+// proxy may render as a clickable link. Callers that don't need the link
+// should use Send; pass nil sessionRef to behave identically.
+func (c *BotProxyClient) SendWithSessionRef(ctx context.Context, userID, chatType, msgType, content, taskID string, sessionRef *proxySessionRef) error {
 	req := proxySendRequest{
-		UserID:   userID,
-		ChatType: chatType,
-		MsgType:  msgType,
-		Content:  content,
-		TaskID:   taskID,
+		UserID:     userID,
+		ChatType:   chatType,
+		MsgType:    msgType,
+		Content:    content,
+		TaskID:     taskID,
+		SessionRef: sessionRef,
 	}
 	return c.doPost(ctx, "/api/bot/send", req)
 }
@@ -45,16 +53,6 @@ func (c *BotProxyClient) Reply(ctx context.Context, reqID, msgType, content stri
 		Content: content,
 	}
 	return c.doPost(ctx, "/api/bot/reply", req)
-}
-
-func (c *BotProxyClient) ReplyStream(ctx context.Context, reqID, streamID string, content string, finish bool) error {
-	req := proxyStreamReplyRequest{
-		ReqID:    reqID,
-		StreamID: streamID,
-		Content:  content,
-		Finish:   finish,
-	}
-	return c.doPost(ctx, "/api/bot/reply/stream", req)
 }
 
 func (c *BotProxyClient) UpdateCard(ctx context.Context, reqID string, cardUpdate []byte) error {

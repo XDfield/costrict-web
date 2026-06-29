@@ -29,6 +29,10 @@ type InboundMessage struct {
 type OutboundMessage struct {
 	ContentType string `json:"contentType"`
 	Content     string `json:"content"`
+	// Metadata carries optional channel-specific hints. Adapters may consult
+	// known keys (e.g. "session_ref") to enrich outbound delivery. Senders
+	// must not require adapters to understand any particular key.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type ReplyTarget struct {
@@ -50,12 +54,6 @@ type Sender interface {
 	Send(ctx context.Context, content string) error
 	SendMessage(ctx context.Context, msg OutboundMessage) error
 	ReplyContext() ReplyContext
-}
-
-// StreamSender is an optional interface that Sender implementations
-// can implement to support streaming message delivery.
-type StreamSender interface {
-	SendStream(ctx context.Context, content string, finish bool) error
 }
 
 type ChannelEvent struct {
