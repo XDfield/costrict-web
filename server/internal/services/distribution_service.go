@@ -125,11 +125,6 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 					return err
 				}
 			}
-
-			// Auto-create favorite for the recipient
-			if s.behaviorSvc != nil {
-				_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
-			}
 		}
 
 		return nil
@@ -137,6 +132,18 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Auto-favorite each recipient AFTER the distribution has committed. This is
+	// best-effort: a favorite hiccup must not roll back an otherwise-valid
+	// distribution, and creating it post-commit avoids leaving an orphan favorite
+	// if the transaction had rolled back. (In-tx it can't be best-effort: any error
+	// inside the tx aborts the whole tx in Postgres.) The recipient is distributed
+	// regardless; the favorite is the auto-install convenience.
+	if s.behaviorSvc != nil {
+		for _, userID := range recipients {
+			_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
+		}
 	}
 
 	// Notify recipients
@@ -336,7 +343,17 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.UnfavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					// Same tx as the status update, so the readonly guard sees this
+					// distribution as already revoked/paused and removes the favorite
+					// instead of treating the skill as still-required. ErrSkillRequired
+					// (another active readonly distribution still needs it) is an
+					// expected, non-fatal outcome — keep the favorite and continue. Any
+					// OTHER error is a real failure: propagate it so the whole tx
+					// (including the revoked/paused status change) rolls back rather than
+					// committing a status that's out of sync with the favorite.
+					if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil && !errors.Is(err, ErrSkillRequired) {
+						return err
+					}
 				}
 			}
 			if *status == "revoked" {
@@ -354,7 +371,11 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.FavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					// Re-favorite within the same tx; a real failure must roll back the
+					// resume so status and favorite stay consistent.
+					if _, _, err := s.behaviorSvc.FavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil {
+						return err
+					}
 				}
 			}
 		}
