@@ -18,16 +18,18 @@ func BuildInstructions(eventType string) string {
 - query_recent_messages(limit): 查询会话最近的对话消息，了解用户正在执行什么任务。limit 默认 5 条
 
 ### 权限操作工具
-- reply_permission(permissionID, approved): 回复权限请求。当用户明确批准或拒绝时调用此工具。
+- reply_permission(permissionID, approved, enableAutoAccept?): 回复权限请求。当用户明确批准或拒绝时调用此工具。
   - permissionID: 权限请求的 ID
   - approved: true 表示批准，false 表示拒绝
+  - enableAutoAccept: 可选。仅当用户明确表达"以后都自动同意""记住这次选择""别再问我了"等持久化意图时才设为 true——这会把这个 workspace 的 autoAccept 打开，后续权限请求由系统自动批准。用户只对当前这一次表态（"这次允许"/"批准一下"）时**不要**设这个参数。
 
 示例流程：
 1. 先调用 query_recent_messages 了解用户在做什么
 2. 向用户说明权限请求的内容，询问是否允许
 3. 用户说"允许" → 调用 reply_permission(permissionID=xxx, approved=true)
 4. 用户说"拒绝" → 调用 reply_permission(permissionID=xxx, approved=false)
-5. 用户有其他问题 → 正常对话，不调用工具`)
+5. 用户说"以后都自动同意" → 调用 reply_permission(permissionID=xxx, approved=true, enableAutoAccept=true)
+6. 用户有其他问题 → 正常对话，不调用工具`)
 
 	case "question":
 		return fmt.Sprintf(`

@@ -155,8 +155,16 @@ func (r *AgentRunner) Run(ctx context.Context, userID, sessionID, message string
 					}
 				}
 				if choice.FinishReason != "" {
-					// Save assistant message to DB
-					r.addAssistantMessage(ctx, sessionID, fullResponse)
+					// Strip any hallucinated <tool_call> text XML before persisting —
+					// Run() has no tool registry, so the model's attempt to call tools
+					// here is just noise that shouldn't pollute session history.
+					persisted := fullResponse
+					if _, cleaned := parseTextToolCalls(persisted); cleaned != persisted {
+						slog.Warn("[agent] Run: stripped text-encoded tool_call XML before persisting",
+							"sessionID", sessionID, "before", len(persisted), "after", len(cleaned))
+						persisted = cleaned
+					}
+					r.addAssistantMessage(ctx, sessionID, persisted)
 					eventCh <- AgentEvent{
 						Type:    "done",
 						IsFinal: true,
@@ -445,8 +453,34 @@ func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID strin
 
 			choice := resp.Choices[0]
 
+			// Some LLMs (notably GLM-family) sometimes emit tool calls as text
+			// inside content using an XML-like convention instead of — or in
+			// addition to — the structured tool_calls field. Always run the
+			// parser so the XML is stripped from content even when structured
+			// ToolCalls are also present (in that case we keep the structured
+			// calls and only use the parser to clean the leaked text).
+			textParsed := false
+			if parsed, cleaned := parseTextToolCalls(choice.Message.Content); len(parsed) > 0 {
+				slog.Info("[agent] RunEventReply: recovered text-encoded tool calls from content",
+					"sessionID", sessionID, "count", len(parsed),
+					"hadStructured", len(choice.Message.ToolCalls) > 0)
+				if len(choice.Message.ToolCalls) == 0 {
+					choice.Message.ToolCalls = parsed
+				}
+				choice.Message.Content = cleaned
+				textParsed = true
+			}
+
 			// Save assistant message to DB
 			r.addAssistantMessage(ctx, sessionID, choice.Message.Content)
+
+			// When tool calls were recovered from text, surface the leftover
+			// chat content (e.g., "好的，已经批准了...") before executing tools
+			// so the user sees the acknowledgement that preceded the leaked
+			// <tool_call> block.
+			if textParsed && choice.Message.Content != "" {
+				eventCh <- AgentEvent{Type: "token", Content: choice.Message.Content}
+			}
 
 			// Check for tool calls
 			if len(choice.Message.ToolCalls) > 0 {
@@ -473,6 +507,8 @@ func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID strin
 						DeviceID:      deviceID,
 						Directory:     directory,
 						SessionID:     deviceSessionID,
+						UserID:        userID,
+						DB:            r.rt.db,
 						DeviceProxy:   r.rt.DeviceProxy,
 						MarkProcessed: func() { r.markEventProcessed(sessionID) },
 					}

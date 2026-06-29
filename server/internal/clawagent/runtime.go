@@ -11,6 +11,8 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/gateway"
+	// sessionurl disabled — re-add when re-enabling 查看会话 link feature.
+	// "github.com/costrict/costrict-web/server/internal/sessionurl"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -288,7 +290,7 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 		if runErr != nil {
 			return fmt.Errorf("agent event reply failed: %w", runErr)
 		}
-		go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID)
+		go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID, sess.EventData)
 		return nil
 	}
 
@@ -305,84 +307,103 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 		return fmt.Errorf("agent run failed: %w", runErr)
 	}
 
-	go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID)
+	go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID, nil)
 	return nil
 }
 
-// streamResponse consumes the event channel and sends responses to the channel sender.
-// When the sender implements StreamSender, it uses streaming for incremental delivery.
+// streamResponse consumes the event channel and dispatches the final assembled
+// reply. Non-streaming: content is accumulated and sent once on the final
+// event, so adapters see a single OutboundMessage. When eventData is non-nil
+// (event-driven reply path), a session_ref is attached as metadata so channels
+// like wecom-bot can render a clickable link back to the related session.
 func (rt *ClawAgentRuntime) streamResponse(
 	ctx context.Context,
 	eventCh <-chan AgentEvent,
 	sender channel.Sender,
 	userID, userMessage, sessionID string,
+	eventData *EventContext,
 ) {
-	var buf strings.Builder
-	var lastFlush time.Time
 	var assistantReply strings.Builder
 
-	streamSender, hasStream := sender.(channel.StreamSender)
+	slog.Info("[stream] starting", "sessionID", sessionID, "userID", userID, "hasEventData", eventData != nil)
 
-	slog.Info("[stream] starting", "sessionID", sessionID, "userID", userID, "hasStream", hasStream)
-
-	flush := func(finish bool) {
-		if buf.Len() > 0 || finish {
-			content := buf.String()
-			slog.Debug("[stream] flushing", "sessionID", sessionID, "contentLen", len(content), "finish", finish)
-			if hasStream {
-				if err := streamSender.SendStream(ctx, content, finish); err != nil {
-					slog.Error("[stream] SendStream error", "sessionID", sessionID, "error", err)
-				}
-			} else {
-				if err := sender.Send(ctx, content); err != nil {
-					slog.Error("[stream] Send error", "sessionID", sessionID, "error", err)
-				}
+	// Best-effort session_ref: resolve workspaceID once up-front. If lookup
+	// fails or components are missing, proceed without the link — the reply
+	// itself is the priority.
+	//
+	// [disabled] 查看会话 link feature — commented out. To re-enable, uncomment
+	// the block below.
+	/*
+	var metadata map[string]any
+	if eventData != nil && eventData.SessionID != "" && eventData.Path != "" && eventData.DeviceID != "" {
+		workspaceID, err := sessionurl.ResolveWorkspaceID(rt.db, eventData.DeviceID, eventData.Path)
+		if err != nil {
+			slog.Warn("[stream] failed to resolve workspaceID for session_ref",
+				"sessionID", sessionID, "deviceID", eventData.DeviceID, "error", err)
+		} else if url := sessionurl.Build(rt.cfg.AppURL, workspaceID, eventData.SessionID); url != "" {
+			metadata = map[string]any{
+				"session_ref": map[string]any{
+					"title": "查看会话",
+					"url":   url,
+				},
 			}
-			buf.Reset()
-			lastFlush = time.Now()
+		}
+	}
+	*/
+	var metadata map[string]any
+
+	send := func(content string) {
+		msg := channel.OutboundMessage{ContentType: "text", Content: content, Metadata: metadata}
+		if err := sender.SendMessage(ctx, msg); err != nil {
+			slog.Error("[stream] SendMessage error", "sessionID", sessionID, "error", err)
 		}
 	}
 
 	for evt := range eventCh {
-		if evt.Type == "tool_call" {
-			slog.Debug("[runtime] streamResponse: tool_call", "tool", evt.Tool, "sessionID", sessionID)
-			continue
-		}
-		if evt.Type == "tool_result" {
-			slog.Debug("[runtime] streamResponse: tool_result", "tool", evt.Tool, "sessionID", sessionID)
+		if evt.Type == "tool_call" || evt.Type == "tool_result" {
+			slog.Debug("[runtime] streamResponse: "+evt.Type, "tool", evt.Tool, "sessionID", sessionID)
 			continue
 		}
 		if evt.Error != "" {
 			slog.Error("[stream] LLM returned error", "sessionID", sessionID, "error", evt.Error)
-			if hasStream {
-				_ = streamSender.SendStream(ctx, fmt.Sprintf("⚠️ %s", evt.Error), true)
-			} else {
-				_ = sender.Send(ctx, fmt.Sprintf("⚠️ %s", evt.Error))
-			}
+			send(fmt.Sprintf("⚠️ %s", evt.Error))
 			continue
 		}
 		if evt.IsFinal {
 			slog.Info("[stream] final event received", "sessionID", sessionID, "replyLen", assistantReply.Len())
-			flush(true)
-			// Clear EventData from DB (horizontal scaling)
-			go rt.SessionMeta.ClearEventData(rt.bgCtx, sessionID)
-			// Async memory refresh
 			reply := assistantReply.String()
+			// Defense-in-depth: even when the producing path is Run() (no tools)
+			// and the model hallucinates <tool_call>…</tool_call> as text, strip
+			// it before the message reaches the user. parseTextToolCalls returns
+			// the cleaned content; we discard any parsed calls because this path
+			// has no tool registry wired in.
+			stripped := false
+			if _, cleaned := parseTextToolCalls(reply); cleaned != reply {
+				slog.Warn("[stream] stripped text-encoded tool_call XML from reply (Run path doesn't execute tools)",
+					"sessionID", sessionID, "before", len(reply), "after", len(cleaned))
+				reply = cleaned
+				stripped = true
+			}
+			// If the model emitted nothing but tool-call XML, the user would
+			// see an empty message. Substitute a fallback so they at least know
+			// an event is pending and how to respond.
+			if reply == "" && stripped {
+				slog.Warn("[stream] reply empty after XML strip, sending fallback", "sessionID", sessionID)
+				reply = "收到一个新的申请，请回复「允许」或「拒绝」来处理。"
+			}
+			if reply != "" {
+				send(reply)
+			}
+			go rt.SessionMeta.ClearEventData(rt.bgCtx, sessionID)
 			if reply != "" {
 				go rt.MemoryMgr.Refresh(rt.bgCtx, userID, userMessage, reply, rt.runner.llmClient, rt.agentCfg)
 			}
-			// Async session meta update
 			go rt.SessionMeta.IncrementMessageCount(sessionID)
-			// Async compaction check
 			go rt.maybeCompact(rt.bgCtx, sessionID)
 			break
 		}
 		if evt.Content != "" {
-			buf.WriteString(evt.Content)
 			assistantReply.WriteString(evt.Content)
-			if buf.Len() > 500 || (!lastFlush.IsZero() && time.Since(lastFlush) > 2*time.Second) {
-				flush(false)
-			}
 		}
 	}
 }
