@@ -143,7 +143,8 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 	// regardless; the favorite is the auto-install convenience.
 	if s.behaviorSvc != nil {
 		for _, userID := range recipients {
-			_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID)
+			// Distributed favorites default to "auto" (AI-auto-invokable).
+			_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID, "auto")
 		}
 	}
 
