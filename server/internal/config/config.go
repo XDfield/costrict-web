@@ -70,12 +70,16 @@ type ClawAgentSessionConfig struct {
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
-// (real department/user tree, X-API-Key authenticated). Both fields are optional:
-// when BaseURL or APIKey is empty the dept-sync client is considered unconfigured
+// (real department/user tree, X-Query-Key authenticated). BaseURL and APIKey are
+// optional: when either is empty the dept-sync client is considered unconfigured
 // and degrades gracefully (admin endpoints return 503, frontend shows a notice).
+// PathPrefix/AuthHeader default to the current dept-sync contract and only need
+// overriding if the service changes its route prefix or auth header.
 type DeptSyncConfig struct {
-	BaseURL     string // e.g. http://dept-sync:8080 (no trailing /api)
-	APIKey      string // X-API-Key value issued by dept-sync (query_key table)
+	BaseURL     string // e.g. http://dept-sync:8080 (bare address, no route prefix)
+	APIKey      string // query_key value issued by dept-sync; sent in AuthHeader
+	PathPrefix  string // data-API route prefix, default /costrict-dept-info/api/v1
+	AuthHeader  string // auth header name, default X-Query-Key
 	TimeoutSec  int    // per-request HTTP timeout, default 10s
 	CacheTTLSec int    // in-memory cache TTL for tree/users responses, default 60s
 }
@@ -208,6 +212,8 @@ func Load() *Config {
 		DeptSync: DeptSyncConfig{
 			BaseURL:     getEnv("DEPT_SYNC_URL", ""),
 			APIKey:      getEnv("DEPT_SYNC_API_KEY", ""),
+			PathPrefix:  getEnv("DEPT_SYNC_PATH_PREFIX", "/costrict-dept-info/api/v1"),
+			AuthHeader:  getEnv("DEPT_SYNC_AUTH_HEADER", "X-Query-Key"),
 			TimeoutSec:  getEnvInt("DEPT_SYNC_TIMEOUT_SECONDS", 10),
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},

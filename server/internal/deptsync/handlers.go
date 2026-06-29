@@ -143,7 +143,7 @@ func (m *Module) correlate(users []DeptUser) []deptMemberResponse {
 			UserID:      u.UserID,
 			Username:    u.Username,
 			UniversalID: u.UniversalID,
-			IsMain:      u.IsMain,
+			IsMain:      u.IsMain == 1, // dept-sync is_main is an int flag; 1 = primary
 			Position:    u.Position,
 		}
 		if local, ok := byUID[u.UniversalID]; ok && u.UniversalID != "" {

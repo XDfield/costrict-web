@@ -31,20 +31,18 @@ func TestClient_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestClient_GetTree_NestedAndAPIKey(t *testing.T) {
-	var gotKey string
+func TestClient_GetTree_NestedAndQueryKey(t *testing.T) {
+	var gotKey, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.Header.Get(apiKeyHeader)
-		if r.URL.Path != "/api/department/tree" {
+		gotKey = r.Header.Get(defaultAuthHeader)
+		gotPath = r.URL.Path
+		if r.URL.Path != defaultPathPrefix+"/department/tree" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("include_children") != "true" {
-			t.Errorf("expected include_children=true, got %q", r.URL.RawQuery)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":[
-			{"deptId":"49","deptName":"深信服","deptPath":"/深信服","parentDeptId":"","deptLevel":1,"childDeptCount":1,"children":[
-				{"deptId":"6560","deptName":"Costrict研发部","deptPath":"/深信服/Costrict研发部","parentDeptId":"49","deptLevel":2,"childDeptCount":0}
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"dept_id":"49","dept_name":"深信服","dept_path":"/深信服","parent_dept_id":"","dept_level":1,"child_dept_count":1,"children":[
+				{"dept_id":"6560","dept_name":"Costrict研发部","dept_path":"/深信服/Costrict研发部","parent_dept_id":"49","dept_level":2,"child_dept_count":0}
 			]}
 		]}`))
 	}))
@@ -56,7 +54,10 @@ func TestClient_GetTree_NestedAndAPIKey(t *testing.T) {
 		t.Fatalf("GetTree: %v", err)
 	}
 	if gotKey != "secret-key" {
-		t.Fatalf("expected X-API-Key header secret-key, got %q", gotKey)
+		t.Fatalf("expected X-Query-Key header secret-key, got %q", gotKey)
+	}
+	if gotPath != defaultPathPrefix+"/department/tree" {
+		t.Fatalf("expected prefixed path, got %q", gotPath)
 	}
 	if len(tree) != 1 {
 		t.Fatalf("expected 1 root, got %d", len(tree))
@@ -69,12 +70,38 @@ func TestClient_GetTree_NestedAndAPIKey(t *testing.T) {
 	}
 }
 
-func TestClient_GetDeptUsers_ListWrapper(t *testing.T) {
+func TestClient_GetTree_ListWrapper(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// data wrapped as {list,total}
-		_, _ = w.Write([]byte(`{"code":0,"data":{"total":2,"list":[
-			{"userId":"u1","username":"朱海俊","universalId":"uid-1","isMain":true,"position":"实习生"},
-			{"userId":"u2","username":"韦体东","universalId":"uid-2","isMain":false,"position":"研发主管"}
+		// department tree wrapped as {list,total} — exercises decodeDeptList unwrap.
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":{"total":1,"list":[
+			{"dept_id":"49","dept_name":"深信服","dept_path":"/深信服","children":[
+				{"dept_id":"1416","dept_name":"研发体系","dept_path":"/深信服/研发体系"}
+			]}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	c := New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "k"})
+	tree, err := c.GetTree()
+	if err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if len(tree) != 1 || tree[0].DeptID != "49" || len(tree[0].Children) != 1 {
+		t.Fatalf("unexpected tree from list wrapper: %+v", tree)
+	}
+	if tree[0].Children[0].DeptName != "研发体系" {
+		t.Fatalf("unexpected nested child: %+v", tree[0].Children[0])
+	}
+}
+
+func TestClient_GetDeptUsers_ListWrapper(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		// data wrapped as {list,total} — exercises unwrapList compatibility.
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":{"total":2,"list":[
+			{"user_id":"u1","username":"朱海俊","universal_id":"uid-1","is_main":1,"position":"实习生"},
+			{"user_id":"u2","username":"韦体东","universal_id":"uid-2","is_main":0,"position":"研发主管"}
 		]}}`))
 	}))
 	defer srv.Close()
@@ -84,17 +111,20 @@ func TestClient_GetDeptUsers_ListWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeptUsers: %v", err)
 	}
+	if gotPath != defaultPathPrefix+"/department/6571/users" {
+		t.Fatalf("expected prefixed members path, got %q", gotPath)
+	}
 	if len(users) != 2 {
 		t.Fatalf("expected 2 users, got %d", len(users))
 	}
-	if users[0].UniversalID != "uid-1" || !users[0].IsMain {
+	if users[0].UniversalID != "uid-1" || users[0].IsMain != 1 {
 		t.Fatalf("unexpected user[0]: %+v", users[0])
 	}
 }
 
 func TestClient_GetDeptUsers_BareArray(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":[{"userId":"u1","username":"a","universalId":"uid-1"}]}`))
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[{"user_id":"u1","username":"a","universal_id":"uid-1"}]}`))
 	}))
 	defer srv.Close()
 
@@ -110,7 +140,7 @@ func TestClient_GetDeptUsers_BareArray(t *testing.T) {
 
 func TestClient_NullData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"message":"empty","data":null}`))
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"message":"empty","data":null}`))
 	}))
 	defer srv.Close()
 
@@ -127,7 +157,7 @@ func TestClient_NullData(t *testing.T) {
 func TestClient_UpstreamError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"code":500,"message":"boom"}`))
+		_, _ = w.Write([]byte(`{"code":"500","success":false,"message":"boom"}`))
 	}))
 	defer srv.Close()
 
@@ -137,16 +167,16 @@ func TestClient_UpstreamError(t *testing.T) {
 	}
 }
 
-func TestClient_AppCodeError(t *testing.T) {
+func TestClient_AppFailureFlag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HTTP 200 but non-zero application code.
-		_, _ = w.Write([]byte(`{"code":401,"message":"invalid api key","data":null}`))
+		// HTTP 200 but explicit success:false (e.g. invalid query key surfaced in body).
+		_, _ = w.Write([]byte(`{"code":"40001","success":false,"message":"invalid query key","data":null}`))
 	}))
 	defer srv.Close()
 
 	c := New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "k"})
 	if _, err := c.GetTree(); err == nil {
-		t.Fatal("expected error on app code 401, got nil")
+		t.Fatal("expected error on success:false, got nil")
 	}
 }
 
@@ -154,7 +184,7 @@ func TestClient_Cache(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"code":0,"data":[{"deptId":"1","deptName":"a"}]}`))
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[{"dept_id":"1","dept_name":"a"}]}`))
 	}))
 	defer srv.Close()
 
@@ -178,6 +208,64 @@ func TestClient_Cache(t *testing.T) {
 	}
 }
 
+func TestClient_CustomPrefixAndHeader(t *testing.T) {
+	var gotKey, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-Custom-Key")
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[{"dept_id":"1","dept_name":"a"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(config.DeptSyncConfig{
+		BaseURL: srv.URL,
+		APIKey:  "ck",
+		// No leading slash on purpose: New() must normalize it to /custom/api.
+		PathPrefix: "custom/api",
+		AuthHeader: "X-Custom-Key",
+	})
+	if _, err := c.GetTree(); err != nil {
+		t.Fatalf("GetTree: %v", err)
+	}
+	if gotKey != "ck" {
+		t.Fatalf("expected custom header value ck, got %q", gotKey)
+	}
+	if gotPath != "/custom/api/department/tree" {
+		t.Fatalf("expected custom-prefixed path, got %q", gotPath)
+	}
+}
+
+func TestClient_GetUserDepartments(t *testing.T) {
+	var gotKey, gotPath, gotType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get(defaultAuthHeader)
+		gotPath = r.URL.Path
+		gotType = r.URL.Query().Get("type")
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"dept_id":"6560","dept_name":"Costrict研发部","dept_path":"/研发体系/Costrict研发部","parent_dept_id":"1416","dept_level":2}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "qk"})
+	depts, err := c.GetUserDepartments("uid-25163")
+	if err != nil {
+		t.Fatalf("GetUserDepartments: %v", err)
+	}
+	if gotPath != defaultPathPrefix+"/user/uid-25163/departments" {
+		t.Fatalf("expected prefixed user-departments path, got %q", gotPath)
+	}
+	if gotType != "universal" {
+		t.Fatalf("expected type=universal (authz passes universal_id), got %q", gotType)
+	}
+	if gotKey != "qk" {
+		t.Fatalf("expected X-Query-Key qk, got %q", gotKey)
+	}
+	if len(depts) != 1 || depts[0].DeptPath != "/研发体系/Costrict研发部" {
+		t.Fatalf("unexpected departments: %+v", depts)
+	}
+}
+
 func TestClient_GetDepartmentPath(t *testing.T) {
 	// Not configured → ErrNotConfigured.
 	if _, err := New(config.DeptSyncConfig{}).GetDepartmentPath("6560"); err != ErrNotConfigured {
@@ -185,10 +273,10 @@ func TestClient_GetDepartmentPath(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":[
-			{"deptId":"1416","deptName":"研发体系","deptPath":"/研发体系","children":[
-				{"deptId":"6560","deptName":"Costrict研发部","deptPath":"/研发体系/Costrict研发部","children":[
-					{"deptId":"6571","deptName":"开发组","deptPath":"/研发体系/Costrict研发部/开发组"}
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"dept_id":"1416","dept_name":"研发体系","dept_path":"/研发体系","children":[
+				{"dept_id":"6560","dept_name":"Costrict研发部","dept_path":"/研发体系/Costrict研发部","children":[
+					{"dept_id":"6571","dept_name":"开发组","dept_path":"/研发体系/Costrict研发部/开发组"}
 				]}
 			]}
 		]}`))
