@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,7 +42,9 @@ func NewUserIDMapper(cfg config.WecomAPIConfig) *UserIDMapper {
 
 // Resolve converts an encrypted open_userid to plaintext userid.
 // Results are cached in memory. If the API call fails, the original
-// open_userid is returned as a fallback.
+// open_userid is returned as a fallback and a warning is logged so silent
+// resolution failures (user gets "enabled" but never receives pushes) are
+// visible to operators.
 func (m *UserIDMapper) Resolve(openUserID string) string {
 	if m == nil || openUserID == "" {
 		return openUserID
@@ -54,11 +57,15 @@ func (m *UserIDMapper) Resolve(openUserID string) string {
 
 	token, err := m.getAccessToken()
 	if err != nil {
+		slog.Warn("open_userid resolution failed: get access token",
+			"openUserID", openUserID, "error", err)
 		return openUserID
 	}
 
 	userID, err := m.convertUserID(token, openUserID)
 	if err != nil {
+		slog.Warn("open_userid resolution failed: convert userid",
+			"openUserID", openUserID, "error", err)
 		return openUserID
 	}
 

@@ -140,7 +140,8 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 			"userID", inbound.ExternalUserID,
 		)
 		if p.sdk != nil && p.sdk.IsConnected() {
-			_, _ = p.sdk.SendMarkdown(inbound.ExternalChatID, "当前不支持群聊功能，请进行私聊。")
+			_, _ = p.sdk.SendMarkdown(inbound.ExternalChatID,
+				"抱歉，机器人暂不支持群聊场景。\n\n请添加机器人为联系人后**私聊**使用，任务通知也将通过私聊推送给你。")
 		}
 		return
 	}
@@ -164,8 +165,39 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		Metadata:          inbound.Metadata,
 	}
 
-	if err := p.backend.Forward(context.Background(), msg); err != nil {
+	respBody, err := p.backend.Forward(context.Background(), msg)
+	if err != nil {
 		p.logger.Error("failed to forward to backend", "error", err)
+		return
+	}
+
+	// Parse backend response to act on firstContact / error feedback.
+	var br struct {
+		Success      bool   `json:"success"`
+		FirstContact bool   `json:"firstContact"`
+		Bound        bool   `json:"bound"`
+		Welcome      string `json:"welcome"`
+		ErrMsg       string `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &br); err != nil {
+		// Non-JSON response (e.g., "success" from non-wecom-bot paths) — nothing to act on.
+		return
+	}
+
+	if p.sdk == nil || !p.sdk.IsConnected() {
+		return
+	}
+
+	if br.ErrMsg != "" {
+		if _, err := p.sdk.SendMarkdown(inbound.ExternalChatID, br.ErrMsg); err != nil {
+			p.logger.Warn("failed to send error notice to user", "error", err)
+		}
+		return
+	}
+	if br.FirstContact && br.Welcome != "" {
+		if _, err := p.sdk.SendMarkdown(inbound.ExternalChatID, br.Welcome); err != nil {
+			p.logger.Warn("failed to send welcome to user", "error", err)
+		}
 	}
 }
 
