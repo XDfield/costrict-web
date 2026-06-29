@@ -4,18 +4,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"net/url"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
-	"github.com/costrict/costrict-web/server/internal/services"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+var ErrInvalidRepoURL = errors.New("invalid repository url")
 
 const (
 	RoleAdmin  = "admin"
@@ -48,23 +51,14 @@ var (
 	ErrRepositoryBindingNotFound = errors.New("project repository binding not found")
 )
 
-	type ProjectService struct {
-		db              *gorm.DB
-		usageSvc        interface {
-			AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
-			AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
-			AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
-		}
-		userService     *userpkg.UserService
-		notificationSvc *notification.NotificationService
-	}
+type ProjectService struct {
+	db              *gorm.DB
+	userService     *userpkg.UserService
+	notificationSvc *notification.NotificationService
+}
 
-func NewProjectService(db *gorm.DB, usageSvc interface {
-	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
-	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
-	AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
-}, userService *userpkg.UserService, notificationSvc *notification.NotificationService) *ProjectService {
-	return &ProjectService{db: db, usageSvc: usageSvc, userService: userService, notificationSvc: notificationSvc}
+func NewProjectService(db *gorm.DB, userService *userpkg.UserService, notificationSvc *notification.NotificationService) *ProjectService {
+	return &ProjectService{db: db, userService: userService, notificationSvc: notificationSvc}
 }
 
 func isValidRole(role string) bool {
@@ -544,7 +538,7 @@ func (s *ProjectService) BindRepository(projectID, operatorID, gitRepoURL, displ
 	if project.ArchivedAt != nil {
 		return nil, ErrProjectArchived
 	}
-	normalizedRepo, err := services.NormalizeGitRepoURL(gitRepoURL)
+	normalizedRepo, err := normalizeGitRepoURL(gitRepoURL)
 	if err != nil {
 		return nil, err
 	}
@@ -589,280 +583,6 @@ func (s *ProjectService) UnbindRepository(projectID, repoBindingID, operatorID s
 	return nil
 }
 
-func (s *ProjectService) ListRepositoryCandidates(projectID, userID string, days int) ([]ProjectRepositoryCandidate, error) {
-	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
-		return nil, err
-	}
-	if days < 1 || days > 90 {
-		return nil, fmt.Errorf("days must be between 1 and 90")
-	}
-	if s.usageSvc == nil {
-		return nil, services.ErrUsageQueryFailed
-	}
-
-	members, err := s.ListMembers(projectID)
-	if err != nil {
-		return nil, err
-	}
-	userIDs := make([]string, 0, len(members))
-	for _, member := range members {
-		userIDs = append(userIDs, member.UserID)
-	}
-
-	var existing []models.ProjectRepository
-	if err := s.db.Where("project_id = ?", projectID).Find(&existing).Error; err != nil {
-		return nil, err
-	}
-	boundRepoSet := make(map[string]struct{}, len(existing))
-	for _, repo := range existing {
-		boundRepoSet[repo.GitRepoURL] = struct{}{}
-	}
-
-	aggregates, err := s.usageSvc.AggregateRepositoriesByUsers(userIDs, days)
-	if err != nil {
-		return nil, err
-	}
-
-	type candidateAgg struct {
-		requestCount   int64
-		lastActiveDate string
-	}
-	byRepo := map[string]candidateAgg{}
-	for _, agg := range aggregates {
-		normalized, err := services.NormalizeGitRepoURL(agg.GitRepoURL)
-		if err != nil {
-			continue
-		}
-		if _, exists := boundRepoSet[normalized]; exists {
-			continue
-		}
-		current := byRepo[normalized]
-		current.requestCount += agg.RequestCount
-		if agg.LastActiveDate > current.lastActiveDate {
-			current.lastActiveDate = agg.LastActiveDate
-		}
-		byRepo[normalized] = current
-	}
-
-	items := make([]ProjectRepositoryCandidate, 0, len(byRepo))
-	for repoURL, agg := range byRepo {
-		items = append(items, ProjectRepositoryCandidate{
-			DisplayName:    candidateDisplayNameFromRepoURL(repoURL),
-			GitRepoURL:     repoURL,
-			RequestCount:   agg.requestCount,
-			LastActiveDate: agg.lastActiveDate,
-		})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].RequestCount == items[j].RequestCount {
-			return items[i].GitRepoURL < items[j].GitRepoURL
-		}
-		return items[i].RequestCount > items[j].RequestCount
-	})
-	return items, nil
-}
-
-func (s *ProjectService) GetProjectRepoActivity(projectID, userID string, days int, includeInactive bool) (*ProjectRepoActivityResponse, error) {
-	if err := s.checkPermission(projectID, userID, RoleMember); err != nil {
-		return nil, err
-	}
-	if days < 1 || days > 90 {
-		return nil, fmt.Errorf("days must be between 1 and 90")
-	}
-	project, err := s.GetProject(projectID)
-	if err != nil {
-		return nil, err
-	}
-	members, err := s.ListMembers(projectID)
-	if err != nil {
-		return nil, err
-	}
-	var repositories []models.ProjectRepository
-	if err := s.db.Where("project_id = ?", projectID).Order("created_at ASC").Find(&repositories).Error; err != nil {
-		return nil, err
-	}
-
-	userIDs := make([]string, 0, len(members))
-	for _, member := range members {
-		userIDs = append(userIDs, member.UserID)
-	}
-	repoURLs := make([]string, 0, len(repositories))
-	for _, repo := range repositories {
-		repoURLs = append(repoURLs, repo.GitRepoURL)
-	}
-
-	userNames := make(map[string]string, len(userIDs))
-	if s.userService != nil {
-		users, err := s.userService.GetUsersByIDs(userIDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, member := range members {
-			if user, ok := users[member.UserID]; ok && user != nil {
-				name := user.Username
-				if user.DisplayName != nil && *user.DisplayName != "" {
-					name = *user.DisplayName
-				}
-				userNames[member.UserID] = name
-			}
-		}
-	}
-	for _, member := range members {
-		if _, ok := userNames[member.UserID]; !ok {
-			userNames[member.UserID] = member.UserID
-		}
-	}
-
-	aggregates := []services.UsageRepoUserAggregate{}
-	dailyAggregates := []services.UsageRepoDailyAggregate{}
-	if len(userIDs) > 0 && len(repoURLs) > 0 {
-		if s.usageSvc == nil {
-			return nil, services.ErrUsageQueryFailed
-		}
-		aggregates, err = s.usageSvc.AggregateProjectRepoActivity(userIDs, repoURLs, days)
-		if err != nil {
-			return nil, err
-		}
-		dailyAggregates, err = s.usageSvc.AggregateProjectRepoDailyActivity(userIDs, repoURLs, days)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	repoByURL := make(map[string]models.ProjectRepository, len(repositories))
-	for _, repo := range repositories {
-		repoByURL[repo.GitRepoURL] = repo
-	}
-
-	memberItems := make(map[string]*ProjectMemberRepoActivityItem, len(members))
-	for _, member := range members {
-		memberItems[member.UserID] = &ProjectMemberRepoActivityItem{
-			UserID:      member.UserID,
-			Username:    userNames[member.UserID],
-			Role:        member.Role,
-			ActiveRepos: []ProjectMemberActiveRepo{},
-		}
-	}
-
-	repoItems := make(map[string]*ProjectRepositoryRepoActivityItem, len(repositories))
-	for _, repo := range repositories {
-		repoItems[repo.ID] = &ProjectRepositoryRepoActivityItem{
-			RepositoryID:  repo.ID,
-			DisplayName:   repo.DisplayName,
-			GitRepoURL:    repo.GitRepoURL,
-			ActiveMembers: []ProjectRepoActiveMember{},
-			DailyRequests: []ProjectRepoDailyRequest{},
-		}
-	}
-
-	from, to := projectDateRange(days)
-	dateKeys := make([]string, 0, days)
-	for current := from; !current.After(to); current = current.AddDate(0, 0, 1) {
-		dateKeys = append(dateKeys, current.Format("2006-01-02"))
-	}
-	for _, repo := range repositories {
-		item := repoItems[repo.ID]
-		for _, dateKey := range dateKeys {
-			item.DailyRequests = append(item.DailyRequests, ProjectRepoDailyRequest{Date: dateKey, RequestCount: 0})
-		}
-	}
-	for _, agg := range dailyAggregates {
-		repoMeta, ok := repoByURL[agg.GitRepoURL]
-		if !ok {
-			continue
-		}
-		item := repoItems[repoMeta.ID]
-		for i := range item.DailyRequests {
-			if item.DailyRequests[i].Date == agg.Date {
-				item.DailyRequests[i].RequestCount = agg.RequestCount
-				break
-			}
-		}
-	}
-
-	activeMemberSet := map[string]struct{}{}
-	activeRepoSet := map[string]struct{}{}
-	var totalRequests int64
-	for _, agg := range aggregates {
-		repoMeta, ok := repoByURL[agg.GitRepoURL]
-		if !ok {
-			continue
-		}
-		memberItem, ok := memberItems[agg.UserID]
-		if !ok {
-			continue
-		}
-		memberItem.ActiveRepos = append(memberItem.ActiveRepos, ProjectMemberActiveRepo{
-			RepositoryID:   repoMeta.ID,
-			DisplayName:    repoMeta.DisplayName,
-			GitRepoURL:     agg.GitRepoURL,
-			RequestCount:   agg.RequestCount,
-			LastActiveDate: agg.LastActiveDate,
-			InputTokens:    agg.InputTokens,
-			OutputTokens:   agg.OutputTokens,
-			Cost:           agg.TotalCost,
-		})
-		memberItem.ActiveRepoCount++
-		memberItem.TotalRequests += agg.RequestCount
-
-		repoItem := repoItems[repoMeta.ID]
-		repoItem.ActiveMembers = append(repoItem.ActiveMembers, ProjectRepoActiveMember{
-			UserID:         agg.UserID,
-			Username:       userNames[agg.UserID],
-			RequestCount:   agg.RequestCount,
-			LastActiveDate: agg.LastActiveDate,
-		})
-		repoItem.ActiveMemberCount++
-		repoItem.TotalRequests += agg.RequestCount
-
-		activeMemberSet[agg.UserID] = struct{}{}
-		activeRepoSet[repoMeta.ID] = struct{}{}
-		totalRequests += agg.RequestCount
-	}
-
-	memberList := make([]ProjectMemberRepoActivityItem, 0, len(memberItems))
-	for _, member := range members {
-		item := memberItems[member.UserID]
-		if includeInactive || item.ActiveRepoCount > 0 {
-			sort.Slice(item.ActiveRepos, func(i, j int) bool {
-				if item.ActiveRepos[i].RequestCount == item.ActiveRepos[j].RequestCount {
-					return item.ActiveRepos[i].GitRepoURL < item.ActiveRepos[j].GitRepoURL
-				}
-				return item.ActiveRepos[i].RequestCount > item.ActiveRepos[j].RequestCount
-			})
-			memberList = append(memberList, *item)
-		}
-	}
-
-	repositoryList := make([]ProjectRepositoryRepoActivityItem, 0, len(repoItems))
-	for _, repo := range repositories {
-		item := repoItems[repo.ID]
-		if includeInactive || item.ActiveMemberCount > 0 {
-			sort.Slice(item.ActiveMembers, func(i, j int) bool {
-				if item.ActiveMembers[i].RequestCount == item.ActiveMembers[j].RequestCount {
-					return item.ActiveMembers[i].UserID < item.ActiveMembers[j].UserID
-				}
-				return item.ActiveMembers[i].RequestCount > item.ActiveMembers[j].RequestCount
-			})
-			repositoryList = append(repositoryList, *item)
-		}
-	}
-
-	return &ProjectRepoActivityResponse{
-		Project: ProjectRepoActivityProject{ID: project.ID, Name: project.Name},
-		Range: ProjectRepoActivityRange{Days: days, From: from.Format("2006-01-02"), To: to.Format("2006-01-02")},
-		Summary: ProjectRepoActivitySummary{
-			MemberCount:           len(members),
-			RepositoryCount:       len(repositories),
-			ActiveMemberCount:     len(activeMemberSet),
-			ActiveRepositoryCount: len(activeRepoSet),
-			TotalRequests:         totalRequests,
-		},
-		Members:      memberList,
-		Repositories: repositoryList,
-	}, nil
-}
-
 func (s *ProjectService) checkPermission(projectID, userID, requiredRole string) error {
 	member, err := s.GetMember(projectID, userID)
 	if err != nil {
@@ -874,10 +594,47 @@ func (s *ProjectService) checkPermission(projectID, userID, requiredRole string)
 	return nil
 }
 
-func projectDateRange(days int) (time.Time, time.Time) {
-	toDate := time.Now().UTC()
-	fromDate := toDate.AddDate(0, 0, -(days - 1))
-	return fromDate, toDate
+func normalizeGitRepoURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", ErrInvalidRepoURL
+	}
+
+	if strings.HasPrefix(trimmed, "git@") {
+		withoutPrefix := strings.TrimPrefix(trimmed, "git@")
+		parts := strings.SplitN(withoutPrefix, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", ErrInvalidRepoURL
+		}
+		trimmed = "https://" + parts[0] + "/" + parts[1]
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRepoURL, err)
+	}
+	if parsed.Host == "" && parsed.Scheme == "" {
+		trimmed = "https://" + trimmed
+		parsed, err = url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", ErrInvalidRepoURL, err)
+		}
+	}
+	if parsed.Host == "" {
+		return "", ErrInvalidRepoURL
+	}
+
+	repoPath := strings.TrimSuffix(parsed.Path, ".git")
+	repoPath = strings.TrimSuffix(repoPath, "/")
+	repoPath = path.Clean(repoPath)
+	if repoPath == "." || repoPath == "/" || repoPath == "" {
+		return "", ErrInvalidRepoURL
+	}
+	if !strings.HasPrefix(repoPath, "/") {
+		repoPath = "/" + repoPath
+	}
+
+	return "https://" + strings.ToLower(parsed.Host) + strings.ToLower(repoPath), nil
 }
 
 func (s *ProjectService) notifyInvitationCreated(project *models.Project, invitation *models.ProjectInvitation) {

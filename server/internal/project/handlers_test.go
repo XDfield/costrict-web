@@ -17,7 +17,7 @@ func newProjectTestRouter(t *testing.T) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	db := setupProjectTestDB(t)
-	module := NewWithDependencies(db, nil, nil, nil)
+	module := New(db, nil)
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
 		if userID := c.GetHeader("X-User-ID"); userID != "" {

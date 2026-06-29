@@ -3,7 +3,6 @@ package project
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -572,26 +571,6 @@ func ListProjectRepositoriesHandler(svc *ProjectService) gin.HandlerFunc {
 	}
 }
 
-func ListProjectRepositoryCandidatesHandler(svc *ProjectService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		days := 30
-		if raw := c.Query("days"); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			if err != nil || parsed < 1 || parsed > 90 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "days must be between 1 and 90"})
-				return
-			}
-			days = parsed
-		}
-		repositories, err := svc.ListRepositoryCandidates(c.Param("id"), currentUserID(c), days)
-		if err != nil {
-			writeError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, ProjectRepositoryCandidatesResponse{Repositories: repositories})
-	}
-}
-
 func BindProjectRepositoryHandler(svc *ProjectService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req CreateProjectRepositoryRequest
@@ -615,35 +594,5 @@ func UnbindProjectRepositoryHandler(svc *ProjectService) gin.HandlerFunc {
 			return
 		}
 		c.Status(http.StatusNoContent)
-	}
-}
-
-func GetProjectRepoActivityHandler(svc *ProjectService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		days := 7
-		if raw := c.Query("days"); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			if err != nil || parsed < 1 || parsed > 90 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "days must be between 1 and 90"})
-				return
-			}
-			days = parsed
-		}
-		includeInactive := true
-		if raw := c.Query("includeInactive"); raw != "" {
-			parsed, err := strconv.ParseBool(raw)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "includeInactive must be a boolean"})
-				return
-			}
-			includeInactive = parsed
-		}
-
-		resp, err := svc.GetProjectRepoActivity(c.Param("id"), currentUserID(c), days, includeInactive)
-		if err != nil {
-			writeError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, resp)
 	}
 }
