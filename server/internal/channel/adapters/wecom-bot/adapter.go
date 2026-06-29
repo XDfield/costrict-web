@@ -83,104 +83,55 @@ func (a *WeComBotAdapter) Reply(ctx context.Context, _ json.RawMessage, target c
 		msgType = "text"
 	}
 
-	return a.client.Send(ctx, target.ExternalChatID, "single", msgType, message.Content, "")
+	return a.client.SendWithSessionRef(ctx, target.ExternalChatID, "single", msgType, message.Content, "", extractSessionRef(message.Metadata))
 }
 
-// SendStream sends a streaming reply chunk to wecom-bot-proxy.
-// It implements the adapter-level streaming interface detected by adapterSender.
-func (a *WeComBotAdapter) SendStream(ctx context.Context, _ json.RawMessage, target channel.ReplyTarget, metadata map[string]any, content string, finish bool) error {
-	if a.client == nil {
-		return fmt.Errorf("wecom-bot proxy not configured")
+// extractSessionRef pulls an optional {title, url} pair from outbound metadata.
+// Adapters should not assume the key exists — conversational replies typically
+// omit it; event-driven replies (permission/question/etc.) populate it so the
+// proxy can render a clickable link back to the related CoStrict session.
+func extractSessionRef(metadata map[string]any) *proxySessionRef {
+	if metadata == nil {
+		return nil
 	}
-	reqID, _ := metadata["reqId"].(string)
-	if reqID == "" {
-		// No reqID available; fall back to one-shot send
-		return a.Reply(ctx, nil, target, channel.OutboundMessage{ContentType: "text", Content: content})
+	raw, ok := metadata["session_ref"]
+	if !ok {
+		return nil
 	}
-	// Use reqID as streamID (unique per inbound message)
-	return a.client.ReplyStream(ctx, reqID, reqID, content, finish)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	title, _ := m["title"].(string)
+	url, _ := m["url"].(string)
+	if url == "" {
+		return nil
+	}
+	return &proxySessionRef{Title: title, URL: url}
 }
+
+// Card delivery is intentionally disabled for wecom-bot. Notifications now flow
+// as markdown text (with session_ref link) via Reply/Send; interactive cards are
+// not used in the current UX. Methods remain as no-ops so dispatcher's call
+// sites and notification-data tracking stay intact — re-enable by restoring the
+// card JSON marshal + a.client.Send(..., "card", ...) body.
 
 func (a *WeComBotAdapter) SendInteractiveCard(ctx context.Context, userID string, card wecom.InteractiveCard, taskID string) error {
-	if a.client == nil {
-		return fmt.Errorf("wecom-bot proxy not configured")
-	}
-
-	cardJSON, err := json.Marshal(map[string]any{
-		"card_type": "button_interaction",
-		"task_id":   taskID,
-		"main_title": map[string]string{
-			"title": card.Title,
-			"desc":  card.Description,
-		},
-		"button_list": cardToButtons(card.Buttons),
-	})
-	if err != nil {
-		return err
-	}
-	return a.client.Send(ctx, userID, "single", "card", string(cardJSON), taskID)
+	slog.Info("[wecom-bot] SendInteractiveCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
+	return nil
 }
 
 func (a *WeComBotAdapter) SendVoteCard(ctx context.Context, userID string, card wecom.VoteCard, taskID string) error {
-	if a.client == nil {
-		return fmt.Errorf("wecom-bot proxy not configured")
-	}
-
-	cardJSON, err := json.Marshal(map[string]any{
-		"card_type":     "vote_interaction",
-		"task_id":       taskID,
-		"main_title":    map[string]string{"title": card.Title, "desc": card.SubTitle},
-		"checkbox":      card.Checkbox,
-		"submit_button": card.SubmitButton,
-	})
-	if err != nil {
-		return err
-	}
-	return a.client.Send(ctx, userID, "single", "card", string(cardJSON), taskID)
+	slog.Info("[wecom-bot] SendVoteCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
+	return nil
 }
 
 func (a *WeComBotAdapter) SendTextNoticeCard(ctx context.Context, userID string, card wecom.TextNoticeCard, taskID string) error {
-	if a.client == nil {
-		return fmt.Errorf("wecom-bot proxy not configured")
-	}
-
-	templateCard := map[string]any{
-		"card_type":  "text_notice",
-		"task_id":    taskID,
-		"main_title": map[string]string{"title": card.Title},
-	}
-	if card.SubTitle != "" {
-		templateCard["sub_title_text"] = card.SubTitle
-	}
-	if len(card.JumpList) > 0 {
-		jumps := make([]map[string]any, len(card.JumpList))
-		for i, j := range card.JumpList {
-			jumps[i] = map[string]any{"type": 1, "title": j.Title, "url": j.URL}
-		}
-		templateCard["jump_list"] = jumps
-		templateCard["card_action"] = map[string]any{"type": 1, "url": card.JumpList[0].URL}
-	}
-
-	cardJSON, err := json.Marshal(templateCard)
-	if err != nil {
-		return err
-	}
-	return a.client.Send(ctx, userID, "single", "card", string(cardJSON), taskID)
+	slog.Info("[wecom-bot] SendTextNoticeCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
+	return nil
 }
 
 func (a *WeComBotAdapter) UpdateCardStatus(responseCode, statusText, action string, cardData []byte, externalUserID string) error {
 	slog.Warn("[wecom-bot] UpdateCardStatus called without reqID context; use card update via proxy API instead")
 	return fmt.Errorf("wecom-bot adapter requires reqID-based card update via proxy API")
-}
-
-func cardToButtons(buttons []wecom.CardButton) []map[string]any {
-	result := make([]map[string]any, len(buttons))
-	for i, b := range buttons {
-		result[i] = map[string]any{
-			"text":  b.Text,
-			"style": b.Style,
-			"key":   b.Key,
-		}
-	}
-	return result
 }

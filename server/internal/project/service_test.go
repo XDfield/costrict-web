@@ -83,7 +83,7 @@ func setupProjectTestDB(t *testing.T) *gorm.DB {
 
 func TestBindAndListProjectRepositories(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -109,7 +109,7 @@ func TestBindAndListProjectRepositories(t *testing.T) {
 
 func TestBindRepositoryRequiresAdminAndRejectsArchivedProject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -134,7 +134,7 @@ func TestBindRepositoryRequiresAdminAndRejectsArchivedProject(t *testing.T) {
 
 func TestCreateProjectCreatesAdminMember(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	enabledAt := time.Now().UTC()
 
 	project, err := svc.CreateProject("u1", "Project A", "desc", &enabledAt)
@@ -155,7 +155,7 @@ func TestCreateProjectCreatesAdminMember(t *testing.T) {
 
 func TestCreateProjectNameUniquePerCreator(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	if _, err := svc.CreateProject("u1", "Project A", "", nil); err != nil {
 		t.Fatalf("seed CreateProject error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestCreateProjectNameUniquePerCreator(t *testing.T) {
 
 func TestCreateProjectAllowsNilEnabledAt(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -181,7 +181,7 @@ func TestCreateProjectAllowsNilEnabledAt(t *testing.T) {
 
 func TestArchiveAndUnarchiveProject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	enabledAt := time.Now().UTC()
 	project, err := svc.CreateProject("u1", "Project A", "", &enabledAt)
 	if err != nil {
@@ -211,7 +211,7 @@ func TestArchiveAndUnarchiveProject(t *testing.T) {
 
 func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -231,7 +231,7 @@ func TestUpdateProjectCanSetEnabledAt(t *testing.T) {
 
 func TestUpdateProjectArchiveTime(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -254,7 +254,7 @@ func TestUpdateProjectArchiveTime(t *testing.T) {
 
 func TestUpdateProjectArchiveTimeRequiresArchivedProject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -267,7 +267,7 @@ func TestUpdateProjectArchiveTimeRequiresArchivedProject(t *testing.T) {
 
 func TestListProjectsKeepsCreatedAtOrder(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 
 	first, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
@@ -300,7 +300,7 @@ func TestListProjectsKeepsCreatedAtOrder(t *testing.T) {
 
 func TestListProjectsCanFilterPinnedOnly(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 
 	projectA, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
@@ -328,7 +328,7 @@ func TestListProjectsCanFilterPinnedOnly(t *testing.T) {
 
 func TestListProjectsExcludesDeletedProjects(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 
 	project, err := svc.CreateProject("u1", "Project A", "", nil)
 	if err != nil {
@@ -353,7 +353,7 @@ func TestListProjectsExcludesDeletedProjects(t *testing.T) {
 
 func TestSetProjectPinUpdatesMemberPreference(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
@@ -384,7 +384,7 @@ func TestSetProjectPinUpdatesMemberPreference(t *testing.T) {
 
 func TestInvitationFlowAcceptAndReject(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -422,7 +422,7 @@ func TestInvitationFlowAcceptAndReject(t *testing.T) {
 
 func TestOnlyAdminCanInviteAndCannotRemoveLastAdmin(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)
@@ -447,7 +447,7 @@ func TestOnlyAdminCanInviteAndCannotRemoveLastAdmin(t *testing.T) {
 
 func TestExpiredInvitationCannotBeAccepted(t *testing.T) {
 	db := setupProjectTestDB(t)
-	svc := NewProjectService(db, nil, nil, nil)
+	svc := NewProjectService(db, nil, nil)
 	project, err := svc.CreateProject("admin", "Project A", "", nil)
 	if err != nil {
 		t.Fatalf("CreateProject error: %v", err)

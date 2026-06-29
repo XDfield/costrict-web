@@ -1,7 +1,6 @@
 package notification
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,7 +9,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification/sender"
-	"github.com/costrict/costrict-web/server/internal/pathutil"
+	"github.com/costrict/costrict-web/server/internal/sessionurl"
 	"github.com/lib/pq"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -108,7 +107,7 @@ func (s *NotificationService) TriggerNotifications(userID, eventType, sessionID,
 			path:       path,
 			actionData: actionData,
 		}
-		workspaceID, err := s.getWorkspaceID(deviceID, path)
+		workspaceID, err := sessionurl.ResolveWorkspaceID(s.db, deviceID, path)
 		if err != nil {
 			slog.Error(
 				"failed to get workspaceID", "userID", userID,
@@ -213,38 +212,6 @@ func (s *NotificationService) Broadcast(scope BroadcastScope, title, content str
 	}
 
 	return len(recipients), nil
-}
-
-// getWorkspaceID 根据设备标识符和路径查找工作空间ID。
-// 注意：传入的 deviceID 是 devices.device_id（外部设备标识符），
-// 而 workspaces.device_id 存储的是 devices.id（UUID主键），
-// 因此需要先 JOIN devices 表进行转换，不能直接用 deviceID 匹配 workspaces.device_id。
-func (s *NotificationService) getWorkspaceID(deviceID, path string) (string, error) {
-	var workspaceID string
-	normalizedPath := pathutil.NormalizeWorkspacePath(path)
-	err := s.db.Table("workspace_directories wd").
-		Select("w.id").
-		Joins("JOIN workspaces w ON w.id = wd.workspace_id").
-		Joins("JOIN devices d ON CAST(d.id AS TEXT) = w.device_id").
-		Where("wd.path = ? AND d.device_id = ?", normalizedPath, deviceID).
-		Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL AND d.deleted_at IS NULL").
-		Scan(&workspaceID).Error
-	if err == nil && workspaceID == "" && normalizedPath != path {
-		err = s.db.Table("workspace_directories wd").
-			Select("w.id").
-			Joins("JOIN workspaces w ON w.id = wd.workspace_id").
-			Joins("JOIN devices d ON CAST(d.id AS TEXT) = w.device_id").
-			Where("wd.path = ? AND d.device_id = ?", path, deviceID).
-			Where("wd.deleted_at IS NULL AND w.deleted_at IS NULL AND d.deleted_at IS NULL").
-			Scan(&workspaceID).Error
-	}
-	if err != nil {
-		return "", err
-	}
-	if workspaceID == "" {
-		return "", fmt.Errorf("workspace not found for deviceID=%s, path=%s", deviceID, normalizedPath)
-	}
-	return workspaceID, nil
 }
 
 func (s *NotificationService) send(userID, eventType string, msg sender.NotificationMessage) {
@@ -524,11 +491,8 @@ func (s *NotificationService) buildMessage(info sessionInfo) sender.Notification
 		bodyParts = append(bodyParts, fmt.Sprintf("**状态更新**: %s", title))
 	}
 
-	sessionURL := ""
-	if s.cloudBaseURL != "" && info.workspaceID != "" && info.sessionID != "" {
-		pathID := base64.RawURLEncoding.EncodeToString([]byte(info.path))
-		sessionURL = fmt.Sprintf("%s/workspace/%s/%s/session/%s", s.cloudBaseURL, info.workspaceID, pathID, info.sessionID)
-	} else {
+	sessionURL := sessionurl.Build(s.cloudBaseURL, info.workspaceID, info.sessionID)
+	if sessionURL == "" {
 		slog.Warn("sessionURL assembly failed.", "workspaceID", info.workspaceID, "sessionID", info.sessionID)
 		sessionURL = s.cloudBaseURL
 	}

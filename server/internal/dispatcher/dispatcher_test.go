@@ -1,7 +1,9 @@
 package dispatcher
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"gorm.io/driver/sqlite"
@@ -88,7 +90,7 @@ func insertIDTrustIdentity(t *testing.T, db *gorm.DB, userSubjectID, providerUse
 
 func TestNewDispatcher(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
 	if d == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
@@ -96,7 +98,7 @@ func TestNewDispatcher(t *testing.T) {
 
 func TestDispatcher_Dispatch_UnsupportedEvent(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", nil, nil, false, false, nil, nil)
+	d := NewDispatcher(db, nil, notification.NewStore(db), "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -111,7 +113,7 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 	setupNotificationTable(t, db)
 
 	store := notification.NewStore(db)
-	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, false, false, nil, nil)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
 
 	d.Dispatch(DispatchInput{
 		UserID:    "user-1",
@@ -123,7 +125,7 @@ func TestDispatcher_Dispatch_SessionEvent_Immediate(t *testing.T) {
 
 func TestResolveWeComUserID(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
 
 	// No identity → empty
 	if got := d.resolveWeComUserID("user-none"); got != "" {
@@ -268,7 +270,7 @@ func TestNeedsInteraction(t *testing.T) {
 
 func TestDispatcher_NilStore(t *testing.T) {
 	db := setupTestDB(t)
-	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil)
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
 
 	// Should not panic with nil store
 	d.Dispatch(DispatchInput{
@@ -277,4 +279,94 @@ func TestDispatcher_NilStore(t *testing.T) {
 		SessionID: "session-1",
 		DeviceID:  "device-1",
 	})
+}
+
+func TestIsDeferrable(t *testing.T) {
+	if !isDeferrable("permission") {
+		t.Error("expected permission to be deferrable")
+	}
+	if !isDeferrable("permission_batch") {
+		t.Error("expected permission_batch to be deferrable")
+	}
+	if !isDeferrable("question") {
+		t.Error("expected question to be deferrable")
+	}
+	if isDeferrable("session.completed") {
+		t.Error("expected session.completed to not be deferrable")
+	}
+	if isDeferrable("idle") {
+		t.Error("expected idle to not be deferrable")
+	}
+}
+
+func TestDispatcher_DeferredTimer_Cancel(t *testing.T) {
+	db := setupTestDB(t)
+	setupNotificationTable(t, db)
+	store := notification.NewStore(db)
+	// Use a short delay so the test runs fast
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, false, false, nil, nil, 5*time.Second)
+
+	// AI handler returns true — event is "handled" by AI, so deferred timer starts
+	d.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
+		return true
+	})
+
+	// Dispatch a permission event — should start a deferred timer
+	d.Dispatch(DispatchInput{
+		UserID:    "user-1",
+		EventType: "permission",
+		SessionID: "session-defer-1",
+		DeviceID:  "device-1",
+	})
+
+	// Verify the timer exists
+	d.deferredMu.Lock()
+	_, hasTimer := d.deferredTimers["session-defer-1"]
+	d.deferredMu.Unlock()
+	if !hasTimer {
+		t.Fatal("expected deferred timer to be set for session-defer-1")
+	}
+
+	// Cancel the deferred notification (simulates user replying before timer fires)
+	d.CancelDeferredNotification("session-defer-1")
+
+	// Verify the timer was cancelled
+	d.deferredMu.Lock()
+	_, hasTimer = d.deferredTimers["session-defer-1"]
+	d.deferredMu.Unlock()
+	if hasTimer {
+		t.Fatal("expected deferred timer to be cancelled for session-defer-1")
+	}
+}
+
+func TestDispatcher_DeferredTimer_ZeroDelay(t *testing.T) {
+	db := setupTestDB(t)
+	// Zero delay should default to 30s
+	d := NewDispatcher(db, nil, nil, "http://localhost:3000", nil, nil, false, false, nil, nil, 0)
+	if d.notificationDelay != 30*time.Second {
+		t.Fatalf("expected 30s default, got %v", d.notificationDelay)
+	}
+}
+
+func TestDispatcher_NonDeferrableEvent_Immediate(t *testing.T) {
+	db := setupTestDB(t)
+	setupNotificationTable(t, db)
+	store := notification.NewStore(db)
+	d := NewDispatcher(db, nil, store, "http://localhost:3000", nil, nil, false, false, nil, nil, 30*time.Second)
+
+	// Dispatch a non-deferrable event — should NOT start a deferred timer
+	d.Dispatch(DispatchInput{
+		UserID:    "user-1",
+		EventType: "session.completed",
+		SessionID: "session-immediate-1",
+		DeviceID:  "device-1",
+	})
+
+	// No deferred timer should exist for session.completed
+	d.deferredMu.Lock()
+	_, hasTimer := d.deferredTimers["session-immediate-1"]
+	d.deferredMu.Unlock()
+	if hasTimer {
+		t.Fatal("expected no deferred timer for non-deferrable event")
+	}
 }

@@ -47,7 +47,29 @@ func (h *EventHandler) SetOnEventProcessed(f func(sessionID string)) {
 // default 30s). This gives the user processing time and allows event batching.
 // If the user replies before the timer fires, the deferred notification is cancelled.
 func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) error {
-	slog.Info("[event_handler] HandleAIEvent enter", "eventType", req.EventType, "sessionID", req.SessionID, "deviceID", req.DeviceID, "hasSender", req.Sender != nil)
+	slog.Info("[event_handler] HandleAIEvent enter",
+		"eventType", req.EventType,
+		"platformUserID", req.UserID,
+		"deviceSessionID", req.SessionID,
+		"deviceID", req.DeviceID,
+		"hasSender", req.Sender != nil,
+	)
+
+	var chatType string
+	var externalUserID string
+	if req.Sender != nil {
+		rc := req.Sender.ReplyContext()
+		chatType = rc.Target.ExternalChatType
+		externalUserID = rc.Target.ExternalUserID
+		if chatType == "" {
+			chatType = "single"
+		}
+		slog.Info("[event_handler] outbound route",
+			"platformUserID", req.UserID,
+			"externalUserID", externalUserID,
+			"chatType", chatType,
+		)
+	}
 
 	eventDesc := h.describeEvent(req)
 
@@ -65,11 +87,6 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 	var baseKey string
 	var resetType string
 	if req.Sender != nil {
-		rc := req.Sender.ReplyContext()
-		chatType := rc.Target.ExternalChatType
-		if chatType == "" {
-			chatType = "single"
-		}
 		baseKey = fmt.Sprintf("agent:clawagent:%s:%s", chatType, req.UserID)
 		resetType = "direct"
 	} else {
@@ -77,14 +94,21 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 		resetType = "event"
 	}
 
+	slog.Info("[event_handler] session resolve",
+		"platformUserID", req.UserID,
+		"baseKey", baseKey,
+		"resetType", resetType,
+	)
+
 	sessionID, err := h.runtime.resolveActiveSession(req.UserID, baseKey, resetType)
 	if err != nil {
 		return fmt.Errorf("resolve event session: %w", err)
 	}
 
 	// Store EventContext in session for tool execution when user replies
+	var ec *EventContext
 	if needsEventProcessing(req.EventType) {
-		ec := buildEventContext(req)
+		ec = buildEventContext(req)
 
 		// Store in DB for horizontal scaling
 		if err := h.runtime.SessionMeta.SetEventData(ctx, sessionID, ec); err != nil {
@@ -115,7 +139,7 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 	// the message content (that would leak raw metadata to the user via the channel).
 	if req.Sender != nil {
 		slog.Info("[event_handler] launching streamResponse", "sessionID", sessionID, "senderType", fmt.Sprintf("%T", req.Sender))
-		go h.runtime.streamResponse(ctx, eventCh, req.Sender, req.UserID, message, sessionID)
+		go h.runtime.streamResponse(ctx, eventCh, req.Sender, req.UserID, message, sessionID, ec)
 	} else {
 		go func() {
 			for evt := range eventCh {
@@ -328,11 +352,15 @@ func (h *EventHandler) buildPrompt(req AIEventRequest, eventDesc string) string 
 - 如果有选项，分析各选项含义，结合上下文给用户推荐一个合适的选项，然后问用户确认
 - 如果是开放性问题，把问题转述给用户，让用户给出回答
 - 如果上面给了来源信息（设备名、会话名、任务意图），说话时用这些来指代任务，比如「dev-laptop 上 cs-cloud 重构那个任务在问…」
-- 记住你是转述和辅助，不是你自己在执行任务`, eventDesc)
+- 记住你是转述和辅助，不是你自己在执行任务
+
+【重要】这是一次通知，你没有任何工具可调用。绝对不要输出 <tool_call>、reply_question 之类的标签或函数名——这条消息会直接显示给用户，输出工具调用语法只会让用户看到一堆乱码。先用自然语言把情况和你的建议说出来，等用户回复后再处理。`, eventDesc)
 	}
 
 	return fmt.Sprintf(`设备上跑的任务发起了个申请：%s
-你是用户的秘书，转告用户是哪个任务要做什么、为什么，然后问ta批不批。如果上面给了来源信息（设备名、会话名、任务意图），说话时用这些来指代任务，比如「dev-laptop 上 cs-cloud 重构那个任务要…」。记住你是转述，不是你自己在执行。`, eventDesc)
+你是用户的秘书，转告用户是哪个任务要做什么、为什么，然后问ta批不批。如果上面给了来源信息（设备名、会话名、任务意图），说话时用这些来指代任务，比如「dev-laptop 上 cs-cloud 重构那个任务要…」。记住你是转述，不是你自己在执行。
+
+【重要】这是一次通知，你没有任何工具可调用。绝对不要输出 <tool_call>、reply_permission 之类的标签或函数名——这条消息会直接显示给用户，输出工具调用语法只会让用户看到一堆乱码。即使用户以前说过「自动同意」，这次也先用自然语言把申请讲清楚、让用户确认；等用户回复 yes/no 之后再走工具流程。上面给出的权限 ID 是给你参考的，不要在消息里复述，也不要尝试调用工具去操作它们。`, eventDesc)
 }
 
 // describeEvent generates a natural language description of the event.

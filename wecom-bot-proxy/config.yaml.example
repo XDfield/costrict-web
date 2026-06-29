@@ -5,21 +5,26 @@ bot:
   heartbeat_interval: 30s
   reconnect_initial_backoff: 5s
   reconnect_max_backoff: 60s
+  input_max_length: 120  # 用户输入最大字符数（按 rune 计），超出时 proxy 层硬拦截并提示用户
+  # session_ref 渲染模式：
+  #   enabled    （默认）将 server 携带的 session_ref 渲染为 markdown 可点击链接追加到正文末尾
+  #   restricted 忽略 session_ref，正文按原样转发（适用于不允许外链的受限场景）
+  session_link_mode: enabled
+  session_title_max_length: 50  # session_ref 标题最大字符数（按 rune 计），超出截断并加省略号
+
+wecom_api:
+  corp_id: "${WECOM_CORP_ID}"
+  agent_secret: "${WECOM_AGENT_SECRET}"
 
 server:
   listen: ":9090"
 
-backends:
-  backend-a:
-    url: "${CORICT_WEB_URL:-http://127.0.0.1:8080}/api/webhooks/channels/wecom-bot"
-    auth_token: "${BACKEND_A_TOKEN}"
-    hmac_secret: "${BACKEND_A_HMAC_SECRET:-}"
-    timeout: 10s
-    retry: 3
-
-routing:
-  default_backend: backend-a
-  task_route_ttl: 24h
+backend:
+  url: "${CORICT_WEB_URL:-http://127.0.0.1:8080}/api/webhooks/channels/wecom-bot"
+  auth_token: "${BACKEND_TOKEN}"
+  hmac_secret: "${BACKEND_HMAC_SECRET:-}"
+  timeout: 10s
+  retry: 3
 
 dedup:
   enabled: true

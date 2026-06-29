@@ -117,7 +117,13 @@ func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *s
 		}
 
 		oldGwID, oldConnID := registry.BindDevice(body.DeviceID, body.GatewayID, body.ConnID)
-		_ = deviceSvc.SetOnline(body.DeviceID)
+		if err := deviceSvc.SetOnline(body.DeviceID); err != nil {
+			slog.Error("[gateway] failed to mark device online",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID, "connID", body.ConnID, "error", err)
+		} else {
+			slog.Info("[gateway] device marked online",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID, "connID", body.ConnID, "reboundFrom", oldGwID)
+		}
 
 		// If the device was previously bound to a different gateway, close the old session
 		if oldGwID != "" && oldGwID != body.GatewayID {

@@ -9,6 +9,8 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
 // Definition describes a tool for LLM tool calling.
@@ -24,6 +26,8 @@ type Context struct {
 	DeviceID      string
 	Directory     string
 	SessionID     string
+	UserID        string
+	DB            *gorm.DB
 	DeviceProxy   DeviceProxy
 	MarkProcessed func()
 }

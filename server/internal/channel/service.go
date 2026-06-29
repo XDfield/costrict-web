@@ -31,6 +31,7 @@ type ChannelService struct {
 	weComWebhookEnabled bool
 	weChatEnabled       bool
 	weComBotEnabled     bool
+	wecomBotQRCode      string
 	actionHandler       ActionCallbackHandler
 }
 
@@ -38,6 +39,10 @@ type ActionCallbackHandler func(ctx context.Context, action, token, responseCode
 
 func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
 	s.actionHandler = h
+}
+
+func (s *ChannelService) SetWeComBotQRCode(url string) {
+	s.wecomBotQRCode = url
 }
 
 func (s *ChannelService) SetReplyContextStore(store ReplyContextStore) {
@@ -134,7 +139,8 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		return "success", http.StatusOK, nil
 	}
 
-	log.Printf("ChannelService: received inbound message: chatID=%s, userID=%s, content=%q, contentType=%s", msg.ExternalChatID, msg.ExternalUserID, msg.Content, msg.ContentType)
+	log.Printf("[inbound] externalUserID=%s chatID=%s chatType=%s content=%q contentType=%s",
+		msg.ExternalUserID, msg.ExternalChatID, msg.ExternalChatType, msg.Content, msg.ContentType)
 
 	// Handle interactive card callbacks
 	if msg.ContentType == "action_callback" {
@@ -153,11 +159,59 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		return "success", http.StatusOK, nil
 	}
 
+	// For wecom-bot (system-level config with empty UserID), resolve the platform
+	// user ID from the WeCom external user ID via idtrust identity binding.
+	// This ensures inbound sessions use the same userID as outbound (device events).
+	resolvedUserID := ""
+	if len(configs) > 0 {
+		resolvedUserID = configs[0].UserID
+	}
+	if resolvedUserID == "" && channelType == "wecom-bot" && msg.ExternalUserID != "" {
+		var identity models.UserAuthIdentity
+		if err := s.db.Where("provider_user_id = ? AND provider = ? AND deleted_at IS NULL",
+			msg.ExternalUserID, "idtrust").First(&identity).Error; err != nil {
+			log.Printf("[inbound] failed to resolve platformUserID from externalUserID=%s: %v",
+				msg.ExternalUserID, err)
+		} else {
+			resolvedUserID = identity.UserSubjectID
+			log.Printf("[inbound] resolved platformUserID=%s from externalUserID=%s (wecom-bot)",
+				resolvedUserID, msg.ExternalUserID)
+		}
+	}
+
+	if resolvedUserID != "" {
+		log.Printf("[inbound] session key userID=%s externalUserID=%s", resolvedUserID, msg.ExternalUserID)
+	}
+
+	// wecom-bot first-contact detection: when a user's first inbound message
+	// arrives, flip WebhookVerified to true so the UI can render the "bound"
+	// state. The proxy reads the returned JSON and sends a welcome message.
+	firstContact := false
+	bound := false
+	resolveErr := ""
+	if channelType == "wecom-bot" {
+		if msg.ExternalUserID != "" && resolvedUserID == "" {
+			resolveErr = "未找到企微账号绑定信息，请先在 CoStrict 控制台完成企微账号绑定后再试"
+		} else if resolvedUserID != "" {
+			var userCfg models.ChannelConfig
+			if err := s.db.Where("channel_type = ? AND user_id = ? AND deleted_at IS NULL", "wecom-bot", resolvedUserID).
+				First(&userCfg).Error; err == nil {
+				bound = true
+				if !userCfg.WebhookVerified {
+					firstContact = true
+					if err := s.db.Model(&userCfg).Update("webhook_verified", true).Error; err != nil {
+						log.Printf("[inbound] failed to set webhook_verified: %v", err)
+					}
+				}
+			}
+		}
+	}
+
 	for _, cfg := range configs {
 		rc := ReplyContext{
 			ChannelConfigID: cfg.ID,
 			ChannelType:     cfg.ChannelType,
-			UserID:          cfg.UserID,
+			UserID:          resolvedUserID,
 			Target: ReplyTarget{
 				ExternalChatID: msg.ExternalChatID,
 				ExternalUserID: msg.ExternalUserID,
@@ -176,6 +230,22 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 			"last_active_at": now,
 			"last_error":     "",
 		})
+	}
+
+	if channelType == "wecom-bot" {
+		resp := map[string]any{
+			"success":      true,
+			"firstContact": firstContact,
+			"bound":        bound,
+		}
+		if firstContact {
+			resp["welcome"] = "✅ 绑定成功！后续任务通知将通过此企微机器人推送给你。如需调整通知偏好，可在 CoStrict 控制台随时管理。"
+		}
+		if resolveErr != "" {
+			resp["error"] = resolveErr
+		}
+		body, _ := json.Marshal(resp)
+		return string(body), http.StatusOK, nil
 	}
 
 	return "success", http.StatusOK, nil
@@ -304,7 +374,7 @@ func (s *ChannelService) ListConfigs(userID string) ([]models.ChannelConfig, err
 				UserID:      userID,
 				ChannelType: "wecom-bot",
 				Name:        "企微 bot",
-				Enabled:     true,
+				Enabled:     false,
 			}
 			if err := s.db.Create(&botChannel).Error; err == nil {
 				configs = append([]models.ChannelConfig{botChannel}, configs...)
@@ -349,6 +419,9 @@ func (s *ChannelService) enrichWecomChannelConfig(userID string, config models.C
 		}
 	}
 	configData["userId"] = idtrustIdentity.ProviderUserID
+	if config.ChannelType == "wecom-bot" && s.wecomBotQRCode != "" {
+		configData["botQRCode"] = s.wecomBotQRCode
+	}
 
 	updatedConfig, _ := json.Marshal(configData)
 	config.Config = datatypes.JSON(updatedConfig)
@@ -460,6 +533,7 @@ func (s *ChannelService) CreateSenderForUser(userID string, channelType string) 
 		if externalUserID == "" {
 			return nil, fmt.Errorf("empty provider user id for user %s", userID)
 		}
+		log.Printf("[outbound] platformUserID=%s → externalUserID=%s (wecom-bot)", userID, externalUserID)
 	}
 
 	target := ReplyTarget{

@@ -62,7 +62,6 @@ import (
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
-	usagepkg "github.com/costrict/costrict-web/server/internal/usage"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -126,35 +125,6 @@ func main() {
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes)
 	handlers.InitUserModule(userModule)
 
-	var usageProvider services.UsageProvider
-	switch strings.ToLower(strings.TrimSpace(cfg.UsageProvider)) {
-	case "", "sqlite":
-		usageDB, err := usagepkg.OpenSQLite(cfg.UsageSQLitePath)
-		if err != nil {
-			log.Fatalf("Failed to initialize usage sqlite: %v", err)
-		}
-		usageProvider = services.NewSQLiteUsageProvider(usageDB)
-	case "es":
-		if strings.TrimSpace(cfg.UsageESReportBaseURL) == "" {
-			log.Fatalf("Failed to initialize usage provider: USAGE_ES_REPORT_BASE_URL is required when USAGE_PROVIDER=es")
-		}
-		if strings.TrimSpace(cfg.UsageESQueryBaseURL) == "" {
-			log.Fatalf("Failed to initialize usage provider: USAGE_ES_QUERY_BASE_URL is required when USAGE_PROVIDER=es")
-		}
-		usageProvider = services.NewESUsageProvider(services.ESUsageProviderConfig{
-			ReportBaseURL:      cfg.UsageESReportBaseURL,
-			QueryBaseURL:       cfg.UsageESQueryBaseURL,
-			ReportPath:         cfg.UsageESReportPath,
-			QueryPath:          cfg.UsageESQueryPath,
-			Timeout:            time.Duration(cfg.UsageESTimeoutSec) * time.Second,
-			BasicUser:          cfg.UsageESBasicUser,
-			BasicPass:          cfg.UsageESBasicPass,
-			InsecureSkipVerify: cfg.UsageESInsecureSkipVerify,
-		})
-	default:
-		log.Fatalf("Failed to initialize usage provider: unsupported USAGE_PROVIDER=%q", cfg.UsageProvider)
-	}
-
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
 		storagePath = "./data/artifacts"
@@ -204,8 +174,6 @@ func main() {
 	// Initialize search and recommend handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
 	recommendHandler := handlers.NewRecommendHandler(recommendSvc, behaviorSvc)
-	usageSvc := services.NewUsageService(usageProvider, userModule.Service)
-	usageHandler := handlers.NewUsageHandler(usageSvc)
 
 	// Initialize Distribution handler
 	distSvc := services.NewDistributionService(db, behaviorSvc)
@@ -370,12 +338,6 @@ func main() {
 			authed.POST("/auth/bind/confirm-merge", handlers.ConfirmMergeIdentity)
 			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
-
-			usage := authed.Group("/usage")
-			{
-				usage.POST("/report", usageHandler.Report)
-				usage.GET("/activity", usageHandler.Activity)
-			}
 
 			repos := authed.Group("/repositories")
 			{
@@ -545,6 +507,7 @@ func main() {
 			channel.RegisterAdapter(wecom.NewWeComAdapter(cfg.Channels.WeCom))
 			channel.RegisterAdapter(wecombot.NewWeComBotAdapter(cfg.Channels.WeComBot))
 			channelModule = channel.New(db, &channel.NoopMessageHandler{}, cfg.WebhookBaseURL, cfg.Channels.EnabledTypes, cfg.Channels.WeComEnabled, cfg.Channels.WeComWebhookEnabled, cfg.Channels.WeChatEnabled, cfg.Channels.WeComBotEnabled)
+			channelModule.Service.SetWeComBotQRCode(cfg.Channels.WeComBot.BotQRCode)
 			channelModule.Service.SetReplyContextStore(channel.NewPostgresReplyContextStore(db))
 			channelModule.RegisterRoutes(r.Group("/api"), authed)
 
@@ -567,7 +530,7 @@ func main() {
 				// Inner goroutine observes ctx.Done() and exits.
 			})
 
-			projectModule := project.NewWithDependencies(db, usageSvc, userModule.Service, notificationModule.Service)
+			projectModule := project.New(db, notificationModule.Service)
 			projectModule.RegisterRoutes(authed)
 
 			memoryModule := memory.New(db, storageBackend)
@@ -664,9 +627,14 @@ func main() {
 		wecomBotAdapterForDispatcher = a
 	}
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry)
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry, time.Duration(cfg.ClawAgent.Session.NotificationDelaySeconds)*time.Second)
 // Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
 	if clawRT != nil {
+		// When the user replies before the deferred timer fires, cancel the
+		// pending card notification so the user doesn't get a redundant card.
+		clawRT.EventHandler.SetOnEventProcessed(func(sessionID string) {
+			disp.CancelDeferredNotification(sessionID)
+		})
 		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
 			log.Printf("[clawagent] aiEventHandler callback invoked: eventType=%s sessionID=%s deviceID=%s", eventType, sessionID, deviceID)
 			req := clawagent.AIEventRequest{

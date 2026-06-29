@@ -46,6 +46,7 @@ next-env.d.ts
 .trigger/
 
 # Go
+*.exe
 server/bin/
 server/pkg/
 server/*.exe

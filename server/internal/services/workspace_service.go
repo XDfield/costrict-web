@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/pathutil"
@@ -172,6 +173,11 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 
 	if err := tx.Create(workspace).Error; err != nil {
 		tx.Rollback()
+		if strings.Contains(err.Error(), "idx_workspaces_user_name_active") ||
+			strings.Contains(err.Error(), "duplicate key value violates unique constraint") ||
+			strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, ErrWorkspaceNameExists
+		}
 		return nil, err
 	}
 
@@ -363,8 +369,12 @@ func (s *WorkspaceService) DeleteWorkspace(workspaceID, userID string) error {
 		// 如果没有其他工作空间(result.Error == gorm.ErrRecordNotFound)，直接删除即可
 	}
 
-	// 软删除（会级联删除目录）
-	return s.DB.Delete(workspace).Error
+	// 软删除工作空间，并级联软删除其目录
+	if err := s.DB.Select("Directories").Delete(workspace).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // SetDefaultWorkspace 设置默认工作空间

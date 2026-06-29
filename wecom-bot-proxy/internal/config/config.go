@@ -11,21 +11,36 @@ import (
 )
 
 type Config struct {
-	Bot     BotConfig    `yaml:"bot"`
-	Server  ServerConfig `yaml:"server"`
-	Backends BackendsMap `yaml:"backends"`
-	Routing RoutingConfig `yaml:"routing"`
-	Dedup   DedupConfig  `yaml:"dedup"`
-	Logging LoggingConfig `yaml:"logging"`
+	Bot      BotConfig      `yaml:"bot"`
+	WecomAPI WecomAPIConfig `yaml:"wecom_api"`
+	Server   ServerConfig   `yaml:"server"`
+	Backend  BackendConfig  `yaml:"backend"`
+	Dedup    DedupConfig    `yaml:"dedup"`
+	Logging  LoggingConfig  `yaml:"logging"`
 }
 
 type BotConfig struct {
-	BotID                  string        `yaml:"bot_id"`
-	Secret                 string        `yaml:"secret"`
-	WSURL                  string        `yaml:"ws_url"`
-	HeartbeatInterval      time.Duration `yaml:"heartbeat_interval"`
+	BotID                   string        `yaml:"bot_id"`
+	Secret                  string        `yaml:"secret"`
+	WSURL                   string        `yaml:"ws_url"`
+	HeartbeatInterval       time.Duration `yaml:"heartbeat_interval"`
 	ReconnectInitialBackoff time.Duration `yaml:"reconnect_initial_backoff"`
-	ReconnectMaxBackoff    time.Duration `yaml:"reconnect_max_backoff"`
+	ReconnectMaxBackoff     time.Duration `yaml:"reconnect_max_backoff"`
+	InputMaxLength          int           `yaml:"input_max_length"`
+	// SessionLinkMode controls whether session_ref is rendered as a clickable
+	// markdown link. "enabled" (default) appends the link; "restricted" ignores
+	// session_ref entirely and forwards content verbatim.
+	SessionLinkMode         string        `yaml:"session_link_mode"`
+	// SessionTitleMaxLength caps the session_ref title length (in runes) when
+	// rendered as link text, to avoid bloating the message bubble.
+	SessionTitleMaxLength   int           `yaml:"session_title_max_length"`
+}
+
+// WecomAPIConfig holds credentials for calling WeCom server APIs
+// (access-token + open_userid → userid conversion).
+type WecomAPIConfig struct {
+	CorpID      string `yaml:"corp_id"`
+	AgentSecret string `yaml:"agent_secret"`
 }
 
 type ServerConfig struct {
@@ -38,13 +53,6 @@ type BackendConfig struct {
 	HMACSecret string        `yaml:"hmac_secret"`
 	Timeout    time.Duration `yaml:"timeout"`
 	Retry      int           `yaml:"retry"`
-}
-
-type BackendsMap map[string]BackendConfig
-
-type RoutingConfig struct {
-	DefaultBackend string        `yaml:"default_backend"`
-	TaskRouteTTL   time.Duration `yaml:"task_route_ttl"`
 }
 
 type DedupConfig struct {
@@ -114,36 +122,29 @@ func (c *Config) Validate() error {
 	if c.Bot.ReconnectMaxBackoff == 0 {
 		c.Bot.ReconnectMaxBackoff = 60 * time.Second
 	}
+	if c.Bot.InputMaxLength == 0 {
+		c.Bot.InputMaxLength = 120
+	}
+	if c.Bot.SessionLinkMode == "" {
+		c.Bot.SessionLinkMode = "enabled"
+	}
+	if c.Bot.SessionTitleMaxLength == 0 {
+		c.Bot.SessionTitleMaxLength = 50
+	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":9090"
 	}
-	if len(c.Backends) == 0 {
-		return fmt.Errorf("at least one backend is required")
+	if c.Backend.URL == "" {
+		return fmt.Errorf("backend.url is required")
 	}
-	for name, b := range c.Backends {
-		if b.URL == "" {
-			return fmt.Errorf("backend %q: url is required", name)
-		}
-		if b.AuthToken == "" {
-			return fmt.Errorf("backend %q: auth_token is required", name)
-		}
-		if b.Timeout == 0 {
-			b.Timeout = 10 * time.Second
-			c.Backends[name] = b
-		}
-		if b.Retry == 0 {
-			b.Retry = 3
-			c.Backends[name] = b
-		}
+	if c.Backend.AuthToken == "" {
+		return fmt.Errorf("backend.auth_token is required")
 	}
-	if c.Routing.DefaultBackend == "" {
-		return fmt.Errorf("routing.default_backend is required")
+	if c.Backend.Timeout == 0 {
+		c.Backend.Timeout = 10 * time.Second
 	}
-	if _, ok := c.Backends[c.Routing.DefaultBackend]; !ok {
-		return fmt.Errorf("routing.default_backend %q not found in backends", c.Routing.DefaultBackend)
-	}
-	if c.Routing.TaskRouteTTL == 0 {
-		c.Routing.TaskRouteTTL = 24 * time.Hour
+	if c.Backend.Retry == 0 {
+		c.Backend.Retry = 3
 	}
 	if c.Dedup.MaxEntries == 0 {
 		c.Dedup.MaxEntries = 10000
@@ -157,30 +158,19 @@ func (c *Config) Validate() error {
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
 	}
+	// wecom_api is optional; if corp_id is set, agent_secret is required
+	if c.WecomAPI.CorpID != "" && c.WecomAPI.AgentSecret == "" {
+		return fmt.Errorf("wecom_api.agent_secret is required when wecom_api.corp_id is set")
+	}
 	return nil
 }
 
-func (c *Config) BackendNames() []string {
-	names := make([]string, 0, len(c.Backends))
-	for name := range c.Backends {
-		names = append(names, name)
-	}
-	return names
-}
-
-// FindBackendByToken finds the backend name that matches the given auth token.
-// Used for authentication + caller identity in one step.
-func (c *Config) FindBackendByToken(token string) string {
-	// Strip "Bearer " prefix if present
+// ValidateAuthToken checks if the given token matches the configured backend auth token.
+func (c *Config) ValidateAuthToken(token string) bool {
 	if len(token) > 7 && token[:7] == "Bearer " {
 		token = token[7:]
 	}
-	for name, b := range c.Backends {
-		if b.AuthToken == token {
-			return name
-		}
-	}
-	return ""
+	return c.Backend.AuthToken != "" && c.Backend.AuthToken == token
 }
 
 // GetEnvOrDefault returns the environment variable value or a default.

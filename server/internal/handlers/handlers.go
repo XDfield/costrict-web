@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -189,6 +190,27 @@ func decodeBindState(encoded string) bindState {
 		return bindState{}
 	}
 	return out
+}
+
+// stripBindQueryParams removes previously-attached bind callback params from a
+// redirect URL so the backend always rewrites them from scratch. This prevents
+// stale `bind=success` (or any other bind state) from shadowing the fresh value
+// the current callback wants to surface to the frontend.
+func stripBindQueryParams(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	q.Del("bind")
+	q.Del("merge_token")
+	q.Del("expected_provider")
+	q.Del("actual_provider")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func signBindStatePayload(payload string) string {
@@ -525,12 +547,24 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse bound identity"})
 		return
 	}
+	fmt.Printf("[bindAuthCallback] state.Provider=%q claims.Provider=%q claims.Name=%q claims.Phone=%q claims.UniversalID=%q\n", state.Provider, claims.Provider, claims.Name, claims.Phone, claims.UniversalID)
 	if state.Provider != "" && !strings.EqualFold(claims.Provider, state.Provider) {
-		c.JSON(http.StatusConflict, gin.H{"error": "provider_mismatch"})
+		fmt.Printf("[bindAuthCallback] branch=provider_mismatch redirect to frontend with expected=%q actual=%q\n", state.Provider, claims.Provider)
+		redirectURL := stripBindQueryParams(state.RedirectTo)
+		if redirectURL == "" {
+			redirectURL = defaultFrontendURL + "/console/identity"
+		}
+		sep := "?"
+		if strings.Contains(redirectURL, "?") {
+			sep = "&"
+		}
+		c.Redirect(http.StatusFound, redirectURL+sep+"bind=provider_mismatch&expected_provider="+url.QueryEscape(state.Provider)+"&actual_provider="+url.QueryEscape(claims.Provider))
 		return
 	}
+	fmt.Printf("[bindAuthCallback] branch=proceed_to_bind provider_match_ok=%v\n", strings.EqualFold(claims.Provider, state.Provider))
 	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
+			fmt.Printf("[bindAuthCallback] branch=identity_already_bound claims.Provider=%q\n", claims.Provider)
 			externalKey := userpkg.BuildExternalKey(claims)
 			mergeToken := encodeMergeState(mergeState{
 				Provider:      claims.Provider,
@@ -539,7 +573,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 				ExpiresAt:     time.Now().Add(5 * time.Minute).Unix(),
 				Nonce:         uuid.NewString(),
 			})
-			redirectURL := state.RedirectTo
+			redirectURL := stripBindQueryParams(state.RedirectTo)
 			if redirectURL == "" {
 				redirectURL = defaultFrontendURL + "/settings/account"
 			}
@@ -553,11 +587,16 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
 		return
 	}
-	redirectURL := state.RedirectTo
+	fmt.Printf("[bindAuthCallback] branch=bind_success claims.Provider=%q\n", claims.Provider)
+	redirectURL := stripBindQueryParams(state.RedirectTo)
 	if redirectURL == "" {
-		redirectURL = defaultFrontendURL + "/settings/account?bind=success"
+		redirectURL = defaultFrontendURL + "/settings/account"
 	}
-	c.Redirect(http.StatusFound, redirectURL)
+	sep := "?"
+	if strings.Contains(redirectURL, "?") {
+		sep = "&"
+	}
+	c.Redirect(http.StatusFound, redirectURL+sep+"bind=success")
 }
 
 // Login godoc

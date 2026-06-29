@@ -1,7 +1,6 @@
 package project
 
 import (
-	"github.com/costrict/costrict-web/server/internal/services"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -14,15 +13,7 @@ type Module struct {
 }
 
 func New(db *gorm.DB, notificationSvc *notification.NotificationService) *Module {
-	return &Module{Service: NewProjectService(db, nil, userpkg.NewUserService(db), notificationSvc)}
-}
-
-func NewWithDependencies(db *gorm.DB, usageSvc interface {
-	AggregateProjectRepoActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoUserAggregate, error)
-	AggregateProjectRepoDailyActivity(userIDs []string, repoURLs []string, days int) ([]services.UsageRepoDailyAggregate, error)
-	AggregateRepositoriesByUsers(userIDs []string, days int) ([]services.UsageRepoUserAggregate, error)
-}, userSvc *userpkg.UserService, notificationSvc *notification.NotificationService) *Module {
-	return &Module{Service: NewProjectService(db, usageSvc, userSvc, notificationSvc)}
+	return &Module{Service: NewProjectService(db, userpkg.NewUserService(db), notificationSvc)}
 }
 
 func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
@@ -44,10 +35,8 @@ func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup) {
 		projects.POST("/:id/invitations", CreateInvitationHandler(m.Service))
 		projects.GET("/:id/invitations", ListInvitationsHandler(m.Service))
 		projects.GET("/:id/repositories", ListProjectRepositoriesHandler(m.Service))
-		projects.GET("/:id/repository-candidates", ListProjectRepositoryCandidatesHandler(m.Service))
 		projects.POST("/:id/repositories", BindProjectRepositoryHandler(m.Service))
 		projects.DELETE("/:id/repositories/:repoBindingId", UnbindProjectRepositoryHandler(m.Service))
-		projects.GET("/:id/repo-activity", GetProjectRepoActivityHandler(m.Service))
 	}
 
 	invitations := apiGroup.Group("/invitations")

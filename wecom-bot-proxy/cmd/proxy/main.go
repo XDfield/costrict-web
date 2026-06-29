@@ -13,7 +13,6 @@ import (
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/backend"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/config"
 	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/dedup"
-	"github.com/costrict/costrict-web/wecom-bot-proxy/internal/router"
 	"github.com/gin-gonic/gin"
 	"github.com/go-sphere/wecom-aibot-go-sdk/aibot"
 )
@@ -45,8 +44,7 @@ func main() {
 	logger.Info("starting wecom-bot-proxy",
 		"bot_id", cfg.Bot.BotID,
 		"listen", cfg.Server.Listen,
-		"backends", cfg.BackendNames(),
-		"default_backend", cfg.Routing.DefaultBackend,
+		"backend_url", cfg.Backend.URL,
 	)
 
 	// Initialize dedup store
@@ -59,19 +57,8 @@ func main() {
 		}
 	}
 
-	// Initialize route table
-	routes, err := router.NewTable(
-		cfg.Routing.DefaultBackend,
-		cfg.Dedup.MaxEntries,
-		cfg.Routing.TaskRouteTTL,
-	)
-	if err != nil {
-		logger.Error("failed to create route table", "error", err)
-		os.Exit(1)
-	}
-
-	// Initialize backend manager
-	backendMgr := backend.NewManager(cfg.Backends, logger)
+	// Initialize backend client
+	backendClient := backend.NewClient(cfg.Backend, logger)
 
 	// Initialize SDK client
 	scene := 0
@@ -84,11 +71,11 @@ func main() {
 		ReconnectInterval:      int(cfg.Bot.ReconnectInitialBackoff.Milliseconds()),
 		MaxReconnectAttempts:   -1, // unlimited
 		MaxAuthFailureAttempts: 5,
-		RequestTimeout:         int(cfg.Backends[cfg.Routing.DefaultBackend].Timeout.Milliseconds()),
+		RequestTimeout:         int(cfg.Backend.Timeout.Milliseconds()),
 	})
 
 	// Create proxy (core orchestrator)
-	proxy := api.NewProxy(cfg, logger, sdk, routes, backendMgr, dedupStore)
+	proxy := api.NewProxy(cfg, logger, sdk, backendClient, dedupStore)
 	proxy.SetupSDKHandlers()
 
 	// Context with signal handling

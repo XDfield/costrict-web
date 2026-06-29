@@ -77,14 +77,27 @@ func (s *WeComBotSender) Send(userConfig json.RawMessage, msg NotificationMessag
 		return nil // 用户已禁用，不发送
 	}
 
-	// Construct message to wecom-bot-proxy
+	// Construct message to wecom-bot-proxy. session_ref is optional: when the
+	// notification carries a usable session URL (set by NotificationService from
+	// workspace + session IDs), pass {title, url} and let the proxy decide
+	// whether to render it as a markdown link based on its session_link_mode.
 	proxyMsg := map[string]interface{}{
-		"user_id":    msg.UserID,
-		"chat_type":  "individual",
-		"msg_type":   "text",
-		"content":    fmt.Sprintf("%s\n\n%s", msg.Title, msg.Body),
-		"task_id":    fmt.Sprintf("notify_%s_%d", msg.SessionID, time.Now().Unix()),
+		"user_id":   msg.UserID,
+		"chat_type": "individual",
+		"msg_type":  "text",
+		"content":   fmt.Sprintf("%s\n\n%s", msg.Title, msg.Body),
+		"task_id":   fmt.Sprintf("notify_%s_%d", msg.SessionID, time.Now().Unix()),
 	}
+	// [disabled] session_ref attachment — commented out. To re-enable, uncomment
+	// the block below.
+	/*
+	if sessionURL, _ := msg.Metadata["sessionUrl"].(string); sessionURL != "" {
+		proxyMsg["session_ref"] = map[string]string{
+			"title": msg.Title,
+			"url":   sessionURL,
+		}
+	}
+	*/
 
 	body, err := json.Marshal(proxyMsg)
 	if err != nil {
