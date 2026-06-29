@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -16,6 +17,17 @@ var (
 	ErrDeviceOwnedByCaller     = errors.New("device already registered by current user")
 	ErrDeviceNotFound          = errors.New("device not found")
 )
+
+type RecoveryError struct {
+	RecoverableDeviceID string
+	DisplayName         string
+	Platform            string
+	LastConnectedAt     *time.Time
+}
+
+func (e *RecoveryError) Error() string {
+	return "device recovery available"
+}
 
 // ownershipEntry caches a device ownership check result.
 type ownershipEntry struct {
@@ -31,11 +43,13 @@ type DeviceService struct {
 }
 
 type RegisterDeviceRequest struct {
-	DeviceID       string `json:"deviceId" binding:"required"`
-	LegacyDeviceID string `json:"legacyDeviceId"`
-	DisplayName    string `json:"displayName" binding:"required"`
-	Platform       string `json:"platform" binding:"required"`
-	Version        string `json:"version" binding:"required"`
+	DeviceID         string `json:"deviceId" binding:"required"`
+	LegacyDeviceID   string `json:"legacyDeviceId"`
+	DisplayName      string `json:"displayName" binding:"required"`
+	Platform         string `json:"platform" binding:"required"`
+	Version          string `json:"version" binding:"required"`
+	ConfirmRecovery  bool   `json:"confirmRecovery"`
+	ForceNew         bool   `json:"forceNew"`
 }
 
 type UpdateDeviceRequest struct {
@@ -73,7 +87,7 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 		return s.restoreSoftDeletedDevice(softDeleted, userID, req, false)
 	}
 
-	if req.LegacyDeviceID != "" && req.LegacyDeviceID != req.DeviceID {
+	if req.LegacyDeviceID != "" && req.LegacyDeviceID != req.DeviceID && !req.ForceNew {
 		device, token, err := s.migrateFromLegacyDeviceID(userID, req)
 		if device != nil || err != nil {
 			return device, token, err
@@ -99,6 +113,10 @@ func (s *DeviceService) RegisterDevice(userID string, req RegisterDeviceRequest)
 		return nil, "", err
 	}
 
+	if req.LegacyDeviceID != "" && req.LegacyDeviceID != req.DeviceID {
+		s.recordMigration(req.LegacyDeviceID, req.DeviceID, userID)
+	}
+
 	return device, token, nil
 }
 
@@ -117,7 +135,62 @@ func (s *DeviceService) migrateFromLegacyDeviceID(userID string, req RegisterDev
 		return s.restoreSoftDeletedDevice(softDeleted, userID, req, true)
 	}
 
+	if migratedID := s.lookupMigratedDeviceID(req.LegacyDeviceID, userID); migratedID != "" {
+		var migrated models.Device
+		if err := s.DB.Where("device_id = ?", migratedID).First(&migrated).Error; err == nil {
+			if req.ConfirmRecovery {
+				return s.handleExistingDevice(migrated, userID, req, true)
+			}
+			if req.ForceNew {
+				return nil, "", nil
+			}
+			return nil, "", &RecoveryError{
+				RecoverableDeviceID: migrated.DeviceID,
+				DisplayName:         migrated.DisplayName,
+				Platform:            migrated.Platform,
+				LastConnectedAt:     migrated.LastConnectedAt,
+			}
+		}
+	}
+
 	return nil, "", nil
+}
+
+func (s *DeviceService) lookupMigratedDeviceID(oldDeviceID, userID string) string {
+	var migration models.DeviceMigration
+	err := s.DB.Where("old_device_id = ? AND user_id = ?", oldDeviceID, userID).
+		Order("created_at DESC").
+		First(&migration).Error
+	if err != nil {
+		return ""
+	}
+	return migration.NewDeviceID
+}
+
+func (s *DeviceService) recordMigration(oldDeviceID, newDeviceID, userID string) {
+	migration := &models.DeviceMigration{
+		OldDeviceID: oldDeviceID,
+		NewDeviceID: newDeviceID,
+		UserID:      userID,
+	}
+	if err := s.DB.Create(migration).Error; err != nil {
+		s.ownershipCache.Delete(oldDeviceID + ":" + userID)
+	}
+}
+
+func (s *DeviceService) UpdateLegacyFingerprint(deviceID, userID, legacyDeviceID string) error {
+	if legacyDeviceID == "" || legacyDeviceID == deviceID {
+		return nil
+	}
+	var count int64
+	s.DB.Model(&models.DeviceMigration{}).
+		Where("old_device_id = ? AND new_device_id = ? AND user_id = ?", legacyDeviceID, deviceID, userID).
+		Count(&count)
+	if count > 0 {
+		return nil
+	}
+	s.recordMigration(legacyDeviceID, deviceID, userID)
+	return nil
 }
 
 func (s *DeviceService) handleExistingDevice(existing models.Device, userID string, req RegisterDeviceRequest, isLegacyMigration bool) (*models.Device, string, error) {
@@ -170,7 +243,8 @@ func (s *DeviceService) migrateDeviceID(existing models.Device, userID string, r
 		return nil, "", err
 	}
 	now := time.Now()
-	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", req.LegacyDeviceID).Updates(map[string]any{
+	lookupID := existing.DeviceID
+	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", lookupID).Updates(map[string]any{
 		"device_id":        req.DeviceID,
 		"display_name":     req.DisplayName,
 		"platform":         req.Platform,
@@ -182,7 +256,8 @@ func (s *DeviceService) migrateDeviceID(existing models.Device, userID string, r
 	}).Error; err != nil {
 		return nil, "", err
 	}
-	s.ownershipCache.Delete(req.LegacyDeviceID + ":" + userID)
+	s.recordMigration(req.LegacyDeviceID, req.DeviceID, userID)
+	s.ownershipCache.Delete(lookupID + ":" + userID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
 	return &existing, token, nil
 }
@@ -203,6 +278,9 @@ func (s *DeviceService) createDeviceFromLegacyConflict(userID string, req Regist
 	}
 	if err := s.DB.Create(device).Error; err != nil {
 		return nil, "", err
+	}
+	if req.LegacyDeviceID != "" && req.LegacyDeviceID != req.DeviceID {
+		s.recordMigration(req.LegacyDeviceID, req.DeviceID, userID)
 	}
 	return device, token, nil
 }
@@ -229,6 +307,9 @@ func (s *DeviceService) rebindDevice(existing models.Device, userID string, req 
 	}
 	if err := s.DB.Model(&models.Device{}).Where("device_id = ?", lookupID).Updates(updates).Error; err != nil {
 		return nil, "", err
+	}
+	if isLegacyMigration {
+		s.recordMigration(lookupID, req.DeviceID, userID)
 	}
 	s.ownershipCache.Delete(lookupID + ":" + existing.UserID)
 	s.DB.Where("device_id = ?", req.DeviceID).First(&existing)
@@ -429,7 +510,12 @@ func (s *DeviceService) MarkStaleDevicesOffline(checkBound func(deviceID string)
 	var count int
 	for _, d := range devices {
 		if !checkBound(d.DeviceID) {
-			if err := s.SetOffline(d.DeviceID); err == nil {
+			if err := s.SetOffline(d.DeviceID); err != nil {
+				slog.Error("[stale-check] failed to mark device offline",
+					"deviceID", d.DeviceID, "error", err)
+			} else {
+				slog.Warn("[stale-check] device no longer bound to any gateway, marked offline",
+					"deviceID", d.DeviceID)
 				count++
 			}
 		}

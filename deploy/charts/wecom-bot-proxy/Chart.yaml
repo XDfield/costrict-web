@@ -1,0 +1,9 @@
+apiVersion: v2
+name: costrict-web-wecom-bot-proxy
+description: Costrict Web WeCom Bot Proxy - WeChat Work intelligent bot WebSocket proxy
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+mainters:
+  - name: costrict
+    url: https://github.com/costrict

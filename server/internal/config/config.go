@@ -26,6 +26,7 @@ type Config struct {
 	CloudBaseURL              string
 	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
 	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
+	MulticaAPIURL             string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
 	ReleaseDownloadBaseURL    string
 	SystemToken               string
 	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
@@ -47,15 +48,38 @@ type Config struct {
 	// deployment only needs to set BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS. Empty
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
+	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
+}
+
+// ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
+type ClawAgentConfig struct {
+	EncryptionKey string // AES-256-GCM encryption key for API keys
+	Session       ClawAgentSessionConfig
+}
+
+type ClawAgentSessionConfig struct {
+	DailyResetHour               int // Daily reset hour for direct sessions (default 4)
+	GroupIdleMinutes             int // Idle timeout for group sessions in minutes (default 30)
+	EventIdleMinutes             int // Idle timeout for event sessions in minutes (default 60)
+	TaskIdleMinutes              int // Idle timeout for task sessions in minutes (default 120)
+	PruneAfterDays               int // Delete archived sessions after N days (default 30)
+	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
+	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
+	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
+	NotificationDelaySeconds    int // Delay before sending AI notification to user (default 30)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
-// (real department/user tree, X-API-Key authenticated). Both fields are optional:
-// when BaseURL or APIKey is empty the dept-sync client is considered unconfigured
+// (real department/user tree, X-Query-Key authenticated). BaseURL and APIKey are
+// optional: when either is empty the dept-sync client is considered unconfigured
 // and degrades gracefully (admin endpoints return 503, frontend shows a notice).
+// PathPrefix/AuthHeader default to the current dept-sync contract and only need
+// overriding if the service changes its route prefix or auth header.
 type DeptSyncConfig struct {
-	BaseURL     string // e.g. http://dept-sync:8080 (no trailing /api)
-	APIKey      string // X-API-Key value issued by dept-sync (query_key table)
+	BaseURL     string // e.g. http://dept-sync:8080 (bare address, no route prefix)
+	APIKey      string // query_key value issued by dept-sync; sent in AuthHeader
+	PathPrefix  string // data-API route prefix, default /costrict-dept-info/api/v1
+	AuthHeader  string // auth header name, default X-Query-Key
 	TimeoutSec  int    // per-request HTTP timeout, default 10s
 	CacheTTLSec int    // in-memory cache TTL for tree/users responses, default 60s
 }
@@ -63,9 +87,12 @@ type DeptSyncConfig struct {
 type ChannelSystemConfig struct {
 	EnabledTypes []string // Deprecated; use individual enabled flags below
 	WeCom        WeComSystemConfig
+	WeComBot     WeComBotSystemConfig
 	// Individual channel enable flags (system-level availability)
+	WebhookEnabled      bool `mapstructure:"CHANNEL_WEBHOOK_ENABLED"`
 	WeComEnabled        bool `mapstructure:"CHANNEL_WECOM_ENABLED"`
 	WeComWebhookEnabled bool `mapstructure:"CHANNEL_WECOM_WEBHOOK_ENABLED"`
+	WeComBotEnabled     bool `mapstructure:"CHANNEL_WECOM_BOT_ENABLED"`
 	WeChatEnabled       bool `mapstructure:"CHANNEL_WECHAT_ENABLED"`
 }
 
@@ -75,6 +102,11 @@ type WeComSystemConfig struct {
 	Secret         string
 	Token          string
 	EncodingAESKey string
+}
+
+type WeComBotSystemConfig struct {
+	ProxyURL  string
+	AuthToken string
 }
 
 type CasdoorConfig struct {
@@ -143,6 +175,7 @@ func Load() *Config {
 		CloudBaseURL:              cloudBaseURL,
 		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
 		AppURL:                    getEnv("APP_URL", cloudBaseURL),
+		MulticaAPIURL:             getEnv("MULTICA_API_URL", ""),
 		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
 		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
 		FrontendURLs:              frontendURLs,
@@ -179,6 +212,8 @@ func Load() *Config {
 		DeptSync: DeptSyncConfig{
 			BaseURL:     getEnv("DEPT_SYNC_URL", ""),
 			APIKey:      getEnv("DEPT_SYNC_API_KEY", ""),
+			PathPrefix:  getEnv("DEPT_SYNC_PATH_PREFIX", "/costrict-dept-info/api/v1"),
+			AuthHeader:  getEnv("DEPT_SYNC_AUTH_HEADER", "X-Query-Key"),
 			TimeoutSec:  getEnvInt("DEPT_SYNC_TIMEOUT_SECONDS", 10),
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
@@ -187,15 +222,35 @@ func Load() *Config {
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
-			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", true),
-			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", true),
-			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", true),
+			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", false),
+				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
+			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", false),
+			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", false),
+			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
 			WeCom: WeComSystemConfig{
 				CorpID:         getEnv("WECOM_CORP_ID", ""),
 				AgentID:        getEnvInt("WECOM_AGENT_ID", 0),
 				Secret:         getEnv("WECOM_SECRET", ""),
 				Token:          getEnv("WECOM_TOKEN", ""),
 				EncodingAESKey: getEnv("WECOM_ENCODING_AES_KEY", ""),
+			},
+			WeComBot: WeComBotSystemConfig{
+				ProxyURL:  getEnv("WECOM_BOT_PROXY_URL", ""),
+				AuthToken: getEnv("WECOM_BOT_PROXY_AUTH_TOKEN", ""),
+			},
+		},
+		ClawAgent: ClawAgentConfig{
+			EncryptionKey: getEnv("CLAWAGENT_ENCRYPTION_KEY", ""),
+			Session: ClawAgentSessionConfig{
+				DailyResetHour:               getEnvInt("CLAWAGENT_SESSION_DAILY_RESET_HOUR", 4),
+				GroupIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_GROUP_IDLE_MINUTES", 30),
+				EventIdleMinutes:             getEnvInt("CLAWAGENT_SESSION_EVENT_IDLE_MINUTES", 60),
+				TaskIdleMinutes:              getEnvInt("CLAWAGENT_SESSION_TASK_IDLE_MINUTES", 120),
+				PruneAfterDays:               getEnvInt("CLAWAGENT_SESSION_PRUNE_AFTER_DAYS", 30),
+				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
+				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
+				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
+					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
 	}

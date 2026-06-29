@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -125,12 +126,6 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 					return err
 				}
 			}
-
-			// Auto-create favorite for the recipient (distributed skills default to
-			// AI-auto-invokable, matching pre-invokeMode behavior).
-			if s.behaviorSvc != nil {
-				_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID, "auto")
-			}
 		}
 
 		return nil
@@ -140,18 +135,38 @@ func (s *DistributionService) distributeToTarget(ctx context.Context, item *mode
 		return nil, err
 	}
 
-	// Notify recipients
+	// Auto-favorite each recipient AFTER the distribution has committed. This is
+	// best-effort: a favorite hiccup must not roll back an otherwise-valid
+	// distribution, and creating it post-commit avoids leaving an orphan favorite
+	// if the transaction had rolled back. (In-tx it can't be best-effort: any error
+	// inside the tx aborts the whole tx in Postgres.) The recipient is distributed
+	// regardless; the favorite is the auto-install convenience.
+	if s.behaviorSvc != nil {
+		for _, userID := range recipients {
+			// Distributed favorites default to "auto" (AI-auto-invokable).
+			_, _, _ = s.behaviorSvc.FavoriteItem(ctx, item.ID, userID, "auto")
+		}
+	}
+
+	// Notify recipients. Carry the distributor's message (附言) into the body so
+	// recipients actually see the note written at distribution time, not just the
+	// generic "someone shared a skill" line.
 	if s.notificationSvc != nil {
+		body := fmt.Sprintf("有人向你下发了技能 **%s**（权限：%s）", item.Name, permissionMode)
+		if strings.TrimSpace(message) != "" {
+			body += fmt.Sprintf("\n\n附言：%s", message)
+		}
 		for _, userID := range recipients {
 			s.notificationSvc.TriggerMessage(userID, "item.distributed", sender.NotificationMessage{
 				Title:     "技能下发",
-				Body:      fmt.Sprintf("有人向你下发了技能 **%s**（权限：%s）", item.Name, permissionMode),
+				Body:      body,
 				EventType: "item.distributed",
 				Metadata: map[string]any{
 					"itemId":         item.ID,
 					"itemName":       item.Name,
 					"permissionMode": permissionMode,
 					"distributionId": dist.ID,
+					"message":        message,
 				},
 			})
 		}
@@ -337,7 +352,17 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.UnfavoriteItem(ctx, dist.ItemID, receipt.UserID)
+					// Same tx as the status update, so the readonly guard sees this
+					// distribution as already revoked/paused and removes the favorite
+					// instead of treating the skill as still-required. ErrSkillRequired
+					// (another active readonly distribution still needs it) is an
+					// expected, non-fatal outcome — keep the favorite and continue. Any
+					// OTHER error is a real failure: propagate it so the whole tx
+					// (including the revoked/paused status change) rolls back rather than
+					// committing a status that's out of sync with the favorite.
+					if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil && !errors.Is(err, ErrSkillRequired) {
+						return err
+					}
 				}
 			}
 			if *status == "revoked" {
@@ -355,7 +380,11 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 			}
 			for _, receipt := range receipts {
 				if s.behaviorSvc != nil {
-					_, _, _ = s.behaviorSvc.FavoriteItem(ctx, dist.ItemID, receipt.UserID, "auto")
+					// Re-favorite within the same tx; a real failure must roll back the
+					// resume so status and favorite stay consistent.
+					if _, _, err := s.behaviorSvc.FavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil {
+						return err
+					}
 				}
 			}
 		}

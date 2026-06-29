@@ -78,16 +78,38 @@ func (r *GatewayRegistry) Allocate(region string) (*GatewayInfo, error) {
 	return best, nil
 }
 
-func (r *GatewayRegistry) BindDevice(deviceID, gatewayID string) {
-	if err := r.store.BindDevice(deviceID, gatewayID); err != nil {
+func (r *GatewayRegistry) BindDevice(deviceID, gatewayID, connID string) (string, string) {
+	oldGw, oldConn, err := r.store.BindDevice(deviceID, gatewayID, connID)
+	if err != nil {
 		logger.Error("[GatewayRegistry] BindDevice failed: %v", err)
+		return "", ""
 	}
+	return oldGw, oldConn
+}
+
+// GetGatewayInfo returns the GatewayInfo for the given gateway ID.
+func (r *GatewayRegistry) GetGatewayInfo(gatewayID string) *GatewayInfo {
+	gw, err := r.store.GetGateway(gatewayID)
+	if err != nil {
+		return nil
+	}
+	return gw
 }
 
 func (r *GatewayRegistry) UnbindDevice(deviceID string) {
 	if err := r.store.UnbindDevice(deviceID); err != nil {
 		logger.Error("[GatewayRegistry] UnbindDevice failed: %v", err)
 	}
+}
+
+// GetDeviceGatewayID returns the gateway ID a device is currently bound to, without
+// loading full gateway info. Returns empty string if not bound.
+func (r *GatewayRegistry) GetDeviceGatewayID(deviceID string) string {
+	gwID, err := r.store.GetDeviceGateway(deviceID)
+	if err != nil {
+		return ""
+	}
+	return gwID
 }
 
 func (r *GatewayRegistry) Deregister(gatewayID string) error {

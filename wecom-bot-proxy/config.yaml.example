@@ -1,0 +1,31 @@
+bot:
+  bot_id: "${WECOM_BOT_ID}"
+  secret: "${WECOM_BOT_SECRET}"
+  ws_url: "wss://openws.work.weixin.qq.com"
+  heartbeat_interval: 30s
+  reconnect_initial_backoff: 5s
+  reconnect_max_backoff: 60s
+
+server:
+  listen: ":9090"
+
+backends:
+  backend-a:
+    url: "${CORICT_WEB_URL:-http://127.0.0.1:8080}/api/webhooks/channels/wecom-bot"
+    auth_token: "${BACKEND_A_TOKEN}"
+    hmac_secret: "${BACKEND_A_HMAC_SECRET:-}"
+    timeout: 10s
+    retry: 3
+
+routing:
+  default_backend: backend-a
+  task_route_ttl: 24h
+
+dedup:
+  enabled: true
+  max_entries: 10000
+  ttl_seconds: 300
+
+logging:
+  level: info
+  format: json

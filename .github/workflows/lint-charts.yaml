@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        chart: [gateway, api, worker, portal, postgres]
+        chart: [gateway, api, worker, portal, postgres, proxy, wecom-bot-proxy]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -205,6 +205,45 @@ func verifyBindStatePayload(payload, sig string) bool {
 	return hmac.Equal([]byte(signBindStatePayload(payload)), []byte(sig))
 }
 
+// mergeState carries the information needed to complete an account merge after the user
+// confirms the merge dialog on the frontend.
+type mergeState struct {
+	Provider      string `json:"provider"`
+	ExternalKey   string `json:"externalKey"`
+	UserSubjectID string `json:"userSubjectId"`
+	ExpiresAt     int64  `json:"expiresAt"`
+	Nonce         string `json:"nonce"`
+}
+
+func encodeMergeState(s mergeState) string {
+	b, _ := json.Marshal(s)
+	payload := base64.RawURLEncoding.EncodeToString(b)
+	return payload + "." + signBindStatePayload(payload)
+}
+
+func decodeMergeState(encoded string) mergeState {
+	parts := strings.Split(encoded, ".")
+	if len(parts) != 2 {
+		return mergeState{}
+	}
+	payload, sig := parts[0], parts[1]
+	if !verifyBindStatePayload(payload, sig) {
+		return mergeState{}
+	}
+	b, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		return mergeState{}
+	}
+	var out mergeState
+	if err := json.Unmarshal(b, &out); err != nil {
+		return mergeState{}
+	}
+	if out.ExpiresAt > 0 && time.Now().Unix() > out.ExpiresAt {
+		return mergeState{}
+	}
+	return out
+}
+
 func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 	name := user.Username
 	if user.DisplayName != nil && *user.DisplayName != "" {
@@ -445,6 +484,12 @@ func StartBindAuth(c *gin.Context) {
 }
 
 func bindAuthCallback(c *gin.Context, state bindState) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC] bindAuthCallback panicked: %v\n", r)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
+		}
+	}()
 	if state.ExpiresAt == 0 || time.Now().Unix() > state.ExpiresAt {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_state"})
 		return
@@ -486,7 +531,23 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 	}
 	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
-			c.JSON(http.StatusConflict, gin.H{"error": "identity_already_bound", "message": "该登录方式已绑定其他账号"})
+			externalKey := userpkg.BuildExternalKey(claims)
+			mergeToken := encodeMergeState(mergeState{
+				Provider:      claims.Provider,
+				ExternalKey:   externalKey,
+				UserSubjectID: currentUser.SubjectID,
+				ExpiresAt:     time.Now().Add(5 * time.Minute).Unix(),
+				Nonce:         uuid.NewString(),
+			})
+			redirectURL := state.RedirectTo
+			if redirectURL == "" {
+				redirectURL = defaultFrontendURL + "/settings/account"
+			}
+			sep := "?"
+			if strings.Contains(redirectURL, "?") {
+				sep = "&"
+			}
+			c.Redirect(http.StatusFound, redirectURL+sep+"bind=conflict&merge_token="+mergeToken)
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
@@ -693,6 +754,73 @@ func stringPtr(v string) *string {
 	return &v
 }
 
+// ConfirmMergeIdentity godoc
+// @Summary      Confirm account merge
+// @Description  After the user confirms the merge dialog on the frontend, this endpoint
+// transfers the conflicting identity from the other account to the current user.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  object{merge_token=string}  true  "Merge token from the OAuth redirect"
+// @Success      200  {object}  object{message=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Router       /auth/bind/confirm-merge [post]
+func ConfirmMergeIdentity(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	var req struct {
+		MergeToken string `json:"merge_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	ms := decodeMergeState(req.MergeToken)
+	if ms.ExpiresAt == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_or_expired_merge_token"})
+		return
+	}
+	if ms.UserSubjectID != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "merge_token_user_mismatch"})
+		return
+	}
+	if err := UserModule.Service.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
+		if err.Error() == "identity_not_found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "identity_not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to merge identity"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "identity_merged"})
+}
+
+// CancelMergeIdentity godoc
+// @Summary      Cancel account merge
+// @Description  Cancels the merge operation when the user declines the merge dialog.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  object{merge_token=string}  true  "Merge token to cancel"
+// @Success      200  {object}  object{message=string}
+// @Failure      400  {object}  object{error=string}
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/bind/cancel-merge [post]
+func CancelMergeIdentity(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "merge_cancelled"})
+}
+
 func derefString(s *string) string {
 	if s == nil {
 		return ""
@@ -725,12 +853,23 @@ func buildExternalKeyForResponse(claims *userpkg.JWTClaims) string {
 // @Failure      500  {object}  object{error=string}
 // @Router       /repositories [get]
 func ListRepositories(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.UserIDKey)
+	userID, _ := userIDVal.(string)
 	db := database.GetDB()
+
+	// Public repositories are visible to everyone
 	var repos []models.Repository
-	result := db.Find(&repos)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch repositories"})
-		return
+	db.Where("visibility = 'public'").Find(&repos)
+
+	// Private repositories: only those the caller is a member of
+	if userID != "" {
+		var repoIDs []string
+		db.Model(&models.RepoMember{}).Where("user_id = ?", userID).Pluck("repo_id", &repoIDs)
+		if len(repoIDs) > 0 {
+			var privateRepos []models.Repository
+			db.Where("id IN ? AND visibility != 'public'", repoIDs).Find(&privateRepos)
+			repos = append(repos, privateRepos...)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"repositories": repos})
@@ -916,6 +1055,11 @@ func GetRepository(c *gin.Context) {
 		return
 	}
 
+	if !canReadRepo(c, repo.ID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	c.JSON(http.StatusOK, repo)
 }
 
@@ -934,6 +1078,10 @@ func GetRepository(c *gin.Context) {
 // @Router       /repositories/{id} [put]
 func UpdateRepository(c *gin.Context) {
 	id := c.Param("id")
+	if !requireRepoAdmin(c, id) {
+		return
+	}
+
 	var req struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
@@ -986,6 +1134,10 @@ func UpdateRepository(c *gin.Context) {
 // @Router       /repositories/{id} [delete]
 func DeleteRepository(c *gin.Context) {
 	id := c.Param("id")
+	if !requireRepoAdmin(c, id) {
+		return
+	}
+
 	db := database.GetDB()
 
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -1101,6 +1253,26 @@ func getCallerRepoRole(c *gin.Context, repoID string) string {
 
 func isRepoAdmin(role string) bool {
 	return role == "owner" || role == "admin"
+}
+
+// canReadRepo returns true if the caller is allowed to read a repository.
+// Public repos are readable by everyone; private repos require membership.
+func canReadRepo(c *gin.Context, repoID string) bool {
+	visibility := getRepoVisibility(repoID)
+	if visibility == "public" {
+		return true
+	}
+	return getCallerRepoRole(c, repoID) != ""
+}
+
+// requireRepoAdmin checks whether the caller is an admin/owner of the repository.
+// If not, it responds with 403 and returns false.
+func requireRepoAdmin(c *gin.Context, repoID string) bool {
+	if !isRepoAdmin(getCallerRepoRole(c, repoID)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only repo owner or admin can perform this action"})
+		return false
+	}
+	return true
 }
 
 // AddRepositoryMember godoc
@@ -1278,6 +1450,11 @@ func RemoveRepositoryMember(c *gin.Context) {
 // @Router       /repositories/{id}/members [get]
 func ListRepositoryMembers(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var members []models.RepoMember
 	result := db.Where("repo_id = ?", repoID).Find(&members)
@@ -1299,6 +1476,11 @@ func ListRepositoryMembers(c *gin.Context) {
 // @Router       /repositories/{id}/registry [get]
 func GetRepositoryRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var registry models.CapabilityRegistry
 	result := db.Where("repo_id = ?", repoID).Order("CASE source_type WHEN 'external' THEN 0 ELSE 1 END").First(&registry)
@@ -1319,6 +1501,11 @@ func GetRepositoryRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries [get]
 func ListRepoRegistries(c *gin.Context) {
 	repoID := c.Param("id")
+	if !canReadRepo(c, repoID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this repository"})
+		return
+	}
+
 	db := database.GetDB()
 	var registries []models.CapabilityRegistry
 	db.Where("repo_id = ?", repoID).Order("created_at ASC").Find(&registries)
@@ -1338,6 +1525,10 @@ func ListRepoRegistries(c *gin.Context) {
 // @Router       /repositories/{id}/registries [post]
 func AddRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	var req CreateSyncRegistryInput
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -1387,6 +1578,10 @@ func AddRepoRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries/{regId} [put]
 func UpdateRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	regID := c.Param("regId")
 	db := database.GetDB()
 
@@ -1465,6 +1660,10 @@ func UpdateRepoRegistry(c *gin.Context) {
 // @Router       /repositories/{id}/registries/{regId} [delete]
 func RemoveRepoRegistry(c *gin.Context) {
 	repoID := c.Param("id")
+	if !requireRepoAdmin(c, repoID) {
+		return
+	}
+
 	regID := c.Param("regId")
 	db := database.GetDB()
 

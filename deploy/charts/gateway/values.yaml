@@ -2,6 +2,15 @@
 
 replicaCount: 1
 
+# Run Gateway as a DaemonSet instead of a Deployment.
+# When enabled, one Gateway Pod is scheduled per Node and replicaCount is ignored.
+daemonSet:
+  enabled: false
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
 image:
   repository: ghcr.io/xdfield/costrict-web-gateway
   pullPolicy: IfNotPresent
@@ -11,10 +20,6 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""
 
 podAnnotations: {}
 
@@ -80,3 +85,34 @@ readinessProbe:
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
+
+# nginx-router 中间层配置。
+# 启用后，由 OpenResty 负责从 /device/{deviceID}/... 提取 deviceID、
+# 一致性哈希(chash)路由以及通过 headless Service DNS 发现 Gateway Pod。
+# APISIX 退化为薄 WebSocket 透传层，不再需要 K8s 服务发现及对应 RBAC。
+nginxRouter:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: openresty/openresty
+    tag: "1.25.3.1-0-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  # Gateway Pod 发现相关
+  discovery:
+    # 留空时使用 <fullname>-headless
+    headlessServiceName: ""
+    gatewayPort: 8081
+    refreshIntervalMs: 5000
+  # kube-dns 地址；多数集群默认值即可工作
+  resolver: "kube-dns.kube-system.svc.cluster.local"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  podAnnotations: {}

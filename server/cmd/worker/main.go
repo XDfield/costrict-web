@@ -16,6 +16,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/logger"
+	"github.com/costrict/costrict-web/server/internal/migration"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -57,6 +58,14 @@ func runWorker() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
+	// Prevent concurrent migrations when multiple Worker replicas start at the
+	// same time. The lock is released once migrations finish.
+	unlock, err := migration.AcquireLock(db)
+	if err != nil {
+		log.Fatalf("Failed to acquire migration lock: %v", err)
+	}
+	defer unlock()
+
 	if err := runPreMigrations(db); err != nil {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
 	}
@@ -85,6 +94,8 @@ func runWorker() {
 	if err := runPostMigrations(db); err != nil {
 		log.Fatalf("Failed to run post-migrations: %v", err)
 	}
+
+	unlock()
 
 	tmpDir := os.Getenv("SYNC_TMP_DIR")
 	if tmpDir == "" {

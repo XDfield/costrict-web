@@ -11,10 +11,6 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""
 
 podAnnotations: {}
 
@@ -52,10 +48,8 @@ affinity: {}
 config:
   port: "8080"
   logLevel: "info"
+  runMigrations: true
 
-# Database migration job
-migrate:
-  enabled: false
 
 # Database configuration
 database:
@@ -80,6 +74,8 @@ persistence:
     - ReadWriteMany
   size: 10Gi
   existingClaim: ""
+  # Set to an existing StorageClass name to use it instead of creating one
+  storageClass: ""
   mountPath: /app/data/artifacts
   # NFS provisioner used by the created StorageClass; update to match your cluster
   provisioner: "nfs-subdir-external-provisioner"

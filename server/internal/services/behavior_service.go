@@ -23,6 +23,13 @@ func NewBehaviorService(db *gorm.DB) *BehaviorService {
 	return &BehaviorService{db: db}
 }
 
+// ErrSkillRequired is returned by the unfavorite path when the item is still
+// required by an active readonly distribution. It is an EXPECTED outcome (keep
+// the favorite), not a failure — callers running inside a transaction (the
+// distribution revoke/pause path) tolerate it while still propagating real
+// DB errors so the surrounding status change can roll back.
+var ErrSkillRequired = errors.New("cannot unfavorite a required skill")
+
 // LogBehaviorRequest represents a behavior log request
 type LogBehaviorRequest struct {
 	UserID      string                 `json:"userId"`
@@ -155,6 +162,27 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID, invo
 		}
 	}()
 
+	count, created, err := s.favoriteItemTx(tx, itemID, userID, invokeMode)
+	if err != nil {
+		tx.Rollback()
+		return 0, false, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return 0, false, err
+	}
+	return count, created, nil
+}
+
+// FavoriteItemTx adds a favorite within the caller's transaction. Used by the
+// distribution resume path so re-adding recipients' favorites is atomic with the
+// status change (and consistent with UnfavoriteItemTx below). Distributed
+// favorites default to "auto" (AI-auto-invokable), matching prior behavior.
+func (s *BehaviorService) FavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
+	return s.favoriteItemTx(tx, itemID, userID, "auto")
+}
+
+func (s *BehaviorService) favoriteItemTx(tx *gorm.DB, itemID, userID, invokeMode string) (int64, bool, error) {
 	favorite := models.ItemFavorite{
 		ID:         uuid.New().String(),
 		ItemID:     itemID,
@@ -164,28 +192,26 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID, invo
 	var existing models.ItemFavorite
 	err := tx.Where("item_id = ? AND user_id = ?", itemID, userID).First(&existing).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
-		tx.Rollback()
 		return 0, false, err
 	}
 
 	created := err == gorm.ErrRecordNotFound
 	if created {
 		if err := tx.Create(&favorite).Error; err != nil {
-			tx.Rollback()
 			return 0, false, err
 		}
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
 			UpdateColumn("favorite_count", gorm.Expr("favorite_count + 1")).Error; err != nil {
-			tx.Rollback()
 			return 0, false, err
 		}
 	} else if existing.InvokeMode != invokeMode {
 		// Already favorited: update the per-user invoke mode in place (count unchanged).
+		// No tx.Rollback here — this helper runs inside the caller's tx; the caller
+		// (FavoriteItem / the distribution path) owns rollback on a returned error.
 		if err := tx.Model(&models.ItemFavorite{}).
 			Where("id = ?", existing.ID).
 			UpdateColumn("invoke_mode", invokeMode).Error; err != nil {
-			tx.Rollback()
 			return 0, false, err
 		}
 	}
@@ -195,13 +221,9 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID, invo
 		Where("id = ?", itemID).
 		Select("favorite_count").
 		Scan(&count).Error; err != nil {
-		tx.Rollback()
 		return 0, false, err
 	}
 
-	if err := tx.Commit().Error; err != nil {
-		return 0, false, err
-	}
 	return count, created, nil
 }
 
@@ -217,24 +239,47 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 		}
 	}()
 
-	// Prevent unfavororing items from readonly distributions
+	count, removed, err := s.unfavoriteItemTx(tx, itemID, userID)
+	if err != nil {
+		tx.Rollback()
+		return 0, false, err
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return 0, false, err
+	}
+	return count, removed, nil
+}
+
+// UnfavoriteItemTx removes a favorite within the caller's transaction. The
+// distribution revoke/pause path MUST use this (not UnfavoriteItem) so the
+// "required skill" guard below evaluates the just-revoked distribution on the
+// SAME transaction. With a separate transaction the guard reads the still
+// uncommitted distribution status as 'active' and wrongly blocks removing the
+// favorite of a revoked/paused readonly distribution — so the recipient keeps a
+// favorite that the cloud should no longer report, and /hub never unloads it.
+func (s *BehaviorService) UnfavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
+	return s.unfavoriteItemTx(tx, itemID, userID)
+}
+
+func (s *BehaviorService) unfavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
+	// Prevent unfavoriting items still required by an ACTIVE readonly
+	// distribution. A distribution that is already revoked/paused on this tx is
+	// (correctly) excluded by status = 'active'.
 	var readonlyCount int64
 	if err := tx.Model(&models.ItemDistributionReceipt{}).
 		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
 		Where("item_distribution_receipts.user_id = ? AND item_distributions.item_id = ? AND item_distributions.status = ? AND item_distributions.permission_mode = ? AND item_distribution_receipts.receipt_status != ?",
 			userID, itemID, "active", "readonly", "dismissed").
 		Count(&readonlyCount).Error; err != nil {
-		tx.Rollback()
 		return 0, false, err
 	}
 	if readonlyCount > 0 {
-		tx.Rollback()
-		return 0, false, errors.New("cannot unfavorite a required skill")
+		return 0, false, ErrSkillRequired
 	}
 
 	result := tx.Where("item_id = ? AND user_id = ?", itemID, userID).Delete(&models.ItemFavorite{})
 	if result.Error != nil {
-		tx.Rollback()
 		return 0, false, result.Error
 	}
 
@@ -243,7 +288,6 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
 			UpdateColumn("favorite_count", gorm.Expr("CASE WHEN favorite_count > 0 THEN favorite_count - 1 ELSE 0 END")).Error; err != nil {
-			tx.Rollback()
 			return 0, false, err
 		}
 	}
@@ -253,13 +297,9 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 		Where("id = ?", itemID).
 		Select("favorite_count").
 		Scan(&count).Error; err != nil {
-		tx.Rollback()
 		return 0, false, err
 	}
 
-	if err := tx.Commit().Error; err != nil {
-		return 0, false, err
-	}
 	return count, removed, nil
 }
 

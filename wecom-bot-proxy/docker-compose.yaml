@@ -1,0 +1,24 @@
+services:
+  wecom-bot-proxy:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - WECOM_BOT_ID=${WECOM_BOT_ID}
+      - WECOM_BOT_SECRET=${WECOM_BOT_SECRET}
+      - BACKEND_A_TOKEN=${BACKEND_A_TOKEN}
+      - BACKEND_A_HMAC_SECRET=${BACKEND_A_HMAC_SECRET}
+      - CORICT_WEB_URL=${CORICT_WEB_URL:-http://host.docker.internal:8080}
+    volumes:
+      - ./config.yaml:/etc/wecom-bot-proxy/config.yaml:ro
+    restart: unless-stopped
+
+# 部署步骤:
+# 1. 复制配置模板: cp config.yaml.example config.yaml
+# 2. 创建 .env 文件填入实际值:
+#    WECOM_BOT_ID=your_bot_id
+#    WECOM_BOT_SECRET=your_bot_secret
+#    BACKEND_A_TOKEN=your_backend_token
+#    BACKEND_A_HMAC_SECRET=your_hmac_secret
+#    CORICT_WEB_URL=http://costrict-web:8080
+# 3. 启动: docker-compose up -d

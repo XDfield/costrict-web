@@ -125,6 +125,20 @@ func callerIsPlatformAdmin(c *gin.Context, db *gorm.DB) bool {
 	return err == nil && hasRole
 }
 
+// isItemOwnerOrAdmin returns true if the authenticated user is the creator of
+// the item or holds the platform-admin role. This is the central ownership
+// gate for item mutation APIs to prevent IDOR / supply-chain attacks.
+func isItemOwnerOrAdmin(c *gin.Context, db *gorm.DB, item models.CapabilityItem) bool {
+	userID := c.GetString(middleware.UserIDKey)
+	if userID == "" {
+		return false
+	}
+	if item.CreatedBy == userID {
+		return true
+	}
+	return callerIsPlatformAdmin(c, db)
+}
+
 func resolveAssignableTags(tagSvc *services.TagService, slugs []string, createdBy string, allowSystem bool) ([]string, error) {
 	if tagSvc == nil {
 		return nil, nil
@@ -1033,11 +1047,17 @@ func CreateItem(c *gin.Context) {
 		Metadata    json.RawMessage `json:"metadata"`
 		SourcePath  string          `json:"sourcePath"`
 		Source      string          `json:"source"`
-		CreatedBy   string          `json:"createdBy" binding:"required"`
+		// CreatedBy removed: always derived from authenticated user
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	createdBy := c.GetString(middleware.UserIDKey)
+	if createdBy == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
 
@@ -1073,7 +1093,7 @@ func CreateItem(c *gin.Context) {
 		Metadata:    metadata,
 		SourcePath:  req.SourcePath,
 		Source:      req.Source,
-		CreatedBy:   req.CreatedBy,
+		CreatedBy:   createdBy,
 		SourceType:  "direct",
 	}, createItemAssets{})
 	if err != nil {
@@ -1088,7 +1108,7 @@ func CreateItem(c *gin.Context) {
 	enqueueScanAsync(item.ID, 1, "create")
 
 	if CategorySvc != nil && req.Category != "" {
-		CategorySvc.EnsureCategory(req.Category, req.CreatedBy)
+		CategorySvc.EnsureCategory(req.Category, createdBy)
 	}
 
 	c.JSON(http.StatusCreated, buildItemResponse(c, db, *item, c.GetString(middleware.UserIDKey)))
@@ -1200,11 +1220,8 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get(middleware.UserIDKey)
-	uid, _ := userID.(string)
-	if req.UpdatedBy == "" {
-		req.UpdatedBy = uid
-	}
+	uid := c.GetString(middleware.UserIDKey)
+	req.UpdatedBy = uid
 
 	db := h.db
 	var item models.CapabilityItem
@@ -1720,6 +1737,8 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
 // @Success      200  {object}  object{message=string}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id} [delete]
 func DeleteItem(c *gin.Context) {
@@ -2271,7 +2290,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		SourcePath  string             `json:"sourcePath"`
 		Source      string             `json:"source"`
 		Assets      []itemAssetPayload `json:"assets"`
-		CreatedBy   string             `json:"createdBy"`
+		// CreatedBy removed: always derived from authenticated user
 		Tags        []string           `json:"tags"`
 	}
 
@@ -2280,14 +2299,11 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get(middleware.UserIDKey)
-	uid, _ := userID.(string)
-	if req.CreatedBy == "" {
-		req.CreatedBy = uid
-	}
-	if req.CreatedBy == "" {
-		req.CreatedBy = "anonymous"
-	}
+	uid := c.GetString(middleware.UserIDKey)
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
 
 	registryID := req.RegistryID
 	if registryID == "" {
@@ -2301,7 +2317,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	if req.SourcePath == "" {
 		req.SourcePath = defaultSourcePathForItemType(req.ItemType)
 	}
-	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, req.CreatedBy, callerIsPlatformAdmin(c, h.db))
+	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, uid, callerIsPlatformAdmin(c, h.db))
 	if err != nil {
 		if errors.Is(err, services.ErrInvalidTagSlug) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Tag slug may only contain lowercase letters, numbers, hyphens, and underscores", "code": "invalid_tag_slug"})
@@ -2347,7 +2363,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Content:     req.Content,
 		ContentMD5:  contentMD5,
 		Metadata:    metadata,
-		CreatedBy:   req.CreatedBy,
+		CreatedBy:   uid,
 		SourcePath:  req.SourcePath,
 		Source:      req.Source,
 		SourceType:  "direct",
@@ -2364,7 +2380,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	enqueueScanAsync(item.ID, 1, "create")
 
 	if h.categorySvc != nil && req.Category != "" {
-		h.categorySvc.EnsureCategory(req.Category, req.CreatedBy)
+		h.categorySvc.EnsureCategory(req.Category, uid)
 	}
 
 	if h.tagSvc != nil {
@@ -3477,7 +3493,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	description := c.PostForm("description")
 	category := c.PostForm("category")
 	version := c.PostForm("version")
-	createdByForm := c.PostForm("createdBy")
 
 	if itemType == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "itemType is required"})
@@ -3495,13 +3510,10 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		registryID = PublicRegistryID
 	}
 
-	userIDVal, _ := c.Get(middleware.UserIDKey)
-	createdBy, _ := userIDVal.(string)
+	createdBy := c.GetString(middleware.UserIDKey)
 	if createdBy == "" {
-		createdBy = createdByForm
-	}
-	if createdBy == "" {
-		createdBy = "anonymous"
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
 	}
 
 	if h.archiveSvc == nil {

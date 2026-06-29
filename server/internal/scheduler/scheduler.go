@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
@@ -40,6 +41,17 @@ func (s *Scheduler) Start() error {
 	s.cron.Start()
 	log.Printf("Scheduler started with %d registries", len(registries))
 	return nil
+}
+
+// StartLeader runs the scheduler while ctx is active and stops it when ctx is cancelled.
+// It is intended for use with leader.Election so that only one replica runs the scheduler.
+func (s *Scheduler) StartLeader(ctx context.Context) error {
+	if err := s.Start(); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	s.Stop()
+	return ctx.Err()
 }
 
 func (s *Scheduler) Stop() {

@@ -2,14 +2,32 @@ package services
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/notification/sender"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+type fakeNotifier struct {
+	calls []struct {
+		userID    string
+		eventType string
+		msg       sender.NotificationMessage
+	}
+}
+
+func (f *fakeNotifier) TriggerMessage(userID, eventType string, msg sender.NotificationMessage) {
+	f.calls = append(f.calls, struct {
+		userID    string
+		eventType string
+		msg       sender.NotificationMessage
+	}{userID, eventType, msg})
+}
 
 func setupDistributionServiceDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -160,6 +178,161 @@ func TestListAllDistributions_FiltersAndPagination(t *testing.T) {
 	}
 	if len(page2) != 2 || page2[0].ID == list[0].ID {
 		t.Fatalf("expected distinct page2 rows, got %v vs %v", page2[0].ID, list[0].ID)
+	}
+}
+
+func setupRevokeFavoriteDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	stmts := []string{
+		`CREATE TABLE item_distributions (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, distributor_id TEXT NOT NULL,
+			permission_mode TEXT DEFAULT 'readonly', status TEXT DEFAULT 'active',
+			scope_type TEXT DEFAULT 'user', target_id TEXT NOT NULL, message TEXT,
+			revoked_at DATETIME, expires_at DATETIME, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE item_distribution_receipts (
+			id TEXT PRIMARY KEY, distribution_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE capability_items (id TEXT PRIMARY KEY, name TEXT, favorite_count INTEGER DEFAULT 0)`,
+		`CREATE TABLE item_favorites (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL, invoke_mode TEXT NOT NULL DEFAULT 'auto', created_at DATETIME)`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+	}
+	return db
+}
+
+func countFavorites(t *testing.T, db *gorm.DB, itemID, userID string) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Model(&models.ItemFavorite{}).Where("item_id = ? AND user_id = ?", itemID, userID).Count(&n).Error; err != nil {
+		t.Fatalf("count favorites: %v", err)
+	}
+	return n
+}
+
+func TestRevokeReadonlyDistribution_RemovesRecipientFavorite(t *testing.T) {
+	db := setupRevokeFavoriteDB(t)
+	svc := NewDistributionService(db, NewBehaviorService(db))
+	ctx := context.Background()
+
+	if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',1)`).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := db.Create(&models.ItemDistribution{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", PermissionMode: "readonly", Status: "active", ScopeType: "user", TargetID: "u1"}).Error; err != nil {
+		t.Fatalf("seed dist: %v", err)
+	}
+	if err := db.Create(&models.ItemDistributionReceipt{ID: "r1", DistributionID: "d1", UserID: "u1", ReceiptStatus: "read"}).Error; err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+	if err := db.Create(&models.ItemFavorite{ID: "f1", ItemID: "item-1", UserID: "u1"}).Error; err != nil {
+		t.Fatalf("seed favorite: %v", err)
+	}
+	if got := countFavorites(t, db, "item-1", "u1"); got != 1 {
+		t.Fatalf("precondition: expected 1 favorite, got %d", got)
+	}
+
+	if err := svc.RevokeDistribution(ctx, "d1", "admin-a", true); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Revoking a READONLY distribution must remove the recipient's favorite.
+	// Before the tx fix the readonly guard ran in a separate transaction, saw the
+	// distribution as still 'active', and blocked the removal — so the skill
+	// stayed favorited on the cloud and /hub never unloaded it.
+	if got := countFavorites(t, db, "item-1", "u1"); got != 0 {
+		t.Fatalf("expected favorite removed after revoking readonly distribution, got %d", got)
+	}
+}
+
+func TestRevokeReadonlyDistribution_KeepsFavoriteWhenAnotherActiveReadonlyExists(t *testing.T) {
+	db := setupRevokeFavoriteDB(t)
+	svc := NewDistributionService(db, NewBehaviorService(db))
+	ctx := context.Background()
+
+	if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',1)`).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	for _, d := range []models.ItemDistribution{
+		{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", PermissionMode: "readonly", Status: "active", ScopeType: "user", TargetID: "u1"},
+		{ID: "d2", ItemID: "item-1", DistributorID: "admin-b", PermissionMode: "readonly", Status: "active", ScopeType: "user", TargetID: "u1"},
+	} {
+		if err := db.Create(&d).Error; err != nil {
+			t.Fatalf("seed dist: %v", err)
+		}
+	}
+	if err := db.Create(&models.ItemDistributionReceipt{ID: "r1", DistributionID: "d1", UserID: "u1", ReceiptStatus: "read"}).Error; err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+	if err := db.Create(&models.ItemDistributionReceipt{ID: "r2", DistributionID: "d2", UserID: "u1", ReceiptStatus: "read"}).Error; err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+	if err := db.Create(&models.ItemFavorite{ID: "f1", ItemID: "item-1", UserID: "u1"}).Error; err != nil {
+		t.Fatalf("seed favorite: %v", err)
+	}
+
+	if err := svc.RevokeDistribution(ctx, "d1", "admin-a", true); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// d2 (still active + readonly) keeps requiring the item, so the favorite stays.
+	if got := countFavorites(t, db, "item-1", "u1"); got != 1 {
+		t.Fatalf("expected favorite kept (another active readonly distribution exists), got %d", got)
+	}
+}
+
+func TestDistributeItem_NotificationCarriesMessage(t *testing.T) {
+	db := setupDistributionServiceDB(t)
+	svc := NewDistributionService(db, nil)
+	notifier := &fakeNotifier{}
+	svc.SetNotificationService(notifier)
+	ctx := context.Background()
+
+	item := &models.CapabilityItem{ID: "item-1", Name: "Alpha Plugin"}
+
+	// With a message (附言), the recipient notification body must carry it.
+	_, err := svc.DistributeItem(ctx, item, "admin-a", DistributeItemRequest{
+		Targets:        []DistributionTarget{{ScopeType: "user", TargetID: "u1"}},
+		PermissionMode: "readonly",
+		Message:        "请尽快试用",
+	})
+	if err != nil {
+		t.Fatalf("distribute: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifier.calls))
+	}
+	got := notifier.calls[0]
+	if got.userID != "u1" {
+		t.Fatalf("expected notify u1, got %s", got.userID)
+	}
+	if !strings.Contains(got.msg.Body, "附言：请尽快试用") {
+		t.Fatalf("expected body to carry 附言, got %q", got.msg.Body)
+	}
+	if got.msg.Metadata["message"] != "请尽快试用" {
+		t.Fatalf("expected metadata.message=请尽快试用, got %v", got.msg.Metadata["message"])
+	}
+
+	// A blank/whitespace-only message must NOT add an 附言 line.
+	notifier.calls = nil
+	_, err = svc.DistributeItem(ctx, item, "admin-a", DistributeItemRequest{
+		Targets:        []DistributionTarget{{ScopeType: "user", TargetID: "u2"}},
+		PermissionMode: "readonly",
+		Message:        "   ",
+	})
+	if err != nil {
+		t.Fatalf("distribute (blank message): %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifier.calls))
+	}
+	if strings.Contains(notifier.calls[0].msg.Body, "附言") {
+		t.Fatalf("expected no 附言 line for blank message, got %q", notifier.calls[0].msg.Body)
 	}
 }
 

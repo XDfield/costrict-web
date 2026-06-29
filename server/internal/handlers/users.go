@@ -219,13 +219,21 @@ func GetUserBasicInfo(c *gin.Context) {
 	}})
 }
 
+type userSearchResult struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	DisplayName *string `json:"displayName"`
+	AvatarURL   *string `json:"avatarUrl"`
+}
+
 // SearchUsers godoc
 // @Summary      Search users
-// @Description  Search users by username or email keyword (requires authentication)
+// @Description  Search users by username or display name keyword (requires authentication). Returns only basic, non-sensitive fields.
 // @Tags         users
 // @Produce      json
-// @Param        q     query     string  true  "Search keyword"
-// @Success      200   {object}  object{users=[]casdoor.CasdoorUser}
+// @Param        q     query     string  true  "Search keyword (min 1 character)"
+// @Success      200   {object}  object{users=[]handlers.userSearchResult}
+// @Failure      400   {object}  object{error=string}
 // @Failure      401   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /users/search [get]
@@ -236,13 +244,27 @@ func SearchUsers(c *gin.Context) {
 		return
 	}
 
-	keyword := c.Query("q")
+	keyword := strings.TrimSpace(c.Query("q"))
+	if keyword == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Search keyword is required"})
+		return
+	}
+
 	limit := 20
+	var results []userSearchResult
 
 	if UserModule != nil && UserModule.Service != nil {
 		users, err := UserModule.Service.SearchUsers(keyword, limit)
 		if err == nil && len(users) > 0 {
-			c.JSON(http.StatusOK, gin.H{"users": users})
+			for _, u := range users {
+				results = append(results, userSearchResult{
+					ID:          u.SubjectID,
+					Name:        u.Username,
+					DisplayName: u.DisplayName,
+					AvatarURL:   u.AvatarURL,
+				})
+			}
+			c.JSON(http.StatusOK, gin.H{"users": results})
 			return
 		}
 	}
@@ -258,11 +280,21 @@ func SearchUsers(c *gin.Context) {
 		users = users[:limit]
 	}
 
+	for _, u := range users {
+		displayName := u.PreferredUsername
+		results = append(results, userSearchResult{
+			ID:          u.Sub,
+			Name:        u.Name,
+			DisplayName: &displayName,
+			AvatarURL:   &u.Picture,
+		})
+	}
+
 	if UserModule != nil && UserModule.Service != nil {
 		go backfillUsers(context.Background(), users)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"users": users})
+	c.JSON(http.StatusOK, gin.H{"users": results})
 }
 
 func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {

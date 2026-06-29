@@ -16,7 +16,7 @@ type ChannelWorker struct {
 	db             *gorm.DB
 	adapters       map[string]ChannelAdapter
 	messageHandler MessageHandler
-	sessionStore   *ReplyContextStore
+	sessionStore   ReplyContextStore
 	pollers        map[string]context.CancelFunc
 	configHashes   map[string]string
 	mu             sync.Mutex
@@ -193,6 +193,6 @@ func (w *ChannelWorker) StopAll() {
 	}
 }
 
-func (w *ChannelWorker) SessionStore() *ReplyContextStore {
+func (w *ChannelWorker) SessionStore() ReplyContextStore {
 	return w.sessionStore
 }

@@ -1,9 +1,9 @@
 apiVersion: v2
-name: costrict-web-worker
+appVersion: 0.0.80
 description: Costrict Web Worker - Background task processing service
-type: application
-version: 0.1.0
-appVersion: "1.0.0"
 maintainers:
-  - name: costrict
-    url: https://github.com/costrict
+- name: costrict
+  url: https://github.com/costrict
+name: costrict-web-worker
+type: application
+version: 0.0.80

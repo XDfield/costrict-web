@@ -1,12 +1,20 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
+
+var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 // GatewayRegisterHandler godoc
 // @Summary      Register gateway
@@ -35,11 +43,12 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 		}
 
 		info := &GatewayInfo{
-			ID:          body.GatewayID,
-			Endpoint:    body.Endpoint,
-			InternalURL: body.InternalURL,
-			Region:      body.Region,
-			Capacity:    body.Capacity,
+			ID:            body.GatewayID,
+			Endpoint:      body.Endpoint,
+			InternalURL:   body.InternalURL,
+			Region:        body.Region,
+			Capacity:      body.Capacity,
+			LastHeartbeat: time.Now().UnixMilli(),
 		}
 		if err := registry.Register(info); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register gateway"})
@@ -95,19 +104,43 @@ func GatewayHeartbeatHandler(registry *GatewayRegistry) gin.HandlerFunc {
 // @Success      200  {object}  object{success=boolean}
 // @Failure      400  {object}  object{error=string}
 // @Router       /internal/gateway/device/online [post]
-func DeviceOnlineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceService) gin.HandlerFunc {
+func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
 			DeviceID  string `json:"deviceID" binding:"required"`
 			GatewayID string `json:"gatewayID" binding:"required"`
+			ConnID    string `json:"connID"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
 		}
 
-		registry.BindDevice(body.DeviceID, body.GatewayID)
+		oldGwID, oldConnID := registry.BindDevice(body.DeviceID, body.GatewayID, body.ConnID)
 		_ = deviceSvc.SetOnline(body.DeviceID)
+
+		// If the device was previously bound to a different gateway, close the old session
+		if oldGwID != "" && oldGwID != body.GatewayID {
+			if oldGw := registry.GetGatewayInfo(oldGwID); oldGw != nil {
+				go func() {
+					closeURL := fmt.Sprintf("%s/internal/device/%s/close", oldGw.InternalURL, body.DeviceID)
+					closeBody, _ := json.Marshal(map[string]string{"connID": oldConnID})
+					req, err := http.NewRequest(http.MethodPost, closeURL, bytes.NewReader(closeBody))
+					if err != nil {
+						logger.Error("[GatewayRegistry] failed to create close request for device %s on gateway %s: %v", body.DeviceID, oldGwID, err)
+						return
+					}
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-Internal-Secret", client.InternalSecret())
+					resp, err := closeHTTPClient.Do(req)
+					if err != nil {
+						logger.Warn("[GatewayRegistry] failed to close device %s on old gateway %s: %v", body.DeviceID, oldGwID, err)
+						return
+					}
+					resp.Body.Close()
+				}()
+			}
+		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
@@ -135,8 +168,23 @@ func DeviceOfflineHandler(registry *GatewayRegistry, deviceSvc *services.DeviceS
 			return
 		}
 
+		// Only unbind if the device is currently bound to this gateway.
+		// This prevents a gateway from unbinding a device that has already
+		// reconnected to a different gateway.
+		currentGwID := registry.GetDeviceGatewayID(body.DeviceID)
+		if currentGwID != body.GatewayID {
+			c.JSON(http.StatusOK, gin.H{"success": true})
+			return
+		}
+
 		registry.UnbindDevice(body.DeviceID)
-		_ = deviceSvc.SetOffline(body.DeviceID)
+		if err := deviceSvc.SetOffline(body.DeviceID); err != nil {
+			slog.Error("[gateway] failed to mark device offline",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID, "error", err)
+		} else {
+			slog.Info("[gateway] device marked offline via disconnect notification",
+				"deviceID", body.DeviceID, "gatewayID", body.GatewayID)
+		}
 
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	}
@@ -299,12 +347,97 @@ func DeviceVerifyTokenHandler(deviceSvc *services.DeviceService) gin.HandlerFunc
 	}
 }
 
-func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, deviceSvc *services.DeviceService) {
+// SessionProxyHandler proxies a request to a CSC session running on a device.
+// Unlike DeviceProxyHandler, it resolves the device via a Multica session_id and
+// checks workspace-level permission (not device ownership). This is the cloud-side
+// seam for Design Two real-time collaboration around workflow node-runs.
+func SessionProxyHandler(registry *GatewayRegistry, client *Client, multicaBaseURL string) gin.HandlerFunc {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	return func(c *gin.Context) {
+		sessionID := c.Param("sessionID")
+		if sessionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+			return
+		}
+
+		userToken := ExtractBearerToken(c.Request)
+		if userToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization required"})
+			return
+		}
+
+		if multicaBaseURL == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "multica integration not configured"})
+			return
+		}
+
+		// Ask Multica whether this user may access the session.
+		permURL := fmt.Sprintf("%s/api/sessions/%s/permission", strings.TrimRight(multicaBaseURL, "/"), sessionID)
+		permReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, permURL, nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build permission request"})
+			return
+		}
+		permReq.Header.Set("Authorization", "Bearer "+userToken)
+
+		permResp, err := httpClient.Do(permReq)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to contact multica"})
+			return
+		}
+		defer permResp.Body.Close()
+
+		if permResp.StatusCode != http.StatusOK {
+			c.JSON(http.StatusForbidden, gin.H{"error": "session access denied"})
+			return
+		}
+
+		var perm struct {
+			WorkspaceID string `json:"workspace_id"`
+			NodeRunID   string `json:"node_run_id"`
+			DeviceID    string `json:"device_id"`
+			SessionID   string `json:"session_id"`
+			HasAccess   bool   `json:"has_access"`
+		}
+		if err := json.NewDecoder(permResp.Body).Decode(&perm); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "invalid permission response from multica"})
+			return
+		}
+		if !perm.HasAccess || perm.DeviceID == "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "session access denied"})
+			return
+		}
+
+		// Route to the device via its connected gateway.
+		gw, err := registry.GetDeviceGateway(perm.DeviceID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
+			return
+		}
+
+		// Preserve the original request path (after /cloud/sessions/:sessionID/proxy).
+		c.Request.URL.Path = c.Param("path")
+		if err := client.ProxyRequest(gw.InternalURL, perm.DeviceID, c.Request, c.Writer); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		}
+	}
+}
+
+func ExtractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
 	gatewayGroup.POST("/:gatewayID/heartbeat", GatewayHeartbeatHandler(registry))
 	gatewayGroup.DELETE("/:gatewayID", GatewayDeregisterHandler(registry))
-	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, deviceSvc))
+	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, client, deviceSvc))
 	gatewayGroup.POST("/device/offline", DeviceOfflineHandler(registry, deviceSvc))
 	gatewayGroup.POST("/device/verify-token", DeviceVerifyTokenHandler(deviceSvc))
 }

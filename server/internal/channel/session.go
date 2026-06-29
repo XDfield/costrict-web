@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// ReplyContextStore persists reply contexts for inbound channel messages.
+// Implementations must be safe for concurrent use.
+type ReplyContextStore interface {
+	Record(rc ReplyContext)
+	Lookup(channelConfigID, externalUserID string) (ReplyContext, bool)
+	LookupByUser(userID string) []ReplyContext
+	Cleanup(maxAge time.Duration)
+}
+
 type sessionKey struct {
 	ChannelConfigID string
 	ExternalUserID  string
@@ -17,18 +26,20 @@ type storedContext struct {
 	UpdatedAt time.Time
 }
 
-type ReplyContextStore struct {
+// MemoryReplyContextStore is an in-memory implementation of ReplyContextStore.
+// It is suitable for tests and single-replica deployments.
+type MemoryReplyContextStore struct {
 	mu       sync.RWMutex
 	sessions map[sessionKey]storedContext
 }
 
-func NewReplyContextStore() *ReplyContextStore {
-	return &ReplyContextStore{
+func NewReplyContextStore() ReplyContextStore {
+	return &MemoryReplyContextStore{
 		sessions: make(map[sessionKey]storedContext),
 	}
 }
 
-func (s *ReplyContextStore) Record(rc ReplyContext) {
+func (s *MemoryReplyContextStore) Record(rc ReplyContext) {
 	key := sessionKey{
 		ChannelConfigID: rc.ChannelConfigID,
 		ExternalUserID:  rc.Target.ExternalUserID,
@@ -38,7 +49,7 @@ func (s *ReplyContextStore) Record(rc ReplyContext) {
 	s.mu.Unlock()
 }
 
-func (s *ReplyContextStore) Lookup(channelConfigID, externalUserID string) (ReplyContext, bool) {
+func (s *MemoryReplyContextStore) Lookup(channelConfigID, externalUserID string) (ReplyContext, bool) {
 	key := sessionKey{
 		ChannelConfigID: channelConfigID,
 		ExternalUserID:  externalUserID,
@@ -49,7 +60,7 @@ func (s *ReplyContextStore) Lookup(channelConfigID, externalUserID string) (Repl
 	return sc.ReplyContext, ok
 }
 
-func (s *ReplyContextStore) LookupByUser(userID string) []ReplyContext {
+func (s *MemoryReplyContextStore) LookupByUser(userID string) []ReplyContext {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var results []ReplyContext
@@ -61,7 +72,7 @@ func (s *ReplyContextStore) LookupByUser(userID string) []ReplyContext {
 	return results
 }
 
-func (s *ReplyContextStore) Cleanup(maxAge time.Duration) {
+func (s *MemoryReplyContextStore) Cleanup(maxAge time.Duration) {
 	s.mu.Lock()
 	cutoff := time.Now().Add(-maxAge)
 	for k, v := range s.sessions {
@@ -73,9 +84,9 @@ func (s *ReplyContextStore) Cleanup(maxAge time.Duration) {
 }
 
 type adapterSender struct {
-	adapter     ChannelAdapter
-	config      json.RawMessage
-	replyCtx    ReplyContext
+	adapter  ChannelAdapter
+	config   json.RawMessage
+	replyCtx ReplyContext
 }
 
 func NewAdapterSender(adapter ChannelAdapter, config json.RawMessage, rc ReplyContext) Sender {
@@ -92,4 +103,19 @@ func (s *adapterSender) SendMessage(ctx context.Context, msg OutboundMessage) er
 
 func (s *adapterSender) ReplyContext() ReplyContext {
 	return s.replyCtx
+}
+
+// SendStream implements StreamSender by delegating to the adapter if it
+// supports streaming, or falling back to a one-shot Send on finish.
+func (s *adapterSender) SendStream(ctx context.Context, content string, finish bool) error {
+	if streamer, ok := s.adapter.(interface {
+		SendStream(ctx context.Context, config json.RawMessage, target ReplyTarget, metadata map[string]any, content string, finish bool) error
+	}); ok {
+		return streamer.SendStream(ctx, s.config, s.replyCtx.Target, s.replyCtx.Metadata, content, finish)
+	}
+	// Non-streaming adapter: send on final chunk, drop intermediate
+	if finish {
+		return s.Send(ctx, content)
+	}
+	return nil
 }

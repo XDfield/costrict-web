@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       charts:
-        description: 'Charts to release (comma-separated: gateway,api,worker,portal,proxy,postgres,all)'
+        description: 'Charts to release (comma-separated: gateway,api,worker,portal,proxy,postgres,wecom-bot-proxy,all)'
         required: false
         default: 'all'
       version:
@@ -58,7 +58,7 @@ jobs:
           fi
 
           if [ "$CHARTS_INPUT" = "all" ]; then
-            echo 'charts=["gateway","api","worker","portal","proxy","postgres"]' >> $GITHUB_OUTPUT
+            echo 'charts=["gateway","api","worker","portal","proxy","postgres","wecom-bot-proxy"]' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array
             CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -Rc 'split("\n") | map(select(. != ""))')

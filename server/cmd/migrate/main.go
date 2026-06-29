@@ -12,6 +12,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/migration"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/team"
@@ -30,6 +31,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
+
+	// Prevent concurrent migrations when multiple API/Worker replicas start at
+	// the same time. The lock is released automatically when the process exits.
+	unlock, err := migration.AcquireLock(db)
+	if err != nil {
+		log.Fatalf("Failed to acquire migration lock: %v", err)
+	}
+	defer unlock()
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -224,6 +233,10 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.ItemDistributionReceipt{},
 		&models.Organization{},
 		&models.PermissionGrant{},
+		&models.GatewayRegistry{},
+		&models.GatewayDeviceBinding{},
+		&models.ServerEpoch{},
+		&models.ChannelReplyContext{},
 	)
 }
 

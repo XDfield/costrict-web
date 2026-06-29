@@ -61,7 +61,7 @@ func TestGetTreeHandler_Success(t *testing.T) {
 	db := setupTestDB(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":[{"deptId":"6560","deptName":"Costrict研发部","deptPath":"/x/Costrict研发部","children":[{"deptId":"6571","deptName":"开发组"}]}]}`))
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[{"dept_id":"6560","dept_name":"Costrict研发部","dept_path":"/x/Costrict研发部","children":[{"dept_id":"6571","dept_name":"开发组"}]}]}`))
 	}))
 	defer srv.Close()
 
@@ -83,6 +83,27 @@ func TestGetTreeHandler_Success(t *testing.T) {
 	}
 	if len(body.Departments) != 1 || body.Departments[0].DeptID != "6560" {
 		t.Fatalf("unexpected departments: %+v", body.Departments)
+	}
+
+	// Frontend contract guard: the tree is passed through verbatim to the admin UI,
+	// so the output must stay camelCase (AdminDept). Assert on raw keys so a future
+	// tag regression to snake_case is caught here instead of in the browser.
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	depts, _ := raw["departments"].([]any)
+	if len(depts) == 0 {
+		t.Fatal("expected departments array in raw output")
+	}
+	first, _ := depts[0].(map[string]any)
+	for _, k := range []string{"deptId", "deptName", "deptPath", "parentDeptId", "deptLevel", "childDeptCount", "leaderId", "orderNum"} {
+		if _, ok := first[k]; !ok {
+			t.Errorf("frontend contract broken: missing camelCase key %q in %v", k, first)
+		}
+	}
+	if _, ok := first["dept_id"]; ok {
+		t.Error("frontend contract broken: snake_case dept_id leaked to admin output")
 	}
 }
 
@@ -107,9 +128,9 @@ func TestGetDeptUsersHandler_Correlation(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// uid-1 matches a local user; uid-2 does not (unregistered).
-		_, _ = w.Write([]byte(`{"code":0,"data":[
-			{"userId":"u1","username":"朱海俊","universalId":"uid-1","isMain":true,"position":"实习生"},
-			{"userId":"u2","username":"周凯","universalId":"uid-2","isMain":false,"position":"TMO"}
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"user_id":"u1","username":"朱海俊","universal_id":"uid-1","is_main":1,"position":"实习生"},
+			{"user_id":"u2","username":"周凯","universal_id":"uid-2","is_main":0,"position":"TMO"}
 		]}`))
 	}))
 	defer srv.Close()

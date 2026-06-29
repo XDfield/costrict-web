@@ -1,0 +1,278 @@
+{{- if .Values.nginxRouter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-nginx-router-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-nginx-router
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /usr/local/openresty/nginx/conf/mime.types;
+        default_type application/octet-stream;
+
+        # DNS resolver for Kubernetes headless Service lookups
+        resolver {{ .Values.nginxRouter.resolver }} valid=5s;
+        resolver_timeout 2s;
+
+        # Shared across workers: JSON-encoded discovered pod list
+        lua_shared_dict router_state 1m;
+
+        lua_package_path "/usr/local/openresty/site/lualib/?.lua;;";
+
+        init_worker_by_lua_block {
+            -- Only worker 0 performs discovery; the result is shared with all
+            -- workers via the router_state dict. This avoids N concurrent DNS
+            -- queries (one per worker) on every refresh.
+            if ngx.worker.id() ~= 0 then
+                return
+            end
+
+            local router = require "router"
+            local state = ngx.shared.router_state
+
+            local headless_fqdn = "{{ .Release.Name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+            local gateway_port = {{ .Values.nginxRouter.discovery.gatewayPort }}
+            local refresh_ms = {{ .Values.nginxRouter.discovery.refreshIntervalMs }}
+            local resolver_addr = "{{ .Values.nginxRouter.resolver }}"
+
+            -- Refresh at least once per second; never 0 (which would busy-loop).
+            local refresh_interval = math.max(refresh_ms / 1000, 1)
+            -- Expire the cached pod list if discovery stops succeeding, so we
+            -- stop routing to a stale set rather than holding it forever.
+            local ttl_seconds = math.max(refresh_interval * 3, 30)
+
+            local function discover_and_update(premature)
+                if premature then return end
+                local ips, err = router.resolve_ips(headless_fqdn, gateway_port, resolver_addr)
+                if not ips then
+                    ngx.log(ngx.ERR, "discovery failed: ", err)
+                    return
+                end
+                if #ips == 0 then
+                    -- Do not overwrite the last-known-good list with an empty
+                    -- one; let the TTL expire it if this persists.
+                    ngx.log(ngx.WARN, "no gateway pods discovered from ", headless_fqdn)
+                    return
+                end
+
+                local ok, encoded = pcall(router.cjson.encode, ips)
+                if not ok then
+                    ngx.log(ngx.ERR, "failed to encode ips: ", encoded)
+                    return
+                end
+
+                state:set("ips", encoded, ttl_seconds)
+            end
+
+            discover_and_update()
+            local ok, err = ngx.timer.every(refresh_interval, discover_and_update)
+            if not ok then
+                ngx.log(ngx.ERR, "failed to create discovery timer: ", err)
+            end
+        }
+
+        upstream gateway_backend {
+            server 0.0.0.1;  # placeholder, overwritten by balancer
+            balancer_by_lua_block {
+                local router = require "router"
+                local state = ngx.shared.router_state
+                local balancer = require "ngx.balancer"
+
+                local device_id = ngx.var.device_id
+                if not device_id or device_id == "" then
+                    ngx.log(ngx.ERR, "device_id missing in balancer")
+                    return ngx.exit(502)
+                end
+
+                local encoded = state:get("ips")
+                if not encoded then
+                    ngx.log(ngx.ERR, "gateway pod list not ready")
+                    return ngx.exit(502)
+                end
+
+                local ips, err = router.cjson.decode(encoded)
+                if not ips then
+                    ngx.log(ngx.ERR, "failed to decode ips: ", err)
+                    return ngx.exit(502)
+                end
+
+                local peer, err = router.chash_pick(ips, device_id)
+                if not peer then
+                    ngx.log(ngx.ERR, "chash pick failed: ", err)
+                    return ngx.exit(502)
+                end
+
+                -- peer is "ip:port"; assumes IPv4 (the only address family used
+                -- by the Gateway headless Service in this deployment).
+                local host, port = peer:match("^(.+):(%d+)$")
+                local ok, err = balancer.set_current_peer(host, tonumber(port))
+                if not ok then
+                    ngx.log(ngx.ERR, "set_current_peer failed: ", err)
+                    return ngx.exit(502)
+                end
+            }
+        }
+
+        server {
+            listen 8080;
+
+            location ~ ^/device/(?P<device_id>[^/]+)/ {
+                # The named capture must be explicitly assigned to a variable so
+                # it is visible inside balancer_by_lua_block.
+                set $device_id $device_id;
+
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_read_timeout 86400s;
+                proxy_send_timeout 86400s;
+                proxy_pass http://gateway_backend;
+            }
+
+            location /router_status {
+                default_type application/json;
+                content_by_lua_block {
+                    local router = require "router"
+                    local state = ngx.shared.router_state
+                    local encoded = state:get("ips") or "[]"
+                    local ips, _ = router.cjson.decode(encoded)
+                    if not ips then ips = {} end
+                    ngx.say(router.cjson.encode({
+                        source = "nginx-router",
+                        discovered_ips = ips,
+                    }))
+                }
+            }
+
+            location /health {
+                access_log off;
+                add_header Content-Type text/plain;
+                return 200 "ok\n";
+            }
+        }
+    }
+  router.lua: |
+    -- Pure-Lua DNS discovery + ketama consistent-hash helper for nginx-router.
+    -- Runs inside OpenResty; uses only built-in modules.
+
+    local resolver = require "resty.dns.resolver"
+    local cjson = require "cjson.safe"
+    local ngx_crc32_long = ngx.crc32_long
+    local table_sort = table.sort
+    local table_concat = table.concat
+    local ipairs = ipairs
+    local floor = math.floor
+
+    local _M = {
+        cjson = cjson,
+    }
+
+    -- Worker-local cache of the most recently built ring, so we rebuild only
+    -- when the discovered pod set actually changes (not on every request).
+    local _ring_cache = nil
+    local _ring_cache_key = nil
+
+    -- Resolve all A records for a headless Service and return sorted "ip:port" list.
+    function _M.resolve_ips(fqdn, port, nameserver)
+        local r, err = resolver:new{
+            nameservers = { nameserver },
+            retrans = 3,
+            timeout = 2000,
+        }
+        if not r then
+            return nil, "resolver init failed: " .. (err or "unknown")
+        end
+
+        local answers, err = r:query(fqdn, { qtype = r.TYPE_A })
+        if not answers then
+            return nil, "dns query failed: " .. (err or "unknown")
+        end
+        if answers.errcode then
+            return nil, "dns query error code: " .. tostring(answers.errcode)
+        end
+
+        local ips = {}
+        for _, ans in ipairs(answers) do
+            -- Only A records carry a usable IP; skip CNAME/other record types.
+            if ans.address and ans.type == r.TYPE_A then
+                ips[#ips + 1] = ans.address .. ":" .. tostring(port)
+            end
+        end
+        table_sort(ips)
+        return ips
+    end
+
+    -- Build ketama ring points deterministically from sorted node list.
+    -- Returns a flat array of {hash=uint32, id=string}, sorted by hash with a
+    -- stable tie-break on id so all workers/replicas agree on ordering even
+    -- when two points hash to the same value.
+    local function build_ring(ips, replicas)
+        replicas = replicas or 160
+        local points = {}
+        for _, ip in ipairs(ips) do
+            for i = 1, replicas do
+                local key = ip .. "-" .. i
+                points[#points + 1] = {
+                    hash = ngx_crc32_long(key),
+                    id = ip,
+                }
+            end
+        end
+        table_sort(points, function(a, b)
+            if a.hash ~= b.hash then
+                return a.hash < b.hash
+            end
+            return a.id < b.id
+        end)
+        return points
+    end
+
+    -- Pick a backend for the given key using ketama consistent hashing.
+    function _M.chash_pick(ips, key)
+        if not ips or #ips == 0 then
+            return nil, "empty node list"
+        end
+
+        local cache_key = table_concat(ips, "\0")
+        if _ring_cache_key ~= cache_key then
+            _ring_cache = build_ring(ips)
+            _ring_cache_key = cache_key
+        end
+        local ring = _ring_cache
+
+        local hash = ngx_crc32_long(key)
+
+        -- binary search for first point >= hash
+        local lo, hi = 1, #ring
+        while lo < hi do
+            local mid = floor((lo + hi) / 2)
+            if ring[mid].hash < hash then
+                lo = mid + 1
+            else
+                hi = mid
+            end
+        end
+
+        if lo == #ring and ring[lo].hash < hash then
+            lo = 1
+        end
+
+        return ring[lo].id
+    end
+
+    return _M
+{{- end }}

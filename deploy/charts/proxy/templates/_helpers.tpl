@@ -12,14 +12,16 @@ Create a default fully qualified app name.
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
-{{- $name := default .Chart.Name .Values.nameOverride }}
-{{- if contains $name .Release.Name }}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 {{- end }}
+{{/*
+Namespace to use for all namespaced resources.
+*/}}
+{{- define "proxy.namespace" -}}
+{{ default "costrict-web" .Values.namespace }}
 {{- end }}
+
 
 {{/*
 Create chart name and version as used by the chart label.
@@ -48,13 +50,3 @@ app.kubernetes.io/name: {{ include "proxy.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{/*
-Create the name of the service account to use
-*/}}
-{{- define "proxy.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "proxy.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
