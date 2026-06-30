@@ -90,7 +90,7 @@ func seedDistributions(t *testing.T, db *gorm.DB) {
 	dists := []models.ItemDistribution{
 		{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", Status: "active", ScopeType: "user", TargetID: "u1", CreatedAt: now.Add(-3 * time.Hour)},
 		{ID: "d2", ItemID: "item-1", DistributorID: "admin-b", Status: "paused", ScopeType: "user", TargetID: "u2", CreatedAt: now.Add(-2 * time.Hour)},
-		{ID: "d3", ItemID: "item-2", DistributorID: "admin-a", Status: "active", ScopeType: "organization", TargetID: "org-x", CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: "d3", ItemID: "item-2", DistributorID: "admin-a", Status: "active", ScopeType: "department", TargetID: "dept-x", CreatedAt: now.Add(-1 * time.Hour)},
 		{ID: "d4", ItemID: "item-2", DistributorID: "admin-c", Status: "revoked", ScopeType: "user", TargetID: "u3", CreatedAt: now},
 	}
 	for _, d := range dists {
@@ -141,12 +141,12 @@ func TestListAllDistributions_FiltersAndPagination(t *testing.T) {
 	}
 
 	// scope filter
-	list, total, err = svc.ListAllDistributions(ctx, DistributionListFilter{ScopeType: "organization"})
+	list, total, err = svc.ListAllDistributions(ctx, DistributionListFilter{ScopeType: "department"})
 	if err != nil {
 		t.Fatalf("scope filter: %v", err)
 	}
 	if total != 1 || list[0].ID != "d3" {
-		t.Fatalf("expected only d3 for org scope, got total=%d", total)
+		t.Fatalf("expected only d3 for department scope, got total=%d", total)
 	}
 
 	// search by item name
@@ -385,7 +385,12 @@ func setupDepartmentUsersDB(t *testing.T) *gorm.DB {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		subject_id TEXT,
 		username TEXT,
+		display_name TEXT,
+		email TEXT,
+		is_active BOOLEAN DEFAULT TRUE,
 		casdoor_universal_id TEXT,
+		created_at DATETIME,
+		updated_at DATETIME,
 		deleted_at DATETIME
 	)`).Error; err != nil {
 		t.Fatalf("create users table: %v", err)
@@ -519,6 +524,9 @@ func seedAuthzUsers(t *testing.T) (*gorm.DB, *fakeDeptResolver) {
 			"u-in":    {{DeptID: "fe", DeptPath: "/root/dev/fe"}},
 			"u-out":   {{DeptID: "sales", DeptPath: "/root/sales"}},
 		},
+		members: []deptsync.DeptUser{
+			{UniversalID: "u-in", DeptID: "fe"},
+		},
 	}
 	return db, resolver
 }
@@ -575,12 +583,17 @@ func TestAuthorizeTargets(t *testing.T) {
 	db, resolver := seedAuthzUsers(t)
 	svc := NewDistributionService(db, nil, resolver)
 
-	// Platform admin: anything goes, including organization and cross-subtree dept.
+	// Platform admin: user/department targets pass, including cross-subtree dept.
 	if err := svc.AuthorizeTargets("anyone", true, []DistributionTarget{
-		{ScopeType: "organization", TargetID: "ACME"},
+		{ScopeType: "user", TargetID: "ut-out"},
 		{ScopeType: "department", TargetID: "sales"},
 	}); err != nil {
-		t.Fatalf("platform admin should pass any targets, got %v", err)
+		t.Fatalf("platform admin should pass user/department targets, got %v", err)
+	}
+	if err := svc.AuthorizeTargets("anyone", true, []DistributionTarget{
+		{ScopeType: "organization", TargetID: "ACME"},
+	}); !errors.Is(err, ErrUnsupportedScope) {
+		t.Fatalf("organization for platform admin: want ErrUnsupportedScope, got %v", err)
 	}
 
 	// Leader: department inside subtree (self + descendant) passes.
@@ -610,11 +623,11 @@ func TestAuthorizeTargets(t *testing.T) {
 		t.Fatalf("out-of-subtree user: want ErrTargetOutOfScope, got %v", err)
 	}
 
-	// Leader: organization scope is never delegable to a department manager.
+	// Leader: organization scope is no longer a supported distribution target.
 	if err := svc.AuthorizeTargets("mgr", false, []DistributionTarget{
 		{ScopeType: "organization", TargetID: "ACME"},
-	}); !errors.Is(err, ErrTargetOutOfScope) {
-		t.Fatalf("organization for leader: want ErrTargetOutOfScope, got %v", err)
+	}); !errors.Is(err, ErrUnsupportedScope) {
+		t.Fatalf("organization for leader: want ErrUnsupportedScope, got %v", err)
 	}
 
 	// Atomicity: one out-of-scope target in a batch rejects the whole request.
@@ -661,6 +674,63 @@ func TestResolveDistributionAuthority(t *testing.T) {
 	if err != nil || auth == nil || auth.Unlimited || len(auth.Departments) != 0 {
 		t.Fatalf("unconfigured authority: want bounded+empty, got %+v err=%v", auth, err)
 	}
+}
+
+func TestListEligibleUsers(t *testing.T) {
+	db, resolver := seedAuthzUsers(t)
+	nameIn := "Inside User"
+	nameOut := "Outside User"
+	if err := db.Model(&models.User{}).Where("subject_id = ?", "ut-in").Updates(map[string]interface{}{
+		"display_name": &nameIn,
+		"email":        "inside@example.com",
+		"is_active":    true,
+	}).Error; err != nil {
+		t.Fatalf("seed inside display fields: %v", err)
+	}
+	if err := db.Model(&models.User{}).Where("subject_id = ?", "ut-out").Updates(map[string]interface{}{
+		"display_name": &nameOut,
+		"email":        "outside@example.com",
+		"is_active":    true,
+	}).Error; err != nil {
+		t.Fatalf("seed outside display fields: %v", err)
+	}
+	blankName := "Blank Universal User"
+	if err := db.Exec(`INSERT INTO users (subject_id, username, display_name, email, is_active, casdoor_universal_id) VALUES (?,?,?,?,?,?)`,
+		"ut-blank", "ut-blank", blankName, "blank@example.com", true, "").Error; err != nil {
+		t.Fatalf("seed blank universal user: %v", err)
+	}
+	resolver.members = append(resolver.members, deptsync.DeptUser{UniversalID: "", DeptID: "fe"})
+	svc := NewDistributionService(db, nil, resolver)
+
+	got, err := svc.ListEligibleUsers(context.Background(), "mgr", false, "User", 20)
+	if err != nil {
+		t.Fatalf("manager eligible users: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "ut-in" || got[0].DisplayName == nil || *got[0].DisplayName != nameIn {
+		t.Fatalf("manager should only see in-subtree user, got %+v", got)
+	}
+
+	got, err = svc.ListEligibleUsers(context.Background(), "anyone", true, "User", 20)
+	if err != nil {
+		t.Fatalf("admin eligible users: %v", err)
+	}
+	assertSameStringSet(t, eligibleUserIDs(got), []string{"ut-in", "ut-out", "ut-blank"})
+
+	got, err = svc.ListEligibleUsers(context.Background(), "plain", false, "User", 20)
+	if err != nil {
+		t.Fatalf("plain eligible users: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("plain user should see no eligible users, got %+v", got)
+	}
+}
+
+func eligibleUserIDs(users []EligibleDistributionUser) []string {
+	ids := make([]string, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	return ids
 }
 
 func TestListReceipts(t *testing.T) {

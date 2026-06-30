@@ -607,6 +607,122 @@ func TestListAllItems_FavoritedFilter(t *testing.T) {
 	}
 }
 
+// Regression: favorited + paginated must return the true grand total (not the
+// page length, and not 0). The sidebar "我订阅的" badge and "共 X 个" both read
+// this total; before the fix the paginated-favorited branch never counted, so a
+// non-empty list showed total=0.
+func TestListAllItems_FavoritedPaginated_Total(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fav-pg", Name: "fav-pg-reg", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	// 3 actively-favorited items.
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("item-favpg-%d", i)
+		database.DB.Create(&models.CapabilityItem{
+			ID: id, RegistryID: "reg-fav-pg", RepoID: "public", Slug: id, ItemType: "skill",
+			Name: id, Status: "active", CreatedBy: "owner", Metadata: datatypes.JSON([]byte("{}")),
+		})
+		database.DB.Create(&models.ItemFavorite{ID: "f-" + id, ItemID: id, UserID: "pg-user"})
+	}
+	// 1 force-distributed (readonly, undeletable) SKILL — a distinct subscription
+	// source with no ItemFavorite row of its own.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-favpg-dist", RegistryID: "reg-fav-pg", RepoID: "public", Slug: "favpg-dist", ItemType: "skill",
+		Name: "Force Distributed Skill", Status: "active", CreatedBy: "owner", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.ItemDistribution{
+		ID: "dist-favpg-1", ItemID: "item-favpg-dist", DistributorID: "admin", TargetID: "pg-user",
+		ScopeType: "user", PermissionMode: "readonly", Status: "active",
+	})
+	database.DB.Create(&models.ItemDistributionReceipt{
+		ID: "rcpt-favpg-1", DistributionID: "dist-favpg-1", UserID: "pg-user", ReceiptStatus: "unread",
+	})
+
+	// Subscribed grand total = 3 favorites + 1 distributed = 4 (de-duplicated).
+	router := newItemRouter("pg-user")
+
+	w := get(router, "/api/items?favorited=true&paginated=true&pageSize=2&page=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var p1 map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&p1)
+	if p1["total"].(float64) != 4 {
+		t.Fatalf("expected total=4, got %v", p1["total"])
+	}
+	if got := len(p1["items"].([]interface{})); got != 2 {
+		t.Fatalf("expected 2 items on page 1, got %d", got)
+	}
+	if p1["hasMore"] != true {
+		t.Fatalf("expected hasMore=true on page 1, got %v", p1["hasMore"])
+	}
+
+	w2 := get(router, "/api/items?favorited=true&paginated=true&pageSize=2&page=2")
+	var p2 map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&p2)
+	if p2["total"].(float64) != 4 {
+		t.Fatalf("expected total=4 on page 2, got %v", p2["total"])
+	}
+	if got := len(p2["items"].([]interface{})); got != 2 {
+		t.Fatalf("expected 2 items on page 2, got %d", got)
+	}
+	if p2["hasMore"] != false {
+		t.Fatalf("expected hasMore=false on page 2, got %v", p2["hasMore"])
+	}
+
+	// The force-distributed undeletable skill must be both counted and returned.
+	seen := map[string]bool{}
+	for _, it := range append(p1["items"].([]interface{}), p2["items"].([]interface{})...) {
+		seen[it.(map[string]interface{})["id"].(string)] = true
+	}
+	if !seen["item-favpg-dist"] {
+		t.Fatalf("force-distributed skill missing from subscribed list across pages: %v", seen)
+	}
+}
+
+// Distribution subscriptions only count when the distribution is active and the
+// receipt is not dismissed — a dismissed receipt or a revoked distribution must
+// not inflate the "我订阅的" total.
+func TestListAllItems_FavoritedPaginated_ExcludesDismissedAndRevoked(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fav-dist", Name: "fav-dist-reg", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	mk := func(id string) {
+		database.DB.Create(&models.CapabilityItem{
+			ID: id, RegistryID: "reg-fav-dist", RepoID: "public", Slug: id, ItemType: "skill",
+			Name: id, Status: "active", CreatedBy: "owner", Metadata: datatypes.JSON([]byte("{}")),
+		})
+	}
+	mk("item-dist-active")
+	mk("item-dist-dismissed")
+	mk("item-dist-revoked")
+
+	database.DB.Create(&models.ItemDistribution{ID: "d-active", ItemID: "item-dist-active", DistributorID: "admin", TargetID: "u", ScopeType: "user", PermissionMode: "readonly", Status: "active"})
+	database.DB.Create(&models.ItemDistributionReceipt{ID: "r-active", DistributionID: "d-active", UserID: "u", ReceiptStatus: "unread"})
+
+	database.DB.Create(&models.ItemDistribution{ID: "d-dismissed", ItemID: "item-dist-dismissed", DistributorID: "admin", TargetID: "u", ScopeType: "user", PermissionMode: "dismissible", Status: "active"})
+	database.DB.Create(&models.ItemDistributionReceipt{ID: "r-dismissed", DistributionID: "d-dismissed", UserID: "u", ReceiptStatus: "dismissed"})
+
+	database.DB.Create(&models.ItemDistribution{ID: "d-revoked", ItemID: "item-dist-revoked", DistributorID: "admin", TargetID: "u", ScopeType: "user", PermissionMode: "readonly", Status: "revoked"})
+	database.DB.Create(&models.ItemDistributionReceipt{ID: "r-revoked", DistributionID: "d-revoked", UserID: "u", ReceiptStatus: "unread"})
+
+	w := get(newItemRouter("u"), "/api/items?favorited=true&paginated=true&pageSize=20&page=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["total"].(float64) != 1 {
+		t.Fatalf("expected total=1 (only active+undismissed), got %v", body["total"])
+	}
+	items := body["items"].([]interface{})
+	if len(items) != 1 || items[0].(map[string]interface{})["id"] != "item-dist-active" {
+		t.Fatalf("expected only item-dist-active, got %v", items)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateItem
 // ---------------------------------------------------------------------------

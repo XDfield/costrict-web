@@ -2154,6 +2154,13 @@ func ListAllItems(c *gin.Context) {
 		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Find(&items)
 		total = int64(len(items))
 	} else {
+		// Paginated favorited path: the non-favorited branch counts total above, but
+		// the favorited branch never does, so total would stay 0 while a page of items
+		// is still returned (sidebar badge / "共 X 个" then show 0 against a non-empty
+		// list). Count the filtered favorited+distributed set before limit/offset.
+		if isPaginatedFavorited {
+			query.Model(&models.CapabilityItem{}).Count(&total)
+		}
 		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	}
 	if result.Error != nil {
