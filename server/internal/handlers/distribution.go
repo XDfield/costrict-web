@@ -16,9 +16,9 @@ import (
 
 // DistributionHandler holds dependencies for distribution endpoints.
 type DistributionHandler struct {
-	db              *gorm.DB
-	distSvc         *services.DistributionService
-	systemRoleSvc   *systemrole.SystemRoleService
+	db            *gorm.DB
+	distSvc       *services.DistributionService
+	systemRoleSvc *systemrole.SystemRoleService
 }
 
 // NewDistributionHandler creates a new distribution handler.
@@ -68,7 +68,8 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 	}
 
 	userID := c.GetString(middleware.UserIDKey)
-	if !h.distSvc.CanDistribute(item, userID, h.isPlatformAdmin(userID)) {
+	isPlatformAdmin := h.isPlatformAdmin(userID)
+	if !h.distSvc.CanDistribute(item, userID, isPlatformAdmin) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to push this item"})
 		return
 	}
@@ -76,6 +77,14 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 	var req services.DistributeItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// Per-target boundary: a department manager may only push within the subtree(s)
+	// they manage. Platform admins pass unconditionally. Any out-of-scope target
+	// rejects the whole request (atomic — no partial distribution).
+	if err := h.distSvc.AuthorizeTargets(userID, isPlatformAdmin, req.Targets); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -92,6 +101,23 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusCreated, gin.H{"distributions": results})
+}
+
+// MyDistributionAuthority godoc
+// @Summary      My distribution authority
+// @Description  The current user's distribution reach: unlimited for platform admins, otherwise the department subtrees they lead (manage). Drives the frontend distribute entry + department picker scope. Any authenticated user may query their own.
+// @Tags         distributions
+// @Produce      json
+// @Success      200  {object}  services.DistributionAuthority
+// @Router       /distributions/my/authority [get]
+func (h *DistributionHandler) MyDistributionAuthority(c *gin.Context) {
+	userID := c.GetString(middleware.UserIDKey)
+	authority, err := h.distSvc.ResolveDistributionAuthority(userID, h.isPlatformAdmin(userID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve distribution authority"})
+		return
+	}
+	c.JSON(http.StatusOK, authority)
 }
 
 // ListItemDistributions godoc
@@ -327,4 +353,3 @@ func (h *DistributionHandler) MarkReceiptRead(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Marked as read"})
 }
-
