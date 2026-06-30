@@ -301,7 +301,10 @@ func TestHandleWebhook_WecomBot_NoIdentity_FallsBackToEmpty(t *testing.T) {
 func TestHandleWebhook_ConfigWithUserID_NotOverridden(t *testing.T) {
 	db := setupServiceTestDB(t)
 
-	// Non-wecom-bot channel: config has a real UserID that should NOT be overridden
+	// Non-wecom-bot channel: config has a real UserID that should NOT be overridden.
+	// The sender's externalUserID must resolve via idtrust to that same UserID,
+	// otherwise the targeted lookup misses and the handler is never invoked.
+	insertIdentity(t, db, "original-user", "WecomUser-X")
 	sysCfg := models.ChannelConfig{
 		ID:          "cfg-wecom-1",
 		ChannelType: "wecom",
