@@ -433,6 +433,54 @@ func TestListMyItems_FilterByType(t *testing.T) {
 	}
 }
 
+func TestListMyItems_FilterBySlug(t *testing.T) {
+	defer setupTestDB(t)()
+	// Public registry; items created by the user and by someone else.
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "slug-mine-a", RegistryID: PublicRegistryID, RepoID: "public", Slug: "auto-lint-fix", ItemType: "skill",
+		Name: "Auto Lint Fix", Status: "active", CreatedBy: "slug-user", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "slug-mine-b", RegistryID: PublicRegistryID, RepoID: "public", Slug: "other-skill", ItemType: "skill",
+		Name: "Other Skill", Status: "active", CreatedBy: "slug-user", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	// Same slug as the target but owned by a different user — must NOT leak (AC4/AC6).
+	database.DB.Create(&models.CapabilityItem{
+		ID: "slug-theirs", RegistryID: PublicRegistryID, RepoID: "public", Slug: "taken-by-other", ItemType: "skill",
+		Name: "Taken By Other", Status: "active", CreatedBy: "other-user", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	// Exact-slug filter returns only my matching item.
+	w := get(newRegistryRouter("slug-user"), "/api/items/my?slug=auto-lint-fix")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item for slug filter, got %d", len(items))
+	}
+	if items[0].(map[string]interface{})["id"] != "slug-mine-a" {
+		t.Fatalf("expected slug-mine-a, got %v", items[0].(map[string]interface{})["id"])
+	}
+	if body["total"].(float64) != 1 {
+		t.Fatalf("expected total=1, got %v", body["total"])
+	}
+
+	// A slug owned only by another user yields nothing for me (drives the
+	// publish-loop "slug taken by someone else" conflict path).
+	w2 := get(newRegistryRouter("slug-user"), "/api/items/my?slug=taken-by-other")
+	var body2 map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&body2)
+	if items2 := body2["items"].([]interface{}); len(items2) != 0 {
+		t.Fatalf("expected 0 items for someone else's slug, got %d", len(items2))
+	}
+}
+
 func TestListMyItems_Pagination(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
