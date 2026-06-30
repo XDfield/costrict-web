@@ -409,6 +409,7 @@ func main() {
 			authed.GET("/distributions/my/sent", distHandler.ListSentDistributions)
 			authed.GET("/distributions/my/received", distHandler.ListReceivedDistributions)
 			authed.GET("/distributions/my/authority", distHandler.MyDistributionAuthority)
+			authed.GET("/distributions/eligible-users", distHandler.ListEligibleUsers)
 			authed.PUT("/distributions/:id", distHandler.UpdateDistribution)
 			authed.DELETE("/distributions/:id", distHandler.RevokeDistribution)
 			authed.POST("/distributions/:id/dismiss", distHandler.DismissReceipt)

@@ -152,6 +152,13 @@ type DistributionAuthority struct {
 	Departments []deptsync.Dept `json:"departments"`
 }
 
+type EligibleDistributionUser struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	DisplayName *string `json:"displayName,omitempty"`
+	AvatarURL   *string `json:"avatarUrl,omitempty"`
+}
+
 // ResolveDistributionAuthority returns the operator's reach for the frontend entry
 // gate. Platform admins are Unlimited; otherwise Departments lists the subtrees they
 // lead (empty ⇒ no distribute entry). Fails soft: any dept-sync issue yields an
@@ -218,6 +225,69 @@ func (s *DistributionService) ledDepartmentsFor(operatorSubjectID string) ([]dep
 		managed = append(managed, *node)
 	}
 	return managed, nil
+}
+
+func (s *DistributionService) ListEligibleUsers(ctx context.Context, operatorSubjectID string, isPlatformAdmin bool, keyword string, limit int) ([]EligibleDistributionUser, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	keyword = strings.TrimSpace(keyword)
+
+	query := s.db.WithContext(ctx).Model(&models.User{}).Where("is_active = ? AND subject_id <> ''", true)
+	if keyword != "" {
+		pattern := "%" + keyword + "%"
+		query = query.Where("username LIKE ? OR display_name LIKE ? OR email LIKE ?", pattern, pattern, pattern)
+	}
+
+	if !isPlatformAdmin {
+		if s.deptSync == nil || !s.deptSync.Configured() {
+			return []EligibleDistributionUser{}, nil
+		}
+		departments, err := s.ledDepartmentsFor(operatorSubjectID)
+		if err != nil {
+			return nil, err
+		}
+		if len(departments) == 0 {
+			return []EligibleDistributionUser{}, nil
+		}
+		universalIDs := make([]string, 0)
+		for _, department := range departments {
+			members, derr := s.deptSync.GetDeptUsersTree(department.DeptID)
+			if derr != nil {
+				return nil, derr
+			}
+			for _, member := range members {
+				if member.UniversalID == "" {
+					continue
+				}
+				universalIDs = append(universalIDs, member.UniversalID)
+			}
+		}
+		universalIDs = dedupeStrings(universalIDs)
+		if len(universalIDs) == 0 {
+			return []EligibleDistributionUser{}, nil
+		}
+		query = query.Where("casdoor_universal_id IN ?", universalIDs)
+	}
+
+	var users []models.User
+	if err := query.Limit(limit).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	out := make([]EligibleDistributionUser, 0, len(users))
+	for _, u := range users {
+		out = append(out, eligibleUserFromModel(u))
+	}
+	return out, nil
+}
+
+func eligibleUserFromModel(u models.User) EligibleDistributionUser {
+	return EligibleDistributionUser{
+		ID:          u.SubjectID,
+		Name:        u.Username,
+		DisplayName: u.DisplayName,
+		AvatarURL:   u.AvatarURL,
+	}
 }
 
 // authorizeTargets enforces the distribution boundary for non-platform-admins: every

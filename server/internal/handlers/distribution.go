@@ -124,6 +124,25 @@ func (h *DistributionHandler) MyDistributionAuthority(c *gin.Context) {
 	c.JSON(http.StatusOK, authority)
 }
 
+// ListEligibleUsers godoc
+// @Summary      Search users eligible for distribution
+// @Description  Search users the current operator may distribute to. Platform admins can see all active users; department managers only see users inside managed subtrees.
+// @Tags         distributions
+// @Produce      json
+// @Param        q      query     string  false  "Search keyword"
+// @Success      200    {object}  object{users=[]services.EligibleDistributionUser}
+// @Failure      500    {object}  object{error=string}
+// @Router       /distributions/eligible-users [get]
+func (h *DistributionHandler) ListEligibleUsers(c *gin.Context) {
+	userID := c.GetString(middleware.UserIDKey)
+	users, err := h.distSvc.ListEligibleUsers(c.Request.Context(), userID, h.isPlatformAdmin(userID), c.Query("q"), 20)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search eligible users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
 // ListItemDistributions godoc
 // @Summary      List item distributions
 // @Description  Get all distributions for a specific item
