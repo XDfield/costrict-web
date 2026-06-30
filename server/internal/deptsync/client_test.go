@@ -178,6 +178,56 @@ func TestClient_GetDeptUsersTree(t *testing.T) {
 	}
 }
 
+func TestClient_DepartmentSubtree(t *testing.T) {
+	// Not configured → ErrNotConfigured.
+	if _, err := New(config.DeptSyncConfig{}).DepartmentSubtree("1416"); err != ErrNotConfigured {
+		t.Fatalf("unconfigured DepartmentSubtree: expected ErrNotConfigured, got %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"dept_id":"49","dept_name":"深信服","dept_path":"/深信服","child_dept_count":1,"children":[
+				{"dept_id":"1416","dept_name":"研发体系","dept_path":"/深信服/研发体系","child_dept_count":1,"children":[
+					{"dept_id":"6560","dept_name":"研发部","dept_path":"/深信服/研发体系/研发部","child_dept_count":0}
+				]}
+			]}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "qk"})
+
+	// A non-leaf department returns its node WITH children (so the caller can treat it
+	// as a managing node and the frontend can drill the subtree).
+	node, err := c.DepartmentSubtree("1416")
+	if err != nil {
+		t.Fatalf("DepartmentSubtree: %v", err)
+	}
+	if node == nil || node.DeptID != "1416" || node.DeptPath != "/深信服/研发体系" {
+		t.Fatalf("unexpected node: %+v", node)
+	}
+	if len(node.Children) != 1 || node.Children[0].DeptID != "6560" {
+		t.Fatalf("expected subtree to keep child 研发部, got %+v", node.Children)
+	}
+
+	// A leaf department returns its node with no children (caller treats as non-managing).
+	leaf, err := c.DepartmentSubtree("6560")
+	if err != nil {
+		t.Fatalf("DepartmentSubtree(leaf): %v", err)
+	}
+	if leaf == nil || len(leaf.Children) != 0 {
+		t.Fatalf("expected leaf node with no children, got %+v", leaf)
+	}
+
+	// Unknown / empty department id → nil node (not found), no error.
+	if n, err := c.DepartmentSubtree("nope"); err != nil || n != nil {
+		t.Fatalf("unknown dept: want nil,nil; got %+v,%v", n, err)
+	}
+	if n, err := c.DepartmentSubtree(""); err != nil || n != nil {
+		t.Fatalf("empty dept id: want nil,nil; got %+v,%v", n, err)
+	}
+}
+
 func TestClient_NullData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":"0","success":true,"message":"empty","data":null}`))

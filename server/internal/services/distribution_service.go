@@ -28,13 +28,21 @@ type NotificationSender interface {
 }
 
 // deptMemberResolver is the narrow slice of the dept-sync client the distribution
-// service needs: resolving a department's whole-subtree membership (and reporting
-// whether dept-sync is configured at all). Abstracted to a small interface so the
-// "distribute to a department" path can be unit-tested with a fake and so the
-// service does not hard-depend on the concrete *deptsync.Client. The concrete
-// *deptsync.Client satisfies this interface.
+// service needs. It covers both halves of department-scoped distribution:
+//   - recipient resolution: GetDeptUsersTree (a department's whole-subtree members);
+//   - structural authorization: GetUserDepartments (which departments the operator
+//     belongs to) + DepartmentSubtree (that department's node-with-children, so a
+//     NON-LEAF membership confers management of the subtree) + GetDepartmentPath
+//     (resolving a target's dept_path to range-check it) + Configured.
+//
+// Abstracted to a small interface so the department path can be unit-tested with a
+// fake and so the service does not hard-depend on the concrete *deptsync.Client,
+// which satisfies this interface.
 type deptMemberResolver interface {
 	GetDeptUsersTree(deptID string) ([]deptsync.DeptUser, error)
+	GetDepartmentPath(deptID string) (string, error)
+	GetUserDepartments(userID string) ([]deptsync.Dept, error)
+	DepartmentSubtree(deptID string) (*deptsync.Dept, error)
 	Configured() bool
 }
 
@@ -67,21 +75,246 @@ type DistributeItemRequest struct {
 
 // DistributionResult holds the result of distributing to one target.
 type DistributionResult struct {
-	Distribution *models.ItemDistribution `json:"distribution"`
-	RecipientCount int                    `json:"recipientCount"`
+	Distribution   *models.ItemDistribution `json:"distribution"`
+	RecipientCount int                      `json:"recipientCount"`
 }
 
 var (
-	ErrNotDistributor    = errors.New("only the distributor or platform admin can modify this distribution")
-	ErrDistributionNotFound = errors.New("distribution not found")
+	ErrNotDistributor        = errors.New("only the distributor or platform admin can modify this distribution")
+	ErrDistributionNotFound  = errors.New("distribution not found")
 	ErrInvalidPermissionMode = errors.New("invalid permission mode")
-	ErrCannotDistribute    = errors.New("you do not have permission to push this item")
+	ErrCannotDistribute      = errors.New("you do not have permission to push this item")
+	// ErrTargetOutOfScope is returned when a (non-platform-admin) department manager
+	// aims a distribution at a department or user outside the subtree(s) they manage.
+	ErrTargetOutOfScope = errors.New("target is outside your managed departments")
 )
 
-// CanDistribute checks if a user can distribute an item.
-// Only platform admins are allowed to distribute items.
-func (s *DistributionService) CanDistribute(item *models.CapabilityItem, userID string, isPlatformAdmin bool) bool {
-	return isPlatformAdmin
+// CanDistribute reports whether operatorSubjectID may open the distribution flow for
+// an item. Platform admins may always distribute (unrestricted). Otherwise the user
+// may distribute iff they structurally manage at least one department subtree — i.e.
+// they are the registered leader of some department (see resolveDistributionScope).
+// This only gates *entry*; the per-target subtree check (authorizeTargets) is the
+// real boundary on *where* they may distribute.
+func (s *DistributionService) CanDistribute(item *models.CapabilityItem, operatorSubjectID string, isPlatformAdmin bool) bool {
+	if isPlatformAdmin {
+		return true
+	}
+	unlimited, prefixes, err := s.resolveDistributionScope(operatorSubjectID, false)
+	if err != nil {
+		return false
+	}
+	return unlimited || len(prefixes) > 0
+}
+
+// resolveDistributionScope computes a user's distribution reach:
+//   - unlimited=true (platform admin): may distribute anywhere; prefixes is nil.
+//   - otherwise: prefixes is the set of managed dept_path prefixes (the dept_paths of
+//     every department the user leads). Each prefix covers itself and all descendants.
+//
+// It fails closed: when dept-sync is unconfigured/unreachable, the user cannot be
+// resolved to a universal id, or the lookup errors, it returns (false, nil) — a
+// non-admin then has no reach rather than an over-broad one. unlimited is decided
+// purely by the platform-admin flag, never by dept-sync, so admin distribution is
+// robust to dept-sync being down. Note: unlimited is intentionally NOT widened to
+// business_admin / kanban "see all" — viewing scope must not bleed into push power.
+func (s *DistributionService) resolveDistributionScope(operatorSubjectID string, isPlatformAdmin bool) (bool, []string, error) {
+	if isPlatformAdmin {
+		return true, nil, nil
+	}
+	led, err := s.ledDepartmentsFor(operatorSubjectID)
+	if err != nil {
+		// Degrade fail-closed: an unreachable dept-sync must not confer reach.
+		return false, nil, nil
+	}
+	prefixes := make([]string, 0, len(led))
+	seen := make(map[string]struct{}, len(led))
+	for _, d := range led {
+		if d.DeptPath == "" {
+			continue
+		}
+		if _, ok := seen[d.DeptPath]; ok {
+			continue
+		}
+		seen[d.DeptPath] = struct{}{}
+		prefixes = append(prefixes, d.DeptPath)
+	}
+	return false, prefixes, nil
+}
+
+// DistributionAuthority is the operator's own distribution reach, surfaced to the
+// frontend so it can show/hide the distribute entry and scope the department picker.
+type DistributionAuthority struct {
+	// Unlimited is true for platform admins (may distribute to anyone / any scope).
+	Unlimited bool `json:"unlimited"`
+	// Departments are the managed subtrees (the departments the user leads). For an
+	// unlimited operator this is empty and the frontend uses the full admin tree.
+	Departments []deptsync.Dept `json:"departments"`
+}
+
+// ResolveDistributionAuthority returns the operator's reach for the frontend entry
+// gate. Platform admins are Unlimited; otherwise Departments lists the subtrees they
+// lead (empty ⇒ no distribute entry). Fails soft: any dept-sync issue yields an
+// empty, non-unlimited authority for a non-admin.
+func (s *DistributionService) ResolveDistributionAuthority(operatorSubjectID string, isPlatformAdmin bool) (*DistributionAuthority, error) {
+	if isPlatformAdmin {
+		return &DistributionAuthority{Unlimited: true, Departments: []deptsync.Dept{}}, nil
+	}
+	if s.deptSync == nil || !s.deptSync.Configured() {
+		return &DistributionAuthority{Unlimited: false, Departments: []deptsync.Dept{}}, nil
+	}
+	led, err := s.ledDepartmentsFor(operatorSubjectID)
+	if err != nil || led == nil {
+		led = []deptsync.Dept{}
+	}
+	return &DistributionAuthority{Unlimited: false, Departments: led}, nil
+}
+
+// ledDepartmentsFor returns the departments operatorSubjectID structurally manages —
+// the single source of both their managed prefixes (authorization) and the authority
+// subtree shown to the frontend. The rule is purely topological: a user who belongs
+// to a NON-LEAF department (one with sub-departments) manages that department's whole
+// subtree; members of leaf departments (rank-and-file) manage nothing. This needs no
+// leader_id / position / 工号 — only the operator's department memberships and the
+// tree shape.
+//
+// Returns (nil, nil) — i.e. no reach — when dept-sync is unavailable or the operator
+// has no managing membership (fail closed). dept-sync read errors are surfaced so
+// callers can distinguish "no reach" from "couldn't tell". The tree is read through
+// the client's short-TTL cache (same cache the kanban-scope authz relies on), so a
+// reorg takes effect on the next refresh — an accepted, bounded tradeoff consistent
+// with the rest of the dept-sync-backed authz layer (and distributions are revocable).
+func (s *DistributionService) ledDepartmentsFor(operatorSubjectID string) ([]deptsync.Dept, error) {
+	if s.deptSync == nil || !s.deptSync.Configured() {
+		return nil, nil
+	}
+	universalID := s.universalIDFor(operatorSubjectID)
+	if universalID == "" {
+		return nil, nil
+	}
+	myDepts, err := s.deptSync.GetUserDepartments(universalID)
+	if err != nil {
+		return nil, err
+	}
+	var managed []deptsync.Dept
+	seen := make(map[string]struct{}, len(myDepts))
+	for _, d := range myDepts {
+		if d.DeptID == "" {
+			continue
+		}
+		node, nerr := s.deptSync.DepartmentSubtree(d.DeptID)
+		if nerr != nil {
+			return nil, nerr
+		}
+		// Non-leaf membership ⇒ manager of that department's subtree. A leaf department
+		// (no children) confers nothing.
+		if node == nil || len(node.Children) == 0 {
+			continue
+		}
+		if _, ok := seen[node.DeptPath]; ok {
+			continue
+		}
+		seen[node.DeptPath] = struct{}{}
+		managed = append(managed, *node)
+	}
+	return managed, nil
+}
+
+// authorizeTargets enforces the distribution boundary for non-platform-admins: every
+// target must fall inside the operator's managed subtree(s). Platform admins pass
+// unconditionally. A non-admin with no managed prefixes is rejected outright. Any one
+// out-of-scope target rejects the whole request (atomic — no partial distribution).
+//
+//   - department target: its dept_path must be at-or-below a managed prefix.
+//   - user target: the user must belong to at least one department at-or-below a
+//     managed prefix (a member of the managed subtree).
+//   - organization target: never allowed for a non-admin (company-level, cross-subtree).
+func (s *DistributionService) AuthorizeTargets(operatorSubjectID string, isPlatformAdmin bool, targets []DistributionTarget) error {
+	unlimited, prefixes, err := s.resolveDistributionScope(operatorSubjectID, isPlatformAdmin)
+	if err != nil {
+		return err
+	}
+	if unlimited {
+		return nil
+	}
+	if len(prefixes) == 0 {
+		return ErrCannotDistribute
+	}
+	for _, t := range targets {
+		switch t.ScopeType {
+		case "department":
+			path, perr := s.deptSync.GetDepartmentPath(t.TargetID)
+			if perr != nil || !anyPrefixMatch(path, prefixes) {
+				return ErrTargetOutOfScope
+			}
+		case "user":
+			ok, uerr := s.userWithinPrefixes(t.TargetID, prefixes)
+			if uerr != nil || !ok {
+				return ErrTargetOutOfScope
+			}
+		default:
+			// organization / role / unknown: not delegable to a department manager.
+			return ErrTargetOutOfScope
+		}
+	}
+	return nil
+}
+
+// userWithinPrefixes reports whether the target user belongs to any department that
+// is at-or-below one of the managed prefixes. The user is resolved to its universal
+// id, then dept-sync gives their departments; a single membership inside the managed
+// subtree is enough to be a reachable recipient.
+func (s *DistributionService) userWithinPrefixes(targetSubjectID string, prefixes []string) (bool, error) {
+	universalID := s.universalIDFor(targetSubjectID)
+	if universalID == "" {
+		return false, nil
+	}
+	depts, err := s.deptSync.GetUserDepartments(universalID)
+	if err != nil {
+		return false, err
+	}
+	for _, d := range depts {
+		if anyPrefixMatch(d.DeptPath, prefixes) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// universalIDFor maps a costrict-web subject_id to its casdoor_universal_id (the
+// dept-sync bridge key). Returns "" when the user is unknown or unmapped — the same
+// fail-closed bridge resolveRecipients uses for the department case.
+func (s *DistributionService) universalIDFor(subjectID string) string {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" {
+		return ""
+	}
+	var user models.User
+	if err := s.db.Select("casdoor_universal_id").
+		Where("subject_id = ?", subjectID).First(&user).Error; err != nil {
+		return ""
+	}
+	if user.CasdoorUniversalID == nil {
+		return ""
+	}
+	return *user.CasdoorUniversalID
+}
+
+// anyPrefixMatch reports whether path is at-or-below any of the managed prefixes,
+// using a '/' boundary so "/A/Bc" never matches a prefix "/A/B" (mirrors authz's
+// pathHasPrefix). Empty path/prefix never matches.
+func anyPrefixMatch(path string, prefixes []string) bool {
+	if path == "" {
+		return false
+	}
+	for _, p := range prefixes {
+		if p == "" {
+			continue
+		}
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // DistributeItem distributes an item to the specified targets.
@@ -588,5 +821,3 @@ func dedupeStrings(in []string) []string {
 	}
 	return out
 }
-
-

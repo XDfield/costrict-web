@@ -318,6 +318,45 @@ func findDeptPath(nodes []Dept, deptID string) (string, bool) {
 	return "", false
 }
 
+// DepartmentSubtree returns the department node for deptID with its full nested
+// children (the subtree rooted there), found in the cached department tree. It backs
+// the structural "department manager" authorization: a user who belongs to a NON-LEAF
+// department (one that has children) manages that department's whole subtree, so the
+// returned node's dept_path is a managed prefix and its Children let the frontend
+// render/drill the subtree. Returns (nil, nil) when the department is not in the tree.
+// Leaf departments (no children) come back with an empty Children slice, which the
+// caller treats as "not a managing node".
+func (c *Client) DepartmentSubtree(deptID string) (*Dept, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	deptID = strings.TrimSpace(deptID)
+	if deptID == "" {
+		return nil, nil
+	}
+	tree, err := c.GetTree()
+	if err != nil {
+		return nil, err
+	}
+	return findDeptNode(tree, deptID), nil
+}
+
+// findDeptNode walks the nested department tree depth-first, returning a pointer to
+// the node whose dept_id is deptID (with its children intact), or nil if absent.
+func findDeptNode(nodes []Dept, deptID string) *Dept {
+	for i := range nodes {
+		if nodes[i].DeptID == deptID {
+			return &nodes[i]
+		}
+		if len(nodes[i].Children) > 0 {
+			if found := findDeptNode(nodes[i].Children, deptID); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
 // get performs an authenticated GET (base URL + configured path prefix), sends the
 // configured auth header, and unwraps the {code,success,data} envelope, returning
 // the raw data payload for the caller to decode.
