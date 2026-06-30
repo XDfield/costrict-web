@@ -61,7 +61,7 @@ func (s *DistributionService) SetNotificationService(svc NotificationSender) {
 
 // DistributionTarget represents a single target in a distribute request.
 type DistributionTarget struct {
-	ScopeType string `json:"scopeType" binding:"required"` // user | organization | department
+	ScopeType string `json:"scopeType" binding:"required"` // user | department
 	TargetID  string `json:"targetId" binding:"required"`
 }
 
@@ -84,6 +84,7 @@ var (
 	ErrDistributionNotFound  = errors.New("distribution not found")
 	ErrInvalidPermissionMode = errors.New("invalid permission mode")
 	ErrCannotDistribute      = errors.New("you do not have permission to push this item")
+	ErrUnsupportedScope      = errors.New("distribution target scope must be user or department")
 	// ErrTargetOutOfScope is returned when a (non-platform-admin) department manager
 	// aims a distribution at a department or user outside the subtree(s) they manage.
 	ErrTargetOutOfScope = errors.New("target is outside your managed departments")
@@ -221,14 +222,17 @@ func (s *DistributionService) ledDepartmentsFor(operatorSubjectID string) ([]dep
 
 // authorizeTargets enforces the distribution boundary for non-platform-admins: every
 // target must fall inside the operator's managed subtree(s). Platform admins pass
-// unconditionally. A non-admin with no managed prefixes is rejected outright. Any one
-// out-of-scope target rejects the whole request (atomic — no partial distribution).
+// unconditionally after scope validation. A non-admin with no managed prefixes is
+// rejected outright. Any one out-of-scope target rejects the whole request (atomic —
+// no partial distribution).
 //
 //   - department target: its dept_path must be at-or-below a managed prefix.
 //   - user target: the user must belong to at least one department at-or-below a
 //     managed prefix (a member of the managed subtree).
-//   - organization target: never allowed for a non-admin (company-level, cross-subtree).
 func (s *DistributionService) AuthorizeTargets(operatorSubjectID string, isPlatformAdmin bool, targets []DistributionTarget) error {
+	if err := validateDistributionTargets(targets); err != nil {
+		return err
+	}
 	unlimited, prefixes, err := s.resolveDistributionScope(operatorSubjectID, isPlatformAdmin)
 	if err != nil {
 		return err
@@ -252,8 +256,18 @@ func (s *DistributionService) AuthorizeTargets(operatorSubjectID string, isPlatf
 				return ErrTargetOutOfScope
 			}
 		default:
-			// organization / role / unknown: not delegable to a department manager.
-			return ErrTargetOutOfScope
+			return ErrUnsupportedScope
+		}
+	}
+	return nil
+}
+
+func validateDistributionTargets(targets []DistributionTarget) error {
+	for _, target := range targets {
+		switch target.ScopeType {
+		case "user", "department":
+		default:
+			return ErrUnsupportedScope
 		}
 	}
 	return nil
@@ -319,6 +333,9 @@ func anyPrefixMatch(path string, prefixes []string) bool {
 
 // DistributeItem distributes an item to the specified targets.
 func (s *DistributionService) DistributeItem(ctx context.Context, item *models.CapabilityItem, distributorID string, req DistributeItemRequest) ([]DistributionResult, error) {
+	if err := validateDistributionTargets(req.Targets); err != nil {
+		return nil, err
+	}
 	results := make([]DistributionResult, 0, len(req.Targets))
 
 	for _, target := range req.Targets {
@@ -431,13 +448,6 @@ func (s *DistributionService) resolveRecipients(tx *gorm.DB, target Distribution
 	switch target.ScopeType {
 	case "user":
 		return []string{target.TargetID}, nil
-	case "organization":
-		var userIDs []string
-		// Exclude users without a subject_id (mirrors notification resolveBroadcastRecipients).
-		if err := tx.Model(&models.User{}).Where("organization = ? AND subject_id <> ''", target.TargetID).Pluck("subject_id", &userIDs).Error; err != nil {
-			return nil, err
-		}
-		return userIDs, nil
 	case "department":
 		// dept-sync is the source of truth for fine-grained departments. When it is
 		// not injected/configured (or unreachable, surfaced as Configured()==false at
@@ -493,7 +503,7 @@ func (s *DistributionService) resolveRecipients(tx *gorm.DB, target Distribution
 // DistributionListFilter holds filters for the global (platform admin) distribution list.
 type DistributionListFilter struct {
 	Status    string // active | paused | revoked | "" (all)
-	ScopeType string // user | organization | "" (all)
+	ScopeType string // user | department | "" (all)
 	Search    string // optional: matches item name / distributor id / target id
 	Page      int    // 1-based
 	PageSize  int    // defaults to 20

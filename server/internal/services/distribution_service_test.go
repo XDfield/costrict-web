@@ -90,7 +90,7 @@ func seedDistributions(t *testing.T, db *gorm.DB) {
 	dists := []models.ItemDistribution{
 		{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", Status: "active", ScopeType: "user", TargetID: "u1", CreatedAt: now.Add(-3 * time.Hour)},
 		{ID: "d2", ItemID: "item-1", DistributorID: "admin-b", Status: "paused", ScopeType: "user", TargetID: "u2", CreatedAt: now.Add(-2 * time.Hour)},
-		{ID: "d3", ItemID: "item-2", DistributorID: "admin-a", Status: "active", ScopeType: "organization", TargetID: "org-x", CreatedAt: now.Add(-1 * time.Hour)},
+		{ID: "d3", ItemID: "item-2", DistributorID: "admin-a", Status: "active", ScopeType: "department", TargetID: "dept-x", CreatedAt: now.Add(-1 * time.Hour)},
 		{ID: "d4", ItemID: "item-2", DistributorID: "admin-c", Status: "revoked", ScopeType: "user", TargetID: "u3", CreatedAt: now},
 	}
 	for _, d := range dists {
@@ -141,12 +141,12 @@ func TestListAllDistributions_FiltersAndPagination(t *testing.T) {
 	}
 
 	// scope filter
-	list, total, err = svc.ListAllDistributions(ctx, DistributionListFilter{ScopeType: "organization"})
+	list, total, err = svc.ListAllDistributions(ctx, DistributionListFilter{ScopeType: "department"})
 	if err != nil {
 		t.Fatalf("scope filter: %v", err)
 	}
 	if total != 1 || list[0].ID != "d3" {
-		t.Fatalf("expected only d3 for org scope, got total=%d", total)
+		t.Fatalf("expected only d3 for department scope, got total=%d", total)
 	}
 
 	// search by item name
@@ -575,12 +575,17 @@ func TestAuthorizeTargets(t *testing.T) {
 	db, resolver := seedAuthzUsers(t)
 	svc := NewDistributionService(db, nil, resolver)
 
-	// Platform admin: anything goes, including organization and cross-subtree dept.
+	// Platform admin: user/department targets pass, including cross-subtree dept.
 	if err := svc.AuthorizeTargets("anyone", true, []DistributionTarget{
-		{ScopeType: "organization", TargetID: "ACME"},
+		{ScopeType: "user", TargetID: "ut-out"},
 		{ScopeType: "department", TargetID: "sales"},
 	}); err != nil {
-		t.Fatalf("platform admin should pass any targets, got %v", err)
+		t.Fatalf("platform admin should pass user/department targets, got %v", err)
+	}
+	if err := svc.AuthorizeTargets("anyone", true, []DistributionTarget{
+		{ScopeType: "organization", TargetID: "ACME"},
+	}); !errors.Is(err, ErrUnsupportedScope) {
+		t.Fatalf("organization for platform admin: want ErrUnsupportedScope, got %v", err)
 	}
 
 	// Leader: department inside subtree (self + descendant) passes.
@@ -610,11 +615,11 @@ func TestAuthorizeTargets(t *testing.T) {
 		t.Fatalf("out-of-subtree user: want ErrTargetOutOfScope, got %v", err)
 	}
 
-	// Leader: organization scope is never delegable to a department manager.
+	// Leader: organization scope is no longer a supported distribution target.
 	if err := svc.AuthorizeTargets("mgr", false, []DistributionTarget{
 		{ScopeType: "organization", TargetID: "ACME"},
-	}); !errors.Is(err, ErrTargetOutOfScope) {
-		t.Fatalf("organization for leader: want ErrTargetOutOfScope, got %v", err)
+	}); !errors.Is(err, ErrUnsupportedScope) {
+		t.Fatalf("organization for leader: want ErrUnsupportedScope, got %v", err)
 	}
 
 	// Atomicity: one out-of-scope target in a batch rejects the whole request.

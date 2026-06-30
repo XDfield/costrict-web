@@ -49,7 +49,7 @@ func (h *DistributionHandler) loadItem(c *gin.Context, itemID string) (*models.C
 
 // DistributeItem godoc
 // @Summary      Push item to targets
-// @Description  Push (distribute) an item to users or organizations with specified permission mode. Only platform admins can perform this action.
+// @Description  Push (distribute) an item to users or departments with specified permission mode.
 // @Tags         distributions
 // @Accept       json
 // @Produce      json
@@ -84,7 +84,11 @@ func (h *DistributionHandler) DistributeItem(c *gin.Context) {
 	// they manage. Platform admins pass unconditionally. Any out-of-scope target
 	// rejects the whole request (atomic — no partial distribution).
 	if err := h.distSvc.AuthorizeTargets(userID, isPlatformAdmin, req.Targets); err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		status := http.StatusForbidden
+		if errors.Is(err, services.ErrUnsupportedScope) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -192,7 +196,7 @@ func atoiDefault(s string, def int) int {
 // @Tags         distributions
 // @Produce      json
 // @Param        status    query     string  false  "Filter by status (active|paused|revoked)"
-// @Param        scope     query     string  false  "Filter by scope type (user|organization)"
+// @Param        scope     query     string  false  "Filter by scope type (user|department)"
 // @Param        search    query     string  false  "Search by item name / distributor / target"
 // @Param        page      query     int     false  "Page number (1-based)"
 // @Param        pageSize  query     int     false  "Page size (default 20)"

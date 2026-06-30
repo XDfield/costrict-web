@@ -798,14 +798,14 @@ func (MemoryVersion) TableName() string {
 	return "memory_versions"
 }
 
-// ItemDistribution represents a distribution (push/share) of an item to users or organizations.
+// ItemDistribution represents a distribution (push/share) of an item to users or departments.
 type ItemDistribution struct {
 	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID         string         `gorm:"type:uuid;not null;index:idx_dist_item_status" json:"itemId"`
 	DistributorID  string         `gorm:"type:text;not null;index:idx_dist_distributor" json:"distributorId"`
 	PermissionMode string         `gorm:"type:varchar(32);default:'readonly'" json:"permissionMode"` // readonly | dismissible
 	Status         string         `gorm:"type:varchar(32);default:'active'" json:"status"`           // active | paused | revoked
-	ScopeType      string         `gorm:"type:varchar(32);default:'user'" json:"scopeType"`          // user | organization | department | role
+	ScopeType      string         `gorm:"type:varchar(32);default:'user'" json:"scopeType"`          // user | department
 	TargetID       string         `gorm:"type:text;not null;index:idx_dist_target" json:"targetId"`
 	Message        string         `gorm:"type:text" json:"message,omitempty"`
 	RevokedAt      *time.Time     `json:"revokedAt,omitempty"`
