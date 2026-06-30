@@ -32,29 +32,29 @@ func CreateWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 
 		var req services.CreateWorkspaceRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondError(c, err, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		workspace, err := svc.CreateWorkspace(userID, req)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNameExists) {
-				c.JSON(http.StatusConflict, gin.H{"error": "workspace name already exists"})
+				respondError(c, err, http.StatusConflict, "workspace name already exists")
 				return
 			}
 			if errors.Is(err, services.ErrWorkspaceDirectoryRequired) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "at least one directory is required"})
+				respondError(c, err, http.StatusBadRequest, "at least one directory is required")
 				return
 			}
 			if errors.Is(err, services.ErrDeviceNotFound) || errors.Is(err, services.ErrDeviceNotOwned) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				respondError(c, err, http.StatusBadRequest, err.Error())
 				return
 			}
 			if errors.Is(err, services.ErrDirectoryPathDuplicate) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				respondError(c, err, http.StatusBadRequest, err.Error())
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to create workspace")
 			return
 		}
 
@@ -81,7 +81,7 @@ func ListWorkspacesHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 
 		workspaces, err := svc.ListWorkspaces(userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list workspaces"})
+			respondError(c, err, http.StatusInternalServerError, "failed to list workspaces")
 			return
 		}
 
@@ -112,10 +112,10 @@ func GetWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 		workspace, err := svc.GetWorkspace(workspaceID, userID)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to get workspace")
 			return
 		}
 
@@ -144,10 +144,10 @@ func GetDefaultWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc 
 		workspace, err := svc.GetDefaultWorkspace(userID)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "no default workspace found"})
+				respondError(c, err, http.StatusNotFound, "no default workspace found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get default workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to get default workspace")
 			return
 		}
 
@@ -182,21 +182,21 @@ func UpdateWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 
 		var req services.UpdateWorkspaceRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondError(c, err, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		workspace, err := svc.UpdateWorkspace(workspaceID, userID, req)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
 			if errors.Is(err, services.ErrWorkspaceNameExists) {
-				c.JSON(http.StatusConflict, gin.H{"error": "workspace name already exists"})
+				respondError(c, err, http.StatusConflict, "workspace name already exists")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to update workspace")
 			return
 		}
 
@@ -226,14 +226,14 @@ func DeleteWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc {
 		workspaceID := c.Param("workspaceID")
 		if err := svc.DeleteWorkspace(workspaceID, userID); err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
 			if errors.Is(err, services.ErrDefaultWorkspaceCannotDelete) {
-				c.JSON(http.StatusForbidden, gin.H{"error": "cannot delete default workspace"})
+				respondError(c, err, http.StatusForbidden, "cannot delete default workspace")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to delete workspace")
 			return
 		}
 
@@ -262,10 +262,10 @@ func SetDefaultWorkspaceHandler(svc *services.WorkspaceService) gin.HandlerFunc 
 		workspaceID := c.Param("workspaceID")
 		if err := svc.SetDefaultWorkspace(workspaceID, userID); err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set default workspace"})
+			respondError(c, err, http.StatusInternalServerError, "failed to set default workspace")
 			return
 		}
 
@@ -299,17 +299,17 @@ func AddWorkspaceDirectoryHandler(svc *services.WorkspaceService) gin.HandlerFun
 
 		var req services.CreateDirectoryRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondError(c, err, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		directory, err := svc.AddDirectory(workspaceID, userID, req)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add directory"})
+			respondError(c, err, http.StatusInternalServerError, "failed to add directory")
 			return
 		}
 
@@ -345,17 +345,17 @@ func UpdateWorkspaceDirectoryHandler(svc *services.WorkspaceService) gin.Handler
 
 		var req services.UpdateDirectoryRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondError(c, err, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		directory, err := svc.UpdateDirectory(workspaceID, directoryID, userID, req)
 		if err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) || errors.Is(err, services.ErrWorkspaceDirectoryNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				respondError(c, err, http.StatusNotFound, "directory not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update directory"})
+			respondError(c, err, http.StatusInternalServerError, "failed to update directory")
 			return
 		}
 
@@ -388,14 +388,14 @@ func DeleteWorkspaceDirectoryHandler(svc *services.WorkspaceService) gin.Handler
 
 		if err := svc.DeleteDirectory(workspaceID, directoryID, userID); err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) || errors.Is(err, services.ErrWorkspaceDirectoryNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				respondError(c, err, http.StatusNotFound, "directory not found")
 				return
 			}
 			if errors.Is(err, services.ErrWorkspaceDirectoryRequired) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "workspace must have at least one directory"})
+				respondError(c, err, http.StatusBadRequest, "workspace must have at least one directory")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete directory"})
+			respondError(c, err, http.StatusInternalServerError, "failed to delete directory")
 			return
 		}
 
@@ -429,16 +429,16 @@ func ReorderWorkspaceDirectoriesHandler(svc *services.WorkspaceService) gin.Hand
 
 		var req services.ReorderDirectoriesRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondError(c, err, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		if err := svc.ReorderDirectories(workspaceID, userID, req); err != nil {
 			if errors.Is(err, services.ErrWorkspaceNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+				respondError(c, err, http.StatusNotFound, "workspace not found")
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reorder directories"})
+			respondError(c, err, http.StatusInternalServerError, "failed to reorder directories")
 			return
 		}
 

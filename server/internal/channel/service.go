@@ -110,29 +110,9 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		return body, http.StatusOK, nil
 	}
 
-	var configs []models.ChannelConfig
-	if err := s.db.Where("channel_type = ? AND enabled = true AND deleted_at IS NULL", channelType).
-		Find(&configs).Error; err != nil {
-		return "", http.StatusInternalServerError, err
-	}
-
-	if len(configs) == 0 {
-		// wecom-bot is system-level: auto-create config and process
-		if channelType == "wecom-bot" && s.weComBotEnabled {
-			sysCfg := models.ChannelConfig{
-				ChannelType: "wecom-bot",
-				Name:        "wecom-bot 系统",
-				Enabled:     true,
-			}
-			if err := s.db.Create(&sysCfg).Error; err == nil {
-				configs = append(configs, sysCfg)
-			}
-		}
-		if len(configs) == 0 {
-			return "success", http.StatusOK, nil
-		}
-	}
-
+	// Parse inbound first — we need ExternalUserID to resolve identity before
+	// querying configs. This also lets action_callback frames skip the config
+	// query entirely.
 	msg, err := adapter.ParseInbound(r, nil)
 	if err != nil || msg == nil {
 		log.Printf("ChannelService: ParseInbound result: err=%v, msg=%+v", err, msg)
@@ -159,33 +139,82 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		return "success", http.StatusOK, nil
 	}
 
-	// For wecom-bot (system-level config with empty UserID), resolve the platform
-	// user ID from the WeCom external user ID via idtrust identity binding.
-	// This ensures inbound sessions use the same userID as outbound (device events).
+	// Resolve the platform user ID from the inbound message's sender identity.
+	// For channels that carry externalUserID (wecom-bot, wecom, wechat),
+	// resolve via idtrust — the message identity is authoritative.
 	resolvedUserID := ""
-	if len(configs) > 0 {
-		resolvedUserID = configs[0].UserID
-	}
-	if resolvedUserID == "" && channelType == "wecom-bot" && msg.ExternalUserID != "" {
+	resolvedFromIdentity := false
+	if msg.ExternalUserID != "" {
 		var identity models.UserAuthIdentity
 		if err := s.db.Where("provider_user_id = ? AND provider = ? AND deleted_at IS NULL",
-			msg.ExternalUserID, "idtrust").First(&identity).Error; err != nil {
-			log.Printf("[inbound] failed to resolve platformUserID from externalUserID=%s: %v",
-				msg.ExternalUserID, err)
-		} else {
+			msg.ExternalUserID, "idtrust").First(&identity).Error; err == nil {
 			resolvedUserID = identity.UserSubjectID
-			log.Printf("[inbound] resolved platformUserID=%s from externalUserID=%s (wecom-bot)",
-				resolvedUserID, msg.ExternalUserID)
+			resolvedFromIdentity = true
+			log.Printf("[inbound] resolved platformUserID=%s from externalUserID=%s (channel=%s)",
+				resolvedUserID, msg.ExternalUserID, channelType)
+		} else {
+			log.Printf("[inbound] failed to resolve platformUserID from externalUserID=%s (channel=%s): %v",
+				msg.ExternalUserID, channelType, err)
 		}
+	}
+
+	// Query configs with a targeted lookup. When identity is resolved, this
+	// hits a single per-user row instead of loading every user's config —
+	// fixing both the identity hijack (configs[0].UserID was arbitrary) and
+	// the fan-out (handler was invoked once per config).
+	var configs []models.ChannelConfig
+	if resolvedFromIdentity {
+		var cfg models.ChannelConfig
+		if err := s.db.Where("channel_type = ? AND user_id = ? AND enabled = true AND deleted_at IS NULL",
+			channelType, resolvedUserID).First(&cfg).Error; err == nil {
+			configs = []models.ChannelConfig{cfg}
+		}
+	}
+	// Fall back to system-level config (empty UserID). In practice only
+	// wecom-bot uses this shape.
+	if len(configs) == 0 {
+		var sysCfg models.ChannelConfig
+		if err := s.db.Where("channel_type = ? AND user_id = ? AND enabled = true AND deleted_at IS NULL",
+			channelType, "").First(&sysCfg).Error; err == nil {
+			configs = []models.ChannelConfig{sysCfg}
+		}
+	}
+	// Safety net: channels without inbound identity (no current inbound channel
+	// hits this). Uses the legacy broad query + configs[0].UserID fallback.
+	if len(configs) == 0 && msg.ExternalUserID == "" {
+		if err := s.db.Where("channel_type = ? AND enabled = true AND deleted_at IS NULL", channelType).
+			Find(&configs).Error; err != nil {
+			return "", http.StatusInternalServerError, err
+		}
+		if resolvedUserID == "" && len(configs) > 0 {
+			resolvedUserID = configs[0].UserID
+		}
+	}
+	// wecom-bot: auto-create system-level config if nothing was found, so the
+	// handler still runs and the response can carry resolveErr / welcome.
+	if len(configs) == 0 && channelType == "wecom-bot" && s.weComBotEnabled {
+		sysCfg := models.ChannelConfig{
+			ChannelType: "wecom-bot",
+			Name:        "wecom-bot 系统",
+			Enabled:     true,
+		}
+		if err := s.db.Create(&sysCfg).Error; err == nil {
+			configs = append(configs, sysCfg)
+		}
+	}
+	if len(configs) == 0 {
+		return "success", http.StatusOK, nil
 	}
 
 	if resolvedUserID != "" {
 		log.Printf("[inbound] session key userID=%s externalUserID=%s", resolvedUserID, msg.ExternalUserID)
 	}
 
-	// wecom-bot first-contact detection: when a user's first inbound message
-	// arrives, flip WebhookVerified to true so the UI can render the "bound"
-	// state. The proxy reads the returned JSON and sends a welcome message.
+	// wecom-bot binding completion: 绑定完成的判定是 "wecom 已收到过该 userId 的消息"，
+	// 由 WebhookVerified 持久化标记。ChannelConfig 存在 ≠ 已绑定 —— 用户在控制台创建通道
+	// 只是登记意图，必须 wecom 真的收到一条来自该 userId 的消息才算绑定完成。
+	// 本帧即为 wecom 收到消息的证据：首帧时翻转 WebhookVerified 并标记 firstContact
+	// 让 proxy 推欢迎语；bound 在翻转之后置位，确保语义严格反映 "wecom 已收到消息"。
 	firstContact := false
 	bound := false
 	resolveErr := ""
@@ -196,13 +225,15 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 			var userCfg models.ChannelConfig
 			if err := s.db.Where("channel_type = ? AND user_id = ? AND deleted_at IS NULL", "wecom-bot", resolvedUserID).
 				First(&userCfg).Error; err == nil {
-				bound = true
 				if !userCfg.WebhookVerified {
 					firstContact = true
 					if err := s.db.Model(&userCfg).Update("webhook_verified", true).Error; err != nil {
 						log.Printf("[inbound] failed to set webhook_verified: %v", err)
 					}
 				}
+				// 翻转后 WebhookVerified 必为 true（首帧刚翻转或之前已 true），
+				// 即 wecom 已收到过该 userId 的消息 → 视为绑定完成。
+				bound = true
 			}
 		}
 	}
