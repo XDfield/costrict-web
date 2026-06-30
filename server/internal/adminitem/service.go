@@ -16,9 +16,9 @@ package adminitem
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/itemdelete"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
@@ -248,10 +248,67 @@ func (s *Service) SetStatus(id, status string) error {
 	return nil
 }
 
-// DeleteItem removes an item and its dependent records across any author. The
-// cascade mirrors handlers.DeleteItem: best-effort delete of dependent rows
-// (skipping tables that don't exist in older/test schemas), soft-archive of
-// bundled sub-skills, then the item itself.
+// GetItemStatuses returns the current status keyed by id for the given ids,
+// skipping any that don't exist. Used to capture the prior status for batch
+// audit (from→to), mirroring the single-item status path.
+func (s *Service) GetItemStatuses(ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	var rows []struct {
+		ID     string
+		Status string
+	}
+	s.db.Model(&models.CapabilityItem{}).Select("id, status").Where("id IN ?", ids).Find(&rows)
+	for _, r := range rows {
+		out[r.ID] = r.Status
+	}
+	return out
+}
+
+// BatchSetStatus flips the lifecycle status (上下架) of many items in a single
+// transaction. status must be active|archived. ids that no longer exist are
+// reported in skipped rather than updated. All-or-nothing: on any hard error
+// nothing is committed and (nil, nil, err) is returned.
+func (s *Service) BatchSetStatus(ids []string, status string) (updated, skipped []string, err error) {
+	if status != StatusActive && status != StatusArchived {
+		return nil, nil, ErrInvalidStatus
+	}
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, id := range ids {
+			var count int64
+			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Count(&count).Error; e != nil {
+				return e
+			}
+			if count == 0 {
+				skipped = append(skipped, id)
+				continue
+			}
+			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Update("status", status).Error; e != nil {
+				return e
+			}
+			updated = append(updated, id)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, nil, txErr
+	}
+	if updated == nil {
+		updated = []string{}
+	}
+	if skipped == nil {
+		skipped = []string{}
+	}
+	return updated, skipped, nil
+}
+
+// DeleteItem removes an item and ALL of its associated data across any author.
+// The cascade (shared with handlers.DeleteItem and BatchDeleteItems) lives in
+// internal/itemdelete: bundled sub-skills are hard-deleted recursively,
+// dependent rows + distribution/mcp-config orphans are cleared, then the item
+// itself. Forks owned by other users are intentionally left intact.
 func (s *Service) DeleteItem(id string) error {
 	var item models.CapabilityItem
 	if err := s.db.Select("id").First(&item, "id = ?", id).Error; err != nil {
@@ -262,46 +319,33 @@ func (s *Service) DeleteItem(id string) error {
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		deletions := []struct {
-			model any
-			name  string
-		}{
-			{model: &models.BehaviorLog{}, name: "behavior logs"},
-			{model: &models.ItemFavorite{}, name: "item favorites"},
-			{model: &models.ItemTag{}, name: "item tags"},
-			{model: &models.ScanJob{}, name: "scan jobs"},
-			{model: &models.SecurityScan{}, name: "security scans"},
-			{model: &models.CapabilityVersionAsset{}, name: "capability version assets"},
-			{model: &models.CapabilityAsset{}, name: "capability assets"},
-			{model: &models.CapabilityArtifact{}, name: "capability artifacts"},
-			{model: &models.CapabilityVersion{}, name: "capability versions"},
-		}
-		for _, d := range deletions {
-			if !tx.Migrator().HasTable(d.model) {
-				continue
-			}
-			query := tx.Where("item_id = ?", id)
-			if _, ok := d.model.(*models.CapabilityVersionAsset); ok {
-				query = tx.Where("version_id IN (?)", tx.Model(&models.CapabilityVersion{}).Select("id").Where("item_id = ?", id))
-			}
-			if err := query.Delete(d.model).Error; err != nil {
-				return fmt.Errorf("failed to delete %s: %w", d.name, err)
-			}
-		}
-
-		// Bundled sub-skills follow the parent into a soft archive (mirrors the
-		// public DeleteItem cascade so promoted skill rows stay auditable).
-		if err := tx.Model(&models.CapabilityItem{}).
-			Where("parent_plugin_id = ?", id).
-			Update("status", StatusArchived).Error; err != nil {
-			return fmt.Errorf("failed to archive sub-skills: %w", err)
-		}
-
-		if err := tx.Delete(&models.CapabilityItem{}, "id = ?", id).Error; err != nil {
-			return fmt.Errorf("failed to delete item: %w", err)
-		}
-		return nil
+		return itemdelete.CascadeDelete(tx, id)
 	})
+}
+
+// BatchDeleteItems hard-deletes every id in one transaction so a single failure
+// rolls the entire batch back (no partial deletes). ids that no longer exist
+// when their turn comes — never existed, or were already removed as a sub-skill
+// of an earlier id in the same batch — are returned in skipped rather than
+// deleted. On any hard error nothing is committed and (nil, nil, err) is
+// returned.
+func (s *Service) BatchDeleteItems(ids []string) (deleted, skipped []string, err error) {
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		deleted, skipped, err = itemdelete.CascadeDeleteMany(tx, ids)
+		return err
+	})
+	if txErr != nil {
+		return nil, nil, txErr
+	}
+	// Normalize nil → empty so the JSON response is [] not null (matches the
+	// public batch endpoint and keeps frontend .length/.map safe).
+	if deleted == nil {
+		deleted = []string{}
+	}
+	if skipped == nil {
+		skipped = []string{}
+	}
+	return deleted, skipped, nil
 }
 
 // expandSecurityStatus turns a coarse risk-group token (unknown|low|medium|high)

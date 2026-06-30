@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/itemdelete"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -1761,56 +1762,126 @@ func DeleteItem(c *gin.Context) {
 		return
 	}
 
+	// Shared cascade (see internal/itemdelete): hard-deletes bundled sub-skills
+	// recursively, clears dependent rows + distribution/mcp-config orphans, then
+	// the item itself. Forks owned by other users are left intact.
 	err := db.Transaction(func(tx *gorm.DB) error {
-		// Some environments may not have all tables yet (older schemas/tests).
-		// Delete dependencies in a defensive order when tables exist.
-		deletions := []struct {
-			model any
-			name  string
-		}{
-			{model: &models.BehaviorLog{}, name: "behavior logs"},
-			{model: &models.ItemFavorite{}, name: "item favorites"},
-			{model: &models.ItemTag{}, name: "item tags"},
-			{model: &models.ScanJob{}, name: "scan jobs"},
-			{model: &models.SecurityScan{}, name: "security scans"},
-			{model: &models.CapabilityVersionAsset{}, name: "capability version assets"},
-			{model: &models.CapabilityAsset{}, name: "capability assets"},
-			{model: &models.CapabilityArtifact{}, name: "capability artifacts"},
-			{model: &models.CapabilityVersion{}, name: "capability versions"},
-		}
-
-		for _, d := range deletions {
-			if !tx.Migrator().HasTable(d.model) {
-				continue
-			}
-			query := tx.Where("item_id = ?", id)
-			if _, ok := d.model.(*models.CapabilityVersionAsset); ok {
-				query = tx.Where("version_id IN (?)", tx.Model(&models.CapabilityVersion{}).Select("id").Where("item_id = ?", id))
-			}
-			if err := query.Delete(d.model).Error; err != nil {
-				return fmt.Errorf("failed to delete %s: %w", d.name, err)
-			}
-		}
-
-		// Cascade to bundled sub-skills: archive (not hard-delete) so the promoted
-		// skill rows stay auditable and download links don't 500 mid-flight. This
-		// mirrors the catalog "orphan follows parent → soft archive" semantics.
-		if err := tx.Model(&models.CapabilityItem{}).
-			Where("parent_plugin_id = ?", id).
-			Update("status", "archived").Error; err != nil {
-			return fmt.Errorf("failed to archive sub-skills: %w", err)
-		}
-
-		if err := tx.Delete(&models.CapabilityItem{}, "id = ?", id).Error; err != nil {
-			return fmt.Errorf("failed to delete item: %w", err)
-		}
-		return nil
+		return itemdelete.CascadeDelete(tx, id)
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Item deleted"})
+}
+
+// maxBatchItems bounds a single batch operation so an accidental "select all →
+// delete" can't wipe an unbounded slice in one transaction. The frontend's
+// "select all matching" path pulls ids in pages and respects the same ceiling.
+const maxBatchItems = 200
+
+// BatchDeleteItems godoc
+// @Summary      Batch delete items
+// @Description  Delete up to 200 of the caller's own items (or any items for a platform admin) and their dependent records in a single transaction. All authorized deletes succeed or none do. Items the caller may not delete are reported in `forbidden`; ids that no longer exist are reported in `skipped`.
+// @Tags         items
+// @Accept       json
+// @Produce      json
+// @Param        body  body      object{ids=[]string}  true  "Item ids to delete"
+// @Success      200   {object}  object{deleted=int,skipped=int,forbidden=int}
+// @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
+// @Router       /items [delete]
+func BatchDeleteItems(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	callerID := c.GetString(middleware.UserIDKey)
+	if callerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// Normalize: trim, drop blanks, de-duplicate while preserving order.
+	seen := make(map[string]bool, len(req.IDs))
+	ids := make([]string, 0, len(req.IDs))
+	for _, raw := range req.IDs {
+		id := strings.TrimSpace(raw)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no item ids provided"})
+		return
+	}
+	if len(ids) > maxBatchItems {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("too many items: %d (max %d)", len(ids), maxBatchItems)})
+		return
+	}
+
+	db := database.GetDB()
+	isAdmin := callerIsPlatformAdmin(c, db)
+
+	// Ownership filter: only the item's author (or a platform admin) may delete it.
+	// Batch-load the owners in one query rather than per-id.
+	var rows []struct {
+		ID        string
+		CreatedBy string
+	}
+	if err := db.Model(&models.CapabilityItem{}).Select("id, created_by").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
+		return
+	}
+	owner := make(map[string]string, len(rows))
+	for _, r := range rows {
+		owner[r.ID] = r.CreatedBy
+	}
+
+	authorized := make([]string, 0, len(ids))
+	skipped := make([]string, 0)
+	forbidden := make([]string, 0)
+	for _, id := range ids {
+		createdBy, exists := owner[id]
+		if !exists {
+			skipped = append(skipped, id) // already gone / never existed
+			continue
+		}
+		if createdBy != callerID && !isAdmin {
+			forbidden = append(forbidden, id) // not the caller's to delete
+			continue
+		}
+		authorized = append(authorized, id)
+	}
+
+	deleted := make([]string, 0)
+	if len(authorized) > 0 {
+		var batchSkipped []string
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var e error
+			deleted, batchSkipped, e = itemdelete.CascadeDeleteMany(tx, authorized)
+			return e
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
+			return
+		}
+		skipped = append(skipped, batchSkipped...)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"deleted":      len(deleted),
+		"skipped":      len(skipped),
+		"forbidden":    len(forbidden),
+		"deletedIds":   deleted,
+		"forbiddenIds": forbidden,
+	})
 }
 
 // ListItemVersions godoc

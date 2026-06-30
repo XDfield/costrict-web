@@ -394,6 +394,7 @@ func main() {
 			authed.PUT("/items/:id", itemHandler.UpdateItem)
 			authed.POST("/items/:id/check-consistency", itemHandler.CheckItemConsistency)
 			authed.POST("/items/:id/fork", itemHandler.ForkItem)
+			authed.DELETE("/items", handlers.BatchDeleteItems)
 			authed.DELETE("/items/:id", handlers.DeleteItem)
 			authed.PUT("/items/:id/move", handlers.MoveItem)
 			authed.PUT("/items/:id/transfer", handlers.TransferItemToRepo)

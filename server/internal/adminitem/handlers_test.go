@@ -2,6 +2,7 @@ package adminitem
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,6 +142,15 @@ func seedItem(t *testing.T, db *gorm.DB, id, name, itemType, status, security, c
 	}
 }
 
+// mustExec runs a raw seed statement and fails the test immediately if it errors,
+// so a failed insert can't let a later COUNT==0 assertion pass for the wrong reason.
+func mustExec(t *testing.T, db *gorm.DB, sql string) {
+	t.Helper()
+	if err := db.Exec(sql).Error; err != nil {
+		t.Fatalf("seed exec failed: %v\nSQL: %s", err, sql)
+	}
+}
+
 func TestService_ListItems_FilterAndPaginate(t *testing.T) {
 	db := setupTestDB(t)
 	seedRepoRegistry(t, db)
@@ -238,12 +248,19 @@ func TestService_DeleteItem(t *testing.T) {
 	seedRepoRegistry(t, db)
 	seedItem(t, db, "i1", "Alpha", "plugin", "active", "clean", "u2", 4.5)
 	// dependent rows + a bundled sub-skill
-	db.Exec(`INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('v1','i1',1,'x','u2')`)
-	db.Exec(`INSERT INTO item_favorites (id, item_id, user_id) VALUES ('f1','i1','u9')`)
-	db.Exec(`INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('b1','i1','view')`)
-	db.Exec(`INSERT INTO capability_items
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('v1','i1',1,'x','u2')`)
+	mustExec(t, db, `INSERT INTO item_favorites (id, item_id, user_id) VALUES ('f1','i1','u9')`)
+	mustExec(t, db, `INSERT INTO behavior_logs (id, item_id, action_type) VALUES ('b1','i1','view')`)
+	mustExec(t, db, `INSERT INTO capability_items
 		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, parent_plugin_id, created_at, updated_at)
 		VALUES ('sub1','reg-1','repo-1','sub-slug','skill','Sub','active','clean','u2','i1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+	// A version owned by the bundled sub-skill, to prove the sub-skill's own
+	// dependents are cleaned when it is hard-deleted (not just the parent's).
+	mustExec(t, db, `INSERT INTO capability_versions (id, item_id, revision, content, created_by) VALUES ('subv1','sub1',1,'x','u2')`)
+	// Another user's fork of the plugin — must SURVIVE the source deletion.
+	mustExec(t, db, `INSERT INTO capability_items
+		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, forked_from_item_id, created_at, updated_at)
+		VALUES ('fork1','reg-1','repo-1','fork-slug','plugin','Forked','active','clean','u7','i1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
 
 	svc := NewService(db)
 	if err := svc.DeleteItem("i1"); err != nil {
@@ -263,11 +280,19 @@ func TestService_DeleteItem(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("favorites not cleaned, count=%d", n)
 	}
-	// Sub-skill soft-archived (still present, status archived).
-	var subStatus string
-	db.Raw(`SELECT status FROM capability_items WHERE id = 'sub1'`).Scan(&subStatus)
-	if subStatus != "archived" {
-		t.Fatalf("expected sub-skill archived, got %q", subStatus)
+	// Sub-skill is now hard-deleted along with the parent (no archived orphan).
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE id = 'sub1'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("expected sub-skill hard-deleted, count=%d", n)
+	}
+	db.Raw(`SELECT COUNT(*) FROM capability_versions WHERE item_id = 'sub1'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("expected sub-skill's own versions cleaned, count=%d", n)
+	}
+	// The fork owned by another user is untouched.
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE id = 'fork1'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("expected fork to survive source deletion, count=%d", n)
 	}
 
 	if err := svc.DeleteItem("missing"); err != ErrItemNotFound {
@@ -381,5 +406,191 @@ func TestHandler_DeleteItem(t *testing.T) {
 	m.DeleteItemHandler()(c)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing item, got %d", rec.Code)
+	}
+}
+
+func TestService_BatchDeleteItems(t *testing.T) {
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "p1", "Plugin One", "plugin", "active", "clean", "u2", 4.0)
+	seedItem(t, db, "s1", "Skill One", "skill", "active", "clean", "u2", 4.0)
+	// p1 has a bundled sub-skill that is removed via p1's cascade.
+	mustExec(t, db, `INSERT INTO capability_items
+		(id, registry_id, repo_id, slug, item_type, name, status, security_status, created_by, parent_plugin_id, created_at, updated_at)
+		VALUES ('sub-a','reg-1','repo-1','sub-a-slug','skill','SubA','active','clean','u2','p1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`)
+
+	svc := NewService(db)
+	// Batch lists p1, its sub-skill sub-a (removed via p1's cascade → skipped),
+	// independent s1, and a ghost id that never existed (→ skipped).
+	deleted, skipped, err := svc.BatchDeleteItems([]string{"p1", "sub-a", "s1", "ghost"})
+	if err != nil {
+		t.Fatalf("batch delete: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("expected 2 deleted (p1,s1), got %v", deleted)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("expected 2 skipped (sub-a,ghost), got %v", skipped)
+	}
+	var n int64
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE id IN ('p1','sub-a','s1')`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("expected all batch targets gone, count=%d", n)
+	}
+}
+
+func TestService_BatchDeleteItems_RollsBackOnError(t *testing.T) {
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "good", "Good", "skill", "active", "clean", "u2", 4.0)
+	seedItem(t, db, "boom", "Boom", "skill", "active", "clean", "u2", 4.0)
+	// Block deleting 'boom' so the whole single-transaction batch must roll back.
+	if err := db.Exec(`CREATE TRIGGER block_boom BEFORE DELETE ON capability_items
+		WHEN OLD.id = 'boom'
+		BEGIN SELECT RAISE(ABORT, 'boom blocked'); END;`).Error; err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	svc := NewService(db)
+	deleted, skipped, err := svc.BatchDeleteItems([]string{"good", "boom"})
+	if err == nil {
+		t.Fatalf("expected error from blocked delete, got nil")
+	}
+	if deleted != nil || skipped != nil {
+		t.Fatalf("expected nil results on rollback, got deleted=%v skipped=%v", deleted, skipped)
+	}
+	// 'good' was deleted earlier in the same transaction but must be restored by
+	// the rollback.
+	var n int64
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE id = 'good'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("expected 'good' to survive rollback, count=%d", n)
+	}
+}
+
+func TestHandler_BatchDeleteItems(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "i1", "Alpha", "skill", "active", "clean", "u2", 4.5)
+	seedItem(t, db, "i2", "Beta", "skill", "active", "clean", "u2", 4.5)
+	m := New(db)
+
+	// happy path: i1 + i2 deleted, ghost skipped.
+	c, rec := newCtx(t, http.MethodPost, "/admin/items/batch-delete", "admin1", `{"ids":["i1","i2","ghost"]}`)
+	m.BatchDeleteItemsHandler()(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Success    bool     `json:"success"`
+		Deleted    int      `json:"deleted"`
+		Skipped    int      `json:"skipped"`
+		SkippedIDs []string `json:"skippedIds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Success || resp.Deleted != 2 || resp.Skipped != 1 {
+		t.Fatalf("expected deleted=2 skipped=1, got %+v", resp)
+	}
+
+	// empty ids → 400
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-delete", "admin1", `{"ids":[]}`)
+	m.BatchDeleteItemsHandler()(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ids, got %d", rec.Code)
+	}
+
+	// over the cap → 400
+	var b strings.Builder
+	b.WriteString(`{"ids":[`)
+	for i := 0; i < maxBatchDelete+1; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `"id-%d"`, i)
+	}
+	b.WriteString(`]}`)
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-delete", "admin1", b.String())
+	m.BatchDeleteItemsHandler()(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for over-cap batch, got %d", rec.Code)
+	}
+
+	// unauthenticated → 401
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-delete", "", `{"ids":["x"]}`)
+	m.BatchDeleteItemsHandler()(c)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestService_BatchSetStatus(t *testing.T) {
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "i1", "Alpha", "skill", "active", "clean", "u1", 4.5)
+	seedItem(t, db, "i2", "Beta", "plugin", "active", "clean", "u2", 4.0)
+
+	svc := NewService(db)
+	updated, skipped, err := svc.BatchSetStatus([]string{"i1", "i2", "ghost"}, StatusArchived)
+	if err != nil {
+		t.Fatalf("batch set status: %v", err)
+	}
+	if len(updated) != 2 || len(skipped) != 1 {
+		t.Fatalf("expected updated=2 skipped=1, got updated=%v skipped=%v", updated, skipped)
+	}
+	var archived int64
+	db.Raw(`SELECT COUNT(*) FROM capability_items WHERE status='archived'`).Scan(&archived)
+	if archived != 2 {
+		t.Fatalf("expected 2 archived, got %d", archived)
+	}
+
+	// invalid status → ErrInvalidStatus, nothing changed
+	if _, _, err := svc.BatchSetStatus([]string{"i1"}, "bogus"); err != ErrInvalidStatus {
+		t.Fatalf("expected ErrInvalidStatus, got %v", err)
+	}
+}
+
+func TestHandler_BatchSetStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	seedRepoRegistry(t, db)
+	seedItem(t, db, "i1", "Alpha", "skill", "active", "clean", "u1", 4.5)
+	m := New(db)
+
+	c, rec := newCtx(t, http.MethodPost, "/admin/items/batch-status", "admin1", `{"ids":["i1","ghost"],"status":"archived"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+		Skipped int `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Updated != 1 || resp.Skipped != 1 {
+		t.Fatalf("expected updated=1 skipped=1, got %+v", resp)
+	}
+	var status string
+	db.Raw(`SELECT status FROM capability_items WHERE id='i1'`).Scan(&status)
+	if status != "archived" {
+		t.Fatalf("expected i1 archived, got %q", status)
+	}
+
+	// invalid status → 400
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-status", "admin1", `{"ids":["i1"],"status":"weird"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad status, got %d", rec.Code)
+	}
+
+	// unauthenticated → 401
+	c, rec = newCtx(t, http.MethodPost, "/admin/items/batch-status", "", `{"ids":["i1"],"status":"active"}`)
+	m.BatchSetStatusHandler()(c)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }

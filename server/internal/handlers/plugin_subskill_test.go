@@ -566,7 +566,7 @@ func TestListItems_ParentPluginIdAndExcludeSubSkills(t *testing.T) {
 	}
 }
 
-func TestDeleteItem_ArchivesSubSkills(t *testing.T) {
+func TestDeleteItem_HardDeletesSubSkills(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 	setMemoryStorageBackend(t)
@@ -580,17 +580,15 @@ func TestDeleteItem_ArchivesSubSkills(t *testing.T) {
 		t.Fatalf("delete plugin: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Plugin gone; sub-skill retained but archived.
+	// Plugin gone; sub-skills hard-deleted along with it (no archived orphan).
 	var plugin models.CapabilityItem
 	if err := database.DB.Where("id = ?", pluginID).First(&plugin).Error; err == nil {
 		t.Fatalf("expected plugin deleted, but it still exists")
 	}
-	var child models.CapabilityItem
-	if err := database.DB.Where("parent_plugin_id = ?", pluginID).First(&child).Error; err != nil {
-		t.Fatalf("expected sub-skill retained after plugin delete: %v", err)
-	}
-	if child.Status != "archived" {
-		t.Fatalf("expected sub-skill archived after plugin delete, got %q", child.Status)
+	var remaining int64
+	database.DB.Model(&models.CapabilityItem{}).Where("parent_plugin_id = ?", pluginID).Count(&remaining)
+	if remaining != 0 {
+		t.Fatalf("expected sub-skills hard-deleted after plugin delete, got %d remaining", remaining)
 	}
 }
 
@@ -666,7 +664,7 @@ func TestUploadPlugin_ReuploadKeepsUpdatedSubSkillBinaryAsset(t *testing.T) {
 	}
 }
 
-func TestUploadPlugin_RecreateReusesArchivedSubSkillSlug(t *testing.T) {
+func TestUploadPlugin_RecreateAfterDeleteCreatesFreshSubSkill(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 	setMemoryStorageBackend(t)
@@ -689,16 +687,19 @@ func TestUploadPlugin_RecreateReusesArchivedSubSkillSlug(t *testing.T) {
 
 	var secondChild models.CapabilityItem
 	if err := database.DB.Where("parent_plugin_id = ? AND source_path = ?", secondPluginID, "skills/alpha/SKILL.md").First(&secondChild).Error; err != nil {
-		t.Fatalf("load reused child: %v", err)
+		t.Fatalf("load recreated child: %v", err)
 	}
-	if secondChild.ID != firstChild.ID {
-		t.Fatalf("expected archived child reused, got new id %s (old %s)", secondChild.ID, firstChild.ID)
+	// Hard delete removed the old child entirely, so a recreate mints a FRESH id
+	// rather than adopting an archived row. The slug stays stable (no leftover
+	// row occupying it) and the new child is active.
+	if secondChild.ID == firstChild.ID {
+		t.Fatalf("expected a fresh sub-skill id after hard delete, but reused %s", firstChild.ID)
 	}
 	if secondChild.Slug != "demo-plugin-alpha" {
 		t.Fatalf("expected stable slug demo-plugin-alpha, got %q", secondChild.Slug)
 	}
 	if secondChild.Status != "active" {
-		t.Fatalf("expected reused child active, got %q", secondChild.Status)
+		t.Fatalf("expected recreated child active, got %q", secondChild.Status)
 	}
 }
 
