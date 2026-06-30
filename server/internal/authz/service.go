@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
@@ -158,6 +159,19 @@ func (s *Service) GetUserPermissions(userID string) (*PermissionResult, error) {
 		}
 	}
 	s.mu.RUnlock()
+
+	// Grant-based kanban menu visibility: the role loop above only surfaces the
+	// kanban entry for admins (its allowed_roles). A non-admin who holds an
+	// explicit kanban scope grant should also see it. Probe outside the registry
+	// lock (it does DB / dept-sync I/O) and degrade on error — a failed probe must
+	// hide the entry, never fail the whole permission snapshot.
+	if !hasAny(menus, []string{KanbanMenuCode}) {
+		if ok, err := s.hasKanbanMenuAccess(userID, expanded); err != nil {
+			logger.Warn("[authz] kanban menu access probe failed (hiding entry): %v", err)
+		} else if ok {
+			menus = append(menus, KanbanMenuCode)
+		}
+	}
 
 	return &PermissionResult{
 		Menus:        menus,
