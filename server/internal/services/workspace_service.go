@@ -181,7 +181,8 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 		return nil, err
 	}
 
-	// 创建工作目录
+	// 创建工作目录，同时保留内存副本用于响应构造
+	workspace.Directories = make([]models.WorkspaceDirectory, 0, len(req.Directories))
 	hasDefault := false
 	for i, dirReq := range req.Directories {
 		directory := &models.WorkspaceDirectory{
@@ -203,6 +204,7 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 			tx.Rollback()
 			return nil, err
 		}
+		workspace.Directories = append(workspace.Directories, *directory)
 	}
 
 	// 如果没有设置默认目录，将第一个设为默认
@@ -213,14 +215,31 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 			tx.Rollback()
 			return nil, err
 		}
+		workspace.Directories[0].IsDefault = true
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
 
-	// 重新加载完整数据
-	return s.GetWorkspace(workspace.ID, userID)
+	// 直接用刚写入的内存数据构造响应，避免事务提交后立即读 DB。
+	// 线上 PG 走主从架构时，复读可能命中尚未同步的副本，导致 not found。
+	// 设备数据不在本事务内写入，允许走副本查询。
+	deviceStatus := ""
+	deviceUniqueID := ""
+	if workspace.DeviceID != "" && s.DeviceService != nil {
+		device, err := s.DeviceService.GetDeviceByID(workspace.DeviceID, userID)
+		if err == nil {
+			deviceStatus = device.Status
+			deviceUniqueID = device.DeviceID
+		}
+	}
+
+	return &WorkspaceWithDeviceStatus{
+		Workspace:      *workspace,
+		DeviceStatus:   deviceStatus,
+		DeviceUniqueID: deviceUniqueID,
+	}, nil
 }
 
 // GetWorkspace 获取工作空间详情
