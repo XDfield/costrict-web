@@ -63,8 +63,17 @@ type ListParams struct {
 	SecurityStatus string // a coarse risk group or an exact security_status value
 	Search         string // LIKE over name/description
 	CreatedBy      string // exact author subject_id
-	Page           int
-	PageSize       int
+	// MissingSecurityEval narrows to items that were NEVER security-evaluated
+	// (security_status = 'unscanned'). Deliberately narrower than the
+	// securityStatusGroups["unknown"] bucket (which also includes pending /
+	// scanning / error / skipped) — "never evaluated" ≠ "evaluation in progress
+	// or errored", so the two are separate filters, not the same constant.
+	MissingSecurityEval bool
+	// MissingScore narrows to items with no positive experience score
+	// (experience_score <= 0): the upstream final_score was absent/zero.
+	MissingScore bool
+	Page         int
+	PageSize     int
 }
 
 // ItemRow is the flat, frontend-facing shape for one content row. It carries the
@@ -72,7 +81,10 @@ type ListParams struct {
 type ItemRow struct {
 	ID              string  `json:"id"`
 	Name            string  `json:"name"`
+	Slug            string  `json:"slug"`
 	ItemType        string  `json:"itemType"`
+	Category        string  `json:"category"`
+	Source          string  `json:"source"`
 	Status          string  `json:"status"`
 	SecurityStatus  string  `json:"securityStatus"`
 	ExperienceScore float64 `json:"experienceScore"`
@@ -96,28 +108,7 @@ func (s *Service) ListItems(p ListParams) ([]ItemRow, int64, error) {
 		pageSize = 20
 	}
 
-	query := s.db.Model(&models.CapabilityItem{})
-	if p.ItemType != "" {
-		query = query.Where("item_type = ?", p.ItemType)
-	}
-	if p.Status != "" {
-		query = query.Where("status = ?", p.Status)
-	}
-	if p.SecurityStatus != "" {
-		statuses := expandSecurityStatus(p.SecurityStatus)
-		query = query.Where("security_status IN ?", statuses)
-	}
-	if p.CreatedBy != "" {
-		query = query.Where("created_by = ?", p.CreatedBy)
-	}
-	if search := strings.TrimSpace(p.Search); search != "" {
-		like := "%" + search + "%"
-		if s.db.Dialector.Name() == "postgres" {
-			query = query.Where("name ILIKE ? OR description ILIKE ?", like, like)
-		} else {
-			query = query.Where("name LIKE ? OR description LIKE ?", like, like)
-		}
-	}
+	query := s.applyListFilters(p)
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -134,14 +125,68 @@ func (s *Service) ListItems(p ListParams) ([]ItemRow, int64, error) {
 		return nil, 0, err
 	}
 
-	repoNames := s.resolveRepoNames(items)
+	return s.toRows(items), total, nil
+}
 
+// ExportRows returns ALL rows matching the filters (no pagination) for CSV
+// export. Shares applyListFilters with ListItems so the export always reflects
+// the exact same filter semantics the console list shows.
+func (s *Service) ExportRows(p ListParams) ([]ItemRow, error) {
+	var items []models.CapabilityItem
+	if err := s.applyListFilters(p).
+		Preload("Registry").
+		Order("updated_at DESC").
+		Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return s.toRows(items), nil
+}
+
+// applyListFilters builds the shared filtered query used by both ListItems and
+// ExportRows. Empty/false fields are ignored; all present filters AND together.
+func (s *Service) applyListFilters(p ListParams) *gorm.DB {
+	query := s.db.Model(&models.CapabilityItem{})
+	if p.ItemType != "" {
+		query = query.Where("item_type = ?", p.ItemType)
+	}
+	if p.Status != "" {
+		query = query.Where("status = ?", p.Status)
+	}
+	if p.SecurityStatus != "" {
+		query = query.Where("security_status IN ?", expandSecurityStatus(p.SecurityStatus))
+	}
+	if p.MissingSecurityEval {
+		query = query.Where("security_status = ?", "unscanned")
+	}
+	if p.MissingScore {
+		query = query.Where("experience_score <= ?", 0)
+	}
+	if p.CreatedBy != "" {
+		query = query.Where("created_by = ?", p.CreatedBy)
+	}
+	if search := strings.TrimSpace(p.Search); search != "" {
+		like := "%" + search + "%"
+		if s.db.Dialector.Name() == "postgres" {
+			query = query.Where("name ILIKE ? OR description ILIKE ?", like, like)
+		} else {
+			query = query.Where("name LIKE ? OR description LIKE ?", like, like)
+		}
+	}
+	return query
+}
+
+// toRows maps loaded items to frontend rows, batch-resolving repo names (no N+1).
+func (s *Service) toRows(items []models.CapabilityItem) []ItemRow {
+	repoNames := s.resolveRepoNames(items)
 	rows := make([]ItemRow, 0, len(items))
 	for _, item := range items {
 		row := ItemRow{
 			ID:              item.ID,
 			Name:            item.Name,
+			Slug:            item.Slug,
 			ItemType:        item.ItemType,
+			Category:        item.Category,
+			Source:          item.Source,
 			Status:          item.Status,
 			SecurityStatus:  item.SecurityStatus,
 			ExperienceScore: item.ExperienceScore,
@@ -155,8 +200,7 @@ func (s *Service) ListItems(p ListParams) ([]ItemRow, int64, error) {
 		}
 		rows = append(rows, row)
 	}
-
-	return rows, total, nil
+	return rows
 }
 
 // resolveRepoNames batch-fetches repository display names for the registries the
