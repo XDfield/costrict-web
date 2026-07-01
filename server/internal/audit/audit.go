@@ -55,6 +55,8 @@ const (
 
 	ActionItemStatusChange = "item.status_change"
 	ActionItemDelete       = "item.delete"
+
+	ActionBundleImport = "item.bundle_import"
 )
 
 // Common target-type constants for the target_type column.
@@ -68,6 +70,7 @@ const (
 	TargetSetting             = "setting"
 	TargetAnnouncement        = "announcement"
 	TargetItem                = "item"
+	TargetImportJob           = "capability_import_job"
 )
 
 // pkgLogger is the process-wide audit logger. nil until Init runs.

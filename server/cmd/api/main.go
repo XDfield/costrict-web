@@ -31,6 +31,7 @@ import (
 	"time"
 
 	_ "github.com/costrict/costrict-web/server/docs"
+	"github.com/costrict/costrict-web/server/internal/adminimport"
 	"github.com/costrict/costrict-web/server/internal/adminitem"
 	"github.com/costrict/costrict-web/server/internal/adminuser"
 	"github.com/costrict/costrict-web/server/internal/audit"
@@ -170,6 +171,21 @@ func main() {
 	handlers.CategorySvc = categorySvc
 	handlers.TagSvc = tagSvc
 	itemHandler := handlers.NewItemHandler(db, parserSvc, categorySvc, tagSvc)
+
+	// Catalog import (admin): reuse the CatalogIngestService the migrate CLI uses,
+	// driven from the admin console. A leader-elected runner executes jobs so only
+	// one replica imports at a time and a restart recovers in-flight work.
+	catalogIngestSvc := &services.CatalogIngestService{
+		DB:             db,
+		Parser:         parserSvc,
+		TagSvc:         tagSvc,
+		CategorySvc:    categorySvc,
+		ScanJobService: scanJobSvc,
+	}
+	adminImportModule := adminimport.New(db, catalogIngestSvc, storageBackend)
+	importRunner := adminImportModule.Runner()
+	// Only the leader replica runs imports, mirroring the scheduler above.
+	go leader.NewElection(db, "costrict-import-runner", 10*time.Second).Run(ctx, importRunner.Start, importRunner.Stop)
 
 	// Initialize search and recommend handlers
 	searchHandler := handlers.NewSearchHandler(searchSvc)
@@ -510,6 +526,9 @@ func main() {
 			// Admin content management (M6, platform admin only): cross-registry
 			// item list, across-author status switch (上下架), and delete.
 			adminitem.New(db).RegisterRoutes(admin)
+
+			// Admin catalog bundle import (platform admin only).
+			adminImportModule.RegisterRoutes(admin)
 
 			kanbanModule := kanban.New()
 			kanbanModule.RegisterRoutes(authed, authzModule.Service)

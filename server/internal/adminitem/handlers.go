@@ -1,6 +1,7 @@
 package adminitem
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,23 @@ import (
 // keeps the cascade's transaction size reasonable. The frontend's "select all
 // matching" path pulls ids in pages and must respect the same ceiling.
 const maxBatchDelete = 200
+
+// csvSafe neutralizes spreadsheet formula injection (CWE-1236): a cell whose
+// first character is =, +, -, @, or a leading tab/CR can be executed as a
+// formula when the CSV is opened in Excel/Sheets. Item name/slug/category/source
+// are (partly) author-controlled — including user-uploaded items surfaced by
+// this cross-author export — so such cells are prefixed with a single quote to
+// force text interpretation.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
 
 func atoiDefault(s string, def int) int {
 	if s == "" {
@@ -53,13 +71,15 @@ func (m *Module) ListItemsHandler() gin.HandlerFunc {
 		pageSize := atoiDefault(c.Query("pageSize"), 20)
 
 		rows, total, err := m.svc.ListItems(ListParams{
-			ItemType:       c.Query("type"),
-			Status:         c.Query("status"),
-			SecurityStatus: c.Query("securityStatus"),
-			Search:         c.Query("search"),
-			CreatedBy:      c.Query("createdBy"),
-			Page:           page,
-			PageSize:       pageSize,
+			ItemType:            c.Query("type"),
+			Status:              c.Query("status"),
+			SecurityStatus:      c.Query("securityStatus"),
+			Search:              c.Query("search"),
+			CreatedBy:           c.Query("createdBy"),
+			MissingSecurityEval: c.Query("missingSecurityEval") == "true",
+			MissingScore:        c.Query("missingScore") == "true",
+			Page:                page,
+			PageSize:            pageSize,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list items"})
@@ -354,5 +374,61 @@ func (m *Module) BatchSetStatusHandler() gin.HandlerFunc {
 			"skipped":    len(skipped),
 			"skippedIds": skipped,
 		})
+	}
+}
+
+// ExportItemsCSVHandler godoc
+//
+//	@Summary		Export items as CSV (admin)
+//	@Description	Stream all items matching the same filters as the list (including missingSecurityEval / missingScore) as a CSV attachment (platform admin only). Not paginated.
+//	@Tags			admin/items
+//	@Produce		text/csv
+//	@Security		BearerAuth
+//	@Param			type				query	string	false	"Exact item type filter"
+//	@Param			status				query	string	false	"Exact status filter"
+//	@Param			securityStatus		query	string	false	"Security risk group or exact value"
+//	@Param			search				query	string	false	"name/description LIKE"
+//	@Param			createdBy			query	string	false	"Exact author subject_id"
+//	@Param			missingSecurityEval	query	bool	false	"Only items never security-evaluated (security_status=unscanned)"
+//	@Param			missingScore		query	bool	false	"Only items with experience_score<=0"
+//	@Success		200	{string}	string	"CSV attachment"
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/admin/items/export.csv [get]
+func (m *Module) ExportItemsCSVHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rows, err := m.svc.ExportRows(ListParams{
+			ItemType:            c.Query("type"),
+			Status:              c.Query("status"),
+			SecurityStatus:      c.Query("securityStatus"),
+			Search:              c.Query("search"),
+			CreatedBy:           c.Query("createdBy"),
+			MissingSecurityEval: c.Query("missingSecurityEval") == "true",
+			MissingScore:        c.Query("missingScore") == "true",
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to export items"})
+			return
+		}
+
+		c.Header("Content-Disposition", "attachment; filename=items-export.csv")
+		c.Header("Content-Type", "text/csv; charset=utf-8")
+		// UTF-8 BOM so Excel renders non-ASCII (Chinese names) correctly.
+		_, _ = c.Writer.Write([]byte{0xEF, 0xBB, 0xBF})
+
+		w := csv.NewWriter(c.Writer)
+		_ = w.Write([]string{"name", "slug", "item_type", "category", "source", "security_status", "experience_score", "created_at"})
+		for _, r := range rows {
+			_ = w.Write([]string{
+				csvSafe(r.Name),
+				csvSafe(r.Slug),
+				r.ItemType,
+				csvSafe(r.Category),
+				csvSafe(r.Source),
+				r.SecurityStatus,
+				strconv.FormatFloat(r.ExperienceScore, 'f', -1, 64),
+				r.CreatedAt,
+			})
+		}
+		w.Flush()
 	}
 }

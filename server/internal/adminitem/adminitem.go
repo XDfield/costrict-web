@@ -27,6 +27,7 @@ func New(db *gorm.DB) *Module {
 // expected to already enforce platform-admin auth (e.g. main.go's /admin group).
 func (m *Module) RegisterRoutes(adminGroup *gin.RouterGroup) {
 	adminGroup.GET("/items", m.ListItemsHandler())
+	adminGroup.GET("/items/export.csv", m.ExportItemsCSVHandler())
 	adminGroup.PUT("/items/:id/status", m.SetItemStatusHandler())
 	adminGroup.POST("/items/batch-delete", m.BatchDeleteItemsHandler())
 	adminGroup.POST("/items/batch-status", m.BatchSetStatusHandler())

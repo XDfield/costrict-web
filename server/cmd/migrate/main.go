@@ -237,6 +237,7 @@ func autoMigrateAll(db *gorm.DB) error {
 		&models.GatewayDeviceBinding{},
 		&models.ServerEpoch{},
 		&models.ChannelReplyContext{},
+		&models.CapabilityImportJob{},
 	)
 }
 
