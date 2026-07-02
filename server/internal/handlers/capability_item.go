@@ -835,6 +835,14 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 		return fmt.Sprintf("%s %s", column, direction)
 	}
 
+	// Count-based columns break ties by experience score so that among items
+	// with the same count the higher-rated ones surface first, then fall back
+	// to recency. Time and score columns keep the plain updated_at tie-breaker.
+	switch column {
+	case "preview_count", "install_count", "favorite_count":
+		return fmt.Sprintf("%s %s, experience_score DESC, updated_at DESC", column, direction)
+	}
+
 	return fmt.Sprintf("%s %s, updated_at DESC", column, direction)
 }
 

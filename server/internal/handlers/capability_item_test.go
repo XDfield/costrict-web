@@ -524,6 +524,45 @@ func TestListAllItems_SortByFavoriteCount_UsesUpdatedAtAsSecondarySort(t *testin
 	}
 }
 
+// When a count column ties, experienceScore breaks the tie ahead of recency:
+// the higher-rated item wins even if its updatedAt is older.
+func TestListAllItems_SortByFavoriteCount_UsesExperienceScoreAsSecondarySort(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-all-sort-secondary-score", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	// Higher score paired with the OLDER updatedAt so a pass proves score (not
+	// recency) drove the ordering.
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-score-high", RegistryID: "reg-all-sort-secondary-score", RepoID: "public", Slug: "score-high", ItemType: "skill",
+		Name: "Score High", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 10,
+		ExperienceScore: 90, CreatedAt: older, UpdatedAt: older,
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-all-score-low", RegistryID: "reg-all-sort-secondary-score", RepoID: "public", Slug: "score-low", ItemType: "skill",
+		Name: "Score Low", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), FavoriteCount: 10,
+		ExperienceScore: 10, CreatedAt: older, UpdatedAt: newer,
+	})
+
+	w := get(newItemRouter(""), "/api/items?sortBy=favoriteCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	first := items[0].(map[string]interface{})
+	if first["id"] != "item-all-score-high" {
+		t.Fatalf("expected higher experienceScore item first when favoriteCount ties, got %v", first["id"])
+	}
+}
+
 func TestListAllItems_TagFilterUsesANDSemantics(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
