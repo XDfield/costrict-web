@@ -572,6 +572,48 @@ func TestListAllItems_TagFilterUsesANDSemantics(t *testing.T) {
 	}
 }
 
+// Name matches must rank ahead of description-only matches (exact > contains >
+// other), overriding the selected column sort within the search result set.
+func TestListAllItems_SearchRanksNameBeforeDescription(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-search-rank", Name: "public", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	// installCount is intentionally inverted vs. desired order so a passing test
+	// proves relevance (not installCount) drove the ordering.
+	for _, item := range []models.CapabilityItem{
+		{ID: "item-name-exact", RegistryID: "reg-search-rank", RepoID: "public", Slug: "name-exact", ItemType: "skill",
+			Name: "Kubernetes", Description: "unrelated blurb", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), InstallCount: 1},
+		{ID: "item-name-contains", RegistryID: "reg-search-rank", RepoID: "public", Slug: "name-contains", ItemType: "skill",
+			Name: "My Kubernetes Tool", Description: "unrelated blurb", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), InstallCount: 50},
+		{ID: "item-desc-only", RegistryID: "reg-search-rank", RepoID: "public", Slug: "desc-only", ItemType: "skill",
+			Name: "Deploy Helper", Description: "works with kubernetes clusters", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), InstallCount: 100},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+	}
+
+	w := get(newItemRouter(""), "/api/items?search=kubernetes&sortBy=installCount&sortOrder=desc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	items := body["items"].([]interface{})
+	if len(items) != 3 {
+		t.Fatalf("expected 3 matching items, got %d", len(items))
+	}
+	wantOrder := []string{"item-name-exact", "item-name-contains", "item-desc-only"}
+	for i, want := range wantOrder {
+		got := items[i].(map[string]interface{})["id"]
+		if got != want {
+			t.Fatalf("position %d: expected %q, got %v (full order proves name-first relevance overrides installCount desc)", i, want, got)
+		}
+	}
+}
+
 func TestListAllItems_FavoritedFilter(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{

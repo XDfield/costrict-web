@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ItemHandler handles item operations
@@ -837,6 +838,29 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 	return fmt.Sprintf("%s %s, updated_at DESC", column, direction)
 }
 
+// applyItemListOrder applies the caller's selected column sort. When a search
+// term is present it prepends a name-first relevance ranking so name matches
+// (exact > prefix > contains) surface ahead of description/tag-only matches;
+// items in the same relevance tier keep the selected column ordering. The
+// relevance expression is parameterized (search value bound via clause.Expr
+// Vars); the column-sort fragment comes from itemListSortOrder's fixed
+// whitelist so concatenating it into the ORDER BY SQL is injection-safe.
+func applyItemListOrder(query *gorm.DB, db *gorm.DB, c *gin.Context) *gorm.DB {
+	colOrder := itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))
+	search := strings.TrimSpace(c.Query("search"))
+	if search == "" {
+		return query.Order(colOrder)
+	}
+	like := database.ILike(db)
+	return query.Order(clause.OrderBy{Expression: clause.Expr{
+		SQL: fmt.Sprintf(
+			"CASE WHEN LOWER(name) = LOWER(?) THEN 0 WHEN name %s ? THEN 1 WHEN name %s ? THEN 2 ELSE 3 END, %s",
+			like, like, colOrder,
+		),
+		Vars: []interface{}{search, search + "%", "%" + search + "%"},
+	}})
+}
+
 func parseTagSlugs(raw string) []string {
 	if raw == "" {
 		return nil
@@ -900,6 +924,8 @@ type itemListFilterOptions struct {
 // applyItemSearchFilter applies a keyword search over name and description. On
 // PostgreSQL it also searches every value of the descriptions jsonb (locale ->
 // localized text) so non-English queries (e.g. Chinese) match the text users see.
+// Tag-scoped filtering is handled separately (explicit tag chips -> applyItemTagsFilter),
+// not folded into free-text search. Name-first ordering is applyItemListOrder.
 func applyItemSearchFilter(query *gorm.DB, db *gorm.DB, search string) *gorm.DB {
 	if search == "" {
 		return query
@@ -1010,7 +1036,7 @@ func ListItems(c *gin.Context) {
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
 
-	result := query.Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
+	result := applyItemListOrder(query, db, c).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})
 		return
@@ -2151,7 +2177,7 @@ func ListAllItems(c *gin.Context) {
 
 	var result *gorm.DB
 	if isFavoritedQuery && !isPaginatedFavorited {
-		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Find(&items)
+		result = applyItemListOrder(query.Preload("Registry"), db, c).Find(&items)
 		total = int64(len(items))
 	} else {
 		// Paginated favorited path: the non-favorited branch counts total above, but
@@ -2161,7 +2187,7 @@ func ListAllItems(c *gin.Context) {
 		if isPaginatedFavorited {
 			query.Model(&models.CapabilityItem{}).Count(&total)
 		}
-		result = query.Preload("Registry").Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
+		result = applyItemListOrder(query.Preload("Registry"), db, c).Limit(pageSize).Offset((page - 1) * pageSize).Find(&items)
 	}
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items"})

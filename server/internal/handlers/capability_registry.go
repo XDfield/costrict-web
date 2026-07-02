@@ -441,7 +441,7 @@ func ListMyItems(c *gin.Context) {
 
 	var items []models.CapabilityItem
 	offset := (page - 1) * pageSize
-	query.Order(itemListSortOrder(c.Query("sortBy"), c.Query("sortOrder"))).Limit(pageSize).Offset(offset).Find(&items)
+	applyItemListOrder(query, db, c).Limit(pageSize).Offset(offset).Find(&items)
 
 	// Supplement registryMap with any registries not yet loaded (e.g. public registry items created by the user)
 	// Batch-fetch all missing registry IDs in a single query to avoid N+1.
