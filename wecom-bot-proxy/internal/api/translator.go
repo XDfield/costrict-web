@@ -144,7 +144,7 @@ func TranslateEventCallback(frame *aibot.WsFrame) (*InboundMsg, error) {
 	case "template_card_event":
 		contentType = "action_callback"
 		content = eventMeta.EventType
-	case "disconnected_event":
+	case "disconnected_event", "enter_chat":
 		return nil, nil
 	}
 

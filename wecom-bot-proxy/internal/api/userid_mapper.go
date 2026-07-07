@@ -41,36 +41,40 @@ func NewUserIDMapper(cfg config.WecomAPIConfig) *UserIDMapper {
 }
 
 // Resolve converts an encrypted open_userid to plaintext userid.
-// Results are cached in memory. If the API call fails, the original
-// open_userid is returned as a fallback and a warning is logged so silent
-// resolution failures (user gets "enabled" but never receives pushes) are
-// visible to operators.
-func (m *UserIDMapper) Resolve(openUserID string) string {
+// Results are cached in memory. Returns:
+//   - (userID, nil) when mapper is disabled (m == nil) or input is empty —
+//     caller should pass the value through unchanged.
+//   - (userID, nil) on successful conversion (also cached).
+//   - (original openUserID, err) when the mapper is configured but conversion
+//     failed (token fetch / API error / not in corp). Caller MUST handle this
+//     — silently forwarding the encrypted open_userid leaks an unresolved
+//     identity downstream and creates spurious sessions.
+func (m *UserIDMapper) Resolve(openUserID string) (string, error) {
 	if m == nil || openUserID == "" {
-		return openUserID
+		return openUserID, nil
 	}
 
 	// Check cache
 	if v, ok := m.cache.Load(openUserID); ok {
-		return v.(string)
+		return v.(string), nil
 	}
 
 	token, err := m.getAccessToken()
 	if err != nil {
 		slog.Warn("open_userid resolution failed: get access token",
 			"openUserID", openUserID, "error", err)
-		return openUserID
+		return openUserID, fmt.Errorf("get access token: %w", err)
 	}
 
 	userID, err := m.convertUserID(token, openUserID)
 	if err != nil {
 		slog.Warn("open_userid resolution failed: convert userid",
 			"openUserID", openUserID, "error", err)
-		return openUserID
+		return openUserID, fmt.Errorf("convert userid: %w", err)
 	}
 
 	m.cache.Store(openUserID, userID)
-	return userID
+	return userID, nil
 }
 
 func (m *UserIDMapper) getAccessToken() (string, error) {

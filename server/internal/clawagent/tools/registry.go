@@ -30,6 +30,23 @@ type Context struct {
 	DB            *gorm.DB
 	DeviceProxy   DeviceProxy
 	MarkProcessed func()
+
+	// DrainSessionPermissions approves every OTHER pending permission in the
+	// same device session as the just-replied one. Used by reply_permission's
+	// enableAutoAccept branch to mirror action_callback.go's auto_approve
+	// drain semantics — without this, the AI path enables autoAccept for
+	// FUTURE permissions but leaves already-pending ones stuck waiting.
+	//
+	// excludePermissionID is the permission just replied (so the drain skips
+	// it; double-replying is a device-side error). Returns the IDs of the
+	// permissions actually drained (excluding excludePermissionID). The
+	// caller is responsible for marking each returned ID resolved in
+	// chat_messages — drain only updates system_notifications + the device
+	// side; without the chat_messages update, the next LLM iteration would
+	// re-read stale EVENT_PENDING rows and try to reply them again.
+	// May be nil when not wired (tests, standalone runs) — callers must
+	// nil-check.
+	DrainSessionPermissions func(ctx context.Context, excludePermissionID string) ([]string, error)
 }
 
 // DeviceProxy is the interface for communicating with device-side services.

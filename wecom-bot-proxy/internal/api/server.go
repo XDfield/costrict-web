@@ -137,11 +137,34 @@ func (p *Proxy) handleInbound(frame *aibot.WsFrame) {
 		}
 	}
 
-	// Resolve encrypted open_userid to plaintext userid
-	originalUserID := inbound.ExternalUserID
+	// Resolve encrypted open_userid to plaintext userid. When the mapper is
+	// configured but conversion fails (IP whitelist, secret, transient WeCom
+	// API error), short-circuit single-chat inbound: send the user a retry
+	// notice and DO NOT forward the encrypted open_userid to the backend.
+	// Forwarding it would miss the idtrust identity lookup (which expects
+	// plaintext) and create a spurious agent session under an unbound identity.
+	// Group chat is intentionally left to fall through — the group-rejection
+	// branch below has its own user-facing message and avoids broadcasting
+	// this notice to the whole group.
 	if p.userIDMap != nil && inbound.ExternalUserID != "" {
-		resolved := p.userIDMap.Resolve(inbound.ExternalUserID)
-		if resolved != inbound.ExternalUserID {
+		originalUserID := inbound.ExternalUserID
+		resolved, err := p.userIDMap.Resolve(originalUserID)
+		if err != nil {
+			p.logger.Warn("open_userid resolution failed, dropping inbound",
+				"openUserID", originalUserID,
+				"chatType", inbound.ExternalChatType,
+				"chatID", inbound.ExternalChatID,
+				"error", err,
+			)
+			if inbound.ExternalChatType != "group" && p.sdk != nil && p.sdk.IsConnected() {
+				notice := "账号身份解析暂时失败，请稍后重试。若反复出现，请联系管理员检查企微可信 IP 与应用 secret 配置。"
+				if _, nerr := p.sdk.SendMarkdown(inbound.ExternalChatID, notice); nerr != nil {
+					p.logger.Warn("failed to send resolution-failure notice", "error", nerr)
+				}
+			}
+			return
+		}
+		if resolved != originalUserID {
 			inbound.ExternalUserID = resolved
 			// For single chat, ExternalChatID was set to the encrypted userID — update it too
 			if inbound.ExternalChatType == "single" {

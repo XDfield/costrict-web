@@ -34,112 +34,116 @@ func NewEventHandler(runtime *ClawAgentRuntime) *EventHandler {
 	return &EventHandler{runtime: runtime}
 }
 
-// SetOnEventProcessed registers a callback invoked when a pending event is processed
-// via tool execution (e.g., permission approved, question answered).
-// This is propagated to the AgentRunner, which triggers it during markEventProcessed.
-func (h *EventHandler) SetOnEventProcessed(f func(sessionID string)) {
+// SetOnEventProcessed registers a callback invoked when a pending event is
+// resolved via tool execution (e.g., permission approved, question answered).
+// The callback receives the agent's userID (NOT a session ID) — the
+// dispatcher keys pending-state backlogs per user so a single reply drains
+// every notification for that user.
+func (h *EventHandler) SetOnEventProcessed(f func(userID string)) {
 	h.runtime.runner.OnEventProcessed = f
 }
 
-// HandleAIEvent processes an event through the AI runtime.
-// When req.Sender is set, the AI response is generated immediately and saved to the session,
-// but the notification to the user is deferred by a configurable delay (AI_NOTIFICATION_DELAY_SECONDS,
-// default 30s). This gives the user processing time and allows event batching.
-// If the user replies before the timer fires, the deferred notification is cancelled.
-func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) error {
-	slog.Info("[event_handler] HandleAIEvent enter",
-		"eventType", req.EventType,
-		"platformUserID", req.UserID,
-		"deviceSessionID", req.SessionID,
-		"deviceID", req.DeviceID,
-		"hasSender", req.Sender != nil,
-	)
+// HandleAIEventBatch processes a batch of events through the AI runtime as a
+// single notification. Used by the dispatcher after debounce coalesces
+// multiple events for the same user into one fire. Writes one EVENT_PENDING
+// row per event (preserving each device session's context), then has the AI
+// RELAY the batch to the user in natural language.
+//
+// The AI on this path gets ONLY query tools (query_session_info,
+// query_recent_messages) — enough to fetch context for an accurate
+// description, but no way to approve/reject/answer. The actual tool-driven
+// decision happens later, on the user→AI path triggered by the user's reply
+// (runtime.Handle → RunEventReply, which arms reply tools and injects the
+// real IDs into the prompt).
+//
+// Splitting the two paths lets each side focus on what it's good at:
+//   - Notification → AI: rich natural-language description, no decision pressure
+//   - User → AI: reply-tool calls driven by explicit user intent
+//
+// The extra system message is NOT persisted — it lives only in this LLM
+// request so subsequent turns don't see stale event prompts.
+func (h *EventHandler) HandleAIEventBatch(ctx context.Context, userID string, inputs []DispatchInput, sender channel.Sender) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	slog.Info("[event_handler] HandleAIEventBatch enter",
+		"userID", userID, "count", len(inputs), "hasSender", sender != nil)
 
-	var chatType string
-	var externalUserID string
-	if req.Sender != nil {
-		rc := req.Sender.ReplyContext()
-		chatType = rc.Target.ExternalChatType
-		externalUserID = rc.Target.ExternalUserID
-		if chatType == "" {
-			chatType = "single"
+	chatType := "single"
+	if sender != nil {
+		rc := sender.ReplyContext()
+		if rc.Target.ExternalChatType != "" {
+			chatType = rc.Target.ExternalChatType
 		}
-		slog.Info("[event_handler] outbound route",
-			"platformUserID", req.UserID,
-			"externalUserID", externalUserID,
-			"chatType", chatType,
-		)
 	}
 
-	eventDesc := h.describeEvent(req)
-
-	message := h.buildPrompt(req, eventDesc)
-
-	// Enrich message with device-side context (session info + recent messages)
-	enriched := h.enrichContext(ctx, req)
-	if enriched != "" {
-		message = enriched + "\n\n" + message
-	}
-	slog.Info("[event_handler] enrichContext result", "sessionID", req.SessionID, "deviceID", req.DeviceID, "path", req.Path, "enriched_len", len(enriched), "enriched_preview", truncateForLog(enriched, 200))
-
-	// Determine session key: use platform userID for single chat to avoid
-	// ExternalChatID mismatch between send (corp userID) and receive (openID).
-	var baseKey string
-	var resetType string
-	if req.Sender != nil {
-		baseKey = fmt.Sprintf("agent:clawagent:%s:%s", chatType, req.UserID)
-		resetType = "direct"
-	} else {
-		baseKey = fmt.Sprintf("agent:clawagent:event:%s:%s", req.EventType, req.SessionID)
-		resetType = "event"
-	}
-
-	slog.Info("[event_handler] session resolve",
-		"platformUserID", req.UserID,
-		"baseKey", baseKey,
-		"resetType", resetType,
-	)
-
-	sessionID, err := h.runtime.resolveActiveSession(req.UserID, baseKey, resetType)
+	// Resolve a single agent session for this user. All events share it —
+	// they're all going to the same user via the same channel.
+	baseKey := fmt.Sprintf("agent:clawagent:%s:%s", chatType, userID)
+	sessionID, err := h.runtime.resolveActiveSession(userID, baseKey, "direct")
 	if err != nil {
 		return fmt.Errorf("resolve event session: %w", err)
 	}
 
-	// Store EventContext in session for tool execution when user replies
-	var ec *EventContext
-	if needsEventProcessing(req.EventType) {
-		ec = buildEventContext(req)
+	// Reconcile stale pending state against device reality before appending
+	// new events. Earlier AI runs that terminated without resolving (relay,
+	// error, etc.) leave EVENT_PENDING rows behind; this marks rows resolved
+	// whose corresponding permission/question is no longer pending on the
+	// device, so the AI's relay reflects only what's actually still open.
+	h.runtime.ReconcilePendingEventsWithDevice(ctx, userID, sessionID)
 
-		// Store in DB for horizontal scaling
-		if err := h.runtime.SessionMeta.SetEventData(ctx, sessionID, ec); err != nil {
-			slog.Error("[event_handler] failed to store event data in DB", "sessionID", sessionID, "error", err)
-		} else {
-			slog.Info("[event_handler] stored event data in DB", "sessionID", sessionID, "eventType", req.EventType)
+	// Write EVENT_PENDING row for each event. Each carries its own device
+	// session ID so the right row gets transitioned to EVENT_RESOLVED when
+	// the user resolves a specific permission/question via tool call (on the
+	// user→AI path).
+	var ecHead *EventContext
+	for _, input := range inputs {
+		if !needsEventProcessing(input.EventType) {
+			continue
 		}
-
-		// Also set in-memory for same-instance fast path
-		h.runtime.runner.SetEventData(sessionID, ec)
-		sess := h.runtime.runner.GetSession(sessionID)
-		if sess != nil {
-			slog.Info("[event_handler] post SetEventData", "sessionID", sessionID, "hasEventData", sess.EventData != nil, "eventType", req.EventType, "deviceSessionID", req.SessionID)
-		} else {
-			slog.Info("[event_handler] post SetEventData: session not found", "sessionID", sessionID)
+		ec := buildEventContext(AIEventRequest{
+			UserID:     userID,
+			EventType:  input.EventType,
+			SessionID:  input.SessionID,
+			DeviceID:   input.DeviceID,
+			Path:       input.Path,
+			ActionData: input.ActionData,
+		})
+		if err := h.runtime.MsgMgr.AppendEventPending(ctx, sessionID, ec); err != nil {
+			slog.Error("[event_handler] AppendEventPending failed",
+				"sessionID", sessionID, "deviceSessionID", input.SessionID, "error", err)
+			continue
+		}
+		if ecHead == nil {
+			ecHead = ec
 		}
 	}
 
-	eventCh, err := h.runtime.runner.Run(ctx, req.UserID, sessionID, message)
-	if err != nil {
-		return fmt.Errorf("AI event run failed: %w", err)
-	}
+	// Compose the extra system message describing the batch (relay-only).
+	// No tool IDs are exposed on this path — the AI is told to translate the
+	// batch to natural language and wait for the user's reply.
+	extraSystem := h.buildBatchExtraSystem(ctx, userID, inputs)
 
-	// Stream the AI response through the sender immediately (no deferred delay).
-	// The deferral happens BEFORE this point (in dispatcher.startDeferredAI timer).
-	// EventContext is already stored in SessionMeta.EventData (DB) and in-memory,
-	// available to tool calls when the user replies — no need to inject XML into
-	// the message content (that would leak raw metadata to the user via the channel).
-	if req.Sender != nil {
-		slog.Info("[event_handler] launching streamResponse", "sessionID", sessionID, "senderType", fmt.Sprintf("%T", req.Sender))
-		go h.runtime.streamResponse(ctx, eventCh, req.Sender, req.UserID, message, sessionID, ec)
+	// User-side placeholder: short, storable, makes history read naturally
+	// in future turns ("AI notified me about N pending tasks"). The full
+	// prompt is in the extra system message, not here.
+	userMessage := fmt.Sprintf("（系统通知：收到 %d 项待处理任务申请。）", len(inputs))
+
+	// Persist the user-side placeholder so it appears in history. RunWithSystem
+	// doesn't append the user message itself; it relies on history already
+	// containing it.
+	h.runtime.runner.AddUserMessage(ctx, sessionID, userMessage)
+
+	// RunEventNotifyRelay gives the AI query-only tools (query_session_info,
+	// query_recent_messages) so it can fetch context to describe the batch
+	// accurately, but no reply tools — it can only relay. When the user
+	// replies, runtime.Handle probes the EVENT_PENDING row and routes
+	// through RunEventReply (full tool set including replies).
+	eventCh := h.runtime.runner.RunEventNotifyRelay(ctx, userID, sessionID, extraSystem, ecHead)
+
+	if sender != nil {
+		slog.Info("[event_handler] launching streamResponse", "sessionID", sessionID, "senderType", fmt.Sprintf("%T", sender))
+		go h.runtime.streamResponse(ctx, eventCh, sender, userID, userMessage, sessionID, ecHead)
 	} else {
 		go func() {
 			for evt := range eventCh {
@@ -149,8 +153,78 @@ func (h *EventHandler) HandleAIEvent(ctx context.Context, req AIEventRequest) er
 			}
 		}()
 	}
-
 	return nil
+}
+
+// DispatchInput is the dispatcher's payload type. Re-declared here so this
+// package doesn't depend on the dispatcher package (which would create an
+// import cycle: dispatcher → clawagent → dispatcher).
+type DispatchInput struct {
+	UserID      string
+	WorkspaceID string
+	EventType   string
+	SessionID   string
+	DeviceID    string
+	Path        string
+	SessionURL  string
+	ActionData  map[string]any
+}
+
+// buildBatchExtraSystem composes the extra system message that drives the
+// notification→AI relay path. The AI is told: relay the batch to the user
+// in natural language with enough detail that the user can decide. The AI
+// has query tools (query_session_info, query_recent_messages) for fetching
+// extra context, but NO reply tools — decisions are made on the user→AI
+// path when the user actually replies.
+//
+// The message lists each event with identity context (device, session,
+// task intent) so the AI can describe each one accurately without
+// hallucinating. Permission/question IDs are intentionally NOT included
+// here — the AI has no reply tools to use them, and they would only
+// confuse the user if echoed. IDs are injected on the user→AI path instead.
+//
+// Enrichment per event is best-effort (device name lookup); missing data is
+// silently skipped.
+func (h *EventHandler) buildBatchExtraSystem(ctx context.Context, userID string, inputs []DispatchInput) string {
+	var b strings.Builder
+	b.WriteString("【系统通知 — 本轮实时数据，权威来源】以下是设备上 ")
+	fmt.Fprintf(&b, "%d", len(inputs))
+	b.WriteString(" 项待处理申请（dispatcher 刚从设备 pending 列表实时拉取，包含命令/路径/数量等真实字段。历史 assistant 消息里的旧转述是之前 batch 的，跟本轮可能完全不同，禁止照抄——以下方实际内容为准）：\n\n")
+	for i, input := range inputs {
+		req := AIEventRequest{
+			UserID:     userID,
+			EventType:  input.EventType,
+			SessionID:  input.SessionID,
+			DeviceID:   input.DeviceID,
+			Path:       input.Path,
+			ActionData: input.ActionData,
+		}
+		desc := h.describeEvent(req)
+		enriched := h.enrichContext(ctx, req)
+		fmt.Fprintf(&b, "%d. ", i+1)
+		if enriched != "" {
+			b.WriteString(enriched)
+			b.WriteString("。")
+		}
+		b.WriteString(desc)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n【你的任务】\n")
+	b.WriteString("你这轮回复的唯一任务是把以上申请**完整、清楚**地转述给用户，让 ta 一眼就能看明白在等什么、需要给什么回应。\n\n")
+
+	b.WriteString("【转述要求】\n")
+	b.WriteString("- **必须说清是什么申请**——绝对不要只写「收到一个新的申请，请回复处理」这种空泛的话；要写明：哪个设备、哪个会话/任务、想做什么动作（命令/文件/访问）、动作的目的（如果上下文能看出来）\n")
+	b.WriteString("- 多项申请用编号或换行逐项列出，每项独立描述，**不要**合并成「N 个申请」一句话\n")
+	b.WriteString("- 问题类申请要把问题原文转述，列出选项（如果有），让用户能直接选\n")
+	b.WriteString("- 高风险动作（rm 删除、覆盖、推送、外发、sudo 等）要明确标注风险，提醒用户谨慎\n")
+	b.WriteString("- 如果觉得上下文还不够（不知道是什么任务、想做的动作目的不明显），**先调用 query_recent_messages 拉一下最近对话**，再转述\n")
+	b.WriteString("- 可以基于上下文给用户一个**提示**（例如「这条看上去是常规的命令，可以考虑允许」），但**最终决定权在用户**——不要替 ta 拍板\n")
+	b.WriteString("- **不要**自己做批准/拒绝/回答的决定——本轮没有 reply_permission / reply_question 工具，决策留到用户回复后再处理\n")
+	b.WriteString("- 不要在转述里出现任何 permissionID / questionID 之类的内部标识\n")
+	b.WriteString("- 转述完就结束回合，等用户回复\n")
+
+	return b.String()
 }
 
 // enrichContext builds a concise task identity for the AI to refer to the task
@@ -213,16 +287,6 @@ func (h *EventHandler) enrichContext(ctx context.Context, req AIEventRequest) st
 			identity += "。"
 		}
 		identity += "最近进展：" + recentTail
-	}
-
-	// Real IDs for tool calls. The AI must use these exact IDs when calling
-	// reply_permission / reply_question — never invent its own. Marked clearly
-	// so the AI doesn't echo them to the user.
-	if ids := extractPendingIDs(req); ids != "" {
-		if identity != "" {
-			identity += "。"
-		}
-		identity += ids
 	}
 
 	slog.Info("[event_handler] enrichContext: done", "sessionID", req.SessionID, "result_len", len(identity), "deviceName", deviceName, "sessionTitle", sessionTitle)
@@ -295,72 +359,6 @@ func messageText(msg map[string]any) string {
 		return text
 	}
 	return ""
-}
-
-// extractPendingIDs pulls the real permission / question IDs from the event's
-// action data and wraps them in a clear instruction: these IDs are for tool
-// calls only, never echo them to the user. This is the single source of truth
-// the AI should use when calling reply_permission / reply_question.
-func extractPendingIDs(req AIEventRequest) string {
-	switch req.EventType {
-	case "permission":
-		if id, ok := req.ActionData["id"].(string); ok && id != "" {
-			return fmt.Sprintf("待回复的权限 ID（调用 reply_permission 时用这个，别自己编，也别告诉用户）：%s", id)
-		}
-	case "permission_batch":
-		perms, _ := req.ActionData["permissions"].([]any)
-		var ids []string
-		for _, p := range perms {
-			if pMap, ok := p.(map[string]any); ok {
-				if id, ok := pMap["id"].(string); ok && id != "" {
-					ids = append(ids, id)
-				}
-			}
-		}
-		if len(ids) > 0 {
-			return fmt.Sprintf("待回复的权限 ID（调用 reply_permission 时逐个用这些真实 ID，别自己编，也别告诉用户）：%s", strings.Join(ids, ", "))
-		}
-	case "question":
-		// Question ID is at top level (data["id"]) from csc, not per-question.
-		// All questions in a single question.asked event share the same request ID.
-		if id, ok := req.ActionData["id"].(string); ok && id != "" {
-			return fmt.Sprintf("待回复的问题 ID（调用 reply_question 时用这个，别自己编，也别告诉用户）：%s", id)
-		}
-		// Fallback: try per-question IDs (used when questions are fetched from API)
-		questions, _ := req.ActionData["questions"].([]any)
-		var ids []string
-		for _, q := range questions {
-			if qMap, ok := q.(map[string]any); ok {
-				if id, ok := qMap["id"].(string); ok && id != "" {
-					ids = append(ids, id)
-				}
-			}
-		}
-		if len(ids) > 0 {
-			return fmt.Sprintf("待回复的问题 ID（调用 reply_question 时用这些真实 ID，别自己编，也别告诉用户）：%s", strings.Join(ids, ", "))
-		}
-	}
-	return ""
-}
-
-// buildPrompt generates the AI prompt tailored to the event type.
-func (h *EventHandler) buildPrompt(req AIEventRequest, eventDesc string) string {
-	if req.EventType == "question" {
-		return fmt.Sprintf(`设备上的任务向你提了个问题，需要你帮忙回答：%s
-
-你是用户的秘书，负责帮用户处理设备端任务提出的问题。请根据问题内容和选项：
-- 如果有选项，分析各选项含义，结合上下文给用户推荐一个合适的选项，然后问用户确认
-- 如果是开放性问题，把问题转述给用户，让用户给出回答
-- 如果上面给了来源信息（设备名、会话名、任务意图），说话时用这些来指代任务，比如「dev-laptop 上 cs-cloud 重构那个任务在问…」
-- 记住你是转述和辅助，不是你自己在执行任务
-
-【重要】这是一次通知，你没有任何工具可调用。绝对不要输出 <tool_call>、reply_question 之类的标签或函数名——这条消息会直接显示给用户，输出工具调用语法只会让用户看到一堆乱码。先用自然语言把情况和你的建议说出来，等用户回复后再处理。`, eventDesc)
-	}
-
-	return fmt.Sprintf(`设备上跑的任务发起了个申请：%s
-你是用户的秘书，转告用户是哪个任务要做什么、为什么，然后问ta批不批。如果上面给了来源信息（设备名、会话名、任务意图），说话时用这些来指代任务，比如「dev-laptop 上 cs-cloud 重构那个任务要…」。记住你是转述，不是你自己在执行。
-
-【重要】这是一次通知，你没有任何工具可调用。绝对不要输出 <tool_call>、reply_permission 之类的标签或函数名——这条消息会直接显示给用户，输出工具调用语法只会让用户看到一堆乱码。即使用户以前说过「自动同意」，这次也先用自然语言把申请讲清楚、让用户确认；等用户回复 yes/no 之后再走工具流程。上面给出的权限 ID 是给你参考的，不要在消息里复述，也不要尝试调用工具去操作它们。`, eventDesc)
 }
 
 // describeEvent generates a natural language description of the event.
@@ -518,21 +516,6 @@ func (h *EventHandler) describeQuestion(req AIEventRequest) string {
 	return "设备有个问题想问你"
 }
 
-// EventForwarder forwards events from the dispatcher to the AI runtime.
-type EventForwarder struct {
-	eventHandler *EventHandler
-}
-
-// NewEventForwarder creates a new EventForwarder.
-func NewEventForwarder(eventHandler *EventHandler) *EventForwarder {
-	return &EventForwarder{eventHandler: eventHandler}
-}
-
-// ShouldUseAIInteraction checks whether AI interaction should be used for this event.
-func (f *EventForwarder) ShouldUseAIInteraction(userID string, eventType string) bool {
-	return eventType == "permission" || eventType == "permission_batch" || eventType == "question"
-}
-
 // needsEventProcessing checks if the event type requires tool-based processing.
 func needsEventProcessing(eventType string) bool {
 	return eventType == "permission" || eventType == "permission_batch" || eventType == "question"
@@ -626,23 +609,5 @@ func truncateForLog(s string, max int) string {
 	return string([]rune(s)[:max]) + "..."
 }
 
-// EventForwarder forwards events from the dispatcher to the AI runtime.
-
-func (f *EventForwarder) ForwardToAI(ctx context.Context, input struct {
-	UserID    string
-	EventType string
-	SessionID string
-	DeviceID  string
-	Path      string
-	Data      map[string]any
-}) error {
-	req := AIEventRequest{
-		UserID:     input.UserID,
-		EventType:  input.EventType,
-		SessionID:  input.SessionID,
-		DeviceID:   input.DeviceID,
-		ActionData: input.Data,
-		Path:       input.Path,
-	}
-	return f.eventHandler.HandleAIEvent(ctx, req)
-}
+// EventForwarder (removed): the dispatcher now calls EventHandler.HandleAIEventBatch
+// directly via the AIEventHandler callback wired in main.go.

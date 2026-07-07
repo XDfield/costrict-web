@@ -12,13 +12,18 @@ import (
 
 // SessionMessage represents a single message in a conversation session, persisted in DB.
 type SessionMessage struct {
-	ID         uint      `gorm:"primaryKey;autoIncrement"`
-	SessionID  string    `gorm:"size:255;not null;index:idx_sm_session;index:idx_sm_session_created,priority:1"`
-	Role       string    `gorm:"size:20;not null"`
-	Content    string    `gorm:"type:text"`
-	ToolCallID string    `gorm:"size:255"`
-	ToolCalls  string    `gorm:"type:text"` // JSON-serialized []ToolCall
-	CreatedAt  time.Time `gorm:"autoCreateTime;index:idx_sm_session_created,priority:2"`
+	ID         uint   `gorm:"primaryKey;autoIncrement"`
+	SessionID  string `gorm:"size:255;not null;index:idx_sm_session;index:idx_sm_session_created,priority:1"`
+	Role       string `gorm:"size:20;not null"`
+	Content    string `gorm:"type:text"`
+	ToolCallID string `gorm:"size:255"`
+	ToolCalls  string `gorm:"type:text"` // JSON-serialized []ToolCall
+	// Kind identifies special system rows. Empty for normal user/assistant/tool
+	// messages; "event_pending" / "event_resolved" for event lifecycle markers.
+	Kind string `gorm:"size:32;default:''"`
+	// Metadata carries event JSON for event-kind rows. Empty for normal rows.
+	Metadata  string    `gorm:"type:text"`
+	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_sm_session_created,priority:2"`
 }
 
 func (SessionMessage) TableName() string {

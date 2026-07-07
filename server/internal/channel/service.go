@@ -191,7 +191,8 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		}
 	}
 	// wecom-bot: auto-create system-level config if nothing was found, so the
-	// handler still runs and the response can carry resolveErr / welcome.
+	// response can carry resolveErr / welcome. The handler is intentionally
+	// NOT invoked when resolveErr is set (see skip below).
 	if len(configs) == 0 && channelType == "wecom-bot" && s.weComBotEnabled {
 		sysCfg := models.ChannelConfig{
 			ChannelType: "wecom-bot",
@@ -238,29 +239,36 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 		}
 	}
 
-	for _, cfg := range configs {
-		rc := ReplyContext{
-			ChannelConfigID: cfg.ID,
-			ChannelType:     cfg.ChannelType,
-			UserID:          resolvedUserID,
-			Target: ReplyTarget{
-				ExternalChatID: msg.ExternalChatID,
-				ExternalUserID: msg.ExternalUserID,
-			},
-			Metadata: msg.Metadata,
-		}
-		s.sessionStore.Record(rc)
+	// Skip handler invocation when identity resolution failed — the wecom-bot
+	// response below carries resolveErr and the proxy will surface it to the
+	// user. Running the handler on an unresolved identity creates a spurious
+	// agent session under an unbound user_id and produces an out-of-context
+	// AI reply alongside the error notice (the "dual reply" bug).
+	if resolveErr == "" {
+		for _, cfg := range configs {
+			rc := ReplyContext{
+				ChannelConfigID: cfg.ID,
+				ChannelType:     cfg.ChannelType,
+				UserID:          resolvedUserID,
+				Target: ReplyTarget{
+					ExternalChatID: msg.ExternalChatID,
+					ExternalUserID: msg.ExternalUserID,
+				},
+				Metadata: msg.Metadata,
+			}
+			s.sessionStore.Record(rc)
 
-		sender := NewAdapterSender(adapter, json.RawMessage(cfg.Config), rc)
-		if err := s.messageHandler.Handle(r.Context(), msg, sender); err != nil {
-			log.Printf("ChannelService: message handler error: %v", err)
-		}
+			sender := NewAdapterSender(adapter, json.RawMessage(cfg.Config), rc)
+			if err := s.messageHandler.Handle(r.Context(), msg, sender); err != nil {
+				log.Printf("ChannelService: message handler error: %v", err)
+			}
 
-		now := time.Now()
-		s.db.Model(&cfg).Updates(map[string]any{
-			"last_active_at": now,
-			"last_error":     "",
-		})
+			now := time.Now()
+			s.db.Model(&cfg).Updates(map[string]any{
+				"last_active_at": now,
+				"last_error":     "",
+			})
+		}
 	}
 
 	if channelType == "wecom-bot" {

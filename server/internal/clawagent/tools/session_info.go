@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // SessionInfoTool lets the AI query session/conversation metadata from the device.
@@ -141,24 +142,194 @@ func formatRecentMessages(messages []map[string]any, limit int) string {
 
 	result := fmt.Sprintf("最近 %d 条消息:\n", len(recent))
 	for i, msg := range recent {
-		role, _ := msg["role"].(string)
-		if role == "" {
-			role = "unknown"
-		}
-
-		content, _ := msg["content"].(string)
-		if content == "" {
-			if text, ok := msg["text"].(string); ok {
-				content = text
-			}
-		}
+		role := extractMessageRole(msg)
+		content := extractMessageText(msg)
 
 		if len([]rune(content)) > 200 {
 			content = string([]rune(content)[:200]) + "..."
+		}
+
+		if role == "" || content == "" {
+			slog.Debug("[tool] query_recent_messages: incomplete message",
+				"index", i+1, "role", role, "contentLen", len(content),
+				"keys", formatMapKeys(msg))
+		}
+
+		if role == "" {
+			role = "unknown"
+		}
+		if content == "" {
+			content = "(无文本内容)"
 		}
 
 		result += fmt.Sprintf("[%d] %s: %s\n", i+1, role, content)
 	}
 
 	return result
+}
+
+// extractMessageRole pulls the role out of a device message.
+// opencode v2 messages endpoint returns items of shape {info: Message, parts: Part[]},
+// where Message has top-level `role` ("user"|"assistant"). Legacy/simple shapes
+// keep role at the message top-level too, so we try direct first, then info.role.
+func extractMessageRole(msg map[string]any) string {
+	if role, ok := msg["role"].(string); ok && role != "" {
+		return role
+	}
+	if info, ok := msg["info"].(map[string]any); ok {
+		if role, ok := info["role"].(string); ok && role != "" {
+			return role
+		}
+	}
+	// Some shapeshifted variants nest role under author/sender.
+	for _, key := range []string{"author", "sender", "from"} {
+		if v, ok := msg[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// extractMessageText pulls human-readable text out of a device message.
+// opencode v2 message shape: {info: Message, parts: Part[]} where Part has
+// discriminated `type` field. We surface text parts plus brief markers for
+// other part kinds so the AI sees what the assistant was doing (tool calls,
+// reasoning, file edits) even on messages with no plain text.
+func extractMessageText(msg map[string]any) string {
+	partsAny, hasParts := msg["parts"].([]any)
+	if hasParts {
+		var b strings.Builder
+		for _, p := range partsAny {
+			pMap, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, marker := extractPartText(pMap)
+			if text == "" && marker == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString(" ")
+			}
+			if text != "" {
+				b.WriteString(text)
+			} else {
+				b.WriteString(marker)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+
+	// info.content (some adapters nest the simple shape under info).
+	if info, ok := msg["info"].(map[string]any); ok {
+		if s := topLevelString(info, "content", "text"); s != "" {
+			return s
+		}
+	}
+
+	// Top-level string content (simple shape).
+	if s := topLevelString(msg, "content", "text"); s != "" {
+		return s
+	}
+
+	// content as array of parts (some adapters).
+	if contentArr, ok := msg["content"].([]any); ok {
+		var b strings.Builder
+		for _, c := range contentArr {
+			cMap, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := cMap["text"].(string); ok && text != "" {
+				if b.Len() > 0 {
+					b.WriteString(" ")
+				}
+				b.WriteString(text)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+
+	return ""
+}
+
+// extractPartText handles opencode v2 Part variants. Returns (text, marker);
+// text is real content (for TextPart), marker is a placeholder for non-text
+// parts (tool calls, reasoning, etc.) so the AI sees the message shape.
+func extractPartText(part map[string]any) (text string, marker string) {
+	pType, _ := part["type"].(string)
+	switch pType {
+	case "text":
+		// Skip synthetic/ignored text parts — they're auto-generated metadata,
+		// not real user input or assistant output.
+		if syn, _ := part["synthetic"].(bool); syn {
+			return "", ""
+		}
+		if ign, _ := part["ignored"].(bool); ign {
+			return "", ""
+		}
+		if t, ok := part["text"].(string); ok && t != "" {
+			return t, ""
+		}
+	case "tool":
+		tool, _ := part["tool"].(string)
+		state, _ := part["state"].(map[string]any)
+		status, _ := state["status"].(string)
+		if tool != "" {
+			return "", fmt.Sprintf("[调用工具 %s, 状态:%s]", tool, status)
+		}
+	case "reasoning":
+		return "", "[推理过程]"
+	case "step-start":
+		return "", "[开始步骤]"
+	case "step-finish":
+		return "", "[结束步骤]"
+	case "file":
+		path, _ := part["path"].(string)
+		if path != "" {
+			return "", fmt.Sprintf("[文件:%s]", path)
+		}
+		return "", "[文件附件]"
+	case "patch":
+		path, _ := part["path"].(string)
+		if path != "" {
+			return "", fmt.Sprintf("[编辑:%s]", path)
+		}
+		return "", "[代码补丁]"
+	case "snapshot":
+		return "", "[快照]"
+	case "subtask":
+		agent, _ := part["agent"].(string)
+		desc, _ := part["description"].(string)
+		return "", fmt.Sprintf("[子任务→%s: %s]", agent, desc)
+	case "agent":
+		agent, _ := part["agent"].(string)
+		return "", fmt.Sprintf("[切换Agent:%s]", agent)
+	case "retry":
+		return "", "[重试]"
+	case "compaction":
+		return "", "[上下文压缩]"
+	}
+	return "", ""
+}
+
+func topLevelString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func formatMapKeys(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return fmt.Sprintf("%v", keys)
 }

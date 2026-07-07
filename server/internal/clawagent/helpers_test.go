@@ -88,6 +88,20 @@ func createTestTables(db *gorm.DB) error {
 			archived_at DATETIME,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE agent_session_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			content TEXT DEFAULT '',
+			tool_call_id TEXT DEFAULT '',
+			tool_calls TEXT DEFAULT '',
+			kind TEXT NOT NULL DEFAULT '',
+			metadata TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX idx_sm_session ON agent_session_messages (session_id)`,
+		`CREATE INDEX idx_sm_session_created ON agent_session_messages (session_id, created_at)`,
+		`CREATE INDEX idx_sm_kind ON agent_session_messages (session_id, kind)`,
 	}
 
 	for _, stmt := range statements {

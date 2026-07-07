@@ -16,6 +16,15 @@ type LLMClient struct {
 	httpClient *http.Client
 }
 
+// llmGenerator is the contract used by AgentRunner to talk to an LLM backend.
+// Defined as an interface so unit tests can swap in a mock without touching
+// real HTTP. *LLMClient satisfies it; production code uses the concrete type.
+type llmGenerator interface {
+	Generate(ctx context.Context, cfg ProviderConfig, messages []ChatMessage) (*ChatCompletionResponse, error)
+	GenerateStream(ctx context.Context, cfg ProviderConfig, messages []ChatMessage) (<-chan StreamEvent, <-chan error)
+	GenerateWithTools(ctx context.Context, cfg ProviderConfig, messages []ChatMessage, tools []ToolDefinition) (*ChatCompletionResponse, error)
+}
+
 // ChatMessage represents a message in the chat completion request.
 type ChatMessage struct {
 	Role       string     `json:"role"`

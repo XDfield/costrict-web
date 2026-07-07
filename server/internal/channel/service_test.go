@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -252,10 +253,10 @@ func TestHandleWebhook_WecomBot_DifferentUsersIsolated(t *testing.T) {
 	}
 }
 
-func TestHandleWebhook_WecomBot_NoIdentity_FallsBackToEmpty(t *testing.T) {
+func TestHandleWebhook_WecomBot_NoIdentity_SkipsHandler(t *testing.T) {
 	db := setupServiceTestDB(t)
 
-	// No identity inserted — resolution should fail gracefully
+	// No identity inserted — resolution should fail gracefully.
 	sysCfg := models.ChannelConfig{
 		ID:          "cfg-wecom-bot-3",
 		ChannelType: "wecom-bot",
@@ -284,17 +285,21 @@ func TestHandleWebhook_WecomBot_NoIdentity_FallsBackToEmpty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/channels/wecom-bot", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	_, _, err := svc.HandleWebhook("wecom-bot", req)
+	respBody, _, err := svc.HandleWebhook("wecom-bot", req)
 	if err != nil {
 		t.Fatalf("HandleWebhook should not return error: %v", err)
 	}
 
-	if handler.lastRC == nil {
-		t.Fatal("message handler was not invoked")
+	// Handler MUST NOT be invoked when identity resolution failed — otherwise
+	// an unresolved identity would create a spurious agent session and produce
+	// a confusing second reply alongside the error notice.
+	if handler.lastRC != nil {
+		t.Fatalf("message handler should not be invoked on unresolved identity; got UserID=%q", handler.lastRC.UserID)
 	}
-	// UserID should be empty (graceful fallback), not crash
-	if handler.lastRC.UserID != "" {
-		t.Errorf("ReplyContext.UserID = %q, want empty (unresolved)", handler.lastRC.UserID)
+
+	// Response body should carry resolveErr so the proxy can surface it.
+	if !strings.Contains(respBody, "未找到企微账号绑定信息") {
+		t.Errorf("response body should carry resolveErr; got %q", respBody)
 	}
 }
 
