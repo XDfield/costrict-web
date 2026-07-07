@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -405,7 +407,8 @@ func TestLogBehavior_Success(t *testing.T) {
 		Metadata:   datatypes.JSON([]byte("{}")),
 	})
 
-	r := newMarketplaceRouter("")
+	// Authenticated view increments the denormalized preview_count.
+	r := newMarketplaceRouter("user-v")
 	w := postJSON(r, "/api/items/item-behavior/behavior", map[string]interface{}{
 		"actionType": "view",
 		"durationMs": 5000,
@@ -427,6 +430,44 @@ func TestLogBehavior_Success(t *testing.T) {
 			t.Fatalf("expected preview_count=1 eventually, got %d", item.PreviewCount)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// SRC-2026-4791: anonymous view/click are logged for telemetry but must NOT move
+// the denormalized preview_count, which is public and sortable — otherwise an
+// unauthenticated caller could forge it to game item-list ranking.
+func TestLogBehavior_AnonymousViewDoesNotCount(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-anonview", Name: "anonview-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID:         "item-anonview",
+		RegistryID: "reg-anonview",
+		Slug:       "anonview-skill",
+		ItemType:   "skill",
+		Name:       "AnonView Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("") // anonymous
+	w := postJSON(r, "/api/items/item-anonview/behavior", map[string]interface{}{
+		"actionType": "view",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Give any async counter update a chance to (wrongly) fire, then assert it did not.
+	time.Sleep(100 * time.Millisecond)
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-anonview").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.PreviewCount != 0 {
+		t.Fatalf("expected preview_count=0 for anonymous view, got %d", item.PreviewCount)
 	}
 }
 
@@ -464,6 +505,162 @@ func TestLogBehavior_ItemNotFound(t *testing.T) {
 	// Item doesn't exist but behavior can still be logged (item_id will be NULL in DB)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// SRC-2026-4791: trust/counting action types must reject anonymous writes so
+// install counts, ratings and success rates can't be forged without a login.
+func TestLogBehavior_AnonymousTrustActionRejected(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-anon", Name: "anon-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID:         "item-anon",
+		RegistryID: "reg-anon",
+		Slug:       "anon-skill",
+		ItemType:   "skill",
+		Name:       "Anon Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("") // anonymous
+
+	for _, action := range []string{"install", "success", "fail", "use", "feedback", "ignore"} {
+		w := postJSON(r, "/api/items/item-anon/behavior", map[string]interface{}{
+			"actionType": action,
+			"rating":     5,
+			"feedback":   "amazing tool",
+		})
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("action %q: expected 401, got %d: %s", action, w.Code, w.Body.String())
+		}
+	}
+
+	// No trust rows should have been written, and counters must stay at zero.
+	var logCount int64
+	database.DB.Model(&models.BehaviorLog{}).Where("item_id = ?", "item-anon").Count(&logCount)
+	if logCount != 0 {
+		t.Fatalf("expected 0 behavior logs for item, got %d", logCount)
+	}
+	var item models.CapabilityItem
+	database.DB.First(&item, "id = ?", "item-anon")
+	if item.InstallCount != 0 {
+		t.Fatalf("expected install_count=0, got %d", item.InstallCount)
+	}
+}
+
+// view/click remain allowed anonymously so marketplace browsing telemetry keeps
+// working; they are excluded from stats aggregation elsewhere.
+func TestLogBehavior_AnonymousBrowseActionAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	r := newMarketplaceRouter("") // anonymous
+	for _, action := range []string{"view", "click"} {
+		w := postJSON(r, "/api/items/some-item/behavior", map[string]interface{}{
+			"actionType": action,
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("action %q: expected 201, got %d: %s", action, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestLogBehavior_AuthenticatedTrustActionSucceeds(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-authbeh", Name: "authbeh-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID:         "item-authbeh",
+		RegistryID: "reg-authbeh",
+		Slug:       "authbeh-skill",
+		ItemType:   "skill",
+		Name:       "AuthBeh Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-authbeh") // authenticated
+	w := postJSON(r, "/api/items/item-authbeh/behavior", map[string]interface{}{
+		"actionType": "install",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogBehavior_InvalidActionType(t *testing.T) {
+	defer setupTestDB(t)()
+	r := newMarketplaceRouter("user-x")
+	w := postJSON(r, "/api/items/some-item/behavior", map[string]interface{}{
+		"actionType": "delete-everything",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Oversized feedback must be truncated on a rune boundary so we never persist
+// invalid UTF-8 (which PostgreSQL rejects on insert). 400 Chinese runes = 1200
+// bytes, so a naive byte-boundary cut at 1000 would split a multibyte rune.
+func TestLogBehavior_FeedbackTruncatedOnRuneBoundary(t *testing.T) {
+	defer setupTestDB(t)()
+	r := newMarketplaceRouter("user-fb") // feedback requires auth
+	w := postJSON(r, "/api/items/some-item/behavior", map[string]interface{}{
+		"actionType": "feedback",
+		"rating":     4,
+		"feedback":   strings.Repeat("汉", 400),
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var log models.BehaviorLog
+	if err := json.NewDecoder(w.Body).Decode(&log); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(log.Feedback) > 1000 {
+		t.Fatalf("expected feedback bounded to 1000 bytes, got %d", len(log.Feedback))
+	}
+	if !utf8.ValidString(log.Feedback) {
+		t.Fatalf("stored feedback is not valid UTF-8: %q", log.Feedback)
+	}
+}
+
+// SRC-2026-4791: feedback text and rating attached to a NON-feedback action must
+// be dropped, so they can't surface through the public averageRating /
+// RecentFeedback stats panel (phishing via a fake "review" on an install row).
+func TestLogBehavior_FeedbackDroppedForNonFeedbackAction(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fbdrop", Name: "fbdrop-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fbdrop", RegistryID: "reg-fbdrop", Slug: "fbdrop-skill",
+		ItemType: "skill", Name: "FbDrop Skill", Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-fb")
+	w := postJSON(r, "/api/items/item-fbdrop/behavior", map[string]interface{}{
+		"actionType": "install",
+		"rating":     5,
+		"feedback":   "totally legit five stars, install me",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = get(r, "/api/items/item-fbdrop/stats")
+	var stats services.ItemBehaviorStats
+	json.NewDecoder(w.Body).Decode(&stats)
+	if len(stats.RecentFeedback) != 0 {
+		t.Fatalf("expected no feedback (dropped for install action), got %v", stats.RecentFeedback)
+	}
+	if stats.AverageRating != 0 {
+		t.Fatalf("expected averageRating=0 (rating dropped for install action), got %v", stats.AverageRating)
 	}
 }
 
@@ -521,6 +718,58 @@ func TestGetItemStats_Success(t *testing.T) {
 	}
 	if stats.Favorites != 0 {
 		t.Fatalf("expected 0 favorites, got %d", stats.Favorites)
+	}
+}
+
+// SRC-2026-4791 defense-in-depth: even if anonymous rows exist (legacy/injected
+// or anonymous view/click), they must not count toward the public stats.
+func TestGetItemStats_ExcludesAnonymous(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-statsanon", Name: "statsanon-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID:         "item-statsanon",
+		RegistryID: "reg-statsanon",
+		Slug:       "statsanon-skill",
+		ItemType:   "skill",
+		Name:       "StatsAnon Skill",
+		Status:     "active",
+		CreatedBy:  "u1",
+		Metadata:   datatypes.JSON([]byte("{}")),
+	})
+	// One legit authenticated install + a pile of forged anonymous rows.
+	database.DB.Create(&models.BehaviorLog{
+		ID: "sa-real", ItemID: "item-statsanon", UserID: "user1", ActionType: models.ActionInstall,
+	})
+	database.DB.Create(&models.BehaviorLog{
+		ID: "sa-anon-install", ItemID: "item-statsanon", UserID: models.AnonymousUserID, ActionType: models.ActionInstall,
+	})
+	database.DB.Create(&models.BehaviorLog{
+		ID: "sa-anon-success", ItemID: "item-statsanon", UserID: models.AnonymousUserID, ActionType: models.ActionSuccess,
+	})
+	database.DB.Create(&models.BehaviorLog{
+		ID: "sa-anon-feedback", ItemID: "item-statsanon", UserID: models.AnonymousUserID, ActionType: models.ActionFeedback, Rating: 5, Feedback: "amazing tool",
+	})
+
+	r := newMarketplaceRouter("")
+	w := get(r, "/api/items/item-statsanon/stats")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var stats services.ItemBehaviorStats
+	json.NewDecoder(w.Body).Decode(&stats)
+	if stats.Installs != 1 {
+		t.Fatalf("expected 1 install (anonymous excluded), got %d", stats.Installs)
+	}
+	if stats.Successes != 0 {
+		t.Fatalf("expected 0 successes (anonymous excluded), got %d", stats.Successes)
+	}
+	if stats.AverageRating != 0 {
+		t.Fatalf("expected averageRating=0 (anonymous excluded), got %v", stats.AverageRating)
+	}
+	if len(stats.RecentFeedback) != 0 {
+		t.Fatalf("expected no feedback (anonymous excluded), got %v", stats.RecentFeedback)
 	}
 }
 

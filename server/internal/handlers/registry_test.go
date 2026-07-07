@@ -34,6 +34,21 @@ func setupTestDB(t *testing.T) func() {
 		t.Fatalf("failed to open test db: %v", err)
 	}
 
+	// mattn/go-sqlite3 gives every pooled connection its OWN private :memory:
+	// database, so a write on one connection is invisible on another. The
+	// DownloadItem/LogBehavior counter update runs in a background goroutine, and
+	// under whole-suite concurrency the pool can grow past one connection, landing
+	// the async install_count/preview_count UPDATE on a different memory DB than
+	// the test polls — intermittently failing (e.g.
+	// TestDownloadItem_AuthenticatedIncrementsInstallCount). Pin the pool to a
+	// single connection so all reads/writes share one in-memory DB. This matches
+	// every other in-memory test suite in the repo (settings, authz, adminitem…).
+	if sqlDB, derr := db.DB(); derr == nil {
+		sqlDB.SetMaxOpenConns(1)
+	} else {
+		t.Fatalf("failed to access sql.DB: %v", derr)
+	}
+
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS repositories (
 			id          TEXT PRIMARY KEY,
@@ -1217,14 +1232,67 @@ func TestDownloadItem_PublicItem(t *testing.T) {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// SRC-2026-4791: an anonymous download must NOT inflate install_count — that
+	// public counter drives trending/popularity ranking, so counting anonymous
+	// downloads would reopen the ranking-manipulation vector via a public endpoint.
+	//
+	// DownloadItem records the behavior asynchronously (a background goroutine
+	// runs LogBehavior, which inserts the log row and THEN calls updateItemStats).
+	// Rather than sleep a fixed interval and hope the goroutine finished, wait
+	// until the download has been logged — that deterministically proves the
+	// counter-updating code has already run — and only then assert install_count
+	// is still 0. This reliably catches a regression that re-enables anonymous
+	// counting instead of racing it.
+	deadline := time.Now().Add(2 * time.Second)
 	for {
-		var item models.CapabilityItem
-		if err := database.DB.First(&item, "id = ?", "item-byid").Error; err == nil && item.InstallCount == 1 {
+		var logged int64
+		database.DB.Model(&models.BehaviorLog{}).
+			Where("item_id = ? AND action_type = ?", "item-byid", string(models.ActionInstall)).
+			Count(&logged)
+		if logged >= 1 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("expected install_count to be incremented after download")
+			t.Fatal("expected the anonymous download to be logged asynchronously")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-byid").Error; err != nil {
+		t.Fatalf("failed to load item: %v", err)
+	}
+	if item.InstallCount != 0 {
+		t.Fatalf("expected install_count=0 for anonymous download, got %d", item.InstallCount)
+	}
+}
+
+func TestDownloadItem_AuthenticatedIncrementsInstallCount(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-byid-auth", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "my-skill", ItemType: "skill",
+		Name: "My Skill", Status: "active", CreatedBy: "system",
+		Content: "# My Skill", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	w := get(newRouter("u1"), "/api/items/item-byid-auth/download")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var item models.CapabilityItem
+		if err := database.DB.First(&item, "id = ?", "item-byid-auth").Error; err == nil && item.InstallCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected install_count=1 after an authenticated download")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
