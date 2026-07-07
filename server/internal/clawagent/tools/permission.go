@@ -117,9 +117,7 @@ func (t *PermissionTool) Execute(ctx context.Context, argsJSON string, toolCtx *
 	// Mark as processed LAST — after drain has grabbed its pending snapshot.
 	// See note above: MarkEventResolvedByID resolves the entire batch row.
 	if toolCtx.MarkProcessed != nil {
-		slog.Debug("[tool] reply_permission: calling MarkProcessed", "permissionID", args.PermissionID)
 		toolCtx.MarkProcessed()
-		slog.Debug("[tool] reply_permission: MarkProcessed done", "permissionID", args.PermissionID)
 	} else {
 		slog.Warn("[tool] reply_permission: MarkProcessed is nil", "permissionID", args.PermissionID)
 	}

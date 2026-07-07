@@ -1054,8 +1054,6 @@ func resolveToolDeviceContext(toolName, argsJSON string, ecs []*EventContext) (d
 		return "", "", ""
 	}
 	if len(ecs) > 0 {
-		slog.Debug("[agent] resolveToolDeviceContext: no ID in args, falling back to first pending event",
-			"tool", toolName, "pendingCount", len(ecs))
 		return ecs[0].DeviceID, ecs[0].Path, ecs[0].SessionID
 	}
 	return "", "", ""
@@ -1163,8 +1161,6 @@ func (r *AgentRunner) makePermissionDrainer(userID, sessionID, deviceID, deviceS
 			// Only drain permission events — question events have separate
 			// semantics (per-question answers) and shouldn't be auto-replied.
 			if ec.EventType != "permission" && ec.EventType != "permission_batch" {
-				slog.Debug("[agent] makePermissionDrainer: skipping non-permission event",
-					"sessionID", sessionID, "eventType", ec.EventType, "eventDeviceSessionID", ec.SessionID)
 				continue
 			}
 			// Scope to the same device session. Pending events from other
