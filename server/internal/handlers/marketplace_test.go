@@ -664,6 +664,150 @@ func TestLogBehavior_FeedbackDroppedForNonFeedbackAction(t *testing.T) {
 	}
 }
 
+// P1-1: install_count counts DISTINCT installers — one account installing many
+// times bumps it once; a different user bumps it again.
+func TestLogBehavior_InstallDedupDistinctUsers(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-dd", Name: "dd-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-dd", RegistryID: "reg-dd", Slug: "dd-skill", ItemType: "skill",
+		Name: "DD Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	ra := newMarketplaceRouter("user-a")
+	for i := 0; i < 3; i++ {
+		if w := postJSON(ra, "/api/items/item-dd/behavior", map[string]interface{}{"actionType": "install"}); w.Code != http.StatusCreated {
+			t.Fatalf("user-a install #%d: expected 201, got %d", i, w.Code)
+		}
+	}
+	rb := newMarketplaceRouter("user-b")
+	if w := postJSON(rb, "/api/items/item-dd/behavior", map[string]interface{}{"actionType": "install"}); w.Code != http.StatusCreated {
+		t.Fatalf("user-b install: expected 201, got %d", w.Code)
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-dd").Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.InstallCount != 2 {
+		t.Fatalf("expected install_count=2 (distinct installers), got %d", item.InstallCount)
+	}
+}
+
+// P1-1: preview_count counts distinct viewers — same user viewing repeatedly counts once.
+func TestLogBehavior_ViewDedupDistinctViewers(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-vd", Name: "vd-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-vd", RegistryID: "reg-vd", Slug: "vd-skill", ItemType: "skill",
+		Name: "VD Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	rv := newMarketplaceRouter("user-v")
+	for i := 0; i < 4; i++ {
+		postJSON(rv, "/api/items/item-vd/behavior", map[string]interface{}{"actionType": "view"})
+	}
+
+	var item models.CapabilityItem
+	if err := database.DB.First(&item, "id = ?", "item-vd").Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.PreviewCount != 1 {
+		t.Fatalf("expected preview_count=1 (distinct viewers), got %d", item.PreviewCount)
+	}
+}
+
+// P1-1: one feedback per (user, item) — a repeated rating supersedes the prior
+// one, so averageRating reflects the latest and recentFeedback isn't flooded.
+func TestLogBehavior_FeedbackDedupSupersedes(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-fd", Name: "fd-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-fd", RegistryID: "reg-fd", Slug: "fd-skill", ItemType: "skill",
+		Name: "FD Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-f")
+	postJSON(r, "/api/items/item-fd/behavior", map[string]interface{}{"actionType": "feedback", "rating": 5, "feedback": "first take"})
+	postJSON(r, "/api/items/item-fd/behavior", map[string]interface{}{"actionType": "feedback", "rating": 1, "feedback": "changed my mind"})
+
+	w := get(r, "/api/items/item-fd/stats")
+	var stats services.ItemBehaviorStats
+	json.NewDecoder(w.Body).Decode(&stats)
+	if stats.AverageRating != 1 {
+		t.Fatalf("expected averageRating=1 (latest only), got %v", stats.AverageRating)
+	}
+	if len(stats.RecentFeedback) != 1 || stats.RecentFeedback[0] != "changed my mind" {
+		t.Fatalf("expected single latest feedback, got %v", stats.RecentFeedback)
+	}
+}
+
+// A follow-up feedback that edits only the review text (no rating) must NOT erase
+// the user's earlier star rating — read-time aggregation uses the latest rating>0.
+func TestGetItemStats_RatingSurvivesTextOnlyEdit(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-rt", Name: "rt-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-rt", RegistryID: "reg-rt", Slug: "rt-skill", ItemType: "skill",
+		Name: "RT Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-rt")
+	postJSON(r, "/api/items/item-rt/behavior", map[string]interface{}{"actionType": "feedback", "rating": 5, "feedback": "great"})
+	// Rating omitted (→ 0): editing only the comment.
+	postJSON(r, "/api/items/item-rt/behavior", map[string]interface{}{"actionType": "feedback", "feedback": "still using it"})
+
+	w := get(r, "/api/items/item-rt/stats")
+	var stats services.ItemBehaviorStats
+	json.NewDecoder(w.Body).Decode(&stats)
+	if stats.AverageRating != 5 {
+		t.Fatalf("expected averageRating=5 (earlier rating preserved), got %v", stats.AverageRating)
+	}
+	if len(stats.RecentFeedback) != 1 || stats.RecentFeedback[0] != "still using it" {
+		t.Fatalf("expected latest feedback text only, got %v", stats.RecentFeedback)
+	}
+}
+
+// P1-1 consistency: the denormalized install_count and stats.Installs are both
+// distinct-user counts, so the item card and the stats panel agree.
+func TestGetItemStats_InstallCountMatchesStats(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-cc", Name: "cc-reg", SourceType: "internal", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-cc", RegistryID: "reg-cc", Slug: "cc-skill", ItemType: "skill",
+		Name: "CC Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-c")
+	for i := 0; i < 3; i++ {
+		postJSON(r, "/api/items/item-cc/behavior", map[string]interface{}{"actionType": "install"})
+		postJSON(r, "/api/items/item-cc/behavior", map[string]interface{}{"actionType": "view"})
+	}
+
+	var item models.CapabilityItem
+	database.DB.First(&item, "id = ?", "item-cc")
+	w := get(r, "/api/items/item-cc/stats")
+	var stats services.ItemBehaviorStats
+	json.NewDecoder(w.Body).Decode(&stats)
+
+	if item.InstallCount != 1 || stats.Installs != 1 {
+		t.Fatalf("install_count and stats.Installs must agree (both distinct=1), got column=%d stats=%d", item.InstallCount, stats.Installs)
+	}
+	if item.PreviewCount != 1 || stats.Views != 1 {
+		t.Fatalf("preview_count and stats.Views must agree (both distinct=1), got column=%d stats=%d", item.PreviewCount, stats.Views)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetItemStats
 // ---------------------------------------------------------------------------

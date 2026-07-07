@@ -226,8 +226,11 @@ func (s *RecommendService) popularityBased(ctx context.Context, req RecommendReq
 	// Get recently popular items (high install count in last 30 days)
 	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
 
+	// Rank by DISTINCT recent installers, not raw log rows — otherwise one account
+	// (or repeated /download hits, which bypass the handler rate limiter) could
+	// flood install logs and climb the popularity list (SRC-2026-4791 P1-1).
 	query := s.db.Model(&models.CapabilityItem{}).
-		Select("capability_items.*, COUNT(bl.id) as recent_installs").
+		Select("capability_items.*, COUNT(DISTINCT bl.user_id) as recent_installs").
 		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.action_type = 'install' AND bl.created_at > ? AND COALESCE(bl.user_id, ?) <> ?", thirtyDaysAgo, models.AnonymousUserID, models.AnonymousUserID).
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
@@ -339,11 +342,13 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize 
 		return nil, 0, err
 	}
 
-	// Exclude anonymous behavior rows from the trending signal so unauthenticated
-	// writes can't inflate an item's recent activity to game the ranking
-	// (SRC-2026-4791).
+	// Rank by DISTINCT recently-active users, not raw log rows, and exclude
+	// anonymous rows — otherwise one authenticated account flooding view/click
+	// (which are deliberately not rate-limited) or /download install logs could
+	// still game the trending order even though the counters are deduped
+	// (SRC-2026-4791 P1-1).
 	query := database.GetDB().Model(&models.CapabilityItem{}).
-		Select("capability_items.*, COUNT(bl.id) as recent_activity").
+		Select("capability_items.*, COUNT(DISTINCT bl.user_id) as recent_activity").
 		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.created_at > ? AND COALESCE(bl.user_id, ?) <> ?", sevenDaysAgo, models.AnonymousUserID, models.AnonymousUserID).
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").

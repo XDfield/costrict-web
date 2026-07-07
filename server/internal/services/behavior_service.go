@@ -89,6 +89,11 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		}
 	}
 
+	// Behavior logs are append-only. Per-user feedback deduplication (one vote per
+	// user) is applied at READ time in GetItemBehaviorStats (latest rating/feedback
+	// per user), not by mutating the log — that avoids losing a prior rating on a
+	// text-only edit, avoids non-atomic delete-then-insert data loss, and is
+	// race-free under concurrent resubmits (SRC-2026-4791 P1-1).
 	createDB := s.db.WithContext(ctx)
 	if log.ItemID == "" {
 		createDB = createDB.Omit("ItemID")
@@ -102,8 +107,10 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 		return nil, result.Error
 	}
 
-	// Keep aggregate counters in sync without blocking the request path in production.
-	if req.ItemID != "" {
+	// Keep the denormalized counters in sync. Only actions that actually move a
+	// counter go through updateItemStats — feedback/click/use/ignore have no
+	// aggregate, so skip the otherwise no-op call (and its goroutine).
+	if req.ItemID != "" && countsTowardItemStats(req.ActionType) {
 		if s.db.Dialector.Name() == "postgres" {
 			go s.updateItemStats(req.ItemID, req.ActionType, userID)
 		} else {
@@ -112,6 +119,38 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 	}
 
 	return log, nil
+}
+
+// countsTowardItemStats reports whether an action moves a denormalized counter
+// or the experience score. Other actions are logged but never reach updateItemStats.
+func countsTowardItemStats(a models.ActionType) bool {
+	switch a {
+	case models.ActionView, models.ActionInstall, models.ActionSuccess, models.ActionFail:
+		return true
+	default:
+		return false
+	}
+}
+
+// recountDistinctUserColumn recomputes a denormalized counter on capability_items
+// as the number of DISTINCT authenticated users who performed `action` on the
+// item, read straight from the append-only log.
+//
+// This is idempotent and race-safe: two concurrent writers each recompute from
+// the authoritative log and converge on the correct value, so a double-click or
+// retry can't leave the counter under-counted the way a read-then-increment can.
+// Anonymous/NULL rows are excluded (SRC-2026-4791 P1-1). `column` is a fixed
+// internal identifier, never user input.
+func (s *BehaviorService) recountDistinctUserColumn(itemID string, action models.ActionType, column string) {
+	sub := gorm.Expr(
+		"(SELECT COUNT(DISTINCT user_id) FROM behavior_logs WHERE item_id = ? AND action_type = ? AND COALESCE(user_id, ?) <> ?)",
+		itemID, action, models.AnonymousUserID, models.AnonymousUserID,
+	)
+	if err := s.db.Model(&models.CapabilityItem{}).
+		Where("id = ?", itemID).
+		UpdateColumn(column, sub).Error; err != nil {
+		logger.Warn("[behavior] recount %s failed item=%s: %v", column, itemID, err)
+	}
 }
 
 // updateItemStats updates item statistics based on behavior.
@@ -136,18 +175,14 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 
 	switch actionType {
 	case models.ActionView:
-		if err := db.Model(&models.CapabilityItem{}).
-			Where("id = ?", itemID).
-			UpdateColumn("preview_count", gorm.Expr("preview_count + 1")).Error; err != nil {
-			logger.Warn("[behavior] update preview_count failed item=%s: %v", itemID, err)
-		}
+		// preview_count = distinct authenticated viewers (reloading a page or one
+		// account can't inflate it).
+		s.recountDistinctUserColumn(itemID, models.ActionView, "preview_count")
 
 	case models.ActionInstall:
-		if err := db.Model(&models.CapabilityItem{}).
-			Where("id = ?", itemID).
-			UpdateColumn("install_count", gorm.Expr("install_count + 1")).Error; err != nil {
-			logger.Warn("[behavior] update install_count failed item=%s: %v", itemID, err)
-		}
+		// install_count = distinct authenticated installers (one account, or
+		// repeated /download hits, can't pump the ranking signal).
+		s.recountDistinctUserColumn(itemID, models.ActionInstall, "install_count")
 
 	case models.ActionSuccess, models.ActionFail:
 		s.updateExperienceScore(itemID)
@@ -304,25 +339,38 @@ func (s *BehaviorService) updateExperienceScore(itemID string) {
 		return
 	}
 
-	// Calculate success rate. Exclude anonymous rows so unauthenticated writes
-	// can't skew the score. COALESCE treats a NULL user_id (legacy/unattributable
-	// rows) the same as the anonymous sentinel — untrusted, so excluded — instead
-	// of letting SQL three-valued logic drop them implicitly (SRC-2026-4791).
-	var total, success int64
+	// Success rate by DISTINCT users, so it matches GetItemBehaviorStats.SuccessRate
+	// (which also counts distinct users) and one account can't skew the score by
+	// repeating success/fail. Exclude anonymous rows; COALESCE treats a NULL user_id
+	// (legacy/unattributable) the same as the anonymous sentinel — untrusted, so
+	// excluded — rather than letting SQL three-valued logic drop it implicitly
+	// (SRC-2026-4791 P1-1).
+	var rows []struct {
+		ActionType models.ActionType
+		Count      int64
+	}
 	db.Model(&models.BehaviorLog{}).
+		Select("action_type, COUNT(DISTINCT user_id) as count").
 		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND action_type IN ?", itemID, models.AnonymousUserID, models.AnonymousUserID, []models.ActionType{models.ActionSuccess, models.ActionFail}).
-		Count(&total)
+		Group("action_type").
+		Scan(&rows)
 
-	db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND action_type = ?", itemID, models.AnonymousUserID, models.AnonymousUserID, models.ActionSuccess).
-		Count(&success)
+	var successUsers, failUsers int64
+	for _, r := range rows {
+		switch r.ActionType {
+		case models.ActionSuccess:
+			successUsers = r.Count
+		case models.ActionFail:
+			failUsers = r.Count
+		}
+	}
 
 	// Always write the recomputed score (0 when there is no trusted data) so an
 	// item whose only success/fail history was anonymous is corrected down rather
 	// than keeping a previously inflated value.
 	score := 0.0
-	if total > 0 {
-		score = float64(success) / float64(total)
+	if total := successUsers + failUsers; total > 0 {
+		score = float64(successUsers) / float64(total)
 	}
 	db.Model(&models.CapabilityItem{}).
 		Where("id = ?", itemID).
@@ -389,18 +437,18 @@ func (s *BehaviorService) GetUserBehaviorSummary(ctx context.Context, userID str
 func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID string) (*ItemBehaviorStats, error) {
 	stats := &ItemBehaviorStats{ItemID: itemID}
 
-	// Count by action type. Exclude anonymous/unattributable rows so unauthenticated
-	// writes (or historically injected ones) can't inflate the public stats. This
-	// mirrors the denormalized counters, which also only move for authenticated
-	// activity, so stats.Views/Installs stay consistent with previewCount/installCount
-	// (SRC-2026-4791).
+	// Count DISTINCT authenticated users per action type. Excluding anonymous/
+	// unattributable rows keeps unauthenticated (or historically injected) writes
+	// out of the public stats, and counting distinct users (not raw events) matches
+	// the denormalized preview_count/install_count — which P1-1 also made
+	// distinct-user — so the item card and the stats panel agree (SRC-2026-4791).
 	actionCounts := make(map[models.ActionType]int64)
 	var results []struct {
 		ActionType models.ActionType
 		Count      int64
 	}
 	s.db.Model(&models.BehaviorLog{}).
-		Select("action_type, COUNT(*) as count").
+		Select("action_type, COUNT(DISTINCT user_id) as count").
 		Where("item_id = ? AND COALESCE(user_id, ?) <> ?", itemID, models.AnonymousUserID, models.AnonymousUserID).
 		Group("action_type").
 		Scan(&results)
@@ -425,18 +473,34 @@ func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID strin
 		stats.SuccessRate = float64(stats.Successes) / float64(total)
 	}
 
-	// Average rating (authenticated rows only).
-	s.db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND rating > 0", itemID, models.AnonymousUserID, models.AnonymousUserID).
-		Select("AVG(rating)").
-		Scan(&stats.AverageRating)
+	// Average rating — one vote per user (the user's latest rating), computed at
+	// read time so the append-only log needs no supersede: a text-only edit can't
+	// erase an earlier star rating and concurrent resubmits can't double-count
+	// (SRC-2026-4791 P1-1). Anonymous/NULL rows excluded.
+	//
+	// "latest" = ORDER BY created_at DESC, id DESC. The id tiebreaker (random UUID)
+	// only matters when two of the SAME user's rows share an identical created_at —
+	// which needs two submits within one timestamp tick. Sequential human submits
+	// are milliseconds+ apart (timestamptz is microsecond-precise in Postgres), so
+	// this is a non-issue in practice; accepted rather than adding a sequence column.
+	s.db.Raw(`
+		SELECT COALESCE(AVG(rating), 0) FROM (
+			SELECT rating,
+			       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
+			FROM behavior_logs
+			WHERE item_id = ? AND COALESCE(user_id, ?) <> ? AND rating > 0
+		) t WHERE rn = 1
+	`, itemID, models.AnonymousUserID, models.AnonymousUserID).Scan(&stats.AverageRating)
 
-	// Recent feedback (authenticated rows only).
-	s.db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND feedback != ''", itemID, models.AnonymousUserID, models.AnonymousUserID).
-		Order("created_at DESC").
-		Limit(10).
-		Pluck("feedback", &stats.RecentFeedback)
+	// Recent feedback — each user's latest non-empty feedback, 10 most recent.
+	s.db.Raw(`
+		SELECT feedback FROM (
+			SELECT feedback, created_at,
+			       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
+			FROM behavior_logs
+			WHERE item_id = ? AND COALESCE(user_id, ?) <> ? AND feedback <> ''
+		) t WHERE rn = 1 ORDER BY created_at DESC LIMIT 10
+	`, itemID, models.AnonymousUserID, models.AnonymousUserID).Scan(&stats.RecentFeedback)
 
 	return stats, nil
 }
