@@ -40,7 +40,7 @@ func (t *PermissionTool) Definition() Definition {
 				},
 				"enableAutoAccept": map[string]any{
 					"type":        "boolean",
-					"description": "可选。设为 true 时，会把这个会话所属 workspace 的 autoAccept 配置打开——后续该 workspace 的权限请求将由系统自动批准，不再逐个询问。仅在用户明确表示「以后都自动同意」「记住：这次批准以后都这么处理」等意图时才设为 true；用户只对当前这一次表态时不要设。",
+					"description": "可选，默认 false。设为 true 会把该 workspace 的 autoAccept 配置打开——后续该 workspace 的权限请求由系统自动批准，不再询问。属于持久配置变更，必须保守：(1) 仅当用户当前明确表达「以后都自动同意」「记住这次选择」「别再问我了」等持久化意图时才设为 true，用户只对当前这一次表态（「这次允许」「批准一下」）时绝对不要设；(2) 仅当当前申请是低风险常规操作（读目录/查看状态/跑测试等），不可逆或高风险动作（删除/覆盖/推送/外发）绝不要擅自开启。即使你判断该 workspace 适合自动接受，也不能自作主张开启——正确做法是先向用户推荐「这是 X workspace 常规操作，要不要开启自动接受？」等用户明确同意后再带 enableAutoAccept=true 调用。",
 				},
 			},
 			"required": []string{"permissionID", "approved"},
@@ -77,15 +77,6 @@ func (t *PermissionTool) Execute(ctx context.Context, argsJSON string, toolCtx *
 	}
 	slog.Debug("[tool] reply_permission: device proxy call succeeded", "permissionID", args.PermissionID, "deviceID", toolCtx.DeviceID)
 
-	// Mark as processed on success
-	if toolCtx.MarkProcessed != nil {
-		slog.Debug("[tool] reply_permission: calling MarkProcessed", "permissionID", args.PermissionID)
-		toolCtx.MarkProcessed()
-		slog.Debug("[tool] reply_permission: MarkProcessed done", "permissionID", args.PermissionID)
-	} else {
-		slog.Warn("[tool] reply_permission: MarkProcessed is nil", "permissionID", args.PermissionID)
-	}
-
 	action := "已拒绝"
 	if args.Approved {
 		action = "已批准"
@@ -113,7 +104,24 @@ func (t *PermissionTool) Execute(ctx context.Context, argsJSON string, toolCtx *
 			slog.Info("[tool] reply_permission: enabled autoAccept on workspace",
 				"workspaceID", wsID, "userID", toolCtx.UserID)
 			result += "；已为该 workspace 开启自动接受，后续权限请求将自动批准"
+			// Drain MUST run before MarkProcessed below — MarkEventResolvedByID
+			// marks the whole batch event row resolved, which would hide
+			// sibling permissionIDs in the same batch from the drainer's
+			// LoadAllPendingEvents query. Calling drain first ensures batch
+			// siblings (e.g. the 2nd/3rd permission in a permission_batch
+			// event) get auto-approved on the device side.
+			result += buildDrainSuffix(ctx, toolCtx, args.PermissionID)
 		}
+	}
+
+	// Mark as processed LAST — after drain has grabbed its pending snapshot.
+	// See note above: MarkEventResolvedByID resolves the entire batch row.
+	if toolCtx.MarkProcessed != nil {
+		slog.Debug("[tool] reply_permission: calling MarkProcessed", "permissionID", args.PermissionID)
+		toolCtx.MarkProcessed()
+		slog.Debug("[tool] reply_permission: MarkProcessed done", "permissionID", args.PermissionID)
+	} else {
+		slog.Warn("[tool] reply_permission: MarkProcessed is nil", "permissionID", args.PermissionID)
 	}
 
 	slog.Debug("[tool] reply_permission: completed", "permissionID", args.PermissionID, "result", result)
@@ -163,4 +171,29 @@ func enableWorkspaceAutoAccept(db *gorm.DB, workspaceID string) error {
 		return fmt.Errorf("update workspace settings: %w", res.Error)
 	}
 	return nil
+}
+
+// buildDrainSuffix invokes the session-permission drain (if wired) and returns
+// the user-facing result suffix describing what happened. Returns empty string
+// when there's nothing notable to report (drain not wired, or wired but found
+// 0 siblings). Extracted from Execute so the drain contract can be tested in
+// isolation — the workspace-resolution path uses Postgres-specific SQL that
+// sqlite test DBs can't run, which would otherwise block drain testing.
+func buildDrainSuffix(ctx context.Context, toolCtx *Context, permissionID string) string {
+	if toolCtx == nil || toolCtx.DrainSessionPermissions == nil {
+		return ""
+	}
+	drainedIDs, drainErr := toolCtx.DrainSessionPermissions(ctx, permissionID)
+	if drainErr != nil {
+		slog.Warn("[tool] reply_permission: drain partial failure",
+			"sessionID", toolCtx.SessionID, "excludePermissionID", permissionID, "error", drainErr)
+		return fmt.Sprintf("；批量处理其它待审权限时部分失败: %v", drainErr)
+	}
+	if len(drainedIDs) > 0 {
+		slog.Info("[tool] reply_permission: drained additional pending permissions",
+			"sessionID", toolCtx.SessionID, "excludePermissionID", permissionID,
+			"drained", len(drainedIDs), "drainedIDs", drainedIDs)
+		return fmt.Sprintf("；同时已批量批准 %d 条同类待审权限", len(drainedIDs))
+	}
+	return ""
 }

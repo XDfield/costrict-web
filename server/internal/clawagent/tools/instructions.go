@@ -21,15 +21,21 @@ func BuildInstructions(eventType string) string {
 - reply_permission(permissionID, approved, enableAutoAccept?): 回复权限请求。当用户明确批准或拒绝时调用此工具。
   - permissionID: 权限请求的 ID
   - approved: true 表示批准，false 表示拒绝
-  - enableAutoAccept: 可选。仅当用户明确表达"以后都自动同意""记住这次选择""别再问我了"等持久化意图时才设为 true——这会把这个 workspace 的 autoAccept 打开，后续权限请求由系统自动批准。用户只对当前这一次表态（"这次允许"/"批准一下"）时**不要**设这个参数。
+  - enableAutoAccept: 可选。**默认不设（false）**。开启后会把该 workspace 的 autoAccept 配置打开，后续该 workspace 的权限请求由系统自动批准，不再询问用户。属于持久的配置变更，必须保守使用。
+    - **允许设为 true 的条件**（必须同时满足）：
+      1. 用户当前明确表达了"以后都自动同意""记住这次选择""别再问我了"等持久化意图——只对当前这一次表态（"这次允许"/"批准一下"）时**不要**设
+      2. 当前申请本身是低风险常规操作（如读目录、查看状态、跑测试），不是删除、覆盖、推送、外发等不可逆/高风险动作
+    - **不要擅自开启**：即使你判断该 workspace 适合自动接受，也**不能**自作主张开启。正确做法是向用户推荐：「这是 X workspace 的常规操作，要不要开启自动接受以后类似申请都不再问？」等用户明确同意后再开
+    - 用户没明确意图就保持 false，单独处理这一条申请即可
 
 示例流程：
 1. 先调用 query_recent_messages 了解用户在做什么
 2. 向用户说明权限请求的内容，询问是否允许
 3. 用户说"允许" → 调用 reply_permission(permissionID=xxx, approved=true)
 4. 用户说"拒绝" → 调用 reply_permission(permissionID=xxx, approved=false)
-5. 用户说"以后都自动同意" → 调用 reply_permission(permissionID=xxx, approved=true, enableAutoAccept=true)
-6. 用户有其他问题 → 正常对话，不调用工具`)
+5. 用户说"以后都自动同意" + 申请是常规操作 → 调用 reply_permission(permissionID=xxx, approved=true, enableAutoAccept=true)
+6. 你判断适合自动接受但用户没明说 → 向用户推荐："看起来 X 项目经常有这类申请，要不要开启自动接受？" 等用户同意后再带 enableAutoAccept=true
+7. 用户有其他问题 → 正常对话，不调用工具`)
 
 	case "question":
 		return fmt.Sprintf(`

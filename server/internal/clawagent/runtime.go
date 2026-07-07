@@ -1,7 +1,9 @@
 package clawagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/channel"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/gateway"
+	"github.com/costrict/costrict-web/server/internal/purify"
 	// sessionurl disabled — re-add when re-enabling 查看会话 link feature.
 	// "github.com/costrict/costrict-web/server/internal/sessionurl"
 	"github.com/gin-gonic/gin"
@@ -52,6 +55,7 @@ type ClawAgentRuntime struct {
 	TaskRegistry *TaskRegistry
 	EventHandler *EventHandler
 	IntentHndlr  *IntentHandler
+	Purifier     *purify.Purifier
 
 	gwRegistry *gateway.GatewayRegistry
 	gwClient   *gateway.Client
@@ -143,6 +147,7 @@ func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, g
 	rt.TaskRegistry = NewTaskRegistry(db)
 	rt.EventHandler = NewEventHandler(rt)
 	rt.IntentHndlr = NewIntentHandler(rt.DeviceProxy)
+	rt.Purifier = purify.New()
 
 
 	// Initialize LLM client and runner
@@ -253,44 +258,109 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 	// Use background context for async LLM calls (request ctx may be cancelled after response)
 	runCtx := rt.bgCtx
 
-	// Check if this session has a pending event that needs tool-based processing
-	sess := rt.runner.GetSession(sessionID)
-	if sess != nil {
-		slog.Info("[runtime] Handle: session state", "sessionID", sessionID, "hasEventData", sess.EventData != nil)
+	// Defense-in-depth: purify user input before it enters chat_messages or
+	// reaches the LLM. Standardize whitespace/control chars, block on length
+	// cap (120 runes by default) and on suspected prompt injection. Redact
+	// is opt-in (not registered by default).
+	if rt.Purifier != nil {
+		result := rt.Purifier.Purify(msg.Content)
+		if result.Blocked {
+			slog.Warn("[runtime] Handle: input blocked by purifier",
+				"sessionID", sessionID, "reason", result.BlockReason)
+			// Distinguish user-facing phrasing by reason category so the user
+			// gets actionable feedback (e.g., "too long" tells them to shorten).
+			hint := "您的消息无法处理，请重新输入。"
+			switch {
+			case strings.Contains(result.BlockReason, "length"):
+				hint = fmt.Sprintf("您的消息过长（上限 %d 字符），请精简后重试。", rt.Purifier.MaxLength())
+			case strings.Contains(result.BlockReason, "injection"):
+				hint = "您的消息包含疑似注入内容，已被拒绝。"
+			case strings.Contains(result.BlockReason, "empty"):
+				hint = "您的消息内容为空，请重新输入。"
+			}
+			return sender.Send(ctx, hint)
+		}
+		if result.HasRedactions() {
+			slog.Info("[runtime] Handle: input redacted",
+				"sessionID", sessionID, "redactions", result.Redactions)
+		}
+		if len(result.Warnings) > 0 {
+			slog.Warn("[runtime] Handle: purifier warnings",
+				"sessionID", sessionID, "warnings", result.Warnings)
+		}
+		msg.Content = result.Cleaned
 	}
-	// If no pending EventData in memory, try loading from DB (horizontal scaling support)
-	if sess != nil && (sess.EventData == nil || sess.EventData.IsProcessed) {
-		ec, err := rt.SessionMeta.GetEventData(runCtx, sessionID)
-		if err == nil && ec != nil && !ec.IsProcessed {
-			slog.Info("[runtime] Handle: loaded EventData from DB", "sessionID", sessionID, "eventType", ec.EventType)
-			rt.runner.SetEventData(sessionID, ec)
-			sess = rt.runner.GetSession(sessionID)
+
+	// AI normalize: run the purified input through an LLM with the recent
+	// session context to produce a structured classification + canonical
+	// rewrite. NO FALLBACK — if the LLM call fails for any reason (no
+	// provider, timeout, empty/malformed response), the input is blocked.
+	// When the LLM classifies the input as injection/jailbreak, the audit
+	// row is already persisted inside NormalizeInput and we surface a
+	// distinct rejection message to the user.
+	originalPurified := msg.Content
+	normalized, _, _, normErr := rt.runner.NormalizeInput(runCtx, userID, sessionID, msg.Content)
+	if normErr != nil {
+		errMsg := normErr.Error()
+		switch {
+		case strings.Contains(errMsg, "injection detected"):
+			// LLM classified input as injection/jailbreak — audit row + warn
+			// log already done inside NormalizeInput. Surface distinct msg
+			// so user understands the rejection reason.
+			return sender.Send(ctx, "您的消息包含疑似注入或越狱内容，已被拒绝。")
+		case strings.Contains(errMsg, "no provider"),
+			strings.Contains(errMsg, "timeout"),
+			strings.Contains(errMsg, "LLM call failed"),
+			strings.Contains(errMsg, "no choices"),
+			strings.Contains(errMsg, "empty content"),
+			strings.Contains(errMsg, "structured parse failed"),
+			strings.Contains(errMsg, "missing required"),
+			strings.Contains(errMsg, "invalid intent"):
+			// System degraded — distinguish from injection rejection.
+			slog.Warn("[runtime] Handle: AI normalize failed, blocking input",
+				"sessionID", sessionID, "original", originalPurified, "error", normErr)
+			return sender.Send(ctx, "您的消息暂时无法被规范化处理，请稍后重试。")
+		default:
+			slog.Warn("[runtime] Handle: AI normalize unknown failure, blocking input",
+				"sessionID", sessionID, "original", originalPurified, "error", normErr)
+			return sender.Send(ctx, "您的消息暂时无法被规范化处理，请稍后重试。")
 		}
 	}
-	if sess != nil && sess.EventData != nil && !sess.EventData.IsProcessed {
-		slog.Info("[runtime] Handle: pending event found, using RunEventReply", "sessionID", sessionID, "eventType", sess.EventData.EventType)
+	msg.Content = normalized
+
+	// Persist the user message BEFORE invoking Run / RunEventReply. Run no
+	// longer appends the user message itself — keeping the DB write outside
+	// the cancellable Run goroutine guarantees user input is never lost when
+	// a subsequent inbound coalesces and cancels an in-flight Run.
+	rt.runner.AddUserMessage(runCtx, sessionID, msg.Content)
+
+	// Pending event state lives in chat_messages as the latest EVENT_PENDING
+	// system row (sole source of truth; multi-pod safe). Probe the DB.
+	ec, err := rt.MsgMgr.LoadPendingEvent(runCtx, sessionID)
+	if err != nil {
+		slog.Error("[runtime] Handle: LoadPendingEvent failed", "sessionID", sessionID, "error", err)
+		// Fall through to normal Run — better to respond than to drop the message.
+		ec = nil
+	}
+	if ec != nil {
+		slog.Info("[runtime] Handle: pending event found, using RunEventReply", "sessionID", sessionID, "eventType", ec.EventType, "deviceSessionID", ec.SessionID)
 
 		// Cancel the deferred notification immediately — the user has responded.
 		// This must happen before RunEventReply (which may take seconds for LLM processing)
-		// to prevent the 30s deferred timer from firing before tool execution completes.
-		// Use sess.EventData.SessionID (device session ID) since the dispatcher's
-		// deferred timer is keyed by device session ID, not the agent session ID.
+		// to prevent the debounce timer from firing before tool execution completes.
+		// Dispatcher keys by userID (per-user debounce backlog).
 		if rt.runner.OnEventProcessed != nil {
-			deviceSessionID := sess.EventData.SessionID
-			if deviceSessionID == "" {
-				deviceSessionID = sessionID // fallback
-			}
-			slog.Info("[runtime] Handle: user responded, notifying dispatcher", "agentSessionID", sessionID, "deviceSessionID", deviceSessionID)
-			rt.runner.OnEventProcessed(deviceSessionID)
+			slog.Info("[runtime] Handle: user responded, notifying dispatcher", "agentSessionID", sessionID, "userID", userID)
+			rt.runner.OnEventProcessed(userID)
 		}
 
-		// Event context found: add user message to session and use RunEventReply (with tools)
-		rt.runner.AddUserMessage(runCtx, sessionID, msg.Content)
-		eventCh, runErr := rt.runner.RunEventReply(runCtx, userID, sessionID)
+		// Event context found: use RunEventReply (with tools). User message
+		// was already persisted above (unified with the Run path).
+		eventCh, runErr := rt.runner.RunEventReply(runCtx, userID, sessionID, ec)
 		if runErr != nil {
 			return fmt.Errorf("agent event reply failed: %w", runErr)
 		}
-		go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID, sess.EventData)
+		go rt.streamResponse(runCtx, eventCh, sender, userID, msg.Content, sessionID, ec)
 		return nil
 	}
 
@@ -394,7 +464,6 @@ func (rt *ClawAgentRuntime) streamResponse(
 			if reply != "" {
 				send(reply)
 			}
-			go rt.SessionMeta.ClearEventData(rt.bgCtx, sessionID)
 			if reply != "" {
 				go rt.MemoryMgr.Refresh(rt.bgCtx, userID, userMessage, reply, rt.runner.llmClient, rt.agentCfg)
 			}
@@ -460,6 +529,152 @@ func (rt *ClawAgentRuntime) resolveUserID(c *gin.Context) string {
 // bgContext returns the background context for async operations.
 func (rt *ClawAgentRuntime) bgContext() context.Context {
 	return rt.bgCtx
+}
+
+// ReconcilePendingEventsWithDevice queries the device for each pending event
+// in the agent session and marks EVENT_RESOLVED any whose corresponding
+// permission/question is no longer pending on the device side. Called at
+// HandleAIEventBatch entry to prevent stale EVENT_PENDING rows — left over
+// from earlier AI runs that terminated without resolving (relay, error, tool
+// iteration limit) — from polluting the AI's view of an incoming batch.
+//
+// Without this, the AI would see a confusing pile of old + new events and
+// frequently choose to relay instead of acting on any of them, leaving the
+// new event unhandled. With this, the AI sees only events that are still
+// genuinely pending on the device, giving it a clean shot at handling them.
+//
+// Best-effort: device query failures are logged and the group is skipped
+// (we can't confirm device state, so don't risk marking rows resolved).
+// Reuses the same device endpoints the dispatcher's IsStillPending uses
+// (/api/v1/permissions, /api/v1/questions), via the same gateway proxy.
+func (rt *ClawAgentRuntime) ReconcilePendingEventsWithDevice(ctx context.Context, userID, sessionID string) {
+	if rt == nil || rt.MsgMgr == nil || rt.gwClient == nil || rt.gwRegistry == nil {
+		return
+	}
+	ecs, err := rt.MsgMgr.LoadAllPendingEvents(ctx, sessionID)
+	if err != nil {
+		slog.Warn("[runtime] reconcile: load pending failed",
+			"sessionID", sessionID, "error", err)
+		return
+	}
+	if len(ecs) == 0 {
+		return
+	}
+
+	// Group by (deviceID, path, eventType) — the device API is per-device and
+	// the two event types hit different endpoints.
+	type groupKey struct {
+		deviceID  string
+		path      string
+		eventType string
+	}
+	groups := make(map[groupKey][]*EventContext)
+	for _, ec := range ecs {
+		k := groupKey{ec.DeviceID, ec.Path, ec.EventType}
+		groups[k] = append(groups[k], ec)
+	}
+
+	for key, groupEcs := range groups {
+		var proxyPath, wrapperKey string
+		switch key.eventType {
+		case "permission", "permission_batch":
+			proxyPath = "/api/v1/permissions"
+			wrapperKey = "permissions"
+		case "question":
+			proxyPath = "/api/v1/questions"
+			wrapperKey = "questions"
+		default:
+			continue
+		}
+
+		var rawMsg json.RawMessage
+		if err := gateway.ProxyDeviceSessionRequest(rt.gwClient, rt.gwRegistry,
+			userID, key.deviceID, key.path, "GET", proxyPath, nil, &rawMsg); err != nil {
+			slog.Warn("[runtime] reconcile: device query failed, skipping group",
+				"sessionID", sessionID, "deviceID", key.deviceID,
+				"path", key.path, "eventType", key.eventType, "error", err)
+			continue
+		}
+		deviceIDs, err := parseDeviceIDList(rawMsg, wrapperKey)
+		if err != nil {
+			slog.Warn("[runtime] reconcile: parse failed, skipping group",
+				"sessionID", sessionID, "eventType", key.eventType, "error", err)
+			continue
+		}
+		deviceSet := make(map[string]struct{}, len(deviceIDs))
+		for _, id := range deviceIDs {
+			deviceSet[id] = struct{}{}
+		}
+
+		for _, ec := range groupEcs {
+			var ids []string
+			if key.eventType == "question" {
+				for _, q := range ec.Questions {
+					if q.ID != "" {
+						ids = append(ids, q.ID)
+					}
+				}
+			} else {
+				ids = PermissionIDsFromEvent(ec)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			anyPending := false
+			for _, id := range ids {
+				if _, ok := deviceSet[id]; ok {
+					anyPending = true
+					break
+				}
+			}
+			if !anyPending {
+				for _, id := range ids {
+					if err := rt.MsgMgr.MarkEventResolvedByID(ctx, sessionID, id, ResolvedReasonDeviceAlreadyDone); err != nil {
+						slog.Warn("[runtime] reconcile: mark resolved failed",
+							"sessionID", sessionID, "id", id, "error", err)
+					}
+				}
+				slog.Info("[runtime] reconcile: marked stale event resolved (device already done)",
+					"sessionID", sessionID, "eventType", key.eventType,
+					"ids", ids, "deviceID", key.deviceID)
+			}
+		}
+	}
+}
+
+// parseDeviceIDList mirrors dispatcher.parseIDList — duplicated here to avoid
+// pulling dispatcher into clawagent (cycle). Handles both bare-array and
+// {"wrapperKey": [...]} response shapes returned by the csc device API.
+func parseDeviceIDList(rawMsg json.RawMessage, wrapperKey string) ([]string, error) {
+	trimmed := bytes.TrimSpace(rawMsg)
+	if len(trimmed) == 0 {
+		return []string{}, nil
+	}
+	// Try wrapper form first.
+	var wrapped map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &wrapped); err == nil {
+		if inner, ok := wrapped[wrapperKey]; ok {
+			return decodeDeviceIDs(inner)
+		}
+	}
+	// Bare array.
+	return decodeDeviceIDs(trimmed)
+}
+
+func decodeDeviceIDs(rawMsg json.RawMessage) ([]string, error) {
+	var entries []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rawMsg, &entries); err != nil {
+		return nil, fmt.Errorf("decode id list: %w", err)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.ID != "" {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids, nil
 }
 
 // Stop gracefully stops background goroutines.
