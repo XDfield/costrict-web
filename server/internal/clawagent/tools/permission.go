@@ -40,7 +40,7 @@ func (t *PermissionTool) Definition() Definition {
 				},
 				"enableAutoAccept": map[string]any{
 					"type":        "boolean",
-					"description": "可选，默认 false。设为 true 会把该 workspace 的 autoAccept 配置打开——后续该 workspace 的权限请求由系统自动批准，不再询问。属于持久配置变更，必须保守：(1) 仅当用户当前明确表达「以后都自动同意」「记住这次选择」「别再问我了」等持久化意图时才设为 true，用户只对当前这一次表态（「这次允许」「批准一下」）时绝对不要设；(2) 仅当当前申请是低风险常规操作（读目录/查看状态/跑测试等），不可逆或高风险动作（删除/覆盖/推送/外发）绝不要擅自开启。即使你判断该 workspace 适合自动接受，也不能自作主张开启——正确做法是先向用户推荐「这是 X workspace 常规操作，要不要开启自动接受？」等用户明确同意后再带 enableAutoAccept=true 调用。",
+					"description": "可选，默认 false。设为 true 会把该 workspace 的 autoAccept 配置打开——后续该 workspace 的权限请求由系统自动批准，不再询问。属于持久配置变更，必须保守：(1) 仅当用户当前明确表达持久化自动意图时才设为 true，识别标志包括但不限于：「自动批准」「自动允许」「自动同意」「以后都自动」「以后不用问了」「记住这次选择」「别再问我了」「always allow」「auto-approve」「auto-accept」等——只要用户的话里出现「自动 / always / auto」+ 批准/允许语义，就视为持久化意图；只对当前这一次表态（如「这次允许」「批准一下」「就这一次」「允许」）时**不要**设。(2) 仅当当前申请是低风险常规操作（读目录/查看状态/跑测试/常规开发命令如 ls/cat/grep/make 等），不可逆或高风险动作（删除/覆盖/推送/外发/sudo 等）绝不要擅自开启，即便用户说了「自动批准」也要先转述风险、确认用户真的要对这类操作开启自动接受后再调用。",
 				},
 			},
 			"required": []string{"permissionID", "approved"},

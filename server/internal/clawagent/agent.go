@@ -2,7 +2,6 @@ package clawagent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -578,6 +577,201 @@ func (r *AgentRunner) toolDefinitions() []ToolDefinition {
 	return defs
 }
 
+// queryToolDefinitions returns tool definitions filtered to read-only query
+// tools (query_session_info, query_recent_messages). Used by the
+// notification→AI path: the AI can fetch context to describe the batch
+// accurately, but cannot approve/reject/answer (reply_permission /
+// reply_question are excluded). Decisions are made on the user→AI path
+// (RunEventReply) when the user actually replies.
+func (r *AgentRunner) queryToolDefinitions() []ToolDefinition {
+	all := r.toolRegistry.All()
+	defs := make([]ToolDefinition, 0, len(all))
+	for _, t := range all {
+		name := t.Name()
+		if name == "reply_permission" || name == "reply_question" {
+			continue
+		}
+		d := t.Definition()
+		defs = append(defs, ToolDefinition{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters:  d.Parameters,
+			},
+		})
+	}
+	return defs
+}
+
+
+// RunEventNotifyRelay is the notification→AI path used by HandleAIEventBatch.
+// The AI receives ONLY query tools (query_session_info,
+// query_recent_messages) — no reply tools — so it can fetch enough context
+// to describe the batch accurately, then relay it to the user in natural
+// language and stop. The actual decision (approve/reject/answer) happens on
+// the user→AI path (RunEventReply) when the user replies.
+//
+// ec is the head event of the batch — its device context (deviceID / path /
+// deviceSessionID) is wired into query tool execution. For single-event
+// batches this is exact; for multi-event batches, AI can only query the
+// head's session (acceptable — the prompt already carries other events'
+// identity from buildBatchExtraSystem).
+//
+// Tool iteration mirrors RunEventReply (maxToolIterations, text-tool-call
+// recovery, runCtx cancellation guards) but the inner tool execution only
+// ever receives query tools — reply tools aren't in the registry subset.
+func (r *AgentRunner) RunEventNotifyRelay(ctx context.Context, userID, sessionID, extraSystem string, ec *EventContext) <-chan AgentEvent {
+	return r.startRun(ctx, sessionID, func(runCtx context.Context, eventCh chan<- AgentEvent) {
+		slog.Info("[agent] RunEventNotifyRelay: starting",
+			"sessionID", sessionID, "userID", userID, "extraSystemLen", len(extraSystem))
+
+		r.getOrCreateSession(sessionID, userID)
+
+		systemPrompt, err := r.buildSystemPrompt(runCtx, userID)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to build context: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+		systemPrompt += tools.BuildInstructions("notify_relay")
+
+		provCfg, err := r.resolveProvider(runCtx, userID)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to resolve provider: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+
+		toolDefs := r.queryToolDefinitions()
+		maxToolIterations := 6
+
+		// Device context for query tools — derived from the head event.
+		deviceID, directory, deviceSessionID := "", "", ""
+		if ec != nil {
+			deviceID = ec.DeviceID
+			directory = ec.Path
+			deviceSessionID = ec.SessionID
+		}
+
+		for iter := 0; iter < maxToolIterations; iter++ {
+			if runCtx.Err() != nil {
+				return
+			}
+			history, err := r.msgMgr.LoadMessages(runCtx, sessionID)
+			if err != nil {
+				if runCtx.Err() == nil {
+					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to load messages: %v", err), IsError: true, IsFinal: true})
+				}
+				return
+			}
+
+			messages := []ChatMessage{{Role: "system", Content: systemPrompt}}
+			if extraSystem != "" {
+				messages = append(messages, ChatMessage{Role: "system", Content: extraSystem})
+			}
+			messages = append(messages, history...)
+
+			resp, err := r.llmClient.GenerateWithTools(runCtx, *provCfg, messages, toolDefs)
+			if err != nil {
+				if runCtx.Err() == nil {
+					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("LLM call failed: %v", err), IsError: true, IsFinal: true})
+				}
+				return
+			}
+			if len(resp.Choices) == 0 {
+				if runCtx.Err() == nil {
+					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "LLM returned no choices", IsError: true, IsFinal: true})
+				}
+				return
+			}
+			choice := resp.Choices[0]
+			slog.Info("[agent] RunEventNotifyRelay: LLM choice",
+				"sessionID", sessionID, "iter", iter,
+				"finishReason", choice.FinishReason,
+				"structuredToolCalls", len(choice.Message.ToolCalls),
+				"contentLen", len(choice.Message.Content),
+				"contentPreview", contentPreview(choice.Message.Content, 240))
+
+			// Recover text-encoded tool calls (GLM-family quirk).
+			if parsed, cleaned := parseTextToolCalls(choice.Message.Content); len(parsed) > 0 {
+				if len(choice.Message.ToolCalls) == 0 {
+					choice.Message.ToolCalls = parsed
+				}
+				choice.Message.Content = cleaned
+				slog.Info("[agent] RunEventNotifyRelay: recovered text-encoded tool calls",
+					"sessionID", sessionID, "count", len(parsed),
+					"hadStructured", len(choice.Message.ToolCalls) > 0)
+			}
+
+			if runCtx.Err() != nil {
+				return
+			}
+			r.addAssistantMessage(runCtx, sessionID, choice.Message.Content)
+
+			if len(choice.Message.ToolCalls) == 0 {
+				// Final relay. Surface prose to user and end.
+				slog.Info("[agent] RunEventNotifyRelay: terminating turn with relay",
+					"sessionID", sessionID, "iter", iter,
+					"finishReason", choice.FinishReason,
+					"contentLen", len(choice.Message.Content))
+				if choice.Message.Content != "" {
+					if !sendEvent(runCtx, eventCh, AgentEvent{Type: "token", Content: choice.Message.Content}) {
+						return
+					}
+				}
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "done", IsFinal: true})
+				return
+			}
+
+			// Execute each query tool call.
+			for _, tc := range choice.Message.ToolCalls {
+				if !sendEvent(runCtx, eventCh, AgentEvent{
+					Type: "tool_call", Tool: tc.Function.Name, Args: tc.Function.Arguments,
+				}) {
+					return
+				}
+				// Defense-in-depth: reply tools should never appear here
+				// (not in toolDefs), but if the LLM hallucinates one, refuse
+				// explicitly so it doesn't accidentally mutate state.
+				if tc.Function.Name == "reply_permission" || tc.Function.Name == "reply_question" {
+					slog.Warn("[agent] RunEventNotifyRelay: LLM attempted write tool on relay-only path — refusing",
+						"sessionID", sessionID, "tool", tc.Function.Name)
+					result := fmt.Sprintf("通知路径不允许调用 %s —— 你这一轮只能转述，决策留到用户回复后再处理。", tc.Function.Name)
+					if !sendEvent(runCtx, eventCh, AgentEvent{Type: "tool_result", Tool: tc.Function.Name, Result: result}) {
+						return
+					}
+					r.addToolResult(runCtx, sessionID, tc, result)
+					continue
+				}
+				toolCtx := &tools.Context{
+					DeviceID:    deviceID,
+					Directory:   directory,
+					SessionID:   deviceSessionID,
+					UserID:      userID,
+					DB:          r.rt.db,
+					DeviceProxy: r.rt.DeviceProxy,
+				}
+				result, execErr := r.toolRegistry.Execute(runCtx, tc.Function.Name, tc.Function.Arguments, toolCtx)
+				if execErr != nil {
+					result = fmt.Sprintf("工具执行失败: %v", execErr)
+				}
+				if !sendEvent(runCtx, eventCh, AgentEvent{
+					Type: "tool_result", Tool: tc.Function.Name, Result: result,
+				}) {
+					return
+				}
+				r.addToolResult(runCtx, sessionID, tc, result)
+			}
+			// Loop to let LLM incorporate query results, then emit the relay.
+		}
+
+		slog.Error("[agent] RunEventNotifyRelay: tool iteration limit reached", "sessionID", sessionID)
+		sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "Tool call iteration limit reached", IsError: true, IsFinal: true})
+	})
+}
 
 // RunEventReply runs a tool-capable LLM call for handling event replies (permission/question).
 // Unlike Run(), this uses non-streaming GenerateWithTools and handles tool execution.
@@ -599,10 +793,26 @@ func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID strin
 			return
 		}
 
-		// Append event-specific instructions based on EventContext
+		// Append event-specific instructions based on EventContext.
+		// Also inject the real pending-events list with IDs so the AI can
+		// call reply_permission / reply_question with the correct ID. The
+		// [EVENT_PENDING] markers visible in conversation history don't
+		// expose IDs to the LLM (they live only in the metadata JSON), so
+		// without this injection the AI would have to guess or hallucinate.
 		if ec != nil {
-			eventInstructions := tools.BuildInstructions(ec.EventType)
-			systemPrompt += eventInstructions
+			systemPrompt += tools.BuildInstructions(ec.EventType)
+
+			pendingNow, perr := r.msgMgr.LoadAllPendingEvents(runCtx, sessionID)
+			if perr != nil {
+				slog.Warn("[agent] RunEventReply: LoadAllPendingEvents failed",
+					"sessionID", sessionID, "error", perr)
+				pendingNow = []*EventContext{ec}
+			} else if len(pendingNow) == 0 {
+				pendingNow = []*EventContext{ec}
+			}
+			if block := formatPendingEventsBlock(pendingNow); block != "" {
+				systemPrompt += block
+			}
 		}
 
 		// Resolve provider config
@@ -789,319 +999,6 @@ func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID strin
 	}), nil
 }
 
-// RunEventReplyWithSystem is the batch-notification counterpart of
-// RunEventReply. It accepts an extra (non-persisted) system message and arms
-// the tool registry so the AI can choose, per event in the batch, whether to
-// auto-execute (call reply_permission / reply_question directly based on
-// memory + context) or relay to the user in natural language.
-//
-// Device/session context for each tool call is resolved at tool-call time by
-// looking up the ID in the args against the session's pending events list —
-// this is what makes batch mode work: a single tool registry invocation can
-// address any event in the batch, and MarkEventResolved flips exactly the
-// matching row (not all pending rows).
-func (r *AgentRunner) RunEventReplyWithSystem(ctx context.Context, userID, sessionID, extraSystem string) (<-chan AgentEvent, error) {
-	return r.startRun(ctx, sessionID, func(runCtx context.Context, eventCh chan<- AgentEvent) {
-		slog.Info("[agent] RunEventReplyWithSystem: starting",
-			"sessionID", sessionID, "userID", userID, "extraSystemLen", len(extraSystem))
-
-		r.getOrCreateSession(sessionID, userID)
-
-		systemPrompt, err := r.buildSystemPrompt(runCtx, userID)
-		if err != nil {
-			if runCtx.Err() == nil {
-				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to build context: %v", err), IsError: true, IsFinal: true})
-			}
-			return
-		}
-		// Append generic event instructions so AI knows the tools' calling
-		// convention. The extraSystem prompt carries the per-batch specifics.
-		systemPrompt += tools.BuildInstructions("permission")
-		systemPrompt += tools.BuildInstructions("question")
-
-		provCfg, err := r.resolveProvider(runCtx, userID)
-		if err != nil {
-			if runCtx.Err() == nil {
-				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to resolve provider: %v", err), IsError: true, IsFinal: true})
-			}
-			return
-		}
-
-		toolDefs := r.toolDefinitions()
-		maxToolIterations := 10
-		// Tracks whether we've already used the one-shot relay fallback for
-		// this run. When the LLM picks stop+pendingEvents>0+contentLen>0, we
-		// inject a system reminder and give it one more turn instead of
-		// terminating — catches the "AI wrote 'I decided to approve' prose
-		// but didn't actually call reply_permission" failure mode. One-shot
-		// per run to avoid infinite relay loops.
-		relayFallbackUsed := false
-
-		for iter := 0; iter < maxToolIterations; iter++ {
-			if runCtx.Err() != nil {
-				return
-			}
-			// Reload pending events each iteration — auto-executed events
-			// transition to resolved between iterations, and we want the
-			// lookup to reflect current state (so AI doesn't double-resolve).
-			pendingEvents, err := r.msgMgr.LoadAllPendingEvents(runCtx, sessionID)
-			if err != nil {
-				slog.Warn("[agent] RunEventReplyWithSystem: LoadAllPendingEvents failed",
-					"sessionID", sessionID, "error", err)
-			}
-
-			history, err := r.msgMgr.LoadMessages(runCtx, sessionID)
-			if err != nil {
-				if runCtx.Err() == nil {
-					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to load messages: %v", err), IsError: true, IsFinal: true})
-				}
-				return
-			}
-
-			messages := []ChatMessage{{Role: "system", Content: systemPrompt}}
-			if extraSystem != "" {
-				messages = append(messages, ChatMessage{Role: "system", Content: extraSystem})
-			}
-			messages = append(messages, history...)
-
-			resp, err := r.llmClient.GenerateWithTools(runCtx, *provCfg, messages, toolDefs)
-			if err != nil {
-				if runCtx.Err() == nil {
-					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("LLM call failed: %v", err), IsError: true, IsFinal: true})
-				}
-				return
-			}
-			if len(resp.Choices) == 0 {
-				if runCtx.Err() == nil {
-					sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "LLM returned no choices", IsError: true, IsFinal: true})
-				}
-				return
-			}
-			choice := resp.Choices[0]
-			// DEBUG: log raw LLM decision so we can diagnose "AI said approve
-			// but no tool was invoked" cases. See RunEventReply for rationale.
-			slog.Info("[agent] RunEventReplyWithSystem: LLM choice",
-				"sessionID", sessionID, "iter", iter,
-				"finishReason", choice.FinishReason,
-				"structuredToolCalls", len(choice.Message.ToolCalls),
-				"contentLen", len(choice.Message.Content),
-				"contentPreview", contentPreview(choice.Message.Content, 240),
-				"pendingEvents", len(pendingEvents))
-
-			// Recover text-encoded tool calls (GLM-family quirk).
-			if parsed, cleaned := parseTextToolCalls(choice.Message.Content); len(parsed) > 0 {
-				if len(choice.Message.ToolCalls) == 0 {
-					choice.Message.ToolCalls = parsed
-				}
-				choice.Message.Content = cleaned
-				slog.Info("[agent] RunEventReplyWithSystem: recovered text-encoded tool calls",
-					"sessionID", sessionID, "count", len(parsed),
-					"hadStructured", len(choice.Message.ToolCalls) > 0)
-			}
-
-			if runCtx.Err() != nil {
-				return
-			}
-			r.addAssistantMessage(runCtx, sessionID, choice.Message.Content)
-
-			if len(choice.Message.ToolCalls) == 0 {
-				// Relay path: LLM chose to write prose without calling tools.
-				// Fallback: if there are still pending events AND the LLM
-				// actually wrote something (signal it tried but didn't follow
-				// through with a tool call) AND we haven't used the one-shot
-				// retry yet — inject a system reminder and run one more
-				// iteration instead of terminating. This catches the common
-				// failure mode where the AI writes "我决定自动批准" and stops,
-				// leaving the request stuck.
-				if len(pendingEvents) > 0 && len(choice.Message.Content) > 0 && !relayFallbackUsed {
-					relayFallbackUsed = true
-					slog.Info("[agent] RunEventReplyWithSystem: relay fallback triggered — injecting reminder",
-						"sessionID", sessionID, "iter", iter,
-						"pendingEvents", len(pendingEvents),
-						"contentLen", len(choice.Message.Content))
-					// Surface the LLM's prose to the user so they see the
-					// reasoning, then continue to the next iteration where
-					// the system reminder will push it toward a tool call.
-					if !sendEvent(runCtx, eventCh, AgentEvent{Type: "token", Content: choice.Message.Content}) {
-						return
-					}
-					reminder := fmt.Sprintf(
-						"【系统提醒】你刚才的回复没有调用任何工具，但仍有 %d 条 pending 申请未处理。"+
-							"必须立即采取行动：要么调用 reply_permission / reply_question 工具处理它们，"+
-							"要么明确说明为什么不能处理（如需要用户提供更多信息）。"+
-							"不要再写「我决定批准」「我会处理」之类的描述性文字而不落实为工具调用——那等于没处理。",
-						len(pendingEvents))
-					if err := r.msgMgr.AppendMessage(runCtx, sessionID, ChatMessage{Role: "system", Content: reminder}); err != nil {
-						slog.Error("[agent] RunEventReplyWithSystem: append reminder failed",
-							"sessionID", sessionID, "error", err)
-					}
-					continue
-				}
-
-				// Final natural-language reply (relay path).
-				slog.Info("[agent] RunEventReplyWithSystem: terminating turn without tool call (LLM chose to relay only)",
-					"sessionID", sessionID, "iter", iter,
-					"finishReason", choice.FinishReason,
-					"pendingEvents", len(pendingEvents),
-					"contentLen", len(choice.Message.Content),
-					"relayFallbackUsed", relayFallbackUsed,
-					"contentPreview", contentPreview(choice.Message.Content, 240))
-				fullResponse := choice.Message.Content
-				if fullResponse != "" {
-					if !sendEvent(runCtx, eventCh, AgentEvent{Type: "token", Content: fullResponse}) {
-						return
-					}
-				}
-				sendEvent(runCtx, eventCh, AgentEvent{Type: "done", IsFinal: true})
-				return
-			}
-
-			// Execute each tool call. Resolve device/session per-call by ID.
-			for _, tc := range choice.Message.ToolCalls {
-				if !sendEvent(runCtx, eventCh, AgentEvent{
-					Type: "tool_call", Tool: tc.Function.Name, Args: tc.Function.Arguments,
-				}) {
-					return
-				}
-
-				deviceID, directory, deviceSessionID := resolveToolDeviceContext(tc.Function.Name, tc.Function.Arguments, pendingEvents)
-
-				// Semantic fast-path: when a reply-class tool can't resolve a
-				// device context, the ID in args doesn't match any pending
-				// event (likely already resolved by drain/device auto-accept,
-				// or hallucinated by the LLM). Returning a hard error here
-				// historically caused the LLM to retry the same ID, wasting
-				// iterations. Instead, surface a clear semantic result so the
-				// LLM understands there's nothing to do and can move on.
-				var result string
-				if deviceID == "" && (tc.Function.Name == "reply_permission" || tc.Function.Name == "reply_question") {
-					id := extractIDFromToolCallArgs(tc.Function.Arguments)
-					switch {
-					case id == "":
-						result = "工具调用缺少 ID 参数，无法处理。请提供 permissionID 或 questionID 后重试。"
-					case len(pendingEvents) == 0:
-						result = "当前没有 pending 申请待处理，无需调用此工具。请直接结束本轮（finishReason=stop）或向用户汇报已处理的申请。"
-					default:
-						result = fmt.Sprintf(
-							"ID %s 不在当前 pending 列表里（可能已被自动处理、已被其它工具调用处理，或 ID 错误），无需再处理。"+
-								"当前剩余 pending 数量: %d。请只处理仍在 pending 列表里的 ID。",
-							id, len(pendingEvents))
-					}
-					slog.Info("[agent] RunEventReplyWithSystem: reply tool has no device context — semantic result",
-						"sessionID", sessionID, "tool", tc.Function.Name,
-						"id", id, "pendingCount", len(pendingEvents))
-				} else {
-					toolCtx := &tools.Context{
-						DeviceID:    deviceID,
-						Directory:   directory,
-						SessionID:   deviceSessionID,
-						UserID:      userID,
-						DB:          r.rt.db,
-						DeviceProxy: r.rt.DeviceProxy,
-						MarkProcessed: func() {
-							r.markEventResolvedByID(userID, sessionID, tc.Function.Name, tc.Function.Arguments)
-						},
-						DrainSessionPermissions: r.makePermissionDrainer(userID, sessionID, deviceID, deviceSessionID),
-					}
-					var execErr error
-					result, execErr = r.toolRegistry.Execute(runCtx, tc.Function.Name, tc.Function.Arguments, toolCtx)
-					if execErr != nil {
-						result = fmt.Sprintf("工具执行失败: %v", execErr)
-					}
-				}
-
-				if !sendEvent(runCtx, eventCh, AgentEvent{
-					Type: "tool_result", Tool: tc.Function.Name, Result: result,
-				}) {
-					return
-				}
-				r.addToolResult(runCtx, sessionID, tc, result)
-			}
-			// Loop to let LLM process tool results (may emit another round of
-			// tool calls for additional events in the batch, or a final relay).
-		}
-
-		slog.Error("[agent] RunEventReplyWithSystem: tool iteration limit reached", "sessionID", sessionID)
-		sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "Tool call iteration limit reached", IsError: true, IsFinal: true})
-	}), nil
-}
-
-// resolveToolDeviceContext finds the deviceID / directory / deviceSessionID
-// matching the ID embedded in a tool call's args. Used by RunEventReplyWithSystem
-// to wire the correct device context per call when AI is processing a batch of
-// pending events. Returns empty strings when no match is found — the tool will
-// surface a clear error.
-// resolveToolDeviceContext maps a tool call to the (deviceID, directory,
-// sessionID) triple the tool's DeviceProxy calls should target.
-//
-// Two resolution paths:
-//
-//  1. Reply-class tools (reply_permission, reply_question): the LLM emits the
-//     target event's permissionID/questionID in args. We resolve to the
-//     matching EventContext — exact match, works for any batch size.
-//
-//  2. Query-class tools (query_session_info, query_recent_messages): args do
-//     not carry an event ID — these tools semantically ask "the current
-//     session". Fall back to the first pending event. This is unambiguous when
-//     the batch has one event (the common case after debounce); for multi-
-//     event batches the LLM should use reply_permission/reply_question with
-//     explicit IDs to disambiguate.
-func resolveToolDeviceContext(toolName, argsJSON string, ecs []*EventContext) (deviceID, directory, deviceSessionID string) {
-	if id := extractIDFromToolCallArgs(argsJSON); id != "" {
-		if match := FindEventByID(ecs, id); match != nil {
-			return match.DeviceID, match.Path, match.SessionID
-		}
-		return "", "", ""
-	}
-	if len(ecs) > 0 {
-		return ecs[0].DeviceID, ecs[0].Path, ecs[0].SessionID
-	}
-	return "", "", ""
-}
-
-// extractIDFromToolCallArgs pulls permissionID or questionID out of the JSON
-// args string emitted by the LLM. Both reply_permission and reply_question
-// follow the same calling convention (camelCase id field at top level).
-func extractIDFromToolCallArgs(argsJSON string) string {
-	if argsJSON == "" {
-		return ""
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return ""
-	}
-	if v, ok := args["permissionID"].(string); ok && v != "" {
-		return v
-	}
-	if v, ok := args["questionID"].(string); ok && v != "" {
-		return v
-	}
-	return ""
-}
-
-// markEventResolvedByID is the ID-keyed variant of markEventResolved. Used by
-// the batch tool path where the runner learns the target event from the tool
-// call args rather than from a single EventContext baked in at run start.
-func (r *AgentRunner) markEventResolvedByID(userID, sessionID, toolName, argsJSON string) {
-	id := extractIDFromToolCallArgs(argsJSON)
-	if id == "" {
-		slog.Warn("[agent] markEventResolvedByID: no ID in tool args",
-			"sessionID", sessionID, "tool", toolName, "args", argsJSON)
-		return
-	}
-	if err := r.msgMgr.MarkEventResolvedByID(r.rt.bgCtx, sessionID, id, ResolvedReasonToolSuccess); err != nil {
-		slog.Error("[agent] markEventResolvedByID: failed",
-			"sessionID", sessionID, "id", id, "error", err)
-		return
-	}
-	r.mu.Lock()
-	hasCallback := r.OnEventProcessed != nil
-	r.mu.Unlock()
-	if hasCallback {
-		r.OnEventProcessed(userID)
-	}
-}
-
 // markEventResolved transitions the EVENT_PENDING row for deviceSessionID to
 // EVENT_RESOLVED in chat_messages (sole source of truth for event state),
 // then notifies the dispatcher to drain its per-user backlog.
@@ -1275,4 +1172,178 @@ func contentPreview(content string, maxChars int) string {
 		return flat[:maxChars] + "…"
 	}
 	return flat
+}
+
+// formatPendingEventsBlock renders the current pending events as a system-prompt
+// block listing each event's type, a terse description, and the real
+// permission/question IDs the LLM should use when calling reply_permission /
+// reply_question. Required because the [EVENT_PENDING] markers visible in
+// conversation history don't carry IDs (they live only in the row's metadata
+// JSON, which the LLM doesn't see). Without this block the LLM has no way to
+// know which ID to emit and would hallucinate.
+//
+// Used in the user→AI tool-capable path (RunEventReply). The notification→AI
+// path doesn't need this — it has no tools, so IDs are irrelevant there.
+func formatPendingEventsBlock(ecs []*EventContext) string {
+	if len(ecs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## 当前 pending 申请（调用 reply_permission / reply_question 时必须用这里的 real ID，不要自己编；也不要把这些 ID 直接复述给用户）\n")
+	for i, ec := range ecs {
+		fmt.Fprintf(&b, "%d. ", i+1)
+		switch ec.EventType {
+		case "permission", "permission_batch":
+			ids := PermissionIDsFromEvent(ec)
+			b.WriteString("[权限] ")
+			b.WriteString(summarizePermissionEvent(ec))
+			if len(ids) > 0 {
+				fmt.Fprintf(&b, "\n   权限 ID：%s", strings.Join(ids, ", "))
+			}
+			b.WriteString("\n")
+		case "question":
+			b.WriteString("[问题] ")
+			if len(ec.Questions) == 0 {
+				b.WriteString("(无问题内容)\n")
+				break
+			}
+			for j, q := range ec.Questions {
+				if j > 0 {
+					b.WriteString("；")
+				}
+				if q.Header != "" {
+					b.WriteString(q.Header)
+					b.WriteString("：")
+				}
+				b.WriteString(q.Question)
+				if len(q.Options) > 0 {
+					var opts []string
+					for _, o := range q.Options {
+						if o.Label != "" && o.Description != "" {
+							opts = append(opts, o.Label+"："+o.Description)
+						} else if o.Label != "" {
+							opts = append(opts, o.Label)
+						} else if o.Description != "" {
+							opts = append(opts, o.Description)
+						}
+					}
+					if len(opts) > 0 {
+						b.WriteString("（可选：" + strings.Join(opts, " / ") + "）")
+					}
+				}
+			}
+			id := ""
+			if len(ec.Questions) > 0 {
+				id = ec.Questions[0].ID
+			}
+			if id != "" {
+				fmt.Fprintf(&b, "\n   问题 ID：%s", id)
+			}
+			b.WriteString("\n")
+		default:
+			fmt.Fprintf(&b, "[未知事件类型 %s]\n", ec.EventType)
+		}
+	}
+	return b.String()
+}
+
+// summarizePermissionEvent renders a permission EventContext as a single
+// spoken sentence. Best-effort — falls back to a generic message when fields
+// are missing. Used inside the system prompt block so the AI has enough
+// context to describe the request back to the user.
+func summarizePermissionEvent(ec *EventContext) string {
+	if ec == nil {
+		return ""
+	}
+	if perms, ok := ec.ActionData["permissions"].([]any); ok && len(perms) > 0 {
+		var parts []string
+		for _, p := range perms {
+			if pMap, ok := p.(map[string]any); ok {
+				parts = append(parts, describeSinglePermissionMap(pMap))
+			}
+		}
+		if len(parts) == 0 {
+			return "任务发起了个权限申请，具体做什么没说清"
+		}
+		return fmt.Sprintf("任务一次性要干 %d 件事：%s", len(perms), strings.Join(parts, "；"))
+	}
+	return describeSinglePermissionMap(ec.ActionData)
+}
+
+// describeSinglePermissionMap turns a permission actionData map into one
+// natural spoken sentence. Mirrors describeSinglePermission in event_handler.go
+// but operates on a raw map (no EventHandler receiver), kept here so
+// formatPendingEventsBlock stays self-contained.
+func describeSinglePermissionMap(data map[string]any) string {
+	if data == nil {
+		return "任务发起了个权限申请，具体做什么没说清"
+	}
+	permType, _ := data["permission"].(string)
+	desc := extractInputDescription(data)
+	cmd := extractInputFieldString(data, "command")
+	filePath := extractInputFieldString(data, "filePath")
+	path := extractInputFieldString(data, "path")
+
+	target := ""
+	switch permType {
+	case "bash":
+		if cmd != "" {
+			target = "跑命令 " + cmd
+		}
+	case "edit", "write":
+		if filePath != "" {
+			target = "改文件 " + filePath
+		} else if path != "" {
+			target = "改文件 " + path
+		}
+	case "read":
+		if filePath != "" {
+			target = "读文件 " + filePath
+		} else if path != "" {
+			target = "读路径 " + path
+		}
+	case "webfetch":
+		target = "访问网络"
+	default:
+		if filePath != "" {
+			target = "动文件 " + filePath
+		} else if path != "" {
+			target = "动路径 " + path
+		} else if cmd != "" {
+			target = "跑 " + cmd
+		}
+	}
+
+	if target == "" {
+		if desc != "" {
+			return "任务要做什么不大清楚，描述是：" + desc
+		}
+		return "任务发起了个权限申请，具体做什么没说清"
+	}
+	if desc != "" {
+		return "任务要" + target + "（" + desc + "）"
+	}
+	return "任务要" + target
+}
+
+func extractInputDescription(data map[string]any) string {
+	if metadata, ok := data["metadata"].(map[string]any); ok {
+		if input, ok := metadata["input"].(map[string]any); ok {
+			if desc, ok := input["description"].(string); ok {
+				return desc
+			}
+		}
+	}
+	return ""
+}
+
+func extractInputFieldString(data map[string]any, field string) string {
+	if metadata, ok := data["metadata"].(map[string]any); ok {
+		if input, ok := metadata["input"].(map[string]any); ok {
+			if val, ok := input[field].(string); ok {
+				return val
+			}
+		}
+	}
+	return ""
 }

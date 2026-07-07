@@ -335,7 +335,15 @@ func (rt *ClawAgentRuntime) Handle(ctx context.Context, msg *channel.InboundMess
 	rt.runner.AddUserMessage(runCtx, sessionID, msg.Content)
 
 	// Pending event state lives in chat_messages as the latest EVENT_PENDING
-	// system row (sole source of truth; multi-pod safe). Probe the DB.
+	// system row (sole source of truth; multi-pod safe). Reconcile with the
+	// device first: device-side state may have drifted (permission expired,
+	// user replied from another channel, device restarted, etc.) since the
+	// EVENT_PENDING row was written. Without this the AI would emit a
+	// reply_permission with a stale ID and the device would 404. Reconcile
+	// is best-effort — groups whose device query fails are skipped, so a
+	// transient device error won't drop legitimately-pending events.
+	rt.ReconcilePendingEventsWithDevice(runCtx, userID, sessionID)
+
 	ec, err := rt.MsgMgr.LoadPendingEvent(runCtx, sessionID)
 	if err != nil {
 		slog.Error("[runtime] Handle: LoadPendingEvent failed", "sessionID", sessionID, "error", err)
