@@ -2,7 +2,6 @@ package clawagent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -168,52 +167,8 @@ func (m *SessionMetaManager) PruneExcess(ctx context.Context, maxPerUser int) (i
 	return result.RowsAffected, result.Error
 }
 
-// SetEventData serializes and stores EventContext on the session meta row.
-// This enables horizontal scaling — any instance can read the pending event.
-func (m *SessionMetaManager) SetEventData(ctx context.Context, sessionID string, ec *EventContext) error {
-	if ec == nil {
-		return m.db.WithContext(ctx).
-			Model(&SessionMeta{}).
-			Where("session_id = ?", sessionID).
-			Update("event_data", nil).Error
-	}
-	data, err := json.Marshal(ec)
-	if err != nil {
-		return fmt.Errorf("marshal event data: %w", err)
-	}
-	return m.db.WithContext(ctx).
-		Model(&SessionMeta{}).
-		Where("session_id = ?", sessionID).
-		Update("event_data", string(data)).Error
-}
-
-// GetEventData deserializes and returns the EventContext from the session meta row.
-// Returns nil if no EventData is stored.
-func (m *SessionMetaManager) GetEventData(ctx context.Context, sessionID string) (*EventContext, error) {
-	var meta SessionMeta
-	if err := m.db.WithContext(ctx).
-		Select("event_data").
-		Where("session_id = ?", sessionID).
-		First(&meta).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if meta.EventData == "" {
-		return nil, nil
-	}
-	var ec EventContext
-	if err := json.Unmarshal([]byte(meta.EventData), &ec); err != nil {
-		return nil, fmt.Errorf("unmarshal event data: %w", err)
-	}
-	return &ec, nil
-}
-
-// ClearEventData removes the EventData from the session meta row.
-func (m *SessionMetaManager) ClearEventData(ctx context.Context, sessionID string) error {
-	return m.db.WithContext(ctx).
-		Model(&SessionMeta{}).
-		Where("session_id = ?", sessionID).
-		Update("event_data", nil).Error
-}
+// (removed) SetEventData/GetEventData/ClearEventData — superseded by the
+// chat_messages EVENT_PENDING/EVENT_RESOLVED rows (sole source of truth for
+// pending event state). The session_meta.event_data column is no longer
+// read by new code; the column itself is left in place to avoid forcing a
+// destructive migration on existing deployments.

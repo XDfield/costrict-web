@@ -76,7 +76,7 @@ func (m *MemoryManager) Save(ctx context.Context, userID, content string) error 
 func (m *MemoryManager) Refresh(
 	ctx context.Context,
 	userID, userMessage, assistantReply string,
-	llmClient *LLMClient,
+	llmClient llmGenerator,
 	cfg ClawAgentConfig,
 ) error {
 	oldMemory, _ := m.Load(ctx, userID)
