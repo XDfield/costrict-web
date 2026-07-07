@@ -349,7 +349,7 @@ func main() {
 		}
 		api.GET("/items/:id/similar", searchHandler.FindSimilar)
 		api.GET("/items/filter-options", handlers.ListItemFilterOptions)
-		api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
+		// api.POST("/items/:id/behavior", recommendHandler.LogBehavior)
 		api.GET("/items/:id/stats", recommendHandler.GetItemStats)
 
 		// All routes below require authentication
