@@ -4,13 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"sync"
 	"log/slog"
+	"strings"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
-	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
@@ -28,95 +25,282 @@ type DispatchInput struct {
 	ActionData  map[string]any
 }
 
-// AIEventHandler is a callback for AI-driven event processing.
-// Return true if the event was handled (card dispatch will be skipped).
-type AIEventHandler func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool
+// AIEventHandler is invoked by the polling goroutine after the debounce
+// window elapses AND the backlog contains at least one still-pending event.
+// Receives a batch — the typical case is one event, but back-to-back events
+// within the debounce window arrive as a single call so the AI can produce
+// one consolidated notification. Return true when the AI notification was
+// successfully delivered; false falls back to the standard notification
+// service for each event in the batch.
+type AIEventHandler func(ctx context.Context, inputs []DispatchInput) bool
+
+// Debounce defaults. The window is reset on every new event for a user (so
+// back-to-back events coalesce into one notification); maxCap bounds the
+// worst-case delay so a sustained event stream can't defer forever.
+const (
+	defaultDebounceWindow = 30 * time.Second
+	defaultDebounceMaxCap = 60 * time.Second
+	defaultPollInterval   = 1 * time.Second
+)
 
 type Dispatcher struct {
 	db              *gorm.DB
 	store           *notification.Store
 	notificationSvc *notification.NotificationService
-	wecomAdapter    *wecom.WeComAdapter
-	wecomBotAdapter interface{} // Will be set to *wecombot.WeComBotAdapter if available
-	weComEnabled    bool
-	weComBotEnabled bool
 	gwClient        *gateway.Client
 	gwRegistry      *gateway.GatewayRegistry
 	appURL          string
 	aiEventHandler  AIEventHandler
 
-	// Deferred notification timer system
-	notificationDelay time.Duration
-	deferredMu        sync.Mutex
-	deferredTimers    map[string]*time.Timer // keyed by sessionID
+	// Per-event-type managers. Before firing, the dispatcher polls each
+	// backlog entry: events reported as no longer pending are suppressed.
+	eventManagers map[string]EventManager
+
+	// Debounce tuning (override via NewDispatcherWithDebounce in tests).
+	debounceWindow time.Duration
+	debounceMaxCap time.Duration
+	pollInterval   time.Duration
+
+	stopCh chan struct{}
 }
 
-func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, wecomAdapter *wecom.WeComAdapter, wecomBotAdapter interface{}, weComEnabled, weComBotEnabled bool, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, notificationDelay time.Duration) *Dispatcher {
-	if notificationDelay <= 0 {
-		notificationDelay = 30 * time.Second
+// NewDispatcher constructs a DB-backed Dispatcher. Deferred notification
+// state lives in the deferred_notifications table — polling + drain happen
+// inside DB transactions, giving multi-pod safety without sticky routing.
+func NewDispatcher(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry) *Dispatcher {
+	return NewDispatcherWithDebounce(db, notificationSvc, store, appURL, gwClient, gwRegistry, defaultDebounceWindow, defaultDebounceMaxCap)
+}
+
+// NewDispatcherWithDebounce exposes debounce tuning for tests; production
+// code should call NewDispatcher.
+func NewDispatcherWithDebounce(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, window, maxCap time.Duration) *Dispatcher {
+	return NewDispatcherWithPolling(db, notificationSvc, store, appURL, gwClient, gwRegistry, window, maxCap, defaultPollInterval)
+}
+
+// NewDispatcherWithPolling exposes all timing knobs for tests that need
+// sub-second polling.
+func NewDispatcherWithPolling(db *gorm.DB, notificationSvc *notification.NotificationService, store *notification.Store, appURL string, gwClient *gateway.Client, gwRegistry *gateway.GatewayRegistry, window, maxCap, poll time.Duration) *Dispatcher {
+	if window <= 0 {
+		window = defaultDebounceWindow
+	}
+	if maxCap <= 0 {
+		maxCap = defaultDebounceMaxCap
+	}
+	if maxCap < window {
+		maxCap = window
+	}
+	if poll <= 0 {
+		poll = defaultPollInterval
 	}
 	return &Dispatcher{
-		db:                db,
-		store:             store,
-		notificationSvc:   notificationSvc,
-		wecomAdapter:      wecomAdapter,
-		wecomBotAdapter:   wecomBotAdapter,
-		weComEnabled:      weComEnabled,
-		weComBotEnabled:   weComBotEnabled,
-		gwClient:          gwClient,
-		gwRegistry:        gwRegistry,
-		appURL:            appURL,
-		notificationDelay: notificationDelay,
-		deferredTimers:    make(map[string]*time.Timer),
+		db:              db,
+		store:           store,
+		notificationSvc: notificationSvc,
+		gwClient:        gwClient,
+		gwRegistry:      gwRegistry,
+		appURL:          appURL,
+		eventManagers:   make(map[string]EventManager),
+		debounceWindow:  window,
+		debounceMaxCap:  maxCap,
+		pollInterval:    poll,
+		stopCh:          make(chan struct{}),
 	}
 }
 
-// SetAIEventHandler registers an AI-driven event handler.
-// When set, permission/question events are first forwarded to AI;
-// only fall back to card dispatch if AI handler returns false or is nil.
+// SetAIEventHandler registers the AI-driven event handler invoked when the
+// debounce timer fires and at least one backlog event is still pending.
 func (d *Dispatcher) SetAIEventHandler(h AIEventHandler) {
 	d.aiEventHandler = h
 }
 
-// CancelDeferredNotification cancels a pending deferred notification timer for
-// the given sessionID. Called by the ClawAgent runtime when the user replies
-// before the timer fires, so the card dispatch is suppressed.
-func (d *Dispatcher) CancelDeferredNotification(sessionID string) {
-	d.deferredMu.Lock()
-	defer d.deferredMu.Unlock()
-	if timer, ok := d.deferredTimers[sessionID]; ok {
-		timer.Stop()
-		delete(d.deferredTimers, sessionID)
-		slog.Info("[dispatcher] cancelled deferred notification", "sessionID", sessionID)
+func (d *Dispatcher) SetEventManager(eventType string, mgr EventManager) {
+	d.eventManagers[eventType] = mgr
+}
+
+// AutoMigrate ensures the deferred_notifications table exists. Call once at
+// startup before Start.
+func (d *Dispatcher) AutoMigrate() error {
+	return d.db.AutoMigrate(&DeferredNotification{})
+}
+
+// Start launches the polling goroutine that watches for fire times in the
+// deferred_notifications table. Returns immediately; goroutine respects
+// Close().
+func (d *Dispatcher) Start(ctx context.Context) error {
+	if err := d.AutoMigrate(); err != nil {
+		return fmt.Errorf("dispatcher automigrate: %w", err)
+	}
+	go d.pollDeferredTimers()
+	return nil
+}
+
+// Close stops background goroutines. Idempotent.
+func (d *Dispatcher) Close() {
+	select {
+	case <-d.stopCh:
+	default:
+		close(d.stopCh)
 	}
 }
 
-// startDeferredNotification starts a timer that will fire after notificationDelay
-// and dispatch a card notification for the given input. The timer is keyed by
-// sessionID so it can be cancelled if the user replies before it fires.
-func (d *Dispatcher) startDeferredNotification(input DispatchInput) {
-	d.deferredMu.Lock()
-	// Cancel any existing timer for the same session
-	if timer, ok := d.deferredTimers[input.SessionID]; ok {
-		timer.Stop()
-		delete(d.deferredTimers, input.SessionID)
+// CancelDeferredNotification drains per-user pending state so the timer will
+// not fire for the in-flight backlog. Called by the clawagent runtime when
+// the user replies before the debounce window elapses. Keyed by userID
+// because the dispatcher debounces per user, not per device session.
+func (d *Dispatcher) CancelDeferredNotification(userID string) {
+	if userID == "" {
+		return
 	}
-	d.deferredTimers[input.SessionID] = time.AfterFunc(d.notificationDelay, func() {
-		d.deferredMu.Lock()
-		delete(d.deferredTimers, input.SessionID)
-		d.deferredMu.Unlock()
+	ctx := context.Background()
+	rows, err := d.cancelUserBacklog(ctx, userID)
+	if err != nil {
+		slog.Warn("[dispatcher] CancelDeferredNotification: delete failed", "userID", userID, "error", err)
+		return
+	}
+	if rows > 0 {
+		slog.Info("[dispatcher] cancelled deferred notification", "userID", userID, "rows", rows)
+	}
+}
 
-		slog.Info("[dispatcher] deferred timer fired, dispatching card notification", "eventType", input.EventType, "sessionID", input.SessionID)
-		channels := d.selectChannels(input.UserID)
-		d.dispatchNow(input, channels)
+// startDeferredNotification records the event in the per-user backlog and
+// (re)arms the debounce timer. The timer fires after debounceWindow of
+// silence OR debounceMaxCap from the first event, whichever comes first.
+// Multiple events within the window coalesce into a single fire.
+//
+// The insert + FireAt recompute happen in one transaction so the FirstSeen
+// anchor read is atomic relative to concurrent producers — no risk of two
+// pods reading different anchors and computing different FireAt values.
+func (d *Dispatcher) startDeferredNotification(input DispatchInput) {
+	ctx := context.Background()
+	payload, err := json.Marshal(input)
+	if err != nil {
+		slog.Error("[dispatcher] startDeferredNotification: marshal failed", "error", err)
+		return
+	}
+	userID := input.UserID
+	now := time.Now()
+
+	entry := &DeferredNotification{
+		UserID:    userID,
+		FireAt:    now.Add(d.debounceWindow), // tentative; rearmUserFireAt overrides
+		FirstSeen: now,
+		Payload:   string(payload),
+	}
+
+	err = d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(entry).Error; err != nil {
+			return err
+		}
+		return d.rearmUserFireAt(tx, userID, now)
 	})
-	d.deferredMu.Unlock()
-	slog.Info("[dispatcher] started deferred notification", "eventType", input.EventType, "sessionID", input.SessionID, "delay", d.notificationDelay)
+	if err != nil {
+		slog.Error("[dispatcher] startDeferredNotification: txn failed", "userID", userID, "error", err)
+		return
+	}
+
+	slog.Info("[dispatcher] armed deferred notification",
+		"userID", userID, "eventType", input.EventType, "deviceSessionID", input.SessionID,
+		"window", d.debounceWindow)
+}
+
+// pollDeferredTimers wakes every pollInterval and queries for users whose
+// fire_at has passed. For each: invokes fireDeferredNotification, which
+// atomically drains the backlog inside a transaction.
+func (d *Dispatcher) pollDeferredTimers() {
+	ctx := context.Background()
+	ticker := time.NewTicker(d.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+		}
+		now := time.Now()
+		users, err := d.loadPendingUsers(ctx, now)
+		if err != nil {
+			slog.Warn("[dispatcher] poll: query failed", "error", err)
+			continue
+		}
+		for _, userID := range users {
+			d.fireDeferredNotification(userID)
+		}
+	}
+}
+
+// fireDeferredNotification is invoked when the per-user fire_at has passed.
+// Drains the backlog inside a transaction (atomic SELECT + DELETE — no race
+// even with concurrent pods), filters out events that were resolved through
+// other channels during the window, then invokes the AI handler for the
+// survivors (or the notification service as fallback).
+func (d *Dispatcher) fireDeferredNotification(userID string) {
+	ctx := context.Background()
+
+	entries, err := d.drainUserBacklog(ctx, userID)
+	if err != nil {
+		slog.Error("[dispatcher] fire: drain failed", "userID", userID, "error", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	var pending []DispatchInput
+	for _, e := range entries {
+		input, ok := decodePayload(e.Payload)
+		if !ok {
+			continue
+		}
+		if mgr, ok := d.eventManagers[input.EventType]; ok {
+			still, perr := mgr.IsStillPending(ctx, input)
+			if perr != nil {
+				slog.Warn("[dispatcher] fire: IsStillPending errored, treating as pending",
+					"eventType", input.EventType, "deviceSessionID", input.SessionID, "error", perr)
+				pending = append(pending, input)
+			} else if !still {
+				slog.Info("[dispatcher] fire: dropping resolved event",
+					"eventType", input.EventType, "deviceSessionID", input.SessionID)
+			} else {
+				pending = append(pending, input)
+			}
+		} else {
+			// No manager → conservatively fire.
+			pending = append(pending, input)
+		}
+	}
+
+	if len(pending) == 0 {
+		slog.Info("[dispatcher] fire: all backlog events resolved, nothing to send", "userID", userID)
+		return
+	}
+
+	slog.Info("[dispatcher] fire: invoking AI handler", "userID", userID, "count", len(pending))
+	d.invokeAIHandler(pending)
+}
+
+// invokeAIHandler runs the registered AI event handler with the full batch
+// of surviving events. If no handler is registered or it declines, falls
+// back to the standard notification service per event so the user still
+// gets some signal.
+func (d *Dispatcher) invokeAIHandler(inputs []DispatchInput) {
+	if len(inputs) == 0 {
+		return
+	}
+	if d.aiEventHandler != nil {
+		handled := d.aiEventHandler(context.Background(), inputs)
+		if handled {
+			return
+		}
+	}
+	for _, input := range inputs {
+		slog.Info("[dispatcher] AI handler declined, falling back to notification service",
+			"eventType", input.EventType, "sessionID", input.SessionID)
+		d.dispatchNotification(input)
+	}
 }
 
 // --- WeCom UserID Resolution ---
 
-// resolveWeComUserID 从用户的 IDTrust 身份认证信息中获取企微员工 userId
 func (d *Dispatcher) resolveWeComUserID(appUserID string) string {
 	var identity models.UserAuthIdentity
 	if err := d.db.Where("user_subject_id = ? AND provider = ? AND deleted_at IS NULL", appUserID, "idtrust").
@@ -133,17 +317,17 @@ func (d *Dispatcher) resolveWeComUserID(appUserID string) string {
 // --- Public Interface ---
 
 func (d *Dispatcher) Dispatch(input DispatchInput) {
-	slog.Info("[dispatcher] Dispatch received", "eventType", input.EventType, "sessionID", input.SessionID, "hasStore", d.store != nil, "hasAIHandler", d.aiEventHandler != nil)
+	slog.Info("[dispatcher] Dispatch received",
+		"eventType", input.EventType, "sessionID", input.SessionID,
+		"hasStore", d.store != nil, "hasAIHandler", d.aiEventHandler != nil,
+		"hasManager", d.eventManagers[input.EventType] != nil)
 	if d.store == nil {
 		return
 	}
 
-	// Auto-accept permission requests when workspace has autoAccept enabled.
-	// Both single permission and permission_batch short-circuit here: skip the
-	// AI handler and the deferred notification timer entirely — the user has
-	// already opted into auto-approval, so there's nothing to notify about.
 	if (input.EventType == "permission" || input.EventType == "permission_batch") && d.isAutoAccept(input) {
-		slog.Info("[dispatcher] auto-accept enabled, auto-approving permission(s)", "eventType", input.EventType, "sessionID", input.SessionID)
+		slog.Info("[dispatcher] auto-accept enabled, auto-approving permission(s)",
+			"eventType", input.EventType, "sessionID", input.SessionID)
 		if input.EventType == "permission" {
 			d.autoApprovePermission(input)
 		} else {
@@ -152,345 +336,36 @@ func (d *Dispatcher) Dispatch(input DispatchInput) {
 		return
 	}
 
-	// Deferrable events: permission, permission_batch, question
-	// Start a deferred timer. If the user replies (via AI handler) before the
-	// timer fires, CancelDeferredNotification stops the timer and the card is
-	// never sent. If the timer fires, the card is dispatched as a fallback.
 	if isDeferrable(input.EventType) {
-		if d.aiEventHandler != nil {
-			handled := d.aiEventHandler(context.Background(), input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
-			if handled {
-				slog.Info("[dispatcher] event handled by AI, starting deferred card timer", "eventType", input.EventType, "sessionID", input.SessionID)
-				d.startDeferredNotification(input)
-				return
-			}
-			slog.Info("[dispatcher] AI declined, starting deferred card timer", "eventType", input.EventType, "sessionID", input.SessionID)
-		}
-		// No AI handler or AI declined: still defer the card dispatch
 		d.startDeferredNotification(input)
 		return
 	}
 
-	// Non-deferrable events: dispatch immediately
-	channels := d.selectChannels(input.UserID)
-	d.dispatchNow(input, channels)
+	d.dispatchNotification(input)
 }
 
 // --- Event Classification ---
 
-func needsInteraction(eventType string) bool {
-	return eventType == "permission" || eventType == "question"
-}
-
-// isDeferrable returns true for events that should use the deferred
-// notification timer (permission, permission_batch, question).
 func isDeferrable(eventType string) bool {
 	return eventType == "permission" || eventType == "permission_batch" || eventType == "question"
 }
 
-// --- Channel Selection ---
-
-type SelectedChannels struct {
-	Interactive []models.ChannelConfig
+// needsInteraction retained for compatibility — tests reference it. Equivalent
+// to "permission or question" (not batch) after the card path removal.
+func needsInteraction(eventType string) bool {
+	return eventType == "permission" || eventType == "question"
 }
 
-func (d *Dispatcher) selectChannels(userID string) *SelectedChannels {
-	result := &SelectedChannels{}
-	d.db.Where(
-		"user_id = ? AND channel_type IN ('wecom') AND enabled = true AND deleted_at IS NULL",
-		userID,
-	).Find(&result.Interactive)
-	return result
-}
-
-// --- Dispatch Routing ---
-
-func (d *Dispatcher) dispatchNow(input DispatchInput, channels *SelectedChannels) {
-	// AI handler is already tried in Dispatch before the deferred timer is set.
-	// When this function runs (either immediately for non-deferrable events, or
-	// after the deferred timer fires), we go straight to card/notification dispatch.
-	if needsInteraction(input.EventType) && len(channels.Interactive) > 0 {
-		d.dispatchInteractive(input, channels)
-		return
-	}
-
-	// permission_batch goes through its own card path
-	if input.EventType == "permission_batch" {
-		d.dispatchPermissionBatch(input)
-		return
-	}
-
-	d.dispatchNotification(input)
-}
-
-func (d *Dispatcher) dispatchInteractive(input DispatchInput, channels *SelectedChannels) {
-	wecomUserID := d.resolveWeComUserID(input.UserID)
-	if wecomUserID == "" {
-		slog.Error("[dispatcher] cannot resolve wecom user id", "appUserID", input.UserID)
-		d.dispatchNotification(input)
-		return
-	}
-
-	for _, ch := range channels.Interactive {
-		if ch.ChannelType == "wecom" {
-			d.dispatchToWeComNew(input, wecomUserID)
-			return
-		}
-	}
-	d.dispatchNotification(input)
-}
+// --- Notification Dispatch ---
 
 func (d *Dispatcher) dispatchNotification(input DispatchInput) {
 	if d.notificationSvc != nil {
-		d.notificationSvc.TriggerNotifications(input.UserID, input.EventType, input.SessionID, input.DeviceID, input.Path, input.ActionData)
+		d.notificationSvc.TriggerNotifications(input.UserID, input.EventType, input.SessionID,
+			input.DeviceID, input.Path, input.ActionData)
 	}
 }
 
-// dispatchToWeComNew is the direct dispatch path: creates new notifications and sends cards
-func (d *Dispatcher) dispatchToWeComNew(input DispatchInput, wecomUserID string) {
-	switch input.EventType {
-	case "permission":
-		d.sendApprovalCard(input, wecomUserID)
-	case "question":
-		d.sendVoteCards(input, wecomUserID)
-	default:
-		d.sendGuidanceCard(input, wecomUserID, false)
-	}
-}
-
-// --- Permission Card (Button Interaction) ---
-
-func (d *Dispatcher) sendApprovalCard(input DispatchInput, wecomUserID string) {
-	info := extractPermissionInfo(input)
-	sessionTitle := d.fetchSessionTitle(input)
-	if sessionTitle != "" {
-		info.Description = fmt.Sprintf("会话「%s」%s", sessionTitle, info.Description)
-	}
-
-	buttons := []wecom.CardButton{
-		{Text: "批准", Key: "", Style: 1},
-		{Text: "拒绝", Key: "", Style: 3},
-		{Text: "自批准", Key: "", Style: 2},
-	}
-
-	cardData := map[string]any{
-		"card_type":  "button_interaction",
-		"main_title": map[string]string{"title": info.Title, "desc": info.Description},
-		"sub_title_text": info.Command,
-		"horizontal_content_list": info.HorizontalItems,
-		"button_list": buttons,
-	}
-
-	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:      input.UserID,
-		Type:        "permission",
-		Title:       info.Title,
-		SessionID:   input.SessionID,
-		DeviceID:    input.DeviceID,
-		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType:  "permission",
-		ActionData:  mustMarshal(input.ActionData),
-		CardData:    mustMarshal(cardData),
-	})
-	if err != nil {
-		slog.Error("[dispatcher] create permission notification failed", "error", err)
-		return
-	}
-
-	buttons[0].Key = "approve:" + n.ActionToken
-	buttons[1].Key = "reject:" + n.ActionToken
-	buttons[2].Key = "auto_approve:" + n.ActionToken
-	cardData["button_list"] = buttons
-	d.updateNotificationData(n.ActionToken, info.Title, cardData)
-
-	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
-		sessionURL := d.buildSessionURL(input)
-		taskID := fmt.Sprintf("perm_%s_%d", input.SessionID, time.Now().UnixMilli())
-		card := wecom.InteractiveCard{
-			Title:               info.Title,
-			Description:         info.Description,
-			SubTitle:            info.Command,
-			URL:                 sessionURL,
-			HorizontalContentList: info.HorizontalItems,
-			Buttons:             buttons,
-		}
-		var err error
-		if d.weComBotEnabled && d.wecomBotAdapter != nil {
-			err = d.sendWecomBotCard(wecomUserID, card, taskID)
-		} else if d.weComEnabled && d.wecomAdapter != nil {
-			err = d.wecomAdapter.SendInteractiveCard(context.Background(), wecomUserID, card, taskID)
-		}
-		if err != nil {
-			slog.Error("[dispatcher] send wecom approval card failed", "error", err)
-		}
-	}
-}
-
-// --- Question Vote Cards ---
-
-// sendVoteCards creates new notifications and sends vote_interaction cards (direct path)
-func (d *Dispatcher) sendVoteCards(input DispatchInput, wecomUserID string) {
-	questions := extractQuestionInfos(input.ActionData)
-	if len(questions) == 0 {
-		d.sendGuidanceCard(input, wecomUserID, false)
-		return
-	}
-
-	// 多题问卷走文本通知卡片
-	if len(questions) > 1 {
-		slog.Info("[dispatcher] multi-question questionnaire, using text notice card", "questionCount", len(questions))
-		d.sendSessionNoticeCard(input, wecomUserID, "会话通知", fmt.Sprintf("有 %d 道问题需要回答，请点击下方链接前往会话操作", len(questions)))
-		return
-	}
-
-	// Send notice card first, then vote card for single question
-	d.sendSessionNoticeCard(input, wecomUserID, "会话通知", "有问题需要回答")
-	d.sendSingleVoteCard(input, wecomUserID, questions[0], 0)
-}
-
-// sendSingleVoteCard creates a new notification and sends one vote_interaction card (direct path)
-func (d *Dispatcher) sendSingleVoteCard(input DispatchInput, wecomUserID string, q questionInfo, questionIndex int) {
-	title := q.Header
-	if title == "" {
-		title = q.Question
-	}
-
-	mode := 0
-	if q.Multiple {
-		mode = 1
-	}
-	options := buildVoteOptions(q.Options)
-	checkbox := wecom.WeComCheckbox{
-		QuestionKey: fmt.Sprintf("q_%d", questionIndex),
-		OptionList:  options,
-		Mode:        mode,
-	}
-	submitBtn := wecom.WeComSubmitButton{Text: "提交", Key: ""}
-
-	cardData := map[string]any{
-		"card_type":     "vote_interaction",
-		"main_title":    map[string]string{"title": title, "desc": q.Question},
-		"checkbox":      checkbox,
-		"submit_button": submitBtn,
-	}
-
-	actionData := make(map[string]any)
-	for k, v := range input.ActionData {
-		actionData[k] = v
-	}
-	actionData["questionIndex"] = questionIndex
-
-	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:      input.UserID,
-		Type:        "question",
-		Title:       title,
-		SessionID:   input.SessionID,
-		DeviceID:    input.DeviceID,
-		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType:  "question",
-		ActionData:  mustMarshal(actionData),
-		CardData:    mustMarshal(cardData),
-	})
-	if err != nil {
-		slog.Error("[dispatcher] create question notification failed", "index", questionIndex, "error", err)
-		return
-	}
-
-	submitBtn.Key = "submit:" + n.ActionToken
-	cardData["submit_button"] = submitBtn
-	d.updateNotificationData(n.ActionToken, title, cardData)
-
-	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
-		taskID := fmt.Sprintf("q_%s_%d_%d", input.SessionID, time.Now().UnixMilli(), questionIndex)
-		voteCard := wecom.VoteCard{
-			Title:        title,
-			SubTitle:     q.Question,
-			Checkbox:     checkbox,
-			SubmitButton: submitBtn,
-			ReplaceText:  "已提交",
-		}
-		var err error
-		if d.weComBotEnabled && d.wecomBotAdapter != nil {
-			err = d.sendWecomBotVoteCard(wecomUserID, voteCard, taskID)
-		} else if d.weComEnabled && d.wecomAdapter != nil {
-			err = d.wecomAdapter.SendVoteCard(context.Background(), wecomUserID, voteCard, taskID)
-		}
-		if err != nil {
-			slog.Error("[dispatcher] send wecom question card failed", "index", questionIndex, "error", err)
-		}
-	}
-}
-
-// --- Guidance Card ---
-
-func (d *Dispatcher) sendGuidanceCard(input DispatchInput, wecomUserID string, isMultiselect bool) {
-	title := "需要你的操作"
-	subTitle := "请点击下方链接在会话中查看详情"
-
-	if isMultiselect {
-		subTitle = "由于企业微信控件限制，无法在卡片中完成多选操作，请点击下方链接操作"
-	}
-
-	url := input.SessionURL
-	if url == "" && input.Path != "" {
-		url = fmt.Sprintf("%s%s", d.appURL, input.Path)
-	}
-
-	var buttons []wecom.CardButton
-	if url != "" {
-		buttons = append(buttons, wecom.CardButton{Text: "在会话中查看", Key: "", Style: 1})
-	}
-
-	cardData := map[string]any{
-		"card_type":      "button_interaction",
-		"main_title":     map[string]string{"title": title},
-		"sub_title_text": subTitle,
-		"button_list":    buttons,
-	}
-
-	n, err := d.store.Create(notification.CreateNotificationInput{
-		UserID:      input.UserID,
-		Type:        input.EventType,
-		Title:       title,
-		SessionID:   input.SessionID,
-		DeviceID:    input.DeviceID,
-		WorkspaceID: d.resolveWorkspaceID(input),
-		ActionType:  input.EventType,
-		ActionData:  mustMarshal(input.ActionData),
-		CardData:    mustMarshal(cardData),
-	})
-	if err != nil {
-		slog.Error("[dispatcher] create guidance notification failed", "error", err)
-		return
-	}
-
-	if len(buttons) > 0 {
-		buttons[0].Key = "navigate:" + n.ActionToken
-		cardData["button_list"] = buttons
-		d.updateNotificationData(n.ActionToken, title, cardData)
-	}
-
-	if d.wecomAdapter != nil || d.wecomBotAdapter != nil {
-		taskID := fmt.Sprintf("guide_%s_%d", input.SessionID, time.Now().UnixMilli())
-		card := wecom.InteractiveCard{
-			Title:       title,
-			Description: subTitle,
-			URL:         url,
-			Buttons:     buttons,
-		}
-		var err error
-		if d.weComBotEnabled && d.wecomBotAdapter != nil {
-			err = d.sendWecomBotCard(wecomUserID, card, taskID)
-		} else if d.weComEnabled && d.wecomAdapter != nil {
-			err = d.wecomAdapter.SendInteractiveCard(context.Background(), wecomUserID, card, taskID)
-		}
-		if err != nil {
-			slog.Error("[dispatcher] send wecom guidance card failed", "error", err)
-		}
-	}
-}
-
-// --- Session Notice Card (text_notice with jump_list) ---
+// --- Auto-Accept ---
 
 func (d *Dispatcher) isAutoAccept(input DispatchInput) bool {
 	if input.Path == "" || input.DeviceID == "" {
@@ -544,32 +419,6 @@ func (d *Dispatcher) autoApprovePermission(input DispatchInput) {
 	slog.Info("[dispatcher] auto-approved permission", "sessionID", input.SessionID, "permissionID", id)
 }
 
-
-// dispatchPermissionBatch handles a batch of permission requests collected by cs-cloud.
-// If autoAccept is enabled: approve all permissions via gateway proxy.
-// If autoAccept is disabled: send a single guidance card (text_notice).
-func (d *Dispatcher) dispatchPermissionBatch(input DispatchInput) {
-	if d.isAutoAccept(input) {
-		slog.Info("[dispatcher] auto-accept enabled, batch-approving permissions", "sessionID", input.SessionID)
-		d.batchApprovePermissions(input)
-		return
-	}
-
-	wecomUserID := d.resolveWeComUserID(input.UserID)
-	if wecomUserID == "" {
-		slog.Error("[dispatcher] cannot resolve wecom user id for permission batch", "appUserID", input.UserID)
-		return
-	}
-
-	count := 0
-	if perms, ok := input.ActionData["permissions"].([]any); ok {
-		count = len(perms)
-	}
-	subTitle := fmt.Sprintf("有 %d 个权限请求待处理，请点击下方链接前往会话操作", count)
-	d.sendSessionNoticeCard(input, wecomUserID, "权限请求", subTitle)
-}
-
-// batchApprovePermissions approves all permissions in a batch via gateway proxy.
 func (d *Dispatcher) batchApprovePermissions(input DispatchInput) {
 	if d.gwClient == nil || d.gwRegistry == nil {
 		return
@@ -600,190 +449,11 @@ func (d *Dispatcher) batchApprovePermissions(input DispatchInput) {
 		}
 		approved++
 	}
-	slog.Info("[dispatcher] batch auto-approved permissions", "sessionID", input.SessionID, "total", len(perms), "approved", approved)
-}
-// resolveWorkspaceID returns the workspace ID for the given input by looking up
-// userID + deviceUUID + path. Returns empty string if not found.
-func (d *Dispatcher) resolveWorkspaceID(input DispatchInput) string {
-	if input.Path == "" || input.DeviceID == "" {
-		return ""
-	}
-	normalizedPath := strings.ReplaceAll(input.Path, "\\", "/")
-	var dev models.Device
-	if err := d.db.Where("device_id = ?", input.DeviceID).First(&dev).Error; err != nil {
-		return ""
-	}
-	var ws models.Workspace
-	if err := d.db.
-		Joins("JOIN workspace_directories ON workspace_directories.workspace_id = workspaces.id").
-		Where("workspaces.user_id = ? AND workspaces.device_id = ?", input.UserID, dev.ID).
-		Where("REPLACE(workspace_directories.path, chr(92), chr(47)) = ?", normalizedPath).
-		Where("workspace_directories.deleted_at IS NULL").
-		First(&ws).Error; err != nil {
-		return ""
-	}
-	return ws.ID
-}
-
-func (d *Dispatcher) buildSessionURL(input DispatchInput) string {
-	if input.SessionURL != "" {
-		return input.SessionURL
-	}
-	wsID := d.resolveWorkspaceID(input)
-	if wsID == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s/m/workspace/%s/?session=%s", d.appURL, wsID, input.SessionID)
-}
-
-func (d *Dispatcher) fetchSessionTitle(input DispatchInput) string {
-	if d.gwClient == nil || d.gwRegistry == nil {
-		return ""
-	}
-	if input.DeviceID == "" || input.SessionID == "" {
-		return ""
-	}
-	directory := input.Path
-	proxyPath := fmt.Sprintf("/api/v1/conversations/%s", input.SessionID)
-	var result map[string]any
-	if err := gateway.ProxyDeviceSessionRequest(d.gwClient, d.gwRegistry, input.UserID, input.DeviceID, directory, "GET", proxyPath, nil, &result); err != nil {
-		slog.Warn("[dispatcher] failed to fetch session title", "sessionID", input.SessionID, "error", err)
-		return ""
-	}
-	if title, ok := result["title"].(string); ok && title != "" {
-		slog.Info("[dispatcher] fetched session title", "sessionID", input.SessionID, "title", title)
-		return title
-	}
-	return ""
-}
-
-func (d *Dispatcher) sendSessionNoticeCard(input DispatchInput, wecomUserID string, title string, subTitle string) {
-	if d.wecomAdapter == nil && d.wecomBotAdapter == nil {
-		return
-	}
-	sessionURL := d.buildSessionURL(input)
-	slog.Info("[dispatcher] session notice card", "sessionURL", sessionURL, "input.SessionURL", input.SessionURL, "input.Path", input.Path, "appURL", d.appURL)
-	if sessionURL == "" {
-		return
-	}
-
-	// Fetch session title for the subtitle
-	sessionTitle := d.fetchSessionTitle(input)
-	cardSubTitle := subTitle
-	if sessionTitle != "" {
-		cardSubTitle = fmt.Sprintf("会话「%s」%s", sessionTitle, subTitle)
-	}
-
-	taskID := fmt.Sprintf("notice_%s_%d", input.SessionID, time.Now().UnixMilli())
-	card := wecom.TextNoticeCard{
-		Title:    title,
-		SubTitle: cardSubTitle,
-		JumpList: []wecom.TextNoticeJump{
-			{Title: "点击跳转到会话页面查看", URL: sessionURL},
-		},
-	}
-	var err error
-	if d.weComBotEnabled && d.wecomBotAdapter != nil {
-		err = d.sendWecomBotTextNoticeCard(wecomUserID, card, taskID)
-	} else if d.weComEnabled && d.wecomAdapter != nil {
-		err = d.wecomAdapter.SendTextNoticeCard(context.Background(), wecomUserID, card, taskID)
-	}
-	if err != nil {
-		slog.Error("[dispatcher] send wecom session notice card failed", "error", err)
-	}
+	slog.Info("[dispatcher] batch auto-approved permissions",
+		"sessionID", input.SessionID, "total", len(perms), "approved", approved)
 }
 
 // --- Helpers ---
-
-func (d *Dispatcher) updateNotificationData(actionToken string, title string, cardData map[string]any) {
-	updates := map[string]any{"title": title}
-	if cardData != nil {
-		updates["card_data"] = mustMarshal(cardData)
-	}
-	d.db.Model(&models.SystemNotification{}).
-		Where("action_token = ?", actionToken).
-		Updates(updates)
-}
-
-type permissionInfo struct {
-	Title           string
-	Description     string
-	Command         string
-	HorizontalItems []wecom.HorizontalContentItem
-}
-
-func extractPermissionInfo(input DispatchInput) permissionInfo {
-	info := permissionInfo{Title: "权限请求"}
-	if input.ActionData == nil {
-		return info
-	}
-
-	// Extract permission type (e.g. "bash")
-	permType, _ := input.ActionData["permission"].(string)
-	if permType != "" {
-		info.Title = fmt.Sprintf("权限请求: %s", permType)
-		info.Description = fmt.Sprintf("请求使用 %s 权限", permType)
-	}
-
-	// Extract command from patterns or metadata
-	if patterns, ok := input.ActionData["patterns"].([]any); ok && len(patterns) > 0 {
-		if cmd, ok := patterns[0].(string); ok {
-			info.Command = cmd
-		}
-	}
-	if metadata, ok := input.ActionData["metadata"].(map[string]any); ok {
-		if inputField, ok := metadata["input"].(map[string]any); ok {
-			if cmd, ok := inputField["command"].(string); ok && cmd != "" {
-				info.Command = cmd
-			}
-		}
-	}
-
-	// Build horizontal content items
-	info.HorizontalItems = []wecom.HorizontalContentItem{
-		{KeyName: "权限类型", Value: permType},
-	}
-	if info.Command != "" {
-		// Truncate long commands for display
-		cmdDisplay := info.Command
-		if len([]rune(cmdDisplay)) > 40 {
-			cmdDisplay = string([]rune(cmdDisplay)[:40]) + "..."
-		}
-		info.HorizontalItems = append(info.HorizontalItems, wecom.HorizontalContentItem{
-			KeyName: "执行命令", Value: cmdDisplay,
-		})
-	}
-
-	return info
-}
-
-func buildPermissionTitle(input DispatchInput) string {
-	return extractPermissionInfo(input).Title
-}
-
-func hasMultipleSelect(questions []questionInfo) bool {
-	for _, q := range questions {
-		if q.Multiple {
-			return true
-		}
-	}
-	return false
-}
-
-func buildVoteOptions(opts []questionOption) []wecom.WeComVoteOption {
-	options := make([]wecom.WeComVoteOption, len(opts))
-	for i, opt := range opts {
-		text := opt.Label
-		if opt.Description != "" {
-			text = fmt.Sprintf("%s. %s", opt.Label, opt.Description)
-		}
-		options[i] = wecom.WeComVoteOption{
-			ID:   fmt.Sprintf("opt_%d", i),
-			Text: text,
-		}
-	}
-	return options
-}
 
 func mapEventTypeToTitle(eventType string) string {
 	switch eventType {
@@ -804,115 +474,7 @@ func mapEventTypeToTitle(eventType string) string {
 	}
 }
 
-// --- Question Data Extraction ---
-
-type questionInfo struct {
-	Question string
-	Header   string
-	Options  []questionOption
-	Multiple bool
-	Custom   bool
-}
-
-type questionOption struct {
-	Label       string
-	Description string
-}
-
-func extractQuestionInfos(data map[string]any) []questionInfo {
-	if data == nil {
-		return nil
-	}
-	questionsVal, ok := data["questions"].([]any)
-	if !ok {
-		return nil
-	}
-
-	var result []questionInfo
-	for _, q := range questionsVal {
-		qMap, ok := q.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		qi := questionInfo{
-			Question: strVal(qMap, "question"),
-			Header:   strVal(qMap, "header"),
-		}
-		if m, ok := qMap["multiple"].(bool); ok {
-			qi.Multiple = m
-		}
-		if c, ok := qMap["custom"].(bool); ok {
-			qi.Custom = c
-		}
-
-		if optsVal, ok := qMap["options"].([]any); ok {
-			for _, o := range optsVal {
-				if oMap, ok := o.(map[string]any); ok {
-					qi.Options = append(qi.Options, questionOption{
-						Label:       strVal(oMap, "label"),
-						Description: strVal(oMap, "description"),
-					})
-				}
-			}
-		}
-
-		result = append(result, qi)
-	}
-	return result
-}
-
-func strVal(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
 func mustMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
-}
-
-// sendWecomBotCard sends interactive card via wecom-bot adapter if available
-func (d *Dispatcher) sendWecomBotCard(userID string, card wecom.InteractiveCard, taskID string) error {
-	if d.wecomBotAdapter == nil {
-		return fmt.Errorf("wecom-bot adapter not available")
-	}
-
-	// Type assertion to wecom-bot adapter
-	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
-	if !ok {
-		return fmt.Errorf("invalid wecom-bot adapter type")
-	}
-
-	return adapter.SendInteractiveCard(context.Background(), userID, card, taskID)
-}
-
-// sendWecomBotVoteCard sends vote card via wecom-bot adapter if available
-func (d *Dispatcher) sendWecomBotVoteCard(userID string, card wecom.VoteCard, taskID string) error {
-	if d.wecomBotAdapter == nil {
-		return fmt.Errorf("wecom-bot adapter not available")
-	}
-
-	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
-	if !ok {
-		return fmt.Errorf("invalid wecom-bot adapter type")
-	}
-
-	return adapter.SendVoteCard(context.Background(), userID, card, taskID)
-}
-
-// sendWecomBotTextNoticeCard sends text notice card via wecom-bot adapter if available
-func (d *Dispatcher) sendWecomBotTextNoticeCard(userID string, card wecom.TextNoticeCard, taskID string) error {
-	if d.wecomBotAdapter == nil {
-		return fmt.Errorf("wecom-bot adapter not available")
-	}
-
-	adapter, ok := d.wecomBotAdapter.(*wecombot.WeComBotAdapter)
-	if !ok {
-		return fmt.Errorf("invalid wecom-bot adapter type")
-	}
-
-	return adapter.SendTextNoticeCard(context.Background(), userID, card, taskID)
 }

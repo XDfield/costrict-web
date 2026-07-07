@@ -645,47 +645,68 @@ func main() {
 
 	notificationStore := notification.NewStore(db)
 
-	// Use the same WeComAdapter instance that was registered earlier for channel module
-	var wecomAdapterForDispatcher *wecom.WeComAdapter
-	if a, ok := channel.GetAdapter("wecom"); ok {
-		wecomAdapterForDispatcher, _ = a.(*wecom.WeComAdapter)
+	// Dispatcher is DB-backed: deferred notification state lives in the
+	// deferred_notifications table. No Redis dependency — multi-pod safety
+	// comes from DB transactions (SELECT + DELETE drain inside one txn).
+	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, gatewayClient, gatewayRegistry)
+	if err := disp.Start(context.Background()); err != nil {
+		log.Fatalf("dispatcher Start: %v", err)
 	}
+	defer disp.Close()
 
-	// Get wecom-bot adapter if available
-	var wecomBotAdapterForDispatcher interface{}
-	if a, ok := channel.GetAdapter("wecom-bot"); ok {
-		wecomBotAdapterForDispatcher = a
-	}
+	// Register per-event-type managers. The dispatcher's deferred timer
+	// consults these to detect whether the event is still pending on the
+	// device before firing the AI notification — letting users who already
+	// self-handled (cs-cloud CLI, web UI) skip the redundant heads-up.
+	disp.SetEventManager("permission", dispatcher.NewPermissionManager(gatewayClient, gatewayRegistry))
+	disp.SetEventManager("permission_batch", dispatcher.NewPermissionManager(gatewayClient, gatewayRegistry))
+	disp.SetEventManager("question", dispatcher.NewQuestionManager(gatewayClient, gatewayRegistry))
 
-	disp := dispatcher.NewDispatcher(db, notificationSvc, notificationStore, cfg.AppURL, wecomAdapterForDispatcher, wecomBotAdapterForDispatcher, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, gatewayClient, gatewayRegistry, time.Duration(cfg.ClawAgent.Session.NotificationDelaySeconds)*time.Second)
-// Wire ClawAgent AI event handler into dispatcher (AI handles permission/question first, falls back to cards)
+	// Wire ClawAgent AI event handler into dispatcher. After the deferred
+	// wait window elapses (and the event is still pending), the AI handler
+	// generates the natural-language notification and streams it to the user.
 	if clawRT != nil {
-		// When the user replies before the deferred timer fires, cancel the
-		// pending card notification so the user doesn't get a redundant card.
-		clawRT.EventHandler.SetOnEventProcessed(func(sessionID string) {
-			disp.CancelDeferredNotification(sessionID)
+		// When the user replies before the debounce window elapses, drain the
+		// pending backlog so the AI notification never fires.
+		clawRT.EventHandler.SetOnEventProcessed(func(userID string) {
+			disp.CancelDeferredNotification(userID)
 		})
-		disp.SetAIEventHandler(func(ctx context.Context, userID, eventType, sessionID, deviceID, path string, actionData map[string]any) bool {
-			log.Printf("[clawagent] aiEventHandler callback invoked: eventType=%s sessionID=%s deviceID=%s", eventType, sessionID, deviceID)
-			req := clawagent.AIEventRequest{
-				UserID:     userID,
-				EventType:  eventType,
-				SessionID:  sessionID,
-				DeviceID:   deviceID,
-				Path:       path,
-				ActionData: actionData,
-			}
 
+		disp.SetAIEventHandler(func(ctx context.Context, inputs []dispatcher.DispatchInput) bool {
+			if len(inputs) == 0 {
+				return true
+			}
+			userID := inputs[0].UserID
+			log.Printf("[clawagent] aiEventHandler batch invoked: userID=%s count=%d", userID, len(inputs))
+
+			var sender channel.Sender
 			if channelModule != nil && cfg.Channels.WeComBotEnabled {
-				sender, err := channelModule.Service.CreateSenderForUser(userID, "wecom-bot")
+				s, err := channelModule.Service.CreateSenderForUser(userID, "wecom-bot")
 				if err != nil {
 					log.Printf("[clawagent] failed to create wecom-bot sender: %v", err)
 				} else {
-					req.Sender = sender
+					sender = s
 				}
 			}
 
-			if err := clawRT.EventHandler.HandleAIEvent(context.Background(), req); err != nil {
+			// Boundary conversion: dispatcher's DispatchInput → clawagent's
+			// re-declared DispatchInput (kept separate to avoid an import cycle
+			// dispatcher → clawagent → dispatcher).
+			ci := make([]clawagent.DispatchInput, 0, len(inputs))
+			for _, in := range inputs {
+				ci = append(ci, clawagent.DispatchInput{
+					UserID:      in.UserID,
+					WorkspaceID: in.WorkspaceID,
+					EventType:   in.EventType,
+					SessionID:   in.SessionID,
+					DeviceID:    in.DeviceID,
+					Path:        in.Path,
+					SessionURL:  in.SessionURL,
+					ActionData:  in.ActionData,
+				})
+			}
+
+			if err := clawRT.EventHandler.HandleAIEventBatch(ctx, userID, ci, sender); err != nil {
 				log.Printf("[clawagent] AI event handler error: %v", err)
 				return false
 			}
