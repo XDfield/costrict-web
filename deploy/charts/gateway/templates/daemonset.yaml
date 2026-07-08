@@ -49,7 +49,8 @@ spec:
               value: {{ .Values.config.port | quote }}
             - name: SERVER_URL
               value: {{ .Values.config.serverUrl | quote }}
-            # DaemonSet 模式下用 Node 名作为 Gateway ID，节点不变则 ID 不变
+            # DaemonSet 模式下用 Node 名作为 Gateway ID，节点不变则 ID 不变。
+            # 可通过 config.gatewayIdPrefix 添加前缀，例如 "gw-" 会变成 "gw-ip-10-0-1-10"。
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -59,7 +60,7 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
             - name: GATEWAY_ID
-              value: $(NODE_NAME)
+              value: "{{ .Values.config.gatewayIdPrefix }}$(NODE_NAME)"
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
             # Server 通过 Pod IP 直接回连该 Gateway
