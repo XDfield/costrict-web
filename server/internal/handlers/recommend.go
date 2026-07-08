@@ -178,6 +178,8 @@ func (h *RecommendHandler) GetNewAndNoteworthy(c *gin.Context) {
 // @Param        body  body      object{actionType=string,context=string,searchQuery=string,sessionId=string,durationMs=integer,rating=integer,feedback=string,metadata=object}  true  "Behavior data"
 // @Success      201   {object}  models.BehaviorLog
 // @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      429   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items/{id}/behavior [post]
 func (h *RecommendHandler) LogBehavior(c *gin.Context) {
