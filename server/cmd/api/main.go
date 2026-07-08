@@ -591,6 +591,12 @@ func main() {
 		store = gateway.NewMemoryStore()
 		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
 	}
+
+	// Wire the Redis-backed rate limiter for trust behavior writes (SRC-2026-4791
+	// P1-1). The handler applies it only to trust actions (not view/click), keyed
+	// by user id; a nil redisClient (REDIS_URL unset) makes it a no-op (fail-open).
+	recommendHandler.SetBehaviorRateLimiter(redisClient, 30)
+
 	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
 		for _, id := range deviceIDs {
 			if err := deviceSvc.SetOffline(id); err != nil {

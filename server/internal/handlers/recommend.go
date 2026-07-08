@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -10,6 +11,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
 // maxFeedbackLen bounds the free-text feedback stored per behavior log.
@@ -19,6 +21,11 @@ const maxFeedbackLen = 1000
 type RecommendHandler struct {
 	recommendSvc *services.RecommendService
 	behaviorSvc  *services.BehaviorService
+
+	// Rate limiter for trust behavior writes (SRC-2026-4791 P1-1). Wired after the
+	// Redis client is built; a nil client makes AllowBehavior a no-op (fail-open).
+	rateLimitRedis  *redis.Client
+	rateLimitPerMin int
 }
 
 // NewRecommendHandler creates a new recommend handler
@@ -27,6 +34,13 @@ func NewRecommendHandler(recommendSvc *services.RecommendService, behaviorSvc *s
 		recommendSvc: recommendSvc,
 		behaviorSvc:  behaviorSvc,
 	}
+}
+
+// SetBehaviorRateLimiter wires the Redis-backed limiter for POST /items/:id/behavior.
+// Called once after the Redis client exists; perMinute <= 0 or a nil client disables it.
+func (h *RecommendHandler) SetBehaviorRateLimiter(rdb *redis.Client, perMinute int) {
+	h.rateLimitRedis = rdb
+	h.rateLimitPerMin = perMinute
 }
 
 // GetRecommendations godoc
@@ -164,6 +178,8 @@ func (h *RecommendHandler) GetNewAndNoteworthy(c *gin.Context) {
 // @Param        body  body      object{actionType=string,context=string,searchQuery=string,sessionId=string,durationMs=integer,rating=integer,feedback=string,metadata=object}  true  "Behavior data"
 // @Success      201   {object}  models.BehaviorLog
 // @Failure      400   {object}  object{error=string}
+// @Failure      401   {object}  object{error=string}
+// @Failure      429   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items/{id}/behavior [post]
 func (h *RecommendHandler) LogBehavior(c *gin.Context) {
@@ -204,6 +220,17 @@ func (h *RecommendHandler) LogBehavior(c *gin.Context) {
 	if uid == "" && actionType.RequiresAuth() {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
+	}
+
+	// SRC-2026-4791 P1-1: cap the rate of TRUST writes per authenticated user so a
+	// single account can't bulk-spam install/feedback/success/fail. Browsing
+	// signals (view/click) are deliberately NOT throttled — otherwise a burst of
+	// page views could exhaust the budget and 429 a legitimate install. Fails open.
+	if actionType.RequiresAuth() {
+		if !middleware.AllowBehavior(c.Request.Context(), h.rateLimitRedis, "ratelimit:behavior:u:"+uid, h.rateLimitPerMin, time.Minute) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests"})
+			return
+		}
 	}
 
 	// rating and free-text feedback only belong to feedback actions. Drop both for
