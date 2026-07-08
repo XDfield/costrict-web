@@ -132,36 +132,37 @@ func countsTowardItemStats(a models.ActionType) bool {
 	}
 }
 
-// recountDistinctUserColumn recomputes a denormalized counter on capability_items
-// as the number of DISTINCT authenticated users who performed `action` on the
-// item, read straight from the append-only log.
+// isFirstUserAction reports whether the just-logged row is this user's FIRST
+// occurrence of actionType on itemID. LogBehavior inserts the log row before
+// calling updateItemStats, so a count of exactly 1 means "first time". This keeps
+// install_count / preview_count as distinct-user counts with a cheap, bounded
+// query (the composite index idx_behavior_item_action_user makes it an index-only
+// scan of just this user's rows for the item), instead of recomputing
+// COUNT(DISTINCT) over every viewer on each write (SRC-2026-4791 P1-1).
 //
-// This is idempotent and race-safe: two concurrent writers each recompute from
-// the authoritative log and converge on the correct value, so a double-click or
-// retry can't leave the counter under-counted the way a read-then-increment can.
-// Anonymous/NULL rows are excluded (SRC-2026-4791 P1-1). `column` is a fixed
-// internal identifier, never user input.
-func (s *BehaviorService) recountDistinctUserColumn(itemID string, action models.ActionType, column string) {
-	sub := gorm.Expr(
-		"(SELECT COUNT(DISTINCT user_id) FROM behavior_logs WHERE item_id = ? AND action_type = ? AND COALESCE(user_id, ?) <> ?)",
-		itemID, action, models.AnonymousUserID, models.AnonymousUserID,
-	)
-	if err := s.db.Model(&models.CapabilityItem{}).
-		Where("id = ?", itemID).
-		UpdateColumn(column, sub).Error; err != nil {
-		logger.Warn("[behavior] recount %s failed item=%s: %v", column, itemID, err)
+// Concurrency: two in-flight actions from the same user can race and produce a
+// rare off-by-one (both see 2 rows, both skip) — accepted for a denormalized
+// counter and corrected by the P2 recompute/backfill.
+func (s *BehaviorService) isFirstUserAction(itemID, userID string, action models.ActionType) bool {
+	var n int64
+	if err := s.db.Model(&models.BehaviorLog{}).
+		Where("item_id = ? AND user_id = ? AND action_type = ?", itemID, userID, action).
+		Count(&n).Error; err != nil {
+		// Can't tell if this is the first action — skip the bump (avoid over-count)
+		// but log it so the undercount is observable.
+		logger.Warn("[behavior] first-action count failed item=%s user=%s action=%s: %v", itemID, userID, action, err)
+		return false
 	}
+	return n == 1
 }
 
 // updateItemStats updates item statistics based on behavior.
 //
 // SRC-2026-4791: the denormalized counters (preview_count, install_count) and
 // experience_score are publicly exposed and drive item-list sorting and
-// trending/popularity ranking. Anonymous actions must never move them, or an
-// unauthenticated caller could forge them (e.g. flooding anonymous view via
-// /behavior or anonymous install via the public /download endpoint) to game
-// the ranking. Anonymous rows are still logged for raw telemetry, they just
-// don't affect these aggregates.
+// trending/popularity ranking. They are kept as DISTINCT-user counts (a single
+// account can't self-inflate them). Anonymous actions never reach the counter
+// updates (guarded below) — they are still logged for raw telemetry.
 func (s *BehaviorService) updateItemStats(itemID string, actionType models.ActionType, userID string) {
 	db := s.db
 	if db == nil {
@@ -175,14 +176,27 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 
 	switch actionType {
 	case models.ActionView:
-		// preview_count = distinct authenticated viewers (reloading a page or one
-		// account can't inflate it).
-		s.recountDistinctUserColumn(itemID, models.ActionView, "preview_count")
+		// preview_count = distinct authenticated viewers: only the user's first view
+		// bumps it, so reloading a page (or one account) can't inflate it.
+		if s.isFirstUserAction(itemID, userID, models.ActionView) {
+			if err := db.Model(&models.CapabilityItem{}).
+				Where("id = ?", itemID).
+				UpdateColumn("preview_count", gorm.Expr("preview_count + 1")).Error; err != nil {
+				logger.Warn("[behavior] update preview_count failed item=%s: %v", itemID, err)
+			}
+		}
 
 	case models.ActionInstall:
-		// install_count = distinct authenticated installers (one account, or
-		// repeated /download hits, can't pump the ranking signal).
-		s.recountDistinctUserColumn(itemID, models.ActionInstall, "install_count")
+		// install_count = distinct authenticated installers: only the user's first
+		// install bumps it, so one account (or repeated /download hits) can't pump
+		// the ranking signal.
+		if s.isFirstUserAction(itemID, userID, models.ActionInstall) {
+			if err := db.Model(&models.CapabilityItem{}).
+				Where("id = ?", itemID).
+				UpdateColumn("install_count", gorm.Expr("install_count + 1")).Error; err != nil {
+				logger.Warn("[behavior] update install_count failed item=%s: %v", itemID, err)
+			}
+		}
 
 	case models.ActionSuccess, models.ActionFail:
 		s.updateExperienceScore(itemID)
