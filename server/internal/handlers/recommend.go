@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -10,6 +11,9 @@ import (
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
+
+// maxFeedbackLen bounds the free-text feedback stored per behavior log.
+const maxFeedbackLen = 1000
 
 // RecommendHandler handles recommendation requests
 type RecommendHandler struct {
@@ -181,20 +185,66 @@ func (h *RecommendHandler) LogBehavior(c *gin.Context) {
 		return
 	}
 
-	// Get user ID
+	// Reject unknown action types so arbitrary strings can't pollute the log.
+	actionType := models.ActionType(req.ActionType)
+	if !actionType.IsValid() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid actionType"})
+		return
+	}
+
+	// Get user ID (OptionalAuth sets it only when a valid token is present).
 	userID, _ := c.Get(middleware.UserIDKey)
 	uid, _ := userID.(string)
+
+	// SRC-2026-4791: trust/counting signals (install, success, feedback, ...)
+	// must be attributed to an authenticated user. Anonymous writes of these
+	// would let anyone forge install counts, ratings and success rates to game
+	// trending/recommendations. Low-trust browsing signals (view/click) may
+	// still be recorded anonymously.
+	if uid == "" && actionType.RequiresAuth() {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// rating and free-text feedback only belong to feedback actions. Drop both for
+	// any other action type so they can't be attached to install/view/click rows
+	// and surface through the public rating/RecentFeedback stats panel
+	// (SRC-2026-4791).
+	rating := 0
+	feedback := ""
+	if actionType == models.ActionFeedback {
+		rating = req.Rating
+		if rating < 0 {
+			rating = 0
+		} else if rating > 5 {
+			rating = 5
+		}
+
+		// Bound free-text feedback so a single request can't store an unbounded
+		// blob. req.Feedback is valid UTF-8 (JSON-decoded); cut on a rune boundary
+		// so we don't split a multibyte character into invalid UTF-8, which
+		// PostgreSQL rejects on insert. Back up from the cut to the last rune start
+		// (at most 3 bytes) instead of rescanning the whole slice.
+		feedback = req.Feedback
+		if len(feedback) > maxFeedbackLen {
+			end := maxFeedbackLen
+			for end > 0 && !utf8.RuneStart(feedback[end]) {
+				end--
+			}
+			feedback = feedback[:end]
+		}
+	}
 
 	behaviorReq := services.LogBehaviorRequest{
 		UserID:      uid,
 		ItemID:      itemID,
-		ActionType:  models.ActionType(req.ActionType),
+		ActionType:  actionType,
 		Context:     models.ContextType(req.Context),
 		SearchQuery: req.SearchQuery,
 		SessionID:   req.SessionID,
 		DurationMs:  req.DurationMs,
-		Rating:      req.Rating,
-		Feedback:    req.Feedback,
+		Rating:      rating,
+		Feedback:    feedback,
 		Metadata:    req.Metadata,
 	}
 

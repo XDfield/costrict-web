@@ -11,9 +11,9 @@ import (
 
 // RecommendService provides multi-strategy recommendations
 type RecommendService struct {
-	db           *gorm.DB
-	behaviorSvc  *BehaviorService
-	searchSvc    *SearchService
+	db          *gorm.DB
+	behaviorSvc *BehaviorService
+	searchSvc   *SearchService
 }
 
 // NewRecommendService creates a new recommend service
@@ -50,9 +50,9 @@ type RecommendResponse struct {
 // RecommendedItem represents a recommended item with metadata
 type RecommendedItem struct {
 	models.CapabilityItem
-	Score     float64 `json:"score"`
-	Reason    string  `json:"reason"`
-	Strategy  string  `json:"strategy"`
+	Score    float64 `json:"score"`
+	Reason   string  `json:"reason"`
+	Strategy string  `json:"strategy"`
 }
 
 // GetRecommendations returns personalized recommendations using multiple strategies
@@ -126,8 +126,8 @@ func (s *RecommendService) collaborativeFiltering(ctx context.Context, req Recom
 	var similarUserIDs []string
 	s.db.Model(&models.BehaviorLog{}).
 		Select("user_id").
-		Where("user_id != ? AND item_id IN (SELECT item_id FROM behavior_logs WHERE user_id = ?)",
-			req.UserID, req.UserID).
+		Where("user_id != ? AND COALESCE(user_id, ?) <> ? AND item_id IN (SELECT item_id FROM behavior_logs WHERE user_id = ?)",
+			req.UserID, models.AnonymousUserID, models.AnonymousUserID, req.UserID).
 		Group("user_id").
 		Having("COUNT(DISTINCT item_id) >= 2").
 		Order("COUNT(*) DESC").
@@ -228,7 +228,7 @@ func (s *RecommendService) popularityBased(ctx context.Context, req RecommendReq
 
 	query := s.db.Model(&models.CapabilityItem{}).
 		Select("capability_items.*, COUNT(bl.id) as recent_installs").
-		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.action_type = 'install' AND bl.created_at > ?", thirtyDaysAgo).
+		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.action_type = 'install' AND bl.created_at > ? AND COALESCE(bl.user_id, ?) <> ?", thirtyDaysAgo, models.AnonymousUserID, models.AnonymousUserID).
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
 		Order("recent_installs DESC, capability_items.install_count DESC").
@@ -339,9 +339,12 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize 
 		return nil, 0, err
 	}
 
+	// Exclude anonymous behavior rows from the trending signal so unauthenticated
+	// writes can't inflate an item's recent activity to game the ranking
+	// (SRC-2026-4791).
 	query := database.GetDB().Model(&models.CapabilityItem{}).
 		Select("capability_items.*, COUNT(bl.id) as recent_activity").
-		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.created_at > ?", sevenDaysAgo).
+		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.created_at > ? AND COALESCE(bl.user_id, ?) <> ?", sevenDaysAgo, models.AnonymousUserID, models.AnonymousUserID).
 		Where("capability_items.status = ?", "active").
 		Group("capability_items.id").
 		Order("recent_activity DESC, capability_items.install_count DESC").

@@ -59,7 +59,7 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 	// Handle empty strings for UUID fields - convert to valid format or skip
 	userID := req.UserID
 	if userID == "" {
-		userID = "anonymous" // Use a placeholder for anonymous users
+		userID = models.AnonymousUserID // Use a placeholder for anonymous users
 	}
 
 	log := &models.BehaviorLog{
@@ -105,20 +105,32 @@ func (s *BehaviorService) LogBehavior(ctx context.Context, req LogBehaviorReques
 	// Keep aggregate counters in sync without blocking the request path in production.
 	if req.ItemID != "" {
 		if s.db.Dialector.Name() == "postgres" {
-			go s.updateItemStats(req.ItemID, req.ActionType)
+			go s.updateItemStats(req.ItemID, req.ActionType, userID)
 		} else {
-			s.updateItemStats(req.ItemID, req.ActionType)
+			s.updateItemStats(req.ItemID, req.ActionType, userID)
 		}
 	}
 
 	return log, nil
 }
 
-// updateItemStats updates item statistics based on behavior
-func (s *BehaviorService) updateItemStats(itemID string, actionType models.ActionType) {
+// updateItemStats updates item statistics based on behavior.
+//
+// SRC-2026-4791: the denormalized counters (preview_count, install_count) and
+// experience_score are publicly exposed and drive item-list sorting and
+// trending/popularity ranking. Anonymous actions must never move them, or an
+// unauthenticated caller could forge them (e.g. flooding anonymous view via
+// /behavior or anonymous install via the public /download endpoint) to game
+// the ranking. Anonymous rows are still logged for raw telemetry, they just
+// don't affect these aggregates.
+func (s *BehaviorService) updateItemStats(itemID string, actionType models.ActionType, userID string) {
 	db := s.db
 	if db == nil {
 		logger.Warn("[behavior] skip aggregate update: db is nil item=%s action=%s", itemID, actionType)
+		return
+	}
+
+	if userID == "" || userID == models.AnonymousUserID {
 		return
 	}
 
@@ -292,22 +304,29 @@ func (s *BehaviorService) updateExperienceScore(itemID string) {
 		return
 	}
 
-	// Calculate success rate
+	// Calculate success rate. Exclude anonymous rows so unauthenticated writes
+	// can't skew the score. COALESCE treats a NULL user_id (legacy/unattributable
+	// rows) the same as the anonymous sentinel — untrusted, so excluded — instead
+	// of letting SQL three-valued logic drop them implicitly (SRC-2026-4791).
 	var total, success int64
 	db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND action_type IN ?", itemID, []models.ActionType{models.ActionSuccess, models.ActionFail}).
+		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND action_type IN ?", itemID, models.AnonymousUserID, models.AnonymousUserID, []models.ActionType{models.ActionSuccess, models.ActionFail}).
 		Count(&total)
 
 	db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND action_type = ?", itemID, models.ActionSuccess).
+		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND action_type = ?", itemID, models.AnonymousUserID, models.AnonymousUserID, models.ActionSuccess).
 		Count(&success)
 
+	// Always write the recomputed score (0 when there is no trusted data) so an
+	// item whose only success/fail history was anonymous is corrected down rather
+	// than keeping a previously inflated value.
+	score := 0.0
 	if total > 0 {
-		score := float64(success) / float64(total)
-		db.Model(&models.CapabilityItem{}).
-			Where("id = ?", itemID).
-			Update("experience_score", score)
+		score = float64(success) / float64(total)
 	}
+	db.Model(&models.CapabilityItem{}).
+		Where("id = ?", itemID).
+		Update("experience_score", score)
 }
 
 // GetUserBehaviorSummary returns a summary of user behavior
@@ -370,7 +389,11 @@ func (s *BehaviorService) GetUserBehaviorSummary(ctx context.Context, userID str
 func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID string) (*ItemBehaviorStats, error) {
 	stats := &ItemBehaviorStats{ItemID: itemID}
 
-	// Count by action type
+	// Count by action type. Exclude anonymous/unattributable rows so unauthenticated
+	// writes (or historically injected ones) can't inflate the public stats. This
+	// mirrors the denormalized counters, which also only move for authenticated
+	// activity, so stats.Views/Installs stay consistent with previewCount/installCount
+	// (SRC-2026-4791).
 	actionCounts := make(map[models.ActionType]int64)
 	var results []struct {
 		ActionType models.ActionType
@@ -378,7 +401,7 @@ func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID strin
 	}
 	s.db.Model(&models.BehaviorLog{}).
 		Select("action_type, COUNT(*) as count").
-		Where("item_id = ?", itemID).
+		Where("item_id = ? AND COALESCE(user_id, ?) <> ?", itemID, models.AnonymousUserID, models.AnonymousUserID).
 		Group("action_type").
 		Scan(&results)
 
@@ -402,15 +425,15 @@ func (s *BehaviorService) GetItemBehaviorStats(ctx context.Context, itemID strin
 		stats.SuccessRate = float64(stats.Successes) / float64(total)
 	}
 
-	// Average rating
+	// Average rating (authenticated rows only).
 	s.db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND rating > 0", itemID).
+		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND rating > 0", itemID, models.AnonymousUserID, models.AnonymousUserID).
 		Select("AVG(rating)").
 		Scan(&stats.AverageRating)
 
-	// Recent feedback
+	// Recent feedback (authenticated rows only).
 	s.db.Model(&models.BehaviorLog{}).
-		Where("item_id = ? AND feedback != ''", itemID).
+		Where("item_id = ? AND COALESCE(user_id, ?) <> ? AND feedback != ''", itemID, models.AnonymousUserID, models.AnonymousUserID).
 		Order("created_at DESC").
 		Limit(10).
 		Pluck("feedback", &stats.RecentFeedback)
