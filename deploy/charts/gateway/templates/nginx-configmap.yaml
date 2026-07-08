@@ -12,8 +12,12 @@ metadata:
 data:
   nginx.conf: |
     worker_processes auto;
-    error_log /var/log/nginx/error.log notice;
-    pid /run/nginx.pid;
+    # Stock openresty image runs as root by default; this chart runs the
+    # container as UID 1000 (nginx-deployment.yaml securityContext), so all
+    # writable paths must live under /tmp (an emptyDir mounted writable).
+    # Logs go to stderr/stdout so `kubectl logs` can capture them.
+    error_log /dev/stderr notice;
+    pid /tmp/nginx.pid;
 
     events {
         worker_connections 1024;
@@ -22,6 +26,15 @@ data:
     http {
         include /usr/local/openresty/nginx/conf/mime.types;
         default_type application/octet-stream;
+
+        access_log /dev/stdout;
+
+        # Redirect every runtime-temp path off the read-only prefix into /tmp.
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path       /tmp/proxy_temp;
+        fastcgi_temp_path     /tmp/fastcgi_temp;
+        uwsgi_temp_path       /tmp/uwsgi_temp;
+        scgi_temp_path        /tmp/scgi_temp;
 
         # DNS resolver for Kubernetes headless Service lookups
         resolver {{ .Values.nginxRouter.resolver }} valid=5s;
@@ -77,8 +90,13 @@ data:
                 state:set("ips", encoded, ttl_seconds)
             end
 
-            discover_and_update()
-            local ok, err = ngx.timer.every(refresh_interval, discover_and_update)
+            -- Defer first discovery into a timer context; UDP sockets (used by
+            -- resty.dns.resolver) are not available in init_worker_by_lua*.
+            local ok, err = ngx.timer.at(0, discover_and_update)
+            if not ok then
+                ngx.log(ngx.ERR, "failed to create initial discovery timer: ", err)
+            end
+            ok, err = ngx.timer.every(refresh_interval, discover_and_update)
             if not ok then
                 ngx.log(ngx.ERR, "failed to create discovery timer: ", err)
             end
