@@ -58,6 +58,9 @@ config:
   port: "8081"
   serverUrl: "http://costrict-web-api:8080"
   gatewayId: ""
+  # DaemonSet 模式下 Gateway ID 默认使用 Node 名；设置前缀后变为 "{prefix}{nodeName}"。
+  # 留空时保持原来的 Node 名行为。
+  gatewayIdPrefix: ""
   endpoint: ""
   internalUrl: ""
   region: "default"
