@@ -51,6 +51,11 @@ spec:
               mountPath: /usr/local/openresty/site/lualib/router.lua
               subPath: router.lua
               readOnly: true
+            # Writable scratch dir for nginx pid + temp files; required because
+            # the stock openresty image's prefix is root-owned and we run as
+            # UID 1000 with all capabilities dropped.
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /health
@@ -78,4 +83,6 @@ spec:
         - name: config
           configMap:
             name: {{ .Release.Name }}-nginx-router-config
+        - name: tmp
+          emptyDir: {}
 {{- end }}
