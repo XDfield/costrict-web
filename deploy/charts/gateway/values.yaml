@@ -6,6 +6,10 @@ replicaCount: 1
 # When enabled, one Gateway Pod is scheduled per Node and replicaCount is ignored.
 daemonSet:
   enabled: false
+  # Node selector applied only when DaemonSet mode is enabled.
+  # Use this to restrict Gateway Pods to nodes that also run the API service.
+  # If empty, falls back to the global nodeSelector.
+  nodeSelector: {}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
