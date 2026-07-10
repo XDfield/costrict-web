@@ -15,7 +15,19 @@ type Config struct {
 	Region         string // 网关所属区域，用于就近分配和区域隔离
 	Capacity       int    // 网关最大连接容量，超过容量后不再分配新设备
 	ServerURL      string // costrict-web-api 服务地址，用于注册和心跳
-	InternalSecret string // 与 Server 通信的共享密钥，用于内部接口认证
+	InternalSecret string        // 与 Server 通信的共享密钥，用于内部接口认证
+	Nacos          NacosConfig   // Nacos 动态端点解析配置
+}
+
+// NacosConfig configures dynamic endpoint resolution via Nacos.
+// When ServerAddr and DataID are non-empty, the gateway will fetch the
+// endpoint from Nacos and prefer it over the GATEWAY_ENDPOINT env var.
+type NacosConfig struct {
+	ServerAddr  string // e.g. "nacos-headless.nacos.svc.cluster.local:8848"
+	NamespaceID string // empty for public namespace
+	Group       string // defaults to "DEFAULT_GROUP"
+	DataID      string // required to enable Nacos lookup
+	TimeoutMs   uint64 // request timeout, defaults to 5000
 }
 
 func LoadConfig() *Config {
@@ -31,6 +43,13 @@ func LoadConfig() *Config {
 		Capacity:       getEnvInt("GATEWAY_CAPACITY", 1000),
 		ServerURL:      getEnv("SERVER_URL", "http://localhost:8080"),
 		InternalSecret: getEnv("INTERNAL_SECRET", ""),
+		Nacos: NacosConfig{
+			ServerAddr:  getEnv("GATEWAY_NACOS_SERVER_ADDR", ""),
+			NamespaceID: getEnv("GATEWAY_NACOS_NAMESPACE_ID", ""),
+			Group:       getEnv("GATEWAY_NACOS_GROUP", "DEFAULT_GROUP"),
+			DataID:      getEnv("GATEWAY_NACOS_DATA_ID", ""),
+			TimeoutMs:   getEnvUint64("GATEWAY_NACOS_TIMEOUT_MS", 5000),
+		},
 	}
 }
 
@@ -71,6 +90,15 @@ func getEnv(key, defaultValue string) string {
 func getEnvInt(key string, defaultValue int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultValue
+}
+
+func getEnvUint64(key string, defaultValue uint64) uint64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			return n
 		}
 	}
