@@ -52,6 +52,18 @@ spec:
               value: {{ .Values.config.gatewayId | quote }}
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
+            {{- if .Values.config.nacos.enabled }}
+            - name: GATEWAY_NACOS_SERVER_ADDR
+              value: {{ .Values.config.nacos.serverAddr | quote }}
+            - name: GATEWAY_NACOS_NAMESPACE_ID
+              value: {{ .Values.config.nacos.namespaceId | quote }}
+            - name: GATEWAY_NACOS_GROUP
+              value: {{ .Values.config.nacos.group | quote }}
+            - name: GATEWAY_NACOS_DATA_ID
+              value: {{ .Values.config.nacos.dataID | quote }}
+            - name: GATEWAY_NACOS_TIMEOUT_MS
+              value: {{ .Values.config.nacos.timeoutMs | quote }}
+            {{- end }}
             - name: GATEWAY_INTERNAL_URL
               value: {{ .Values.config.internalUrl | quote }}
             - name: GATEWAY_REGION
