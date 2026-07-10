@@ -29,6 +29,12 @@ func main() {
 	cfg := gw.LoadConfig()
 	manager := gw.NewTunnelManager()
 
+	endpoint, err := gw.NewEndpointResolver().Resolve(cfg)
+	if err != nil {
+		log.Fatalf("[Gateway] failed to resolve endpoint: %v", err)
+	}
+	log.Printf("[Gateway] resolved endpoint: %s", endpoint)
+
 	// Start HTTP server first (for health checks)
 	r := gw.SetupRouter(manager, cfg)
 	srv := &http.Server{
@@ -44,10 +50,10 @@ func main() {
 	}()
 
 	// Register with server in background
-	registerWithRetry(cfg)
+	registerWithRetry(cfg, endpoint)
 
 	stopHeartbeat := make(chan struct{})
-	go heartbeatLoop(cfg, manager, stopHeartbeat)
+	go heartbeatLoop(cfg, manager, endpoint, stopHeartbeat)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
@@ -66,19 +72,19 @@ func main() {
 	log.Printf("[Gateway] shutdown complete")
 }
 
-func registerWithRetry(cfg *gw.Config) {
+func registerWithRetry(cfg *gw.Config, endpoint string) {
 	for {
-		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); err != nil {
+		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); err != nil {
 			log.Printf("[Gateway] register failed, retrying in 5s: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		log.Printf("[Gateway] registered with server %s as %s", cfg.ServerURL, cfg.GatewayID)
+		log.Printf("[Gateway] registered with server %s as %s (endpoint=%s)", cfg.ServerURL, cfg.GatewayID, endpoint)
 		return
 	}
 }
 
-func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, stop <-chan struct{}) {
+func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, endpoint string, stop <-chan struct{}) {
 	ticker := time.NewTicker(gw.HeartbeatInterval * time.Second)
 	defer ticker.Stop()
 	var lastEpoch int64
@@ -91,7 +97,7 @@ func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, stop <-chan struct
 		epoch, err := gw.Heartbeat(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret, manager.Count())
 		if err != nil {
 			log.Printf("[Gateway] heartbeat failed: %v, re-registering...", err)
-			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, cfg.Endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); regErr != nil {
+			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); regErr != nil {
 				log.Printf("[Gateway] re-register failed: %v", regErr)
 				continue
 			}
