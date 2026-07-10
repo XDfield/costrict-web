@@ -48,8 +48,12 @@ spec:
               value: {{ .Values.config.port | quote }}
             - name: SERVER_URL
               value: {{ .Values.config.serverUrl | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: GATEWAY_ID
-              value: {{ .Values.config.gatewayId | quote }}
+              value: "{{ .Values.config.gatewayIdPrefix }}$(POD_NAME)"
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
             - name: GATEWAY_INTERNAL_URL
