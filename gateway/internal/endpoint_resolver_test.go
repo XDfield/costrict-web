@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -198,15 +199,115 @@ func TestResolve_NacosServerAddrVariants(t *testing.T) {
 	}
 }
 
-func TestNewEndpointResolverWithClient_NilClient(t *testing.T) {
-	resolver := NewEndpointResolverWithClient(nil)
-	cfg := &Config{Endpoint: "http://gateway.example.com:8081"}
+func TestResolve_NacosInvalidEndpoint(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string
+	}{
+		{name: "missing scheme", response: "gateway.example.com"},
+		{name: "invalid scheme", response: "ftp://gateway.example.com"},
+		{name: "missing host", response: "http://"},
+	}
 
-	got, err := resolver.Resolve(cfg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, tc.response)
+			}))
+			defer server.Close()
+
+			resolver := NewEndpointResolverWithClient(server.Client())
+			cfg := &Config{
+				Endpoint: "http://static.example.com:8081",
+				Nacos: NacosConfig{
+					ServerAddr: server.URL,
+					DataID:     "gateway-endpoint",
+					Group:      "DEFAULT_GROUP",
+					TimeoutMs:  5000,
+				},
+			}
+
+			_, err := resolver.Resolve(cfg)
+			if err == nil {
+				t.Fatal("expected error for invalid endpoint")
+			}
+		})
+	}
+}
+
+func TestResolve_NacosAuthParams(t *testing.T) {
+	var captured url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "http://resolved.example.com:8081")
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		Endpoint: "http://static.example.com:8081",
+		Nacos: NacosConfig{
+			ServerAddr:  server.URL,
+			DataID:      "gateway-endpoint",
+			Group:       "DEFAULT_GROUP",
+			TimeoutMs:   5000,
+			Username:    "user",
+			Password:    "pass",
+			AccessToken: "token123",
+		},
+	}
+
+	_, err := resolver.Resolve(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != cfg.Endpoint {
-		t.Fatalf("expected endpoint %q, got %q", cfg.Endpoint, got)
+
+	if got := captured.Get("username"); got != "user" {
+		t.Fatalf("expected username %q, got %q", "user", got)
 	}
+	if got := captured.Get("password"); got != "pass" {
+		t.Fatalf("expected password %q, got %q", "pass", got)
+	}
+	if got := captured.Get("accessToken"); got != "token123" {
+		t.Fatalf("expected accessToken %q, got %q", "token123", got)
+	}
+}
+
+func TestResolve_NacosDefaultPort(t *testing.T) {
+	transport := &captureTransport{}
+	resolver := NewEndpointResolverWithClient(&http.Client{Transport: transport}).(*defaultEndpointResolver)
+	cfg := &Config{
+		Endpoint: "http://static.example.com:8081",
+		Nacos: NacosConfig{
+			ServerAddr: "nacos.example.com",
+			DataID:     "gateway-endpoint",
+			Group:      "DEFAULT_GROUP",
+			TimeoutMs:  1000,
+		},
+	}
+
+	_, err := resolver.Resolve(cfg)
+	if err == nil {
+		t.Fatal("expected error because captureTransport does not return a response")
+	}
+
+	gotURL := transport.lastURL
+	if gotURL == "" {
+		t.Fatal("expected a request URL to be captured")
+	}
+	if !strings.Contains(gotURL, "nacos.example.com:8848") {
+		t.Fatalf("expected default port 8848 in URL %q", gotURL)
+	}
+}
+
+type captureTransport struct {
+	lastURL string
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.lastURL = req.URL.String()
+	return nil, fmt.Errorf("intentional transport failure")
 }

@@ -54,7 +54,25 @@ func (r *defaultEndpointResolver) Resolve(cfg *Config) (string, error) {
 		return "", errors.New("Nacos returned empty endpoint")
 	}
 
+	if err := validateEndpoint(endpoint); err != nil {
+		return "", err
+	}
+
 	return endpoint, nil
+}
+
+func validateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("Nacos returned invalid endpoint URL %q: %w", endpoint, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("Nacos returned invalid endpoint URL %q: scheme must be http or https", endpoint)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("Nacos returned invalid endpoint URL %q: missing host", endpoint)
+	}
+	return nil
 }
 
 func nacosEnabled(n NacosConfig) bool {
@@ -81,6 +99,13 @@ func resolveFromNacos(client *http.Client, n NacosConfig) (string, error) {
 	q.Set("group", n.Group)
 	if n.NamespaceID != "" {
 		q.Set("tenant", n.NamespaceID)
+	}
+	if n.AccessToken != "" {
+		q.Set("accessToken", n.AccessToken)
+	}
+	if n.Username != "" {
+		q.Set("username", n.Username)
+		q.Set("password", n.Password)
 	}
 	base.RawQuery = q.Encode()
 

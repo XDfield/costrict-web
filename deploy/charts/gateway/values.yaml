@@ -77,6 +77,9 @@ config:
     group: "DEFAULT_GROUP"  # config group
     dataID: ""              # config data ID
     timeoutMs: 5000
+    username: ""            # optional Nacos auth username
+    password: ""            # optional Nacos auth password
+    accessToken: ""         # optional Nacos auth access token
 
 env: []
 envFrom: []

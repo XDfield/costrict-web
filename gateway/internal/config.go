@@ -8,15 +8,15 @@ import (
 )
 
 type Config struct {
-	GatewayID      string // 网关唯一标识符，用于在 API 服务中注册和识别
-	Port           string // 网关服务监听端口
-	Endpoint       string // 网关外部访问地址，客户端通过此地址建立 WebSocket 隧道连接
-	InternalURL    string // 网关内部访问地址，API 服务通过此地址代理请求到设备
-	Region         string // 网关所属区域，用于就近分配和区域隔离
-	Capacity       int    // 网关最大连接容量，超过容量后不再分配新设备
-	ServerURL      string // costrict-web-api 服务地址，用于注册和心跳
-	InternalSecret string        // 与 Server 通信的共享密钥，用于内部接口认证
-	Nacos          NacosConfig   // Nacos 动态端点解析配置
+	GatewayID      string      // 网关唯一标识符，用于在 API 服务中注册和识别
+	Port           string      // 网关服务监听端口
+	Endpoint       string      // 网关外部访问地址，客户端通过此地址建立 WebSocket 隧道连接
+	InternalURL    string      // 网关内部访问地址，API 服务通过此地址代理请求到设备
+	Region         string      // 网关所属区域，用于就近分配和区域隔离
+	Capacity       int         // 网关最大连接容量，超过容量后不再分配新设备
+	ServerURL      string      // costrict-web-api 服务地址，用于注册和心跳
+	InternalSecret string      // 与 Server 通信的共享密钥，用于内部接口认证
+	Nacos          NacosConfig // Nacos 动态端点解析配置
 }
 
 // NacosConfig configures dynamic endpoint resolution via Nacos.
@@ -28,6 +28,9 @@ type NacosConfig struct {
 	Group       string // defaults to "DEFAULT_GROUP"
 	DataID      string // required to enable Nacos lookup
 	TimeoutMs   uint64 // request timeout, defaults to 5000
+	Username    string // optional Nacos auth username
+	Password    string // optional Nacos auth password
+	AccessToken string // optional Nacos auth access token
 }
 
 func LoadConfig() *Config {
@@ -49,6 +52,9 @@ func LoadConfig() *Config {
 			Group:       getEnv("GATEWAY_NACOS_GROUP", "DEFAULT_GROUP"),
 			DataID:      getEnv("GATEWAY_NACOS_DATA_ID", ""),
 			TimeoutMs:   getEnvUint64("GATEWAY_NACOS_TIMEOUT_MS", 5000),
+			Username:    getEnv("GATEWAY_NACOS_USERNAME", ""),
+			Password:    getEnv("GATEWAY_NACOS_PASSWORD", ""),
+			AccessToken: getEnv("GATEWAY_NACOS_ACCESS_TOKEN", ""),
 		},
 	}
 }

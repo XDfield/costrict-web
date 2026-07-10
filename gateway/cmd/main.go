@@ -31,9 +31,10 @@ func main() {
 
 	endpoint, err := gw.NewEndpointResolver().Resolve(cfg)
 	if err != nil {
-		log.Fatalf("[Gateway] failed to resolve endpoint: %v", err)
+		log.Printf("[Gateway] failed to resolve endpoint from Nacos, falling back to GATEWAY_ENDPOINT: %v", err)
+		endpoint = cfg.Endpoint
 	}
-	log.Printf("[Gateway] resolved endpoint: %s", endpoint)
+	log.Printf("[Gateway] using endpoint: %s", endpoint)
 
 	// Start HTTP server first (for health checks)
 	r := gw.SetupRouter(manager, cfg)
