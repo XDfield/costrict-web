@@ -835,6 +835,19 @@ func itemListSortOrder(sortBy, sortOrder string) string {
 		return fmt.Sprintf("%s %s", column, direction)
 	}
 
+	// Tie-breaking is symmetric across the two "asset quality" axes: count
+	// columns break ties by experience score, and the experience score column
+	// breaks ties by favorite count. Whichever axis you sort by, the item that
+	// is stronger on the other axis surfaces first within a tie before falling
+	// back to recency. Time columns keep the plain updated_at tie-breaker,
+	// since recency is the whole intent of a time sort.
+	switch column {
+	case "preview_count", "install_count", "favorite_count":
+		return fmt.Sprintf("%s %s, experience_score DESC, updated_at DESC", column, direction)
+	case "experience_score":
+		return fmt.Sprintf("%s %s, favorite_count DESC, updated_at DESC", column, direction)
+	}
+
 	return fmt.Sprintf("%s %s, updated_at DESC", column, direction)
 }
 
