@@ -197,3 +197,150 @@ func TestGetDeptUsersHandler_Unavailable(t *testing.T) {
 		t.Fatalf("expected 503 on upstream failure, got %d", rec.Code)
 	}
 }
+
+// childrenTreeServer returns a dept-sync stub serving a two-level nested tree:
+// 6560 → [6571 → [6572, 6573], 6580]. All children endpoints read from this
+// (GetChildren slices the cached full tree, so the path is irrelevant here).
+func childrenTreeServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"0","success":true,"data":[
+			{"dept_id":"6560","dept_name":"研发部","dept_path":"/x/研发部","child_dept_count":2,"children":[
+				{"dept_id":"6571","dept_name":"开发组","parent_dept_id":"6560","child_dept_count":2,"children":[
+					{"dept_id":"6572","dept_name":"前端","parent_dept_id":"6571","child_dept_count":0},
+					{"dept_id":"6573","dept_name":"后端","parent_dept_id":"6571","child_dept_count":0}
+				]},
+				{"dept_id":"6580","dept_name":"测试组","parent_dept_id":"6560","child_dept_count":0}
+			]}
+		]}`))
+	}))
+}
+
+func TestGetChildrenHandler_Roots(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	srv := childrenTreeServer()
+	defer srv.Close()
+
+	m := NewModule(New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "k"}), db)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/departments/children", nil)
+	m.GetChildrenHandler()(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Departments []Dept `json:"departments"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Departments) != 1 || body.Departments[0].DeptID != "6560" {
+		t.Fatalf("expected only root 6560, got %+v", body.Departments)
+	}
+	// Root keeps childDeptCount so the UI shows an expand affordance...
+	if body.Departments[0].ChildDeptCount != 2 {
+		t.Fatalf("expected root childDeptCount=2, got %d", body.Departments[0].ChildDeptCount)
+	}
+	// ...but its nested children are stripped (depth-1 only).
+	if len(body.Departments[0].Children) != 0 {
+		t.Fatalf("expected root children stripped (depth-1), got %+v", body.Departments[0].Children)
+	}
+
+	// Depth-1 contract: the "children" key must be omitted (omitempty) from the wire
+	// output so lazy-load consumers never receive a preloaded level.
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	depts, _ := raw["departments"].([]any)
+	first, _ := depts[0].(map[string]any)
+	if _, ok := first["children"]; ok {
+		t.Errorf("depth-1 contract broken: children key leaked into children output")
+	}
+	if _, ok := first["deptId"]; !ok {
+		t.Errorf("frontend contract broken: missing camelCase deptId in %v", first)
+	}
+}
+
+func TestGetChildrenHandler_Children(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	srv := childrenTreeServer()
+	defer srv.Close()
+
+	m := NewModule(New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "k"}), db)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/departments/children?parentId=6560", nil)
+	m.GetChildrenHandler()(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Departments []Dept `json:"departments"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Departments) != 2 {
+		t.Fatalf("expected 2 direct children of 6560, got %d (%+v)", len(body.Departments), body.Departments)
+	}
+	if body.Departments[0].DeptID != "6571" || body.Departments[1].DeptID != "6580" {
+		t.Fatalf("unexpected children order/ids: %+v", body.Departments)
+	}
+	// 6571 has grandchildren upstream, but they must not be serialized (childDeptCount
+	// preserved, Children stripped).
+	if body.Departments[0].ChildDeptCount != 2 {
+		t.Fatalf("expected 6571 childDeptCount=2, got %d", body.Departments[0].ChildDeptCount)
+	}
+	if len(body.Departments[0].Children) != 0 {
+		t.Fatalf("expected grandchildren stripped, got %+v", body.Departments[0].Children)
+	}
+}
+
+func TestGetChildrenHandler_UnknownParent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	srv := childrenTreeServer()
+	defer srv.Close()
+
+	m := NewModule(New(config.DeptSyncConfig{BaseURL: srv.URL, APIKey: "k"}), db)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/departments/children?parentId=9999", nil)
+	m.GetChildrenHandler()(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unknown parent, got %d", rec.Code)
+	}
+	// Unknown parent returns an empty (but present, non-null) array.
+	if got := rec.Body.String(); got != `{"departments":[]}` {
+		t.Fatalf("expected empty departments array, got %s", got)
+	}
+}
+
+func TestGetChildrenHandler_NotConfigured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTestDB(t)
+	m := NewModule(New(config.DeptSyncConfig{}), db)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/admin/departments/children", nil)
+	m.GetChildrenHandler()(c)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["code"] != "dept_sync_unavailable" {
+		t.Fatalf("expected dept_sync_unavailable code, got %v", body["code"])
+	}
+}
