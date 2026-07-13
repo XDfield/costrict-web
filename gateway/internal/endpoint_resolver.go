@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// ErrNacosConfigNotFound is returned by Resolve when Nacos responds with 404,
+// indicating the requested config dataId does not exist. Callers can treat this
+// as a graceful fallback signal to the statically configured endpoint.
+var ErrNacosConfigNotFound = errors.New("nacos config not found")
+
 // EndpointResolver resolves the public endpoint the gateway should register.
 // If Nacos is configured, it fetches the configured data ID; otherwise it
 // returns the statically configured endpoint.
@@ -40,7 +45,7 @@ func (r *defaultEndpointResolver) Resolve(cfg *Config) (string, error) {
 		return "", errors.New("config is nil")
 	}
 
-	if !nacosEnabled(cfg.Nacos) {
+	if !NacosEnabled(cfg.Nacos) {
 		return cfg.Endpoint, nil
 	}
 
@@ -75,7 +80,8 @@ func validateEndpoint(endpoint string) error {
 	return nil
 }
 
-func nacosEnabled(n NacosConfig) bool {
+// NacosEnabled reports whether Nacos endpoint resolution is configured.
+func NacosEnabled(n NacosConfig) bool {
 	return n.ServerAddr != "" && n.DataID != ""
 }
 
@@ -128,6 +134,11 @@ func resolveFromNacos(client *http.Client, n NacosConfig) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			// Config dataId does not exist; signal graceful fallback.
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return "", ErrNacosConfigNotFound
+		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return "", fmt.Errorf("read nacos error response: %w", err)

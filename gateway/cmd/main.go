@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -30,11 +31,22 @@ func main() {
 	manager := gw.NewTunnelManager()
 
 	endpoint, err := gw.NewEndpointResolver().Resolve(cfg)
-	if err != nil {
-		log.Printf("[Gateway] failed to resolve endpoint from Nacos, falling back to GATEWAY_ENDPOINT: %v", err)
-		endpoint = cfg.Endpoint
+
+	source := "env"
+	if gw.NacosEnabled(cfg.Nacos) && err == nil {
+		source = "nacos"
 	}
-	log.Printf("[Gateway] using endpoint: %s", endpoint)
+
+	if err != nil {
+		if errors.Is(err, gw.ErrNacosConfigNotFound) {
+			log.Printf("[Gateway] Nacos config not found (dataId=%s, group=%s), falling back to env endpoint", cfg.Nacos.DataID, cfg.Nacos.Group)
+		} else {
+			log.Printf("[Gateway] failed to resolve endpoint from Nacos, falling back to env endpoint: %v", err)
+		}
+		endpoint = cfg.Endpoint
+		source = "env"
+	}
+	log.Printf("[Gateway] endpoint resolved: source=%s value=%s", source, endpoint)
 
 	// Start HTTP server first (for health checks)
 	r := gw.SetupRouter(manager, cfg)

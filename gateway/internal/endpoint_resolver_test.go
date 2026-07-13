@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -100,11 +101,37 @@ func TestResolve_NacosNotFound(t *testing.T) {
 	}
 
 	_, err := resolver.Resolve(cfg)
-	if err == nil {
-		t.Fatal("expected error when Nacos returns 404")
+	if !errors.Is(err, ErrNacosConfigNotFound) {
+		t.Fatalf("expected ErrNacosConfigNotFound, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "404") {
-		t.Fatalf("expected error to contain 404, got: %v", err)
+}
+
+func TestResolve_NacosServerErrorNotNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		Endpoint: "http://static.example.com:8081",
+		Nacos: NacosConfig{
+			ServerAddr: server.URL,
+			DataID:     "gateway-endpoint",
+			Group:      "DEFAULT_GROUP",
+			TimeoutMs:  5000,
+		},
+	}
+
+	_, err := resolver.Resolve(cfg)
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if errors.Is(err, ErrNacosConfigNotFound) {
+		t.Fatal("expected a different error than ErrNacosConfigNotFound")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("expected error to mention status 500, got: %v", err)
 	}
 }
 
