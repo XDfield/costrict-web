@@ -211,6 +211,46 @@ func (c *Client) GetTree() ([]Dept, error) {
 	return depts, nil
 }
 
+// GetChildren returns the direct children of parentID as a depth-1 list
+// (grandchildren stripped, so only one level is serialized). An empty parentID
+// returns the top-level roots. Each returned node keeps its ChildDeptCount, so the
+// admin frontend can still show an expand affordance without pre-loading a level.
+//
+// It backs the admin department-tree lazy load: the frontend fetches roots first,
+// then each node's children on expand. Sourced from the cached full tree (GetTree)
+// — no extra upstream call. An unknown parentID yields an empty slice.
+func (c *Client) GetChildren(parentID string) ([]Dept, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	tree, err := c.GetTree()
+	if err != nil {
+		return nil, err
+	}
+	nodes := tree // empty parentID → roots
+	if parentID = strings.TrimSpace(parentID); parentID != "" {
+		node := findDeptNode(tree, parentID)
+		if node == nil {
+			return []Dept{}, nil
+		}
+		nodes = node.Children
+	}
+	return stripChildren(nodes), nil
+}
+
+// stripChildren returns a depth-1 shallow copy of nodes: each node keeps its own
+// fields (including ChildDeptCount) but its Children is cleared, so serializing the
+// result emits a single level. Ranging by value copies each node, so the cached
+// tree is never mutated. Always returns a non-nil slice.
+func stripChildren(nodes []Dept) []Dept {
+	out := make([]Dept, len(nodes))
+	for i, n := range nodes {
+		n.Children = nil
+		out[i] = n
+	}
+	return out
+}
+
 // GetDeptUsers returns the members of one department. Cached per department id.
 func (c *Client) GetDeptUsers(deptID string) ([]DeptUser, error) {
 	if !c.Configured() {

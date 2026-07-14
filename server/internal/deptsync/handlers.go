@@ -27,6 +27,7 @@ func NewModule(client *Client, db *gorm.DB) *Module {
 // matching the adminuser/audit convention.
 func (m *Module) RegisterRoutes(adminGroup *gin.RouterGroup) {
 	adminGroup.GET("/departments/tree", m.GetTreeHandler())
+	adminGroup.GET("/departments/children", m.GetChildrenHandler())
 	adminGroup.GET("/departments/:id/users", m.GetDeptUsersHandler())
 }
 
@@ -77,6 +78,32 @@ func (m *Module) GetTreeHandler() gin.HandlerFunc {
 			tree = []Dept{}
 		}
 		c.JSON(http.StatusOK, gin.H{"departments": tree})
+	}
+}
+
+// GetChildrenHandler godoc
+//
+//	@Summary		Department children (admin)
+//	@Description	Direct children of a department (depth-1) for lazy-loading the admin department tree. An empty parentId returns the top-level roots; each node carries childDeptCount so the UI can show an expand affordance. Platform admin only. Returns 503 when dept-sync is not configured/unreachable.
+//	@Tags			admin/departments
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			parentId	query		string	false	"Parent department id (dept_id); empty for top-level roots"
+//	@Success		200			{object}	object{departments=[]object}
+//	@Failure		401			{object}	object{error=string}
+//	@Failure		503			{object}	object{error=string}
+//	@Router			/admin/departments/children [get]
+func (m *Module) GetChildrenHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		children, err := m.client.GetChildren(c.Query("parentId"))
+		if err != nil {
+			respondDeptSyncError(c, err)
+			return
+		}
+		if children == nil {
+			children = []Dept{}
+		}
+		c.JSON(http.StatusOK, gin.H{"departments": children})
 	}
 }
 
