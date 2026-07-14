@@ -67,6 +67,21 @@ config:
   region: "default"
   capacity: 100
 
+  # Nacos dynamic endpoint configuration.
+  # When serverAddr and dataID are set, the gateway reads endpoint from Nacos
+  # instead of the static `endpoint` value above. Each cluster can publish a
+  # different endpoint value in its own Nacos to steer clients to that cluster.
+  nacos:
+    enabled: false
+    serverAddr: ""          # e.g. nacos-headless.nacos.svc.cluster.local:8848
+    namespaceId: ""         # optional namespace ID
+    group: "DEFAULT_GROUP"  # config group
+    dataID: ""              # config data ID
+    timeoutMs: 5000
+    username: ""            # optional Nacos auth username
+    password: ""            # optional Nacos auth password
+    accessToken: ""         # optional Nacos auth access token
+
 env: []
 envFrom: []
 
