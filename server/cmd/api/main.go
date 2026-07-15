@@ -727,10 +727,6 @@ func main() {
 	cloudModule.DB = db
 	cloudModule.Dispatcher = disp
 
-	// Wire the action handler into channel service for interactive card callbacks
-	actionHandler := notification.NewActionHandler(notificationStore, db, gatewayClient, gatewayRegistry, channelModule.Service)
-	channelModule.Service.SetActionHandler(actionHandler.Callback())
-
 	cloudGroup := r.Group("/cloud")
 	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)

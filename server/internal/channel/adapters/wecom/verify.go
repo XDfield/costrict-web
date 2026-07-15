@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/channel"
@@ -64,41 +63,8 @@ func ParseInboundMessage(r *http.Request, cfg *config.WeComSystemConfig) (*chann
 		return nil, fmt.Errorf("unmarshal message failed: %w", err)
 	}
 
-	if msg.MsgType != "text" && !(msg.MsgType == "event" && msg.Event == "template_card_event") {
+	if msg.MsgType != "text" {
 		return nil, nil
-	}
-
-	// Handle interactive card callback
-	if msg.MsgType == "event" && msg.Event == "template_card_event" {
-		action, token := parseEventKey(msg.EventKey)
-
-		metadata := map[string]any{
-			"actionToken":  token,
-			"responseCode": msg.ResponseCode,
-			"taskId":       msg.TaskId,
-		}
-
-		// For vote_interaction callbacks, derive action from selected options
-		if action == "submit" && len(msg.SelectedItems) > 0 {
-			selected := msg.SelectedItems[0]
-			if len(selected.OptionIds) > 0 {
-				optionID := selected.OptionIds[0]
-				if optionID == "approve" || optionID == "reject" {
-					action = optionID
-				} else {
-					action = "select:" + strings.Join(selected.OptionIds, ",")
-				}
-			}
-			metadata["selectedOptions"] = selected.OptionIds
-		}
-
-		return &channel.InboundMessage{
-			ExternalChatID:    msg.FromUserName,
-			ExternalUserID:    msg.FromUserName,
-			ContentType:       "action_callback",
-			Content:           action,
-			Metadata:          metadata,
-		}, nil
 	}
 
 	chatType := "direct"
@@ -118,22 +84,6 @@ func ParseInboundMessage(r *http.Request, cfg *config.WeComSystemConfig) (*chann
 			"agentId":    msg.AgentID,
 		},
 	}, nil
-}
-
-// parseEventKey parses the EventKey from WeCom interactive card callback.
-// "approve:TOKEN"     → ("approve", "TOKEN")
-// "reject:TOKEN"      → ("reject", "TOKEN")
-// "select:TOKEN:0"    → ("select:0", "TOKEN")
-// "navigate:URL"      → ("navigate", "")
-func parseEventKey(key string) (action string, token string) {
-	parts := strings.SplitN(key, ":", 3)
-	if len(parts) < 2 {
-		return key, ""
-	}
-	if parts[0] == "select" && len(parts) == 3 {
-		return "select:" + parts[2], parts[1]
-	}
-	return parts[0], parts[1]
 }
 
 type tokenCacheEntry struct {

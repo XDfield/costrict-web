@@ -1027,11 +1027,11 @@ func (r *AgentRunner) markEventResolved(userID, sessionID, deviceSessionID strin
 //   - marks the EVENT_PENDING row resolved so the next LLM iteration's
 //     LoadAllPendingEvents stops surfacing it
 //
-// This is the AI path's counterpart to action_callback.go's
-// BatchApproveSessionPermissions. That function operates on system_notifications
-// (the UI-card flow's source of truth); the AI path doesn't create those rows,
-// so we read from chat_messages instead. Without this drainer, the AI's
-// enableAutoAccept branch would set autoAccept for FUTURE permissions but
+// This is the AI path's counterpart to notification.BatchApproveSessionPermissions
+// (defined in auto_accept.go). That function operates on system_notifications
+// (the legacy notification flow's source of truth); the AI path doesn't create
+// those rows, so we read from chat_messages instead. Without this drainer, the
+// AI's enableAutoAccept branch would set autoAccept for FUTURE permissions but
 // leave already-pending ones stuck — and worse, the next iteration would
 // re-read stale EVENT_PENDING rows and try to reply them again ("deviceID is
 // empty" errors or device-side double-reply errors).

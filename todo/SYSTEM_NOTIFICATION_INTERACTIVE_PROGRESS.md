@@ -1,5 +1,10 @@
 # 系统通知交互闭环实施进度
 
+> **已废弃**：企微模板卡片（template_card）交互链路已于 2026-07-15 移除，
+> 项目现在只保留纯文本/markdown AI 回复链路。本进度文档保留作为历史记录，
+> 不再驱动后续开发。设计文档 `docs/proposals/SYSTEM_NOTIFICATION_INTERACTIVE.md`
+> 同样仅作历史参考。
+
 基于 `docs/proposals/SYSTEM_NOTIFICATION_INTERACTIVE.md` v3.0.0，任务跟踪。
 
 > **实现状态：🔧 实施中**

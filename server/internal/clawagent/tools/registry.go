@@ -33,8 +33,8 @@ type Context struct {
 
 	// DrainSessionPermissions approves every OTHER pending permission in the
 	// same device session as the just-replied one. Used by reply_permission's
-	// enableAutoAccept branch to mirror action_callback.go's auto_approve
-	// drain semantics — without this, the AI path enables autoAccept for
+	// enableAutoAccept branch to mirror the legacy auto_approve drain
+	// semantics — without this, the AI path enables autoAccept for
 	// FUTURE permissions but leaves already-pending ones stuck waiting.
 	//
 	// excludePermissionID is the permission just replied (so the drain skips

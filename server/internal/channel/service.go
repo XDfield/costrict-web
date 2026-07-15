@@ -13,12 +13,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// CardStatusUpdater updates interactive card status after user action.
-// Implemented by adapters that support interactive cards (e.g., WeComAdapter).
-type CardStatusUpdater interface {
-	UpdateCardStatus(responseCode, statusText, action string, cardData []byte, externalUserID string) error
-}
-
 type ChannelService struct {
 	db             *gorm.DB
 	adapters       map[string]ChannelAdapter
@@ -32,13 +26,6 @@ type ChannelService struct {
 	weChatEnabled       bool
 	weComBotEnabled     bool
 	wecomBotQRCode      string
-	actionHandler       ActionCallbackHandler
-}
-
-type ActionCallbackHandler func(ctx context.Context, action, token, responseCode, externalUserID string) error
-
-func (s *ChannelService) SetActionHandler(h ActionCallbackHandler) {
-	s.actionHandler = h
 }
 
 func (s *ChannelService) SetWeComBotQRCode(url string) {
@@ -111,8 +98,7 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 	}
 
 	// Parse inbound first — we need ExternalUserID to resolve identity before
-	// querying configs. This also lets action_callback frames skip the config
-	// query entirely.
+	// querying configs.
 	msg, err := adapter.ParseInbound(r, nil)
 	if err != nil || msg == nil {
 		log.Printf("ChannelService: ParseInbound result: err=%v, msg=%+v", err, msg)
@@ -121,23 +107,6 @@ func (s *ChannelService) HandleWebhook(channelType string, r *http.Request) (str
 
 	log.Printf("[inbound] externalUserID=%s chatID=%s chatType=%s content=%q contentType=%s",
 		msg.ExternalUserID, msg.ExternalChatID, msg.ExternalChatType, msg.Content, msg.ContentType)
-
-	// Handle interactive card callbacks
-	if msg.ContentType == "action_callback" {
-		action := msg.Content
-		token, _ := msg.Metadata["actionToken"].(string)
-		respCode, _ := msg.Metadata["responseCode"].(string)
-		log.Printf("[channel] interactive card callback: action=%q, token=%q, responseCode=%q, fromUser=%s", action, token, respCode, msg.ExternalUserID)
-
-		if s.actionHandler != nil {
-			if err := s.actionHandler(r.Context(), action, token, respCode, msg.ExternalUserID); err != nil {
-				log.Printf("[channel] action callback error: %v", err)
-			}
-		}
-
-
-		return "success", http.StatusOK, nil
-	}
 
 	// Resolve the platform user ID from the inbound message's sender identity.
 	// For channels that carry externalUserID (wecom-bot, wecom, wechat),
@@ -643,15 +612,4 @@ func getConfigWithMask(ch models.ChannelConfig) models.ChannelConfig {
 		ch.Config = maskConfig(ch.Config, []string{"token"})
 	}
 	return ch
-}
-
-func (s *ChannelService) UpdateInteractiveCard(channelType, responseCode, statusText, action string, cardData []byte, externalUserID string) {
-	updater, ok := s.adapters[channelType].(CardStatusUpdater)
-	if !ok {
-		log.Printf("[channel] adapter %s does not support card status update", channelType)
-		return
-	}
-	if err := updater.UpdateCardStatus(responseCode, statusText, action, cardData, externalUserID); err != nil {
-		log.Printf("[channel] update card status failed: %v", err)
-	}
 }

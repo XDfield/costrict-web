@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	"github.com/costrict/costrict-web/server/internal/channel"
-	"github.com/costrict/costrict-web/server/internal/channel/adapters/wecom"
 	"github.com/costrict/costrict-web/server/internal/config"
 )
 
@@ -39,7 +37,7 @@ func (a *WeComBotAdapter) Capabilities() channel.ChannelCapabilities {
 		Markdown:         true,
 		Media:            false,
 		MentionRequired:  false,
-		ContentTypes:     []string{"text", "markdown", "card"},
+		ContentTypes:     []string{"text", "markdown"},
 	}
 }
 
@@ -108,30 +106,4 @@ func extractSessionRef(metadata map[string]any) *proxySessionRef {
 		return nil
 	}
 	return &proxySessionRef{Title: title, URL: url}
-}
-
-// Card delivery is intentionally disabled for wecom-bot. Notifications now flow
-// as markdown text (with session_ref link) via Reply/Send; interactive cards are
-// not used in the current UX. Methods remain as no-ops so dispatcher's call
-// sites and notification-data tracking stay intact — re-enable by restoring the
-// card JSON marshal + a.client.Send(..., "card", ...) body.
-
-func (a *WeComBotAdapter) SendInteractiveCard(ctx context.Context, userID string, card wecom.InteractiveCard, taskID string) error {
-	slog.Info("[wecom-bot] SendInteractiveCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
-	return nil
-}
-
-func (a *WeComBotAdapter) SendVoteCard(ctx context.Context, userID string, card wecom.VoteCard, taskID string) error {
-	slog.Info("[wecom-bot] SendVoteCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
-	return nil
-}
-
-func (a *WeComBotAdapter) SendTextNoticeCard(ctx context.Context, userID string, card wecom.TextNoticeCard, taskID string) error {
-	slog.Info("[wecom-bot] SendTextNoticeCard skipped (cards disabled)", "userID", userID, "taskID", taskID)
-	return nil
-}
-
-func (a *WeComBotAdapter) UpdateCardStatus(responseCode, statusText, action string, cardData []byte, externalUserID string) error {
-	slog.Warn("[wecom-bot] UpdateCardStatus called without reqID context; use card update via proxy API instead")
-	return fmt.Errorf("wecom-bot adapter requires reqID-based card update via proxy API")
 }

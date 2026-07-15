@@ -30,7 +30,6 @@ type CreateNotificationInput struct {
 	WorkspaceID string
 	ActionType  string
 	ActionData  []byte
-	CardData    []byte
 }
 
 func (s *Store) Create(input CreateNotificationInput) (*models.SystemNotification, error) {
@@ -59,9 +58,6 @@ func (s *Store) Create(input CreateNotificationInput) (*models.SystemNotificatio
 
 	if input.ActionData != nil {
 		n.ActionData = input.ActionData
-	}
-	if input.CardData != nil {
-		n.CardData = input.CardData
 	}
 
 	if err := s.db.Create(n).Error; err != nil {

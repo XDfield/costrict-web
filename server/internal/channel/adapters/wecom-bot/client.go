@@ -55,14 +55,6 @@ func (c *BotProxyClient) Reply(ctx context.Context, reqID, msgType, content stri
 	return c.doPost(ctx, "/api/bot/reply", req)
 }
 
-func (c *BotProxyClient) UpdateCard(ctx context.Context, reqID string, cardUpdate []byte) error {
-	req := proxyCardUpdateRequest{
-		ReqID:   reqID,
-		Content: string(cardUpdate),
-	}
-	return c.doPost(ctx, "/api/bot/card/update", req)
-}
-
 func (c *BotProxyClient) doPost(ctx context.Context, path string, body any) error {
 	data, err := json.Marshal(body)
 	if err != nil {

@@ -28,13 +28,6 @@ type proxyReplyRequest struct {
 	Content string `json:"content"`
 }
 
-type proxyCardUpdateRequest struct {
-	ReqID    string `json:"req_id"`
-	CardType string `json:"card_type,omitempty"`
-	Content  string `json:"content"`
-	TaskID   string `json:"task_id,omitempty"`
-}
-
 type proxyResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`

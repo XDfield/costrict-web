@@ -79,9 +79,6 @@ func (p *Proxy) SetupSDKHandlers() {
 	p.sdk.OnEvent(func(frame *aibot.WsFrame) {
 		p.handleInbound(frame)
 	})
-	p.sdk.OnEventTemplateCardEvent(func(frame *aibot.WsFrame) {
-		p.handleInbound(frame)
-	})
 }
 
 // handleInbound translates a WS frame and forwards it to the backend.
@@ -254,7 +251,6 @@ func (p *Proxy) RegisterRoutes(r *gin.Engine) {
 		bot.POST("/send", p.authMiddleware(), p.handleSend)
 		bot.POST("/reply", p.authMiddleware(), p.handleReply)
 		bot.POST("/welcome", p.authMiddleware(), p.handleWelcome)
-		bot.POST("/card/update", p.authMiddleware(), p.handleCardUpdate)
 		bot.GET("/health", p.handleHealth)
 	}
 }
@@ -291,27 +287,6 @@ func (p *Proxy) handleSend(c *gin.Context) {
 
 	if p.sdk == nil || !p.sdk.IsConnected() {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
-		return
-	}
-
-	// card is structurally different: content is a JSON-marshaled template_card
-	// payload (card_type + main_title + button_list/checkbox/jump_list + task_id).
-	// Forward it to the SDK's SendTemplateCard so it renders as an interactive
-	// card instead of leaking raw JSON as text. session_ref does not apply to
-	// cards — interactive cards have their own jump_list / card_action for links.
-	if req.MsgType == "card" {
-		var templateCard aibot.TemplateCard
-		if err := json.Unmarshal([]byte(req.Content), &templateCard); err != nil {
-			p.logger.Warn("failed to parse card content as template_card", "error", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template_card json"})
-			return
-		}
-		if _, err := p.sdk.SendTemplateCard(req.UserID, templateCard); err != nil {
-			p.logger.Error("failed to send template card via sdk", "error", err)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "send failed"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"success": true})
 		return
 	}
 
@@ -411,43 +386,6 @@ func (p *Proxy) handleWelcome(c *gin.Context) {
 	if err != nil {
 		p.logger.Error("failed to send welcome via sdk", "error", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "welcome failed"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"success": true})
-}
-
-func (p *Proxy) handleCardUpdate(c *gin.Context) {
-	var req CardUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	if req.ReqID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "req_id is required"})
-		return
-	}
-
-	if p.sdk == nil || !p.sdk.IsConnected() {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "ws not connected"})
-		return
-	}
-
-	frame := &aibot.WsFrame{
-		Headers: aibot.WsFrameHeaders{ReqID: req.ReqID},
-	}
-
-	var templateCard aibot.TemplateCard
-	if err := json.Unmarshal([]byte(req.Content), &templateCard); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template card json"})
-		return
-	}
-
-	_, err := p.sdk.UpdateTemplateCard(frame, templateCard, nil)
-	if err != nil {
-		p.logger.Error("failed to update card via sdk", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "card update failed"})
 		return
 	}
 

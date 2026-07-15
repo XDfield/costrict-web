@@ -1,5 +1,10 @@
 # WeCom Bot Proxy 实施进度
 
+> **部分已废弃**：企微模板卡片（template_card）相关进度项已于 2026-07-15 移除。
+> Proxy 现仅支持 text/markdown 消息转发；卡片发送（`SendInteractiveCard` /
+> `SendVoteCard` / `SendTextNoticeCard`）、卡片更新（`/api/bot/card/update`）、
+> 卡片回调监听（`OnEventTemplateCardEvent`）相关条目保留作历史记录。
+
 基于 `docs/proposals/WECOM_BOT_PROXY_DESIGN.md`，按依赖关系排序的开发任务列表。
 
 ---

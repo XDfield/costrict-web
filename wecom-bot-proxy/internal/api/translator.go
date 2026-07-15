@@ -38,13 +38,6 @@ type WelcomeRequest struct {
 	Content string `json:"content"`
 }
 
-type CardUpdateRequest struct {
-	ReqID    string `json:"req_id"`
-	CardType string `json:"card_type,omitempty"`
-	Content  string `json:"content"`
-	TaskID   string `json:"task_id,omitempty"`
-}
-
 // --- Inbound translation (SDK WsFrame → standardized inbound) ---
 
 type InboundMsg struct {
@@ -141,9 +134,6 @@ func TranslateEventCallback(frame *aibot.WsFrame) (*InboundMsg, error) {
 	}
 
 	switch eventMeta.EventType {
-	case "template_card_event":
-		contentType = "action_callback"
-		content = eventMeta.EventType
 	case "disconnected_event", "enter_chat":
 		return nil, nil
 	}

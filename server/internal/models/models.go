@@ -844,7 +844,6 @@ type SystemNotification struct {
 	ActionData   datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"actionData" swaggertype:"object"`
 	ActionToken  string         `gorm:"type:varchar(128);uniqueIndex:idx_system_notifications_action_token,where:action_token IS NOT NULL AND deleted_at IS NULL" json:"actionToken,omitempty"`
 	ActionResult datatypes.JSON `gorm:"type:jsonb" json:"actionResult" swaggertype:"object"`
-	CardData     datatypes.JSON `gorm:"type:jsonb" json:"cardData,omitempty" swaggertype:"object"`
 	ActedAt      *time.Time     `json:"actedAt,omitempty"`
 	ExpiresAt    *time.Time     `json:"expiresAt,omitempty"`
 	CreatedAt    time.Time      `gorm:"index:idx_system_notifications_user_status,priority:3,sort:desc;index:idx_system_notifications_user_type,priority:3,sort:desc" json:"createdAt"`
