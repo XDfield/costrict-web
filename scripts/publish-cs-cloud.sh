@@ -213,11 +213,14 @@ build_assets_json() {
 call_create_release_api() {
     local assets_json="$1"
 
+    # API version 字段不带 v 前缀，做切割
+    local version_for_api="${VERSION#v}"
+
     # 构建请求体
     local request_body
     request_body=$(cat <<EOF
 {
-  "version": "${VERSION}",
+  "version": "${version_for_api}",
   "assets": ${assets_json},
   "changelog": "${CHANGELOG}",
   "force": ${FORCE},
