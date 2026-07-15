@@ -1,24 +1,41 @@
 services:
   wecom-bot-proxy:
-    build: .
+    image: wecom-bot-proxy:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wecom-bot-proxy
     ports:
       - "9090:9090"
     environment:
       - WECOM_BOT_ID=${WECOM_BOT_ID}
       - WECOM_BOT_SECRET=${WECOM_BOT_SECRET}
+      - WECOM_CORP_ID=${WECOM_CORP_ID}
+      - WECOM_AGENT_SECRET=${WECOM_AGENT_SECRET}
       - BACKEND_TOKEN=${BACKEND_TOKEN}
       - BACKEND_HMAC_SECRET=${BACKEND_HMAC_SECRET:-}
       - CORICT_WEB_URL=${CORICT_WEB_URL:-http://host.docker.internal:8080}
+      - TZ=Asia/Shanghai
     volumes:
       - ./config.yaml:/etc/wecom-bot-proxy/config.yaml:ro
     restart: unless-stopped
+    networks:
+      - wecom-net
 
-# 部署步骤:
-# 1. 复制配置模板: cp config.yaml.example config.yaml
+networks:
+  wecom-net:
+    driver: bridge
+
+# 单独启动步骤:
+# 1. 准备 config.yaml: cp config.yaml.example config.yaml (或直接复用现有 config.yaml)
 # 2. 创建 .env 文件填入实际值:
 #    WECOM_BOT_ID=your_bot_id
 #    WECOM_BOT_SECRET=your_bot_secret
+#    WECOM_CORP_ID=your_corp_id
+#    WECOM_AGENT_SECRET=your_agent_secret
 #    BACKEND_TOKEN=your_backend_token
 #    BACKEND_HMAC_SECRET=your_hmac_secret
-#    CORICT_WEB_URL=http://costrict-web:8080
-# 3. 启动: docker-compose up -d
+#    CORICT_WEB_URL=http://host.docker.internal:8080   # 指向宿主机上的 costrict-web
+# 3. 构建并启动: docker compose up -d --build
+# 4. 查看日志:   docker compose logs -f wecom-bot-proxy
+# 5. 停止:       docker compose down
