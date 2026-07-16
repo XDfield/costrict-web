@@ -188,6 +188,8 @@ Fork 后的物品与原物品完全独立，原物品更新不会同步。
 | **paused** | 隐藏（但仍存在）| 不变 | 临时停用，可随时恢复 |
 | **revoked** | 移除 | dismissed | 正式收回，收藏列表删除 favorite 记录 |
 
+**与"用户离开 org"的差异说明**：上表描述的是**下发者主动收回**（distribution.status → revoked）。还有一种被动场景是**用户离开组织**（distribution 仍 active，但用户不再属于 target org）——此时该用户的 receipts 置为 `dismissed`，但**保留** `receiptStatus='accepted'` 或已有 `ForkedItemID` 的记录（用户已"拿走"该能力项，回收等于惩罚）。详见 §9.3 OrgMembershipSyncWorker。
+
 ---
 
 ## 6. API 设计
@@ -350,6 +352,58 @@ const (
 - 通过 backfill 将历史用户自动归类到 Organization
 - 预留 `ParentID` 和 `OrgType`，未来可平滑升级为部门树
 
+### 9.3 组织成员变更级联（OrgMembershipSyncWorker）
+
+ADR-1 的"预创建 receipts"策略只覆盖**下发那一刻**在 org 内的用户。事后加入 / 离开 org 的用户需要由 worker 主动维护 receipts。该 worker 同时承担 Gitea team 同步职责（详见 ROADMAP Phase 2.5），是同一事件的双消费者之一。
+
+**事件源**：`user.organization_changed`，由 dept-sync 服务 webhook 推送（与 ROADMAP §3.5 dept-sync 集成链路一致）。事件载荷：`{user_id, old_org_id, new_org_id, changed_at}`。
+
+**加入 org（new_org_id 非空）流程**：
+
+```
+1. OrgGiteaSyncWorker 先调 Gitea admin API 把用户加入 new_org_id 对应的 team（fire-and-forget + 重试）
+2. Gitea team 成功后，OrgMembershipSyncWorker 执行：
+   SELECT id, permission_mode FROM item_distributions
+   WHERE scope_type='organization'
+     AND target_id=$new_org_id
+     AND status='active'
+   → 对每条 distribution INSERT item_distribution_receipts
+     (distribution_id, user_id, receipt_status='unread')
+     ON CONFLICT (distribution_id, user_id) DO NOTHING
+3. 异步触发 item.distributed 通知（复用 §7.2 模板）
+```
+
+**离开 org（old_org_id 非空）流程**：
+
+```
+1. OrgGiteaSyncWorker 调 Gitea admin API 从 old_org_id team 移除用户
+2. Gitea team 成功后，OrgMembershipSyncWorker 执行：
+   UPDATE item_distribution_receipts
+   SET receipt_status='dismissed', updated_at=NOW()
+   WHERE user_id=$user_id
+     AND receipt_status IN ('unread', 'read')
+     AND distribution_id IN (
+       SELECT id FROM item_distributions
+       WHERE scope_type='organization' AND target_id=$old_org_id
+     )
+   -- 已 accepted 或已 fork（ForkedItemID 非空）的 receipt 保留
+```
+
+**重试与一致性**：
+
+- worker **无状态**：不维护 `sync_status` 列，依赖退避重试 + 审计日志兜底
+- 复用 ROADMAP §2.4 通用 webhook 广播 worker 的 6 次指数退避队列（1s / 5s / 30s / 2min / 10min / 1h）+ 死信队列
+- Gitea team API 与 receipts 维护**不在同一事务**（跨库）：先 Gitea team 成功再写 receipts，避免"Gitea 已加入但 receipts 未补"导致用户看不到下发；逆序失败由日 cron 全量校对兜底（对比 org 成员 vs receipts 集合）
+- 每次写 `gitea_admin_audit_log`（actor=系统，endpoint=`/admin/teams/{id}/members`）
+
+**为何不加 `user_gitea_team_binding` 表**：
+
+V4 §6.6 第 751 行明文：fork 中间件**不校验** team 成员关系（Gitea 自己查 `team_user` 表）。因此：
+
+- 中间件不需要本地 team 映射 → 不需要中间表
+- worker 失败由重试 + 审计覆盖 → 不需要 `sync_status` 状态机
+- "用户在哪些 team" 的查询走 Gitea API（低频管理操作，可接受延迟）→ 不需要本地索引
+
 ---
 
 ## 10. 数据库迁移计划
@@ -431,6 +485,15 @@ func backfillOrganizations(db *gorm.DB) error {
   - 权限检查（仅 platform_admin 可下发，创建者/Repo 管理员禁止下发）
   - 收回后收藏列表不可见
   - Fork 后新 Item 独立存在
+- `org_membership_sync_test.go`（§9.3 OrgMembershipSyncWorker）
+  - 用户加入 org → 自动收到该 org 所有 active distribution 的 unread receipts
+  - 用户加入 org → 已存在的 receipt（ON CONFLICT）不重复创建
+  - 用户加入 org → 触发 `item.distributed` 通知投递
+  - 用户离开 org → `unread` / `read` receipts 置为 `dismissed`
+  - 用户离开 org → `accepted` receipt **保留**（不惩罚已接纳下发的用户）
+  - 用户离开 org → 已 fork（`ForkedItemID` 非空）的 receipt **保留**
+  - Gitea team API 失败 → receipts **不写**（保证 Gitea 拒绝时用户看不到下发）
+  - Gitea team API 成功但 receipts 写入失败 → 退避重试 + 日 cron 校对兜底
 
 ### 13.2 集成测试
 
@@ -487,3 +550,22 @@ func backfillOrganizations(db *gorm.DB) error {
 - 最小权限原则，仅对下发 Item 生效
 - 不污染 Repo 成员关系
 - 实现简单：在 `canMutateItem` 中增加 receipt 检查即可
+
+### ADR-4：组织成员事后变更的 receipt 维护策略
+
+**决策**：用 `OrgMembershipSyncWorker` 监听 `user.organization_changed` 事件，**事后**维护 `item_distribution_receipts`，无需新增 `user_gitea_team_binding` 表。
+
+**背景**：ADR-1 的"预创建 receipts"策略只覆盖**下发那一刻**在 org 内的用户。事后加入 org 的用户永远不会自动收到 receipt——这是 ADR-1 的盲区。
+
+**方案**：
+- 用户加入 org X：扫描 `scope_type='organization' AND target_id=X AND status='active'` 的所有 `item_distributions`，批量 INSERT receipts（`receiptStatus='unread'`），触发 `item.distributed` 通知
+- 用户离开 org X：将 receipts 置为 `dismissed`，但**保留** `receiptStatus='accepted'` 和已有 `ForkedItemID` 的记录（用户已"拿走"该能力项，回收等于惩罚）
+- 失败重试与 ROADMAP Phase 2.5 `OrgGiteaSyncWorker` 共用退避队列；事务保证 receipts 与 Gitea team 同步语义上原子（先 Gitea team 成功再写 receipts）
+
+**理由**：
+- 不引入新表：复用 `item_distributions` + `item_distribution_receipts` + `gitea_admin_audit_log`
+- worker 无状态：fire-and-forget + 退避重试即可，无需 `sync_status` 状态机
+- 接受最终一致性：用户加入 org 后 1-5 秒内 receipt 出现（与 Gitea team 同步窗口对齐），用户重试或刷新即可
+
+**被否决方案**：
+- 新增 `user_gitea_team_binding(user_id, org_id, team_id, sync_status)` 表：fork 中间件不校验 team 成员关系（V4 §6.6 明文不在中间件做 team 校验），状态机是过度设计
