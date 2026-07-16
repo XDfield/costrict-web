@@ -33,7 +33,7 @@
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
-| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
+| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 2 | 5% | 🟡 进行中（A1 + A2 schema + models + tests 完成；A3-A8 待启动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
@@ -314,19 +314,20 @@
 
 > **物理路径**：Phase 0 完成后，所有认证/身份代码在 `cs-user/internal/auth/`。`server/internal/middleware/auth.go` 仅保留 JWT 验签逻辑（依赖 cs-user 的 JWKS endpoint）。
 
-### A1：employment_identities 表迁移
+### A1：employment_identities 表迁移 ✅
 
-- [ ] **实现**：`cs-user/migrations/202607XX_create_employment_identities.sql`（MULTI_TENANCY §6.5.1, §8）
-- [ ] **实现**：`cs-user/internal/models/employment_identity.go`
-- [ ] **测试覆盖**：迁移 up/down 重入测试（testcontainers）
-- [ ] **swagger 注解**：无（数据库迁移）
+- [x] **实现**：`cs-user/migrations/20260716150000_create_employment_identities.sql`（21 列 + 4 索引 + 1 partial unique index `WHERE deleted_at IS NULL`；BIGSERIAL PK / text 列 / timestamptz，遵循 cs-user 既有约定，对应设计 §9.2 lines 674-705；`tenant_id` + `enterprise_uid` 推迟到 Phase B per MULTI_TENANCY §6.5.1, §8.3）
+- [x] **实现**：`cs-user/internal/models/employment_identity.go`（GORM struct，21 字段 + `gorm.DeletedAt` 软删除；`LastSyncedAt` / `NextSyncDueAt` 用 `default:CURRENT_TIMESTAMP` 让 DB 兜底，跨 sqlite/PG 通用）
+- [x] **测试覆盖**：`cs-user/internal/models/employment_identity_test.go`（`//go:build cgo`，sqlite `:memory:` + AutoMigrate + 手动重建 partial unique index；3 测试：CRUDRoundTrip / Defaults / UserSubjectIDUniqueAfterDelete 软删后可重插入）
+- [x] **测试覆盖**：`cs-user/internal/migration/runner_phaseA_test.go`（runner 接 A1/A2 命名文件的 smoke test：Up 应用两表 / Version 推进到 20260716160000 / Down 单步回滚）
+- [x] **swagger 注解**：无（数据库迁移）
 
-### A2：tenant_configs 表（最小 schema）
+### A2：tenant_configs 表（最小 schema） ✅
 
-- [ ] **实现**：`cs-user/migrations/202607XX_create_tenant_configs.sql`（`tenant_id` + `yaml` text 列）
-- [ ] **实现**：`cs-user/internal/models/tenant_config.go`
-- [ ] **测试覆盖**：yaml 列读写测试
-- [ ] **swagger 注解**：无
+- [x] **实现**：`cs-user/migrations/20260716160000_create_tenant_configs.sql`（Phase A 最小：`tenant_id text PK` + `config_yaml text NOT NULL DEFAULT '{}'` + `updated_by text` + `updated_at` / `created_at`；Phase B 再拆 `provider_mapping` / `username_strategy` / `employment_providers` / `features` 分列 + 加 `tenants(tenant_id)` FK）
+- [x] **实现**：`cs-user/internal/models/tenant_config.go`（GORM struct，5 字段；无软删除，re-onboard 走 UPSERT）
+- [x] **测试覆盖**：`cs-user/internal/models/tenant_config_test.go`（`//go:build cgo`，3 测试：YAMLColumnRoundTrip byte-for-byte / DefaultRowInsert `default` 行默认值 / TenantIDUniquePK 重复拒绝）
+- [x] **swagger 注解**：无
 
 ### A3：JWT 自签（RS256 + JWKS）
 
