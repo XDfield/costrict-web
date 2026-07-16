@@ -25,7 +25,7 @@
 
 4. **新用户 onboarding（username / display_name 解耦）**：首次登录后 `username` 走严格确认链路——支持 tenant 级 `auto`（IdP claim 自动映射，企业场景免填写）/ `user_input`（UI 填写）/ `hybrid`（默认，先 auto 失败 fallback 到 UI）三种模式，一经确认 v1 不可变。`display_name` 走宽松链路，用户随时可改。业务 JWT 在 onboarding 未完成时注入 `onboarding_required` 字段供前端识别（§11.3）。
 
-5. **多 IdP 绑定的不覆写原则 + 雇佣上下文与 IdP 解耦**：用户基本身份字段（display_name / avatar_url / locale / email 等）首次登录时由当时绑定的 IdP 一次性填充，后续绑新 IdP **不覆写**（append-only + first-write-wins）。雇佣上下文（enterprise_identities.*）**归属到 user**，由 tenant 在 `employment_providers` 配置中显式声明哪些 IdP 可作为雇佣上下文提供方；非 employment provider（如 GitHub / 飞书）登录 / 绑定 / 切换都不影响雇佣字段，避免社交 IdP 污染企业组织数据（§11.4）。
+5. **多 IdP 绑定的不覆写原则 + 雇佣上下文与 IdP 解耦**：用户基本身份字段（display_name / avatar_url / locale / email 等）首次登录时由当时绑定的 IdP 一次性填充，后续绑新 IdP **不覆写**（append-only + first-write-wins）。雇佣上下文（employment_identities.*）**归属到 user**，由 tenant 在 `employment_providers` 配置中显式声明哪些 IdP 可作为雇佣上下文提供方；非 employment provider（如 GitHub / 飞书）登录 / 绑定 / 切换都不影响雇佣字段，避免社交 IdP 污染企业组织数据（§11.4）。
 
 **一句话价值**：一套 cs-user 服务支持 B2B SaaS（多企业客户）+ 私有化（多业务线分离）+ 客户独立 IdP 接入；不增加部署复杂度；用户身份与企业身份天然隔离。
 
@@ -477,7 +477,7 @@ CREATE UNIQUE INDEX uq_user_auth_identities_external_key
 | **是什么** | cs-cloud 与客户签约的商业主体 | 用户的雇佣关系 / 组织归属 |
 | **决定的事** | 数据隔离（RLS）、计费、配额、资源（Git server、IdP source）、JWT `tenant_id` | 用户的 department / title / 工号 / 上级 |
 | **粒度** | 粗（一个客户一个）| 细（一个用户一个，且可空）|
-| **是否独立表** | ✓ `tenants` 表 | ✗ 是 `enterprise_identities` 表的属性（§6 4 层 UserInfo）|
+| **是否独立表** | ✓ `tenants` 表 | ✗ 是 `employment_identities` 表的属性（§6 4 层 UserInfo）|
 | **典型例子** | acme 与 cs-cloud 签约 → acme 是 tenant | alice 是 acme 员工，工号 EMP001、P7、Platform Team |
 
 **核心洞察**：**tenant 是隔离边界，enterprise 是用户属性**。tenant 决定数据/资源/计费，enterprise 决定人的雇佣元数据。
@@ -507,7 +507,7 @@ tenant "acme-group"  ←──────────── 集团统一签约
 
 **决策 1：不引入 `enterprises` 独立表**
 
-enterprise 仍是 user 的属性（`enterprise_identities` 表，§6 4 层 UserInfo 中的 enterprise 层）。一个 tenant 内默认所有用户共享同一企业身份（`tenant.enterprise_config` 描述 tenant 级元信息），不同 enterprise 通过 user 的 `enterprise_identities.enterprise_uid` 区分（详见 §6.5.1）。
+enterprise 仍是 user 的属性（`employment_identities` 表，§6 4 层 UserInfo 中的 enterprise 层）。一个 tenant 内默认所有用户共享同一企业身份（`tenant.enterprise_config` 描述 tenant 级元信息），不同 enterprise 通过 user 的 `employment_identities.enterprise_uid` 区分（详见 §6.5.1）。
 
 **决策 2：`tenants.enterprise_config` JSONB 承载 tenant 级企业元信息**
 
@@ -542,14 +542,14 @@ enterprise 仍是 user 的属性（`enterprise_identities` 表，§6 4 层 UserI
 **字段定义**：
 
 ```sql
--- enterprise_identities 表加 enterprise_uid 列
-ALTER TABLE cs_user.enterprise_identities
+-- employment_identities 表加 enterprise_uid 列
+ALTER TABLE cs_user.employment_identities
   ADD COLUMN enterprise_uid VARCHAR(128);
 -- 默认由 IdP 的 employeeNumber / employeeId 字段映射，可由 tenant 级配置覆盖
 
 -- tenant 内唯一约束（同一 tenant 内 enterprise_uid 不可重复）
-CREATE UNIQUE INDEX uq_enterprise_identities_tenant_uid
-  ON cs_user.enterprise_identities (tenant_id, enterprise_uid)
+CREATE UNIQUE INDEX uq_employment_identities_tenant_uid
+  ON cs_user.employment_identities (tenant_id, enterprise_uid)
   WHERE enterprise_uid IS NOT NULL AND deleted_at IS NULL;
 ```
 
@@ -578,7 +578,7 @@ CREATE UNIQUE INDEX uq_enterprise_identities_tenant_uid
 | 字段 | 表 | 维度 | 跨登录源稳定性 | 跨企业稳定性 | 出现在 JWT | 用途 |
 |---|---|---|---|---|---|---|
 | `external_key` | user_auth_identities | 登录源身份 | ✗（每条 identity 一个）| ✗ | ✗ | 防钓鱼（§6.2）|
-| `enterprise_uid` | enterprise_identities | 企业身份 | ✓（跨登录源不变，由 IdP 工号决定）| ✗（换企业时变）| ✓（`enterprise.uid`）| 企业身份定位、部门映射 |
+| `enterprise_uid` | employment_identities | 企业身份 | ✓（跨登录源不变，由 IdP 工号决定）| ✗（换企业时变）| ✓（`enterprise.uid`）| 企业身份定位、部门映射 |
 | `user_id` | users | cs-user 用户 | ✓ | ✓ | ✓（`sub`）| 业务表 FK、跨系统稳定标识 |
 | `users.username` | users | cs-user 用户 | ✓ | ✓ | ✓（`user.username`）| tenant 内可读标识 |
 
@@ -762,9 +762,9 @@ CREATE INDEX idx_user_auth_identities_tenant
   ON cs_user.user_auth_identities (tenant_id);
 ```
 
-> 注：`tenant_id` 在此为冗余字段（可从 `users.tenant_id` JOIN 得到），但加索引便于"列出 tenant 内所有 identity"等查询。同理适用于 `user_profile` / `enterprise_identities` / `user_gitea_binding`——三张表均在 N0 阶段按 Step 1 → 2 → 3 顺序迁移。
+> 注：`tenant_id` 在此为冗余字段（可从 `users.tenant_id` JOIN 得到），但加索引便于"列出 tenant 内所有 identity"等查询。同理适用于 `user_profile` / `employment_identities` / `user_gitea_binding`——三张表均在 N0 阶段按 Step 1 → 2 → 3 顺序迁移。
 
-### 8.3 `user_profile` / `user_system_roles` / `enterprise_identities` 加 `tenant_id`
+### 8.3 `user_profile` / `user_system_roles` / `employment_identities` 加 `tenant_id`
 
 每张租户作用域表都加 `tenant_id`，便于按 tenant 聚合查询、批量导出、级联清理。
 
@@ -813,11 +813,11 @@ CREATE TABLE cs_user.tenant_configs (
       -- display_name 初始化优先级（详见 §11.3.5），空 yaml 走全局默认
     employment_providers YAML NOT NULL DEFAULT '{}',
       -- 雇佣上下文提供方 IdP 列表与刷新策略（详见 §11.4.4）。
-      -- 空 yaml = enabled 列表为空 = 该 tenant 不启用雇佣上下文（所有用户 enterprise_identities 为空）；
+      -- 空 yaml = enabled 列表为空 = 该 tenant 不启用雇佣上下文（所有用户 employment_identities 为空）；
       -- tenant_admin 必须显式声明哪些 IdP 是 employment provider 才会写入/刷新雇佣字段
     features         JSONB NOT NULL DEFAULT '{}',
     enterprise_schema_ext JSONB NOT NULL DEFAULT '{}',
-      -- tenant 自定义 enterprise 字段（写入 enterprise_identities.attributes）
+      -- tenant 自定义 enterprise 字段（写入 employment_identities.attributes）
     updated_by       UUID NOT NULL REFERENCES cs_user.users(id),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -894,8 +894,8 @@ ALTER TABLE cs_user.user_auth_identities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_auth_identities FORCE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_profile ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_profile FORCE ROW LEVEL SECURITY;
-ALTER TABLE cs_user.enterprise_identities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cs_user.enterprise_identities FORCE ROW LEVEL SECURITY;
+ALTER TABLE cs_user.employment_identities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cs_user.employment_identities FORCE ROW LEVEL SECURITY;
 -- 其他租户作用域表同理
 
 -- 2. 角色 / Schema 分离
@@ -994,7 +994,7 @@ func setupSession(conn *pgx.Conn, tenantID string) error {
    ├─ 分支判断（详见 §11.4）：
    │   ├─ 新用户首次落库 / 已有用户走登录路径（含 primary_provider 切换）
    │   │   → 调用 ApplyEnterpriseMapping **仅当 source ∈ tenant_configs.employment_providers.enabled**
-   │   │     （非 employment provider 如 github 登录 → 跳过，enterprise_identities 保持现状或留空）
+   │   │     （非 employment provider 如 github 登录 → 跳过，employment_identities 保持现状或留空）
    │   │     求值规则详见 §11.4.4
    │   └─ 已有用户走"绑定新 source"路径（§11.4.3）
    │       → **短路**：跳过 ApplyEnterpriseMapping / ApplyInitialProfileFromIdP，仅 INSERT user_auth_identities
@@ -1066,8 +1066,8 @@ cs-user 内部业务逻辑（用户表、tenant 模型、4 层 UserInfo、企业
     │   ├─ 按 source 求值候选值：
     │   │   - source = "idp_claim:preferred_username"  → raw_claims["preferred_username"]
     │   │   - source = "idp_claim:sub"                 → raw_claims["sub"]
-    │   │   - source = "enterprise_uid"                → enterprise_identities.uid（§6.5.1）
-    │   │   - source = "employee_id"                   → enterprise_identities.employee_id
+    │   │   - source = "enterprise_uid"                → employment_identities.uid（§6.5.1）
+    │   │   - source = "employee_id"                   → employment_identities.employee_id
     │   │   - source = "email_local_part"              → split(users.email, "@")[0]
     │   │   - source = "transformer:{name}"            → 调用内置 transformer（§17.3）
     │   ├─ 候选值经 NormalizeUsername 规整（小写 / 去空格 / 字符白名单 `a-z0-9._-`）
@@ -1197,7 +1197,7 @@ max_length: 64
 
 ### 11.4 用户信息字段填充策略（首次登录 vs 后续 IdP 绑定）
 
-新用户首次登录时由当时绑定的 IdP 走**初始化填充逻辑**；用户后续再绑新 IdP 时遵循**不覆写原则**（first-write-wins / append-only），已落库的 users / user_profile / enterprise_identities 字段不被新 IdP 覆写。雇佣上下文（`enterprise_identities.*`）归属到**平台 user info**（`(user_id, tenant_id)` 维度），由 tenant 显式声明的 **employment provider** 写入/刷新，与 `primary_provider` 解耦（详见 §11.4.4）。这两条共同保证身份合并（identity merge）的安全性。
+新用户首次登录时由当时绑定的 IdP 走**初始化填充逻辑**；用户后续再绑新 IdP 时遵循**不覆写原则**（first-write-wins / append-only），已落库的 users / user_profile / employment_identities 字段不被新 IdP 覆写。雇佣上下文（`employment_identities.*`）归属到**平台 user info**（`(user_id, tenant_id)` 维度），由 tenant 显式声明的 **employment provider** 写入/刷新，与 `primary_provider` 解耦（详见 §11.4.4）。这两条共同保证身份合并（identity merge）的安全性。
 
 #### 11.4.1 字段分类（按可变性）
 
@@ -1205,7 +1205,7 @@ max_length: 64
 |---|---|---|---|---|
 | **A. 身份键冻结** | `users.id` / `users.username`（onboarding 后）/ `users.tenant_id` / `external_key` | cs-user 自生成 / onboarding 确认 / 首次登录写入 | v1 不可（v2 审批流）| **绝不覆写** |
 | **B. IdP 一次性填充（用户可改）** | `display_name` / `avatar_url` / `locale` / `timezone` / `user_profile.*` | 首个 IdP claim 求值（按 `display_name_strategy`，§11.3.5）| `PATCH /api/me/profile` | **不覆写**（first-write-wins）|
-| **C. 雇佣上下文**（绑定到 user，由 employment provider 提供，详见 §11.4.4）| `enterprise_identities.*`（uid / employee_id / department / title / cost_center / ...）| 首次用 `employment_providers.enabled` 中的 IdP 登录时求值写入（非 employment provider 登录留空）| 用户用 employment provider 重新登录时按 `refresh` 策略刷新（员工调岗同步）；用户不能手改 | **不覆写**；非 employment provider 绑定完全不触碰此行；employment provider 绑定按 `resolution_strategy` 处理 |
+| **C. 雇佣上下文**（绑定到 user，由 employment provider 提供，详见 §11.4.4）| `employment_identities.*`（uid / employee_id / department / title / cost_center / ...）| 首次用 `employment_providers.enabled` 中的 IdP 登录时求值写入（非 employment provider 登录留空）| 用户用 employment provider 重新登录时按 `refresh` 策略刷新（员工调岗同步）；用户不能手改 | **不覆写**；非 employment provider 绑定完全不触碰此行；employment provider 绑定按 `resolution_strategy` 处理 |
 | **D. 用户绑定类（需验证）** | `users.email` / `users.phone` | 首个 IdP claim | 走验证流程（邮件 OTP / 短信码） | **不覆写**（新 IdP 即使返回不同 email/phone 也不写入；仅记录在 `user_auth_identities.raw_claims`）|
 | **E. 系统审计** | `created_at` / `created_by_idp` / `last_login_at` / `auth_time` | 系统自动 | 系统自动 | 自动更新 `last_login_at`；其余不动 |
 
@@ -1239,10 +1239,10 @@ func ApplyInitialProfileFromIdP(user *User, rawClaims map[string]any, provider s
     // 类 C：雇佣上下文 —— 仅当 provider 是 employment provider 时才求值
     if sliceContains(tenantConfig.EmploymentProviders.Enabled, provider) {
         ApplyEnterpriseMapping(user, rawClaims, provider, tenantConfig)
-        // → 首次写入 enterprise_identities (user_id, tenant_id, uid, employee_id, ...)
+        // → 首次写入 employment_identities (user_id, tenant_id, uid, employee_id, ...)
         // → resolution_strategy=first_wins 时首次写入即占位，后续 employment provider 登录按 refresh 策略
     }
-    // 非 employment provider（如 GitHub）登录 → enterprise_identities 留空
+    // 非 employment provider（如 GitHub）登录 → employment_identities 留空
     //   用户后续绑 employment provider 时才写入；详见 §11.4.4
 }
 ```
@@ -1267,7 +1267,7 @@ func ApplyInitialProfileFromIdP(user *User, rawClaims map[string]any, provider s
    ├─ 校验 external_key 未被其他 user 占用（§6.2 全局唯一）
    │     └─ 已被占用 → 409 "identity already bound to another user"
    └─ INSERT user_auth_identities (user_id, provider, external_key, raw_claims, bound_at=now())
-      ← 仅这一行写入；users / user_profile / enterprise_identities 不动
+      ← 仅这一行写入；users / user_profile / employment_identities 不动
 [4] 绑定完成 → 用户可在 /me/identities 列表看到新 source
 [5] 返回 200 { identity_id, provider, bound_at }，业务 JWT 不变（primary_provider 不变）
 ```
@@ -1281,7 +1281,7 @@ func ApplyInitialProfileFromIdP(user *User, rawClaims map[string]any, provider s
 
 #### 11.4.4 雇佣上下文与 IdP 解耦（employment providers）
 
-**核心设计修正**：雇佣上下文（`enterprise_identities.*`）归属到 **平台 user info**（`(user_id, tenant_id)` 维度），**不与 `primary_provider` 耦合**。tenant 通过 `employment_providers` 配置显式声明哪些 IdP 可作为雇佣上下文提供方；其余 IdP（如 GitHub / 飞书 / 钉钉等社交或协作型 IdP）即使成为 primary_provider，也不影响雇佣上下文。
+**核心设计修正**：雇佣上下文（`employment_identities.*`）归属到 **平台 user info**（`(user_id, tenant_id)` 维度），**不与 `primary_provider` 耦合**。tenant 通过 `employment_providers` 配置显式声明哪些 IdP 可作为雇佣上下文提供方；其余 IdP（如 GitHub / 飞书 / 钉钉等社交或协作型 IdP）即使成为 primary_provider，也不影响雇佣上下文。
 
 **`employment_providers` tenant 级配置**（写入 `tenant_configs.employment_providers` yaml，详见 §9.2）：
 
@@ -1305,14 +1305,14 @@ uid_immutability: enforce          # enforce：uid 不一致 → 403（默认，
 
 **关键不变量**：
 
-- `enterprise_identities` 行 = `(user_id, tenant_id)` 维度的雇佣快照（**绑定到 user**），不属于任何 `user_auth_identities` 行
+- `employment_identities` 行 = `(user_id, tenant_id)` 维度的雇佣快照（**绑定到 user**），不属于任何 `user_auth_identities` 行
 - 仅当用户**当前 session 的 primary_provider ∈ employment_providers.enabled** 时，登录流程才触发 `ApplyEnterpriseMapping`；否则跳过
-- 非 employment provider 的 IdP（GitHub 等）登录 / 绑定 / 切换 → `enterprise_identities` 一律不动
+- 非 employment provider 的 IdP（GitHub 等）登录 / 绑定 / 切换 → `employment_identities` 一律不动
 - `primary_provider` claim（§12.1）仅描述本次登录方式，不暗示雇佣刷新
 
 **行为矩阵**（用户绑了 3 个 IdP：idtrust / aad / github，employment_providers=[idtrust, aad]）：
 
-| 场景 | 当前登录 IdP | 是 employment provider？ | enterprise_identities 行为 |
+| 场景 | 当前登录 IdP | 是 employment provider？ | employment_identities 行为 |
 |---|---|---|---|
 | 首次登录（idtrust）| idtrust | ✓ | **首次写入**（按 resolution_strategy 占位）|
 | 首次登录（github，无 idtrust）| github | ✗ | 留空；待用户后续绑 employment provider 时再写入 |
@@ -1321,7 +1321,7 @@ uid_immutability: enforce          # enforce：uid 不一致 → 403（默认，
 | 切换 primary_provider（idtrust → github）| github | ✗ | 不动；JWT 中 enterprise 仍展示 idtrust 时期快照 |
 | 切换 primary_provider（idtrust → aad）| aad | ✓ | 按 `refresh`：on_login→重新求值（uid 一致性校验通过则刷新非 uid 字段）|
 | 解绑 employment provider（解 idtrust，仍保留 aad）| aad 下次登录 | ✓ | 不动；aad 是 employment provider，下次登录可继续刷新 |
-| 解绑所有 employment provider（只剩 github）| github | ✗ | 保留现有 enterprise_identities 行作为历史雇佣快照，不再刷新 |
+| 解绑所有 employment provider（只剩 github）| github | ✗ | 保留现有 employment_identities 行作为历史雇佣快照，不再刷新 |
 
 **切换 primary_provider 到 employment provider 的刷新流程**：
 
@@ -1338,7 +1338,7 @@ uid_immutability: enforce          # enforce：uid 不一致 → 403（默认，
    │   ├─ 新 uid != 现有 uid + enforce → 403 "enterprise_uid mismatch"
    │   ├─ 新 uid != 现有 uid + allow_change_with_audit → 覆盖 uid + 写审计日志
    │   └─ aad 无 uid 信息 → 保留现有 uid + 其他字段视配置可空或保留快照
-   └─ UPDATE enterprise_identities SET ... WHERE user_id AND tenant_id
+   └─ UPDATE employment_identities SET ... WHERE user_id AND tenant_id
 [5] 类 B / D 字段（display_name / email / phone / avatar_url）不重写
 [6] 签发新 JWT，primary_provider=aad，enterprise claim = 刷新后快照
 ```
@@ -1363,7 +1363,7 @@ GET /api/me/identities
 
 | 场景 | 处理 |
 |---|---|
-| 用户绑了 GitHub + idtrust，先解绑 idtrust | 允许；下次只能用 GitHub 登录；enterprise_identities 行保留（被视为历史雇佣快照，不再刷新）|
+| 用户绑了 GitHub + idtrust，先解绑 idtrust | 允许；下次只能用 GitHub 登录；employment_identities 行保留（被视为历史雇佣快照，不再刷新）|
 | 用户改 email 后再绑新 IdP 返回旧 email | 不覆写；旧 email 仍记录在新 identity 的 raw_claims 里供审计 |
 | tenant_admin 强制解绑某用户的 IdP | 走 admin API + 审计日志；同样不动 users 表字段 |
 | 同一 IdP 在不同 tenant 的不同 user 上 | 由 external_key 全局唯一约束保证不冲突（§6.2）|
@@ -1402,7 +1402,7 @@ users.locale/timezone     IdP 求值                  不覆写     不覆写   
 users.created_by_idp      首次写入                  -          -                -              -           -
 users.last_login_at       首次写入                  更新       更新             -              更新        更新
 user_profile.*            IdP 求值                  不覆写     不覆写           ✓ PATCH        不覆写      不覆写
-enterprise_identities.*   employment provider 写入  按 strategy 不动           ✗              按 refresh  不动
+employment_identities.*   employment provider 写入  按 strategy 不动           ✗              按 refresh  不动
 user_auth_identities      INSERT 首行               INSERT 增量行               -              不新增行    不新增行
 ```
 
@@ -1602,7 +1602,7 @@ merge_strategy:
 
 | 维度 | 约束 |
 |---|---|
-| 唯一性 | `(tenant_id, uid)` 在 `enterprise_identities` 表内唯一（DB partial unique index + 应用层 validator 双重保障）|
+| 唯一性 | `(tenant_id, uid)` 在 `employment_identities` 表内唯一（DB partial unique index + 应用层 validator 双重保障）|
 | 冲突处理 | 求值后写入前先查 `(tenant_id, uid)`；若已被其他用户占用 → 拒绝登录并报警（疑似 IdP 配置错误或员工账号复用）|
 | 缺失处理 | 若 `required: true` 且 priority_providers 全部为空 → 拒绝登录；若 `required: false` → `enterprise.uid=null`，业务侧按个人用户处理 |
 | 不可变性 | 一旦写入不可改；如员工换工号，走「注销旧 identity（带 1 年保护）+ 创建新 identity」流程（类似 §6.4 username_history） |
@@ -1628,19 +1628,19 @@ tenant 可在 `tenant_configs[<t_id>].custom_transformers` 注册自定义 trans
 
 ```go
 // cs-user/internal/identity/enterprise_mapper.go
-func MapEnterpriseIdentity(
+func MapEmploymentIdentity(
     rawClaimsByProvider map[string]map[string]any,  // {idtrust: {...}, aad: {...}}
     mapping EnterpriseFieldMapping,
     priority []string,
-) (EnterpriseIdentity, error) {
-    result := EnterpriseIdentity{CustomFields: map[string]any{}}
+) (EmploymentIdentity, error) {
+    result := EmploymentIdentity{CustomFields: map[string]any{}}
 
     for _, stdField := range mapping.StandardFields {
         value, sourceProvider, err := resolveByPriority(
             stdField, rawClaimsByProvider, priority)
         if err != nil {
             if stdField.Required {
-                return EnterpriseIdentity{}, fmt.Errorf(
+                return EmploymentIdentity{}, fmt.Errorf(
                     "required enterprise field %s missing from all providers", stdField.Name)
             }
             value = stdField.Default
@@ -1648,7 +1648,7 @@ func MapEnterpriseIdentity(
         if value != nil {
             value = applyTransformers(value, stdField.Transformers)
             if err := applyValidator(value, stdField.Validator); err != nil {
-                return EnterpriseIdentity{}, fmt.Errorf(
+                return EmploymentIdentity{}, fmt.Errorf(
                     "enterprise field %s validation failed: %w", stdField.Name, err)
             }
             result.Set(stdField.Name, value)
@@ -1664,7 +1664,7 @@ func MapEnterpriseIdentity(
 }
 ```
 
-求值后写入 `enterprise_identities.attributes` JSONB（详见 §18.2），并在签发业务 JWT 时把 `enterprise` 子对象填入 claims。
+求值后写入 `employment_identities.attributes` JSONB（详见 §18.2），并在签发业务 JWT 时把 `enterprise` 子对象填入 claims。
 
 #### 平台默认映射 + tenant override
 
@@ -1763,7 +1763,7 @@ rawClaimsByProvider := map[string]map[string]any{
 }
 
 // 2. 按 tenant 级 provider_mapping yaml 求值企业身份（§12.1.1）
-enterprise, err := MapEnterpriseIdentity(
+enterprise, err := MapEmploymentIdentity(
     rawClaimsByProvider,
     tenant.EnterpriseFieldMapping,    // tenant_configs[t_id].enterprise_field_mapping
     tenant.EnterprisePriorityProviders,
@@ -2124,7 +2124,7 @@ extra_fields:
 
 ### 18.2 字段求值
 
-tenant 自定义字段经 provider mapping 求值后，写入 `enterprise_identities.attributes` JSONB：
+tenant 自定义字段经 provider mapping 求值后，写入 `employment_identities.attributes` JSONB：
 
 ```json
 {
@@ -2146,8 +2146,8 @@ tenant 自定义字段经 provider mapping 求值后，写入 `enterprise_identi
 - tenant 标记 `indexed: true` 的字段：自动加表达式索引
 
 ```sql
-CREATE INDEX idx_enterprise_identities_acme_cost_center
-  ON cs_user.enterprise_identities ((attributes->>'cost_center_code'))
+CREATE INDEX idx_employment_identities_acme_cost_center
+  ON cs_user.employment_identities ((attributes->>'cost_center_code'))
   WHERE tenant_id = 't_acme';
 ```
 
@@ -2726,7 +2726,7 @@ UPDATE cs_user.users
 SET tenant_id = 't_default_uuid'
 WHERE tenant_id IS NULL;
 
--- user_auth_identities / user_profile / enterprise_identities 同理
+-- user_auth_identities / user_profile / employment_identities 同理
 ```
 
 ### 26.2 现有用户无感知
@@ -2748,7 +2748,7 @@ WHERE tenant_id IS NULL;
 
 | 阶段 | 周期 | 关键产出 |
 |---|---|---|
-| **N0：tenant 表 + 默认 tenant 引导** | 1 周 | tenants / tenant_admins / platform_admins 表；**同时**对 users / user_auth_identities / user_profile / enterprise_identities / user_gitea_binding 五张表 `ADD COLUMN tenant_id`（multi-step: 先 nullable → backfill `'t_default_uuid'` → `SET NOT NULL`）+ brownfield 全表回填 default tenant |
+| **N0：tenant 表 + 默认 tenant 引导** | 1 周 | tenants / tenant_admins / platform_admins 表；**同时**对 users / user_auth_identities / user_profile / employment_identities / user_gitea_binding 五张表 `ADD COLUMN tenant_id`（multi-step: 先 nullable → backfill `'t_default_uuid'` → `SET NOT NULL`）+ brownfield 全表回填 default tenant |
 | **N1：唯一约束调整 + 索引** | 1 周 | `uq_users_tenant_username`、`uq_users_email_global`、`uq_user_auth_identities_external_key`、各表 `idx_*_tenant` 索引 |
 | **N2：RLS 启用** | 1 周 | PostgreSQL Row Security Policy 配置（`ENABLE` + `FORCE`）；三角色（owner / app / platform_admin）+ SECURITY DEFINER 函数；应用层连接池 hook 注入 session 变量 |
 | **N3：tenant resolution 登录链路** | 2 周 | 子域 / 邮箱域 / 显式选择三层 fallback；Casdoor multi-organization 接入 |
@@ -2884,7 +2884,7 @@ CREATE INDEX idx_tenants_status
 }
 ```
 
-> enterprise_config 仅承载 tenant 级企业元信息（名片性质），不是企业实体。用户的雇佣元数据由 `enterprise_identities.enterprise_uid` 等字段承载（§6.5.1）。
+> enterprise_config 仅承载 tenant 级企业元信息（名片性质），不是企业实体。用户的雇佣元数据由 `employment_identities.enterprise_uid` 等字段承载（§6.5.1）。
 
 ## 附录 B：tenant-scoped provider mapping yaml 示例
 
@@ -2915,7 +2915,7 @@ providers:
 # tenant_configs[acme].username_strategy（详见 §11.3.3）
 # acme 是企业内部租户，强制用工号做 username（auto 模式，免填写）
 mode: auto
-source: employee_id                # 直接用 enterprise_identities.employee_id
+source: employee_id                # 直接用 employment_identities.employee_id
 fallback_to_user_input: false      # 工号缺失视为登录失败（不允许用户自填）
 reserve_patterns: ["admin*", "root", "^(cs|costrict)-.*"]
 normalize:
@@ -2958,8 +2958,8 @@ ALTER TABLE cs_user.user_profile ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_profile FORCE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_system_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_system_roles FORCE ROW LEVEL SECURITY;
-ALTER TABLE cs_user.enterprise_identities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cs_user.enterprise_identities FORCE ROW LEVEL SECURITY;
+ALTER TABLE cs_user.employment_identities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cs_user.employment_identities FORCE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_gitea_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.user_gitea_binding FORCE ROW LEVEL SECURITY;
 ALTER TABLE cs_user.username_history ENABLE ROW LEVEL SECURITY;
@@ -3132,7 +3132,7 @@ EXPLAIN ANALYZE SELECT * FROM cs_user.users WHERE username = 'alice';
     "hard_deleted_at": "2026-08-09T10:20:00Z",
     "user_count": 150,
     "cascaded_tables": ["users", "user_auth_identities", "user_profile",
-                        "enterprise_identities", "user_gitea_binding"]
+                        "employment_identities", "user_gitea_binding"]
   }
 }
 ```
