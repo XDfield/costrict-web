@@ -1,0 +1,95 @@
+basePath: /
+host: localhost:8081
+info:
+  contact: {}
+  description: 'User identity service for the costrict-cloud platform (Phase 1: user
+    CRUD + read-through RPC).'
+  title: cs-user API
+  version: "1.0"
+paths:
+  /api/internal/ping:
+    get:
+      description: Returns pong. Used by costrict-web to verify the X-Internal-Token
+        handshake at startup. Requires the shared secret.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              pong:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Internal handshake
+      tags:
+      - internal
+  /healthz:
+    get:
+      description: Always returns 200 once the process is up. Unauthenticated — safe
+        for K8s livenessProbe.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              status:
+                type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - health
+  /readyz:
+    get:
+      description: Returns 200 when the readiness checker (Postgres ping in P0-2)
+        passes; 503 otherwise. Unauthenticated — safe for K8s readinessProbe. The
+        handler is built by a factory bound to the supplied checker; swag uses the
+        @Router path to register this endpoint.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              status:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              status:
+                type: string
+            type: object
+      summary: Readiness probe
+      tags:
+      - health
+securityDefinitions:
+  InternalToken:
+    description: Shared secret for service-to-service calls from costrict-web (ADR
+      D8).
+    in: header
+    name: X-Internal-Token
+    type: apiKey
+swagger: "2.0"
