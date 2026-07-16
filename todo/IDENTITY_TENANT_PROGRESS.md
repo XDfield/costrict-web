@@ -32,7 +32,7 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 47 | 65% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-6 完成，P0-5 部分） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 50 | 69% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 完成，P0-7/8 待启动） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
@@ -110,13 +110,21 @@
 
 ### P0-5：Helm chart（cluster-internal only）✅
 
-- [x] **实现**：`deploy/charts/cs-user/Chart.yaml`
-- [x] **实现**：`deploy/charts/cs-user/values.yaml`（image / replicas / env / networkPolicy.enabled）
+- [x] **实现**：`deploy/charts/cs-user/Chart.yaml`（version 0.1.0）
+- [x] **实现**：`deploy/charts/cs-user/values.yaml`（image / replicas / env / networkPolicy.enabled / secrets 块 / tests.curlImage）
 - [x] **实现**：`templates/deployment.yaml` + `templates/service.yaml` + `templates/networkpolicy.yaml`（限同 namespace 流量）
-- [ ] **补全**：`templates/secret.yaml`（K8s Secret 注入 `CS_USER_INTERNAL_TOKEN` + PG 凭据；ADR §3.2 列出但当前缺失）
-- [ ] **测试覆盖**：`deploy/charts/cs-user/tests/` 跑 `helm lint` + `helm template` 渲染断言（参考 `test-lint-charts.yaml` CI）
-- [ ] **测试覆盖**：`helm template` 输出 fixture 文件，断言关键 path（labels / env vars / networkPolicy selectors）
-- [ ] **swagger 注解**：无（chart 不暴露 endpoint）
+- [x] **补全**：`templates/secret.yaml`（chart-managed Secret opt-in via `secrets.create=true`；注入 `CS_USER_POSTGRES_PASSWORD` + `CS_USER_INTERNAL_TOKEN`，key 由 `database.existingSecretKey` / `internalToken.existingSecretKey` 控制；与 deployment.yaml 的 fallback 链路对齐 `<release>-secrets`）
+- [x] **测试覆盖**：`templates/tests/test-connection.yaml`（helm test pod，hook=test + before-hook-creation,hook-succeeded；curlimages/curl 镜像可经 `tests.curlImage` 配置；探 `/healthz` + `/readyz`，--fail --max-time 5；securityContext 与主容器一致）
+- [x] **CI 矩阵**：`.github/workflows/lint-charts.yaml` 把 cs-user 加入 chart matrix（之前漏了，与 gateway/api/worker/portal/postgres/proxy/wecom-bot-proxy 同列跑 `helm lint` + `helm template`）
+- [ ] **测试覆盖**：`helm template` 输出 fixture 文件，断言关键 path（labels / env vars / networkPolicy selectors）*(延后：lint-charts CI 已覆盖 lint + template，fixture 级深度断言属于额外加固，留给 P0-7 集成测试基础设施一并接入)*
+- [x] **swagger 注解**：无（chart 不暴露 endpoint）
+
+**实现说明 / 决策**：
+
+- **secret 双轨策略**：(a) 生产：`secrets.create=false`（默认），由 sealed-secrets / external-secrets / `kubectl create secret` 外部供给，operator 把 `database.existingSecret` + `internalToken.existingSecret` 指向它；(b) dev/staging/CI：`secrets.create=true`，chart 渲染 `<release>-secrets` 并自动 wire 进 Deployment。两条路径在 pod env 层等价（deployment.yaml 用 `existingSecret || (secrets.create ? <release>-secrets : nil)` 的 fallback 链）。
+- **空 default fail-fast**：`database.existingSecret` + `internalToken.existingSecret` + `secrets.create=false` 时，Deployment 既不渲染 PG_PASSWORD 也不渲染 INTERNAL_TOKEN env → 容器启动时 `config.Load()` 必然 panic，杜绝"密钥没注入却静默起服"。
+- **helm test 不验 internal API**：测试 pod 走未鉴权的 `/healthz` + `/readyz`；internal API（需 X-Internal-Token）的端到端覆盖留给 P0-7 集成测试 binary（同时起 server + cs-user）。
+- **手工渲染核验**：本地无 helm CLI，已用模板语义手算 4 种组合（prod 默认 / 外部 secret / chart-managed / 混合）的渲染结果；CI 的 `helm template` 是权威 gate。
 
 ### P0-6：ETL 脚本（dry-run + idempotent UPSERT）✅
 
@@ -311,7 +319,7 @@
 | 风险 | 严重度 | 缓解 | 当前状态 |
 |---|---|---|---|
 | 107 处 user 访问点迁移遗漏 | 高 | grep 验证 `models.User` 直接访问清零；costrict-web 表 READONLY 兜底 | 🔴 未启动（P0-7/8 触发） |
-| 共享密钥泄露 | 中 | K8s secret 注入 + 定期轮换 + networkPolicy 限同 namespace | 🟡 networkPolicy 已就绪，secret.yaml 待补 |
+| 共享密钥泄露 | 中 | K8s secret 注入 + 定期轮换 + networkPolicy 限同 namespace | ✅ networkPolicy + secret.yaml + chart-managed/existingSecret 双轨就绪 |
 | ETL cutover 数据丢失 | 高 | dry-run + diff + cutover 停写 + 备份保留 30 天 | 🔴 未启动（P0-6） |
 | cs-user 故障 → costrict-web user API 全挂 | 高 | CachedUserService stale 兜底 + 多副本 + 监控 | 🔴 未启动（P0-7） |
 | Phase 3 csc 兼容性破坏 | 高 | 真实 csc login 集成测试 + 灰度 + 30 天兼容窗口 | ⏳ Phase A7 |
