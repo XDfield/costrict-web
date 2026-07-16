@@ -35,6 +35,8 @@ import (
 	_ "github.com/costrict/costrict-web/cs-user/docs"
 	"github.com/costrict/costrict-web/cs-user/internal/app"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
+	"github.com/costrict/costrict-web/cs-user/internal/migration"
+	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -51,9 +53,47 @@ func main() {
 		logger.Fatal("load config", zap.Error(err))
 	}
 
-	// Phase 1 P0-1: stub readiness checker (HTTP-only). P0-2 will pass a real
-	// Postgres ping here.
-	r := app.NewRouter(cfg, nil)
+	// Open the independent Postgres pool (ADR D1). main owns the lifecycle;
+	// shutdown closes it after the HTTP server stops accepting traffic.
+	pool, err := storage.Open(cfg)
+	if err != nil {
+		logger.Fatal("open postgres", zap.Error(err))
+	}
+	defer func() {
+		if cerr := pool.Close(); cerr != nil {
+			logger.Error("close postgres pool", zap.Error(cerr))
+		}
+	}()
+	logger.Info("postgres pool opened",
+		zap.String("host", cfg.Postgres.Host),
+		zap.String("db", cfg.Postgres.Database))
+
+	// Dev-mode auto-migrate: when CS_USER_AUTO_MIGRATE is truthy ("1"/"true"),
+	// apply pending migrations inline at boot so local dev doesn't need a
+	// separate migrate invocation. Prod wiring (Helm pre-deploy hook calling
+	// the migrate binary) is added in P0-5; this guard keeps prod explicit.
+	if isTruthy(os.Getenv("CS_USER_AUTO_MIGRATE")) {
+		sqlDB, err := pool.SQLDB()
+		if err != nil {
+			logger.Fatal("acquire sql.DB for migration", zap.Error(err))
+		}
+		// gorm postgres driver maps to the "postgres" goose dialect.
+		runner, err := migration.NewRunner(sqlDB, "postgres")
+		if err != nil {
+			logger.Fatal("init migration runner", zap.Error(err))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := runner.Up(ctx); err != nil {
+			cancel()
+			logger.Fatal("auto-migrate", zap.Error(err))
+		}
+		cancel()
+		logger.Info("auto-migrate applied")
+	}
+
+	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
+	// actual DB reachability via Ping.
+	r := app.NewRouter(cfg, pool)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTP.Port,
@@ -79,4 +119,15 @@ func main() {
 		logger.Error("forced shutdown", zap.Error(err))
 	}
 	logger.Info("bye")
+}
+
+// isTruthy returns true for common affirmative env values ("1", "true", "yes"
+// case-insensitive). Empty / unknown values fall back to false so the default
+// remains "do not auto-migrate in prod".
+func isTruthy(v string) bool {
+	switch v {
+	case "1", "true", "TRUE", "True", "yes", "YES", "Yes":
+		return true
+	}
+	return false
 }

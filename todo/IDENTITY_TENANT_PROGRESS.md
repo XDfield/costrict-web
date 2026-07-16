@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 17 | 24% | 🟡 进行中（P0-1 + P0-4 完成，P0-5 部分） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 28 | 39% | 🟡 进行中（P0-1 + P0-2 + P0-4 完成，P0-5 部分） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-4（认证中间件）两个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-2（Postgres + 迁移）。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-4（认证中间件）三个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-3（User / UserAuthIdentity 模型 + CRUD）。
 
 ---
 
@@ -59,22 +59,28 @@
 - [x] **swagger 注解**：`healthz` / `readyz` / `PingHandler` 各自的 `@Router` / `@Summary` / `@Tags`
 - [x] **CI 矩阵**：`.github/workflows/test.yml` 自动发现所有 `go.mod` 并跑 build + vet + test-race
 
-### P0-2：独立 PostgreSQL + cs-user schema（goose migrations）🔜
+### P0-2：独立 PostgreSQL + cs-user schema（goose migrations）✅
 
 - [x] **实现**：`cs-user/internal/config/PostgresConfig.DSN()`（已就绪）
-- [ ] **实现**：`cs-user/migrations/` 目录 + goose 迁移文件，从 `server/migrations/` 复制 user 相关 5 个文件：
-  - [ ] `20260401100000_create_users_table.sql`
-  - [ ] `20260408154000_migrate_users_to_subject_id_and_serial_pk.sql`
-  - [ ] `20260524000000_create_user_auth_identities_table.sql`
-  - [ ] `20260525000000_add_explicitly_unbound_to_user_auth_identities.sql`
-  - [ ] `20260616150000_add_status_to_users.sql`
-- [ ] **实现**：`cs-user/internal/storage/postgres.go`（pgx 连接池 + Ping 用于 readyz）
-- [ ] **实现**：`cs-user/internal/storage/migrations.go`（goose.Up 嵌入迁移文件 via `//go:embed`）
-- [ ] **实现**：`cmd/api/main.go` 启动时跑迁移（dev 模式）/ 提供 `cs-user migrate` 子命令（prod 模式）
-- [ ] **接线**：`app.NewRouter(cfg, postgresChecker)` 替换当前 `nil` 桩
-- [ ] **测试覆盖**：`storage/postgres_test.go`（用 `testcontainers-go` 起真实 PG，跑迁移 up + down + 重入）
-- [ ] **测试覆盖**：`app_test.go` 增加 readyChecker 真实场景（DB 拒连 → 503）的集成测试
-- [ ] **swagger 注解**：无新 endpoint（迁移是基础设施）
+- [x] **实现**：`cs-user/migrations/` 目录 + goose 迁移文件，从 `server/migrations/` 复制 user 相关 5 个文件：
+  - [x] `20260401100000_create_users_table.sql`
+  - [x] `20260408154000_migrate_users_to_subject_id_and_serial_pk.sql`
+  - [x] `20260524000000_create_user_auth_identities_table.sql`
+  - [x] `20260525000000_add_explicitly_unbound_to_user_auth_identities.sql`
+  - [x] `20260616150000_add_status_to_users.sql`
+- [x] **实现**：`cs-user/migrations/embed.go`（`//go:embed *.sql` 把迁移文件嵌入 binary，与 server 同模式）
+- [x] **实现**：`cs-user/internal/storage/postgres.go`（gorm + pgx 连接池 + env-tunable pool sizing + `Ping()` 实现 `app.ReadyChecker`）
+- [x] **实现**：`cs-user/internal/migration/runner.go`（goose.Up 包装；`NewRunner` 用嵌入 FS，`NewRunnerWithFS` 注入测试 FS）
+- [x] **实现**：`cmd/api/main.go` 启动时跑迁移（dev 模式，`CS_USER_AUTO_MIGRATE=1` 触发）/ 提供 `cs-user-migrate` 独立 binary（prod 模式，Helm pre-deploy hook 入口）
+- [x] **实现**：`cs-user/cmd/migrate/main.go` 独立迁移 binary，acquire `pg_advisory_lock` 防并发（lock keys 故意与 server 错开：24680/13579 vs 12345/67890）
+- [x] **接线**：`app.NewRouter(cfg, pool)` 替换 `nil` 桩，/readyz 现反映真实 DB 可达性
+- [x] **测试覆盖**：`internal/storage/postgres_test.go`（envInt defaults / valid / rejects-garbage / rejects-negative + configurePool defaults / overrides / invalid + DSN format + nil-config + Close idempotency）
+- [x] **测试覆盖**：`internal/storage/postgres_cgo_test.go`（`//go:build cgo` —— Ping OK / closed-DB fails / nil-Pool / SQLDB accessor，用 sqlite :memory: 而非 testcontainers，匹配 server 测试惯例）
+- [x] **测试覆盖**：`internal/migration/runner_test.go`（NewRunner 拒绝 nil db / 空 dialect / nil fs / 未知 dialect）
+- [x] **测试覆盖**：`internal/migration/runner_cgo_test.go`（`//go:build cgo` —— Up 应用全部 / Up 幂等 / Version 从 0 推进到 20260102000000 / Down 回滚；用 fstest.MapFS 注入 synthetic migrations 而非真实 Postgres-only schema）
+- [ ] **测试覆盖**：`app_test.go` 增加 readyChecker 真实场景（DB 拒连 → 503）的集成测试 *(P0-3 接 CRUD 时一并补，因当前 readyChecker 是接口注入，已有 stubReadyErr 覆盖 503 路径)*
+- [x] **CI 矩阵**：`go test -race ./...`（含 cgo-tagged sqlite 测试）全部 PASS；Linux + Windows 双平台均跑通
+- [x] **swagger 注解**：无新 endpoint（迁移是基础设施）；`make swagger` 重生成后 spec 无 diff
 
 ### P0-3：User / UserAuthIdentity 模型 + CRUD service 🔜
 
