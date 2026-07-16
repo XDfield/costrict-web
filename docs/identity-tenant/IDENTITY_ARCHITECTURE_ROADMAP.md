@@ -59,7 +59,7 @@
 | JWT claims（`sub` / `universal_id` / `provider` / `email` / `phone`） | 🟡 部分 | `server/internal/middleware/auth.go:27-37`、`server/internal/user/service.go:19-31` |
 | `tenants` 表 / `tenant_id` 列 | ❌ 未开始 | grep 无任何 `tenant_id` 列 |
 | `tenant_configs` 表 + provider mapping yaml | ❌ 未开始 | — |
-| `enterprise_identities` 表 / `employment_providers` | ❌ 未开始 | — |
+| `employment_identities` 表 / `employment_providers` | ❌ 未开始 | — |
 | RLS（PostgreSQL Row Security Policy） | ❌ 未开始 | — |
 | 三级权限（platform / tenant_admin / member） | ❌ 未开始 | — |
 | `primary_provider` claim / 雇佣上下文 JWT claim | ❌ 未开始 | — |
@@ -115,21 +115,54 @@
 
 ---
 
-## 4. 实施路线图（5 个阶段，每阶段独立可上线）
+## 4. 实施路线图（6 个阶段，每阶段独立可上线）
 
 > **关键原则**：每个阶段都是**完整的、可上线的、有用户价值的**。任何一个阶段卡住都不阻塞前一阶段的产出。
+>
+> **路径基线变更（2026-07-16 ADR）**：原 ROADMAP 把 cs-user 服务抽离放在 Stage D（可无限期推迟）。经 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md) 决策，**提前到 Phase 0**——先搭 cs-user 服务壳 + 接管 user 数据 ownership（user CRUD only），再做 Phase A 的 JWT 自签。Phase A 起所有认证 / 身份相关代码物理路径在 `cs-user/...`。
 
-### 阶段 A：JWT 自签 + 雇佣上下文最小集（**MVP，最高优先级**）
+### 阶段 0：cs-user 服务抽离（user 数据 ownership，**先于 Phase A**）
 
-**目标**：让 JWT 不再依赖 Casdoor，并补齐 `enterprise_identities` 表 + `employment_providers` 配置。这一步是后续所有阶段的基础。
+**目标**：搭独立 cs-user 服务（Monorepo `costrict-web/cs-user/`），接管 user 数据 ownership（users / user_auth_identities 表 CRUD），costrict-web 通过 read-through RPC 调用。**不含** JWT 自签、OAuth callback 接管、employment_identities——这些留到 Phase A 及之后。
 
 **任务清单**：
 
-> **物理路径说明**：本阶段所有迁移与代码**暂位于 `costrict-web/server/...`**（cs-user 尚未抽离，见 Stage D）；**职责归属 cs-user**（认证 / 身份 / 租户相关）。Stage D 剥离后路径前缀批量改为 `cs-user/...`，schema 与代码逻辑不变。
+| # | 任务 | 涉及文件 | 来源 |
+|---|---|---|---|
+| P0-1 | cs-user 服务骨架（gin + /healthz + 配置加载） | `cs-user/cmd/api/main.go`、`cs-user/internal/config/` | ADR D1, D9 |
+| P0-2 | 独立 PostgreSQL 实例 + cs-user schema | `cs-user/migrations/`（从 server/migrations 复制 user 相关） | ADR D3 |
+| P0-3 | User / UserAuthIdentity 模型 + CRUD service 迁移 | `cs-user/internal/models/`、`cs-user/internal/user/`、`cs-user/internal/handlers/` | ADR D1 |
+| P0-4 | 内部 API 共享密钥认证中间件（`X-Internal-Token` header） | `cs-user/internal/middleware/internal_auth.go` | ADR D8 |
+| P0-5 | Helm chart（cluster-internal only，network policy 限制） | `deploy/charts/cs-user/` | ADR D9 |
+| P0-6 | ETL 脚本（dry-run + idempotent UPSERT by subject_id） | `cs-user/cmd/etl/main.go` | ADR D6 |
+| P0-7 | read-through RPC client：`server/internal/user/rpc_client.go`，复用 CachedUserService | `server/internal/user/` | ADR D4, D5, D6 |
+| P0-8 | costrict-web users 表进入 READONLY（写入路由到 cs-user） | 应用层 gate + DB trigger 兜底 | ADR D6 |
+
+**完成标准**：
+- cs-user Dockerfile 构建通过，本地 docker-compose 起得来，`/healthz` 返 200
+- ETL dry-run 在生产数据快照：行数一致 + 0 字段 drift
+- costrict-web 任意 user API（如 `GET /api/users/:id`）走 RPC 路径返回正确数据
+- CachedUserService 命中率 > 90%（连续 1 小时压测）
+- cs-user DB 独立备份恢复测试通过
+- costrict-web users 表进入 READONLY（grep 验证无写入路径）
+
+**不在本阶段**：JWT 自签、OAuth callback 接管、employment_identities、tenant_configs、tenant_id 列、RLS、webhook。
+
+**协议**：REST only（HTTP/JSON），不引入 gRPC（见 ADR D5）。
+
+---
+
+### 阶段 A：JWT 自签 + 雇佣上下文最小集（**MVP，最高优先级**）
+
+**目标**：让 JWT 不再依赖 Casdoor，并补齐 `employment_identities` 表 + `employment_providers` 配置。这一步是后续所有阶段的基础。
+
+**任务清单**：
+
+> **物理路径说明**：Phase 0 完成后，本阶段所有认证 / 身份相关代码物理路径在 `cs-user/...`（独立服务）。原 ROADMAP 描述的 `server/internal/auth/` 等路径已迁移到 `cs-user/internal/auth/`。`server/internal/middleware/auth.go` 仅保留 JWT 验签逻辑（依赖 cs-user 的 JWKS endpoint）。
 
 | # | 任务 | 涉及文件 | 来源提案 |
 |---|---|---|---|
-| A1 | 新建 `enterprise_identities` 表迁移 | `server/migrations/202607XX_create_enterprise_identities.sql`（cs-user 范围，Stage D 前物理在 server/） | MULTI_TENANCY §6.5.1, §8 |
+| A1 | 新建 `employment_identities` 表迁移 | `server/migrations/202607XX_create_employment_identities.sql`（cs-user 范围，Stage D 前物理在 server/） | MULTI_TENANCY §6.5.1, §8 |
 | A2 | 新建 `tenant_configs` 表（最小 schema：`tenant_id` + `yaml` 列） | `server/migrations/202607XX_create_tenant_configs.sql` | MULTI_TENANCY §9.2 |
 | A3 | 实现 JWT 自签（RS256 + JWKS endpoint），保留 Casdoor JWT 30 天兼容窗口 | `server/internal/auth/jwt_signer.go`（新）、`server/internal/middleware/auth.go`（改） | USER_CENTER Part II、MULTI_TENANCY §12、§9 下游兼容矩阵 |
 | A4 | OAuth callback 中加 `ApplyEnterpriseMapping` 步骤，按 `employment_providers.enabled` 门控 | `server/internal/user/service.go`、`server/internal/handlers/users.go` | MULTI_TENANCY §11.1[5]、§11.4.2 |
@@ -157,7 +190,7 @@
 | # | 任务 | 来源提案 |
 |---|---|---|
 | B1 | `tenants` + `tenant_admins` 表迁移 | MULTI_TENANCY §7 |
-| B2 | 给 `users` / `user_auth_identities` / `user_profile` / `enterprise_identities` 加 `tenant_id` 列 + 索引 | MULTI_TENANCY §8 |
+| B2 | 给 `users` / `user_auth_identities` / `user_profile` / `employment_identities` 加 `tenant_id` 列 + 索引 | MULTI_TENANCY §8 |
 | B3 | tenant resolution：subdomain → email domain → 显式选择 | MULTI_TENANCY §5 |
 | B4 | 中间件从 JWT 提取 `tenant_id` 注入 request context | MULTI_TENANCY §15、§22 |
 | B5 | 应用层所有 query 经 `tenantScope(ctx)` helper | MULTI_TENANCY §10 |
@@ -187,11 +220,13 @@
 
 ---
 
-### 阶段 D：cs-user 微服务抽离（**可推迟到性能 / 团队规模有需求时**）
+### 阶段 D：cs-user 微服务抽离（**已提前到 Phase 0，本节保留作历史参考**）
 
-**目标**：把用户身份相关代码从 `costrict-web` 单体剥离为独立 `cs-user` 服务。
+> **2026-07-16 ADR 反转**：本阶段原设计为「可无限期推迟，团队 < 10 人 / QPS < 100 不做」。经 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md) 决策，**已提前到 Phase 0 实施**（先做 user 数据 ownership + read-through RPC，不含 JWT 自签）。本节描述保留作历史参考，实际执行以 Phase 0 任务清单为准。
 
-**判断**：单体内代码（阶段 A/B/C 的产出）已经能用，**抽离是组织扩展需求**，不是功能需求。如果团队 < 10 人 / QPS < 100，可以**无限期推迟**本阶段。
+**原目标**：把用户身份相关代码从 `costrict-web` 单体剥离为独立 `cs-user` 服务。
+
+**原判断**：单体内代码（阶段 A/B/C 的产出）已经能用，**抽离是组织扩展需求**，不是功能需求。
 
 **任务清单**：见 `CS_USER_SERVICE_DESIGN.md` Part II-VI，本文不重复。
 
@@ -395,9 +430,9 @@ JWT 自签后，这个端点的处理逻辑必须迁移到 costrict-web（或保
 ## 10. TL;DR
 
 - 5 份提案**不重复**，是依赖栈；**不要删任何一份**。
-- 当前代码实现到「多 IdP 单 tenant」阶段（阶段 A 起点之前）。
-- **只做一件事就做阶段 A**：JWT 自签 + 雇佣上下文最小集。
+- 当前代码实现到「多 IdP 单 tenant」阶段（阶段 0 起点之前）。
+- **第一件事是阶段 0**：cs-user 服务抽离（user 数据 ownership + read-through RPC），见 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md)。Phase 0 完成后做阶段 A（JWT 自签 + 雇佣上下文最小集）。
 - 多 tenant 不是必需：单 tenant 模式（`tenant_id=default`）也能跑。
-- cs-user 微服务抽离（阶段 D）可**无限期推迟**，按团队规模触发。
+- cs-user 微服务抽离**已提前到 Phase 0**（原 ROADMAP 把它放在 Stage D 可推迟，2026-07-16 ADR 反转）。
 - 详细设计查原提案，本文是**执行清单 + 阶段切分 + 下游兼容矩阵**。
 - JWT 自签对 cs-cloud / costrict-web 是**双格式 reader 改动**（§9.6 已落地，旧/新 JWT 都能解析）；对 csc / assistant-ui / quota-manager **零侵入**——只需保留现有 claim 名称（`universal_id` / `provider` / `exp` 等）+ 维持 `/oidc-auth/api/v1/plugin/login` 端点。
