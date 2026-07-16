@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -31,7 +32,7 @@ func TestGetOrCreateUserDisplayNameProtectedByBestIdentityRank(t *testing.T) {
 	}
 
 	// Verify initial DisplayName
-	refreshed, _ := svc.GetUserByID(user.SubjectID)
+	refreshed, _ := svc.GetUserByID(context.Background(), user.SubjectID)
 	if refreshed.DisplayName == nil || *refreshed.DisplayName != "张三" {
 		t.Fatalf("expected display_name=张三 after idtrust login, got %v", refreshed.DisplayName)
 	}

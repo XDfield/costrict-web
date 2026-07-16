@@ -30,6 +30,7 @@ type Config struct {
 	Search                    SearchConfig
 	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	UserService               UserServiceConfig
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -40,6 +41,23 @@ type Config struct {
 	BootstrapPlatformAdmins []string
 	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
 }
+
+// UserServiceConfig selects and configures the read backend for user data.
+// Phase 0/P0-7: default is local (read from server's own DB). Setting
+// Backend to "rpc" routes point reads through cs-user via HTTP. Writes always
+// stay on the local UserService — Phase 1 cs-user has no write API.
+type UserServiceConfig struct {
+	Backend        string // "local" (default) or "rpc"
+	BaseURL        string // cs-user base URL when Backend == "rpc", e.g. http://cs-user:8080
+	InternalToken  string // X-Internal-Token value sent to cs-user
+	TimeoutSec     int    // per-request HTTP timeout in seconds, default 10
+}
+
+// Backend values for UserServiceConfig.Backend.
+const (
+	UserServiceBackendLocal = "local"
+	UserServiceBackendRPC   = "rpc"
+)
 
 // ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
 type ClawAgentConfig struct {
@@ -199,6 +217,12 @@ func Load() *Config {
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		UserService: UserServiceConfig{
+			Backend:       getEnv("USER_SERVICE_BACKEND", UserServiceBackendLocal),
+			BaseURL:       getEnv("USER_SERVICE_URL", ""),
+			InternalToken: getEnv("USER_SERVICE_INTERNAL_TOKEN", ""),
+			TimeoutSec:    getEnvInt("USER_SERVICE_TIMEOUT_SECONDS", 10),
+		},
 		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{

@@ -668,7 +668,7 @@ func GetCurrentUser(c *gin.Context) {
 		if UserModule.CachedService != nil {
 			user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
 		} else if UserModule.Service != nil {
-			user, err = UserModule.Service.GetUserByID(currentUserID)
+			user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
 		}
 		if err == nil && user != nil {
 			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
@@ -728,7 +728,7 @@ func ListBoundIdentities(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	identities, err := UserModule.Service.ListUserIdentities(currentUserID)
+	identities, err := UserModule.Service.ListUserIdentities(c.Request.Context(), currentUserID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list identities"})
 		return
