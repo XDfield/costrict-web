@@ -36,6 +36,10 @@ type UserService struct {
 	db            *gorm.DB
 	syncInterval  time.Duration
 	onUserUpdated func(userSubjectID string)
+	// writeMode gates write methods. Defaults to WriteModeLocal (writes go through).
+	// When WriteModeReadonly, every write method returns ErrWriteBlocked before
+	// touching the DB — kill switch for the P0-8 READONLY cutover.
+	writeMode string
 	// postLoginHook runs after a user is successfully fetched or created via
 	// GetOrCreateUser, which is reserved for genuine login paths (the OAuth
 	// callback and the JWKS auth-middleware path) where the bearer has proven they
@@ -50,7 +54,7 @@ type UserService struct {
 
 // NewUserService creates a new UserService instance
 func NewUserService(db *gorm.DB) *UserService {
-	return &UserService{db: db, syncInterval: 15 * time.Minute}
+	return &UserService{db: db, syncInterval: 15 * time.Minute, writeMode: WriteModeLocal}
 }
 
 func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService {
@@ -58,7 +62,14 @@ func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService
 	if syncIntervalMinutes <= 0 {
 		interval = 15 * time.Minute
 	}
-	return &UserService{db: db, syncInterval: interval}
+	return &UserService{db: db, syncInterval: interval, writeMode: WriteModeLocal}
+}
+
+// SetWriteMode toggles the write gate. Wire from Module.NewWithConfig based on
+// UserServiceConfig.WriteMode. Default is local (writes go through); readonly
+// makes every write method return ErrWriteBlocked.
+func (s *UserService) SetWriteMode(mode string) {
+	s.writeMode = mode
 }
 
 func (s *UserService) SetOnUserUpdated(fn func(userSubjectID string)) {
@@ -233,6 +244,9 @@ func (s *UserService) ListUserIdentities(ctx context.Context, userSubjectID stri
 }
 
 func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	if strings.TrimSpace(userSubjectID) == "" {
 		return fmt.Errorf("user_subject_id is required")
 	}
@@ -356,6 +370,9 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 // owner to targetUserSubjectID. This is used for account merging when a user explicitly
 // confirms that they want to claim an identity already bound to another account.
 func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externalKey string, _ string) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	if targetUserSubjectID == "" || externalKey == "" {
 		return fmt.Errorf("target_user_subject_id and external_key are required")
 	}
@@ -410,6 +427,9 @@ func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externa
 }
 
 func (s *UserService) UnbindIdentityByProvider(userSubjectID string, provider string) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
 		return fmt.Errorf("provider is required")
@@ -535,6 +555,9 @@ func (s *UserService) SearchUsers(ctx context.Context, keyword string, limit int
 // not the user being synced) use SyncUser instead, which performs the same upsert
 // without firing the hook.
 func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
+	if s.writeMode == WriteModeReadonly {
+		return nil, ErrWriteBlocked
+	}
 	u, err := s.getOrCreateUser(claims)
 	if err != nil {
 		return nil, err

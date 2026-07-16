@@ -47,16 +47,23 @@ type Config struct {
 // Backend to "rpc" routes point reads through cs-user via HTTP. Writes always
 // stay on the local UserService — Phase 1 cs-user has no write API.
 type UserServiceConfig struct {
-	Backend        string // "local" (default) or "rpc"
-	BaseURL        string // cs-user base URL when Backend == "rpc", e.g. http://cs-user:8080
-	InternalToken  string // X-Internal-Token value sent to cs-user
-	TimeoutSec     int    // per-request HTTP timeout in seconds, default 10
+	Backend       string // "local" (default) or "rpc"
+	BaseURL       string // cs-user base URL when Backend == "rpc", e.g. http://cs-user:8080
+	InternalToken string // X-Internal-Token value sent to cs-user
+	TimeoutSec    int    // per-request HTTP timeout in seconds, default 10
+	WriteMode     string // "local" (default, writes go through UserService) or "readonly" (writes return ErrWriteBlocked)
 }
 
 // Backend values for UserServiceConfig.Backend.
 const (
 	UserServiceBackendLocal = "local"
 	UserServiceBackendRPC   = "rpc"
+)
+
+// WriteMode values for UserServiceConfig.WriteMode.
+const (
+	UserServiceWriteModeLocal    = "local"
+	UserServiceWriteModeReadonly = "readonly"
 )
 
 // ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
@@ -222,6 +229,7 @@ func Load() *Config {
 			BaseURL:       getEnv("USER_SERVICE_URL", ""),
 			InternalToken: getEnv("USER_SERVICE_INTERNAL_TOKEN", ""),
 			TimeoutSec:    getEnvInt("USER_SERVICE_TIMEOUT_SECONDS", 10),
+			WriteMode:     getEnv("USER_SERVICE_WRITE_MODE", UserServiceWriteModeLocal),
 		},
 		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
