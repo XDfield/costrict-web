@@ -27,7 +27,7 @@
 2. **team_id 必传**：所有 ensure 调用必须传 `team_id`（来自 csc config / 环境变量 / `.costrict/kb.yaml`）；csc 不反查 team 归属
 3. **path 来源唯一**：`kb_repo_path` 只来自 ensure 响应，**csc 不内置算法副本**
 4. **PAT 使用**：所有 git 操作（clone / push / pull）使用调用者本人 fine-grained PAT（用户必须是 team ns org 成员才有 write 权限）；csc 不持 service token
-5. **remote URL 构造**：clone / push / pull 的 remote URL = `<tenant_gitea_base_url>/<kb_repo_path>`（base_url 从 csc config 读取）
+5. **remote URL 来源**：clone / push / pull 的 remote URL **直接使用 ensure 响应的 `kb_clone_url` 字段**（server 已拼接完整 `<tenant_gitea_base_url>/<kb_repo_path>.git`）；csc **禁止**自行拼接 `gitea_base_url + kb_repo_path`。`gitea_base_url` 不再是 csc 必配项（详见 §6 配置）
 6. **不再有 per-repo 权限管理**：成员管理统一走 team ns（详见 [`TEAM_NAMESPACE_API.md`](./TEAM_NAMESPACE_API.md) §2 `members:sync`）；csc 不暴露 authorize / revoke / transfer-owner
 
 ---
@@ -97,10 +97,10 @@ csc kb push [--code-repo-url=URL] [--remote=NAME] [--team-id=UUID] [--force-loca
 3. 经编排器代调 POST /api/internal/kb/ensure
    Header: X-Internal-Service-Token（编排器持有）
    Body: { team_id, code_repo_url }
-   → { kb_repo_path, team_ns_exists, created, algorithm_version }
+   → { kb_repo_path, kb_clone_url, kb_web_url, team_ns_exists, created, algorithm_version }
 4. switch team_ns_exists:
    - true:
-     remote_url = config.gitea_base_url + "/" + kb_repo_path
+     remote_url = response.kb_clone_url  # server 已拼接完整 URL
      git push <remote_url> main:main  # 用调用者本人 PAT
      exit 0
    - false:
@@ -267,13 +267,16 @@ csc kb pr close  <pr-number>
 
 ```yaml
 kb:
-  gitea_base_url: https://gitea.costrict.local    # 当前 tenant 的 Gitea base_url
+  # gitea_base_url: 已弃用（deprecated）—— ensure 响应直接返回 kb_clone_url，
+  #                 csc 不再需要本地持有 Gitea base_url。
+  #                 仅在调试或绕过 ensure 直连 Gitea web 时保留 fallback 用途。
   orchestrator_endpoint: https://orchestrator.costrict.local  # 编排器 base_url（用于代调内部接口）
   default_remote: origin                          # 默认 git remote 名
   default_team_id: 7f3c9a1e-d4b2-4c8e-9a3f-1b2c3d4e5f6a  # 可选；缺省 fallback
 ```
 
-> `gitea_base_url` 与 `orchestrator_endpoint` 优先从 `csc login` 响应中获取，本地配置仅作 fallback。
+> `orchestrator_endpoint` 优先从 `csc login` 响应中获取，本地配置仅作 fallback。
+> `gitea_base_url` 自 v2.1 起弃用——remote URL 全部来自 ensure 响应的 `kb_clone_url` 字段；保留兼容字段仅为过渡期 fallback。
 
 ---
 
@@ -318,8 +321,9 @@ $ csc kb push
 → Calling kb/ensure via orchestrator...
   ✓ team ns exists: t-7f3c9a1e
   ✓ kb_repo_path: t-7f3c9a1e/kb-github.com__ownera__proj
+  ✓ kb_clone_url: https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj.git
   ✓ created: false  # 已存在
-→ git push https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj main:main
+→ git push https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj main:main  # 用 response.kb_clone_url
 
 ✓ KB pushed to t-7f3c9a1e/kb-github.com__ownera__proj @ abc1234
 ```

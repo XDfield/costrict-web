@@ -2,10 +2,10 @@
 
 | 字段 | 内容 |
 |---|---|
-| 版本 | v2.0 |
+| 版本 | v2.0.1 |
 | 状态 | Draft · 评审中 |
 | 创建日期 | 2026-07-15 |
-| 最近更新 | 2026-07-15（v2.0：从原 `WORKFLOW_WORKSPACE_API.md` 重构为平台级 team ns 接口集） |
+| 最近更新 | 2026-07-16（v2.0.1：响应体补全 `kb_clone_url` / `kb_web_url` / `wf_clone_url` / `wf_web_url` 完整 URL 字段，落实 §10.3.1 SoT 约束） |
 | 暴露范围 | **仅内网**——网关（gateway / api-gateway）不对 `/api/internal/*` 路径放行；只允许同 VPC / 服务网格内的可信服务通过 service token 调用 |
 | 关联文档 | [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) v2.17 §16 / §17 / §18、[`KB_REPO_PATH_ALGORITHM.md`](./KB_REPO_PATH_ALGORITHM.md) v2.0、[`WORKFLOW_REPO_PATH_ALGORITHM.md`](./WORKFLOW_REPO_PATH_ALGORITHM.md) v2.0、[`CSC_KB_SUBCOMMAND_CONTRACT.md`](./CSC_KB_SUBCOMMAND_CONTRACT.md)、[`CSC_WF_SUBCOMMAND_CONTRACT.md`](./CSC_WF_SUBCOMMAND_CONTRACT.md)、[`TEAM_ORG_UNIFICATION.md`](../identity-tenant/TEAM_ORG_UNIFICATION.md) ADR-3 v3 |
 
@@ -284,11 +284,26 @@ Content-Type: application/json
 ```json
 {
   "kb_repo_path": "t-7f3c9a1e/kb-github.com__ownera__proj",
+  "kb_clone_url": "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj.git",
+  "kb_web_url": "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj",
   "team_ns_exists": true,
   "created": false,
   "algorithm_version": "v2"
 }
 ```
+
+#### 4.3.1 字段说明
+
+| 字段 | 必返回 | 说明 |
+|---|---|---|
+| `kb_repo_path` | ✓ | team ns 内的相对路径（`<org>/<repo>`）；用于审计 / 日志 / URL 拼接调试 |
+| `kb_clone_url` | ✓ | **调用方 git clone / push / pull 必须直接使用此字段**——server 已拼接 `<tenant_gitea_base_url>/<kb_repo_path>.git`；调用方禁止自行拼接（详见 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §10.3.1 SoT 约束） |
+| `kb_web_url` | ✓ | 浏览器访问入口（不带 `.git` 后缀）；用于 portal UI 链接跳转 |
+| `team_ns_exists` | ✓ | 通常为 true（false 时直接 412 不进入本响应） |
+| `created` | ✓ | 本次 ensure 是否实际创建了 repo（首次为 true，后续幂等为 false） |
+| `algorithm_version` | ✓ | 路径算法版本，与 [`KB_REPO_PATH_ALGORITHM.md`](./KB_REPO_PATH_ALGORITHM.md) 同步 |
+
+> `<tenant_gitea_base_url>` 来源：@server 从 `tenant_configs.<JWT.tenant_id or X-Tenant-Id>.git.base_url` 解析（与 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §1.5 协同）。
 
 ### 4.4 行为分支
 
@@ -360,6 +375,8 @@ Content-Type: application/json
 ```json
 {
   "wf_repo_path": "t-7f3c9a1e/wf-bug-fix-flow",
+  "wf_clone_url": "https://gitea.costrict.local/t-7f3c9a1e/wf-bug-fix-flow.git",
+  "wf_web_url": "https://gitea.costrict.local/t-7f3c9a1e/wf-bug-fix-flow",
   "instance_branch": "inst-f3a8b2c1",
   "created": {
     "type_repo": false,
@@ -369,6 +386,21 @@ Content-Type: application/json
   "algorithm_version": "v2"
 }
 ```
+
+#### 5.3.1 字段说明
+
+| 字段 | 必返回 | 说明 |
+|---|---|---|
+| `wf_repo_path` | ✓ | team ns 内的相对路径（`<org>/<repo>`）；用于审计 / 日志 / URL 拼接调试 |
+| `wf_clone_url` | ✓ | **调用方 git clone / fetch / push 必须直接使用此字段**——server 已拼接 `<tenant_gitea_base_url>/<wf_repo_path>.git`；调用方禁止自行拼接（详见 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §10.3.1 SoT 约束） |
+| `wf_web_url` | ✓ | 浏览器访问入口（不带 `.git` 后缀）；用于 portal UI 链接跳转、PR 查看等 |
+| `instance_branch` | ✓ | 本次实例的工作 branch 名（`inst-<short>`）；调用方需 `git fetch <wf_clone_url> <instance_branch>` 后切到该 branch |
+| `created.type_repo` | ✓ | 是否新建了类型 repo（首次 init 该 def 为 true） |
+| `created.instance_branch` | ✓ | 是否新建了实例 branch（幂等重入为 false） |
+| `team_ns_exists` | ✓ | 通常为 true（false 时直接 412 不进入本响应） |
+| `algorithm_version` | ✓ | 路径算法版本，与 [`WORKFLOW_REPO_PATH_ALGORITHM.md`](./WORKFLOW_REPO_PATH_ALGORITHM.md) 同步 |
+
+> `<tenant_gitea_base_url>` 来源：@server 从 `tenant_configs.<JWT.tenant_id or X-Tenant-Id>.git.base_url` 解析（与 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §1.5 协同）。
 
 ### 5.4 行为分支
 
@@ -425,10 +457,13 @@ csc (用户侧)        编排器                 @server                Gitea
    │                   │── POST /api/internal/kb/ensure ──▶│         │
    │                   │   X-Internal-Service-Token        │         │
    │                   │                                   │── admin PAT ─▶│ 创建/复用 repo
-   │                   │◀────── kb_repo_path ──────────────│         │
-   │◀── kb_repo_path ──│                       │            │
+   │                   │◀── kb_repo_path + kb_clone_url ───│         │
+   │                   │   + kb_web_url                    │         │
+   │◀── kb_clone_url ──│                       │            │         │
+   │   (csc 直接用)    │                       │            │         │
    │                   │                                   │            │
-   │── git push origin main ─────────────────────────────────────────▶│
+   │── git push <kb_clone_url> main:main ─────────────────────────────▶│
+   │   (用调用者本人 PAT)                                              │
 ```
 
 ### 6.3 编排器触发 workflow init
@@ -444,9 +479,12 @@ workflow 编排器            @server                          Gitea
        │                       │── admin PAT ──────────────────▶│ get-or-create type repo
        │                       │── admin PAT ──────────────────▶│ create instance branch
        │◀── wf_repo_path ──────│                                │
-       │   + instance_branch                                    │
+       │   + wf_clone_url      │                                │
+       │   + wf_web_url        │                                │
+       │   + instance_branch   │                                │
        │                       │                                │
    后续节点执行器:                                              │
+   git fetch <wf_clone_url> <instance_branch>                   │
    切 node/<seq>-<slug> branch, base=inst-<short>               │
    开 PR, reviewer 审计, merge 入 inst-<short>                  │
 ```
@@ -531,3 +569,4 @@ team ns 生命周期（`members:sync` / `dissolve`）**不在 csc 范围内**—
 |---|---|---|
 | v1.0–v1.7 | 2026-07-15 早段 | `WORKFLOW_WORKSPACE_API.md`：从最初"workflow workspace"概念逐步演进到 team = workflow 业务 team；定义 2 个内部接口（`workflow/init` + `teams/:id/members:sync`）；Gitea team（非 org）；workflow = 每实例一 repo |
 | v2.0 | 2026-07-15 | **重构为 TEAM_NAMESPACE_API.md（平台级 team ns 接口集）**：①team 升为**平台级概念**（不再 workflow 专属）；②team Gitea 实体从 team 改为 **per-team org** `t-<team_short>`（lazy 创建于首次 `members:sync`）；③接口扩展为 **4 个**：(a) `teams/:id/members:sync` team ns 生命周期入口 + 成员同步 / (b) `teams/:id/dissolve` team 解散归档 / (c) `kb/ensure` KB repo 落 team ns / (d) `workflow/init` workflow 类型 repo + 实例 branch 落 team ns；④workflow 模型从「每实例一 repo」改为「类型 repo + 实例 branch」（base = main）；⑤workflow PR base 从 main 改为 `inst-<short>`；⑥新增 §0 版本演进说明、§6 接口调用模式（含 4 张序列图）、§7 安全考虑、§8 多租户隔离、§9 与原文件的差异对照；⑦依据 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) v2.17 §16 / §17 / §18 与 [`TEAM_ORG_UNIFICATION.md`](../identity-tenant/TEAM_ORG_UNIFICATION.md) ADR-3 v3 |
+| v2.0.1 | 2026-07-16 | **响应体补全完整 URL 字段（落实 §10.3.1 SoT 约束）**：①§4.3 `kb/ensure` 响应新增 `kb_clone_url` / `kb_web_url` 字段 + 字段说明（调用方禁止自行拼接 base_url）；②§5.3 `workflow/init` 响应新增 `wf_clone_url` / `wf_web_url` 字段 + 字段说明；③§6.2 / §6.3 序列图更新——server 返回 path + clone_url + web_url，调用方 git 操作直接用 `*_clone_url`；④依据 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §10.3.1（单一 source of truth：server 返回 ready-to-use 绝对 URL，csc / 编排器禁止自行拼接 `gitea_base_url + repo_path`） |

@@ -1902,12 +1902,16 @@ Content-Type: application/json
 ```json
 {
   "kb_repo_path": "t-7f3c9a1e/kb-github.com__ownera__proj",
+  "kb_clone_url": "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj.git",
+  "kb_web_url": "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj",
   "team_ns_exists": true,
   "created": false,
   "algorithm_version": "v2"
 }
 ```
 
+> **URL 字段使用约束（§10.3.1 SoT）**：`kb_clone_url` / `kb_web_url` 由 server 拼接 `<tenant_gitea_base_url>/<kb_repo_path>` 后返回；调用方（csc / 编排器）**必须直接使用响应字段**，禁止自行拼接 `gitea_base_url + kb_repo_path`。
+>
 > KB repo 的权限不再 per-repo 显式表达——team ns org 成员自动有 read/write；接口不返回 `role` 字段。如调用方需判断"用户 X 是否能 push"，应改问"用户 X 是否为 team ns org 成员"。
 
 #### 16.3.3 行为分支
@@ -1951,7 +1955,7 @@ Content-Type: application/json
 
 4. 按 ensure 响应分支:
    ├─ team_ns_exists=true, created=true/false:
-   │   ├─ git push origin main（remote URL = <tenant_gitea_base_url>/<kb_repo_path>）
+   │   ├─ git push origin main（remote URL = response.kb_clone_url，server 已拼接完整 URL，详见 §10.3.1）
    │   ├─ 使用调用者 PAT（csc login 颁发；用户已是 team ns org 成员即有 write 权限）
    │   └─ 推送成功 → done
    └─ team_ns_exists=false:
@@ -2119,6 +2123,8 @@ Content-Type: application/json
 ```json
 {
   "wf_repo_path": "t-7f3c9a1e/wf-bug-fix-flow",
+  "wf_clone_url": "https://gitea.costrict.local/t-7f3c9a1e/wf-bug-fix-flow.git",
+  "wf_web_url": "https://gitea.costrict.local/t-7f3c9a1e/wf-bug-fix-flow",
   "instance_branch": "inst-f3a8b2c1",
   "created": {
     "type_repo": false,
@@ -2129,6 +2135,8 @@ Content-Type: application/json
 }
 ```
 
+> **URL 字段使用约束（§10.3.1 SoT）**：`wf_clone_url` / `wf_web_url` 由 server 拼接 `<tenant_gitea_base_url>/<wf_repo_path>` 后返回；调用方（workflow 编排器 / 节点执行器）**必须直接使用响应字段**做 `git fetch` / `git push`，禁止自行拼接 `gitea_base_url + wf_repo_path`。
+>
 > 同 §16.3.2，权限不再 per-repo 显式表达——team ns org 成员自动有 read/write；接口不返回 `role` 字段。
 
 #### 17.3.3 行为分支
@@ -2227,7 +2235,7 @@ t-<team_short>/wf-<def_slug>/
 
 ```
 1. 平台编排器启动实例时调 POST /api/internal/workflow/init
-   → 拿到 { wf_repo_path, instance_branch }
+   → 拿到 { wf_repo_path, wf_clone_url, wf_web_url, instance_branch }
 2. 节点执行器（agent / 用户）：
    ├─ csc wf node push <seq>
    │   ├─ 内部先 init（幂等）
@@ -2244,7 +2252,8 @@ t-<team_short>/wf-<def_slug>/
 团队成员修改 def 必须走 main 上的 PR：
 
 ```
-1. git clone <wf_repo_path>
+0. csc wf status（或 init）→ 拿到 response.wf_clone_url（server 已拼接完整 URL，详见 §10.3.1）
+1. git clone <wf_clone_url>
 2. git checkout main
 3. git checkout -b def/<change-desc>
 4. 编辑 definition.yaml
@@ -2289,7 +2298,7 @@ t-<team_short>/wf-<def_slug>/
 
 csc 是 **thin client**：
 
-- 所有命令**统一先经编排器代调 `POST /api/internal/workflow/init`** 拿到 `wf_repo_path` + `instance_branch`（csc 客户端无 service token）
+- 所有命令**统一先经编排器代调 `POST /api/internal/workflow/init`** 拿到 `wf_repo_path` + `wf_clone_url` + `instance_branch`（csc 客户端无 service token）
 - 不内置路径算法（path + branch 都来自 init 响应）
 - 不维护本地缓存
 - **team_id + instance_id 由调用方 / 编排器传入**，csc 不反查归属

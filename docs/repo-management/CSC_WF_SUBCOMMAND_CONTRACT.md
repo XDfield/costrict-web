@@ -27,7 +27,7 @@
 2. **team_id 必传**：所有 init 调用必须传 `team_id`（来自 csc config / 环境变量 / `.costrict/wf.yaml`）；csc 不反查 team 归属
 3. **path / branch 来源唯一**：`wf_repo_path` + `instance_branch` 只来自 init 响应，**csc 不内置算法副本**
 4. **PAT 使用**：所有 git 操作（clone / push / pull）使用调用者本人 fine-grained PAT（用户必须是 team ns org 成员才有 write 权限）；csc 不持 service token
-5. **remote URL 构造**：clone / push / pull 的 remote URL = `<tenant_gitea_base_url>/<wf_repo_path>`（base_url 从 csc config 读取）
+5. **remote URL 来源**：clone / push / pull 的 remote URL **直接使用 init 响应的 `wf_clone_url` 字段**（server 已拼接完整 `<tenant_gitea_base_url>/<wf_repo_path>.git`）；csc **禁止**自行拼接 `gitea_base_url + wf_repo_path`。Gitea REST API 调用（PR / review / merge / archive）仍用 `<gitea_base_url>/api/v1/...`，其中 `gitea_base_url` 优先取 `csc login` 响应下发值，本地配置仅 fallback（详见 §6 配置）
 6. **instance_id 来源**：由平台 workflow 编排器（独立服务）在实例启动时分配，csc 不生成；命令行 / 环境变量 / 配置文件三选一传入
 7. **分支命名约定**：
    - `main`：workflow def canonical 存储（仅 `definition.yaml`）；**不直接 push 节点交付物**
@@ -112,6 +112,7 @@ csc wf init <def_slug> <instance_id>
 4. switch response:
    - team_ns_exists=true, created.type_repo=true:
      print "✓ Type repo created: <wf_repo_path>"
+     print "  wf_clone_url: <wf_clone_url>"
      print "  Definition written to main (sha=abc123)"
      print "  Instance branch: <instance_branch>"
      exit 0
@@ -167,7 +168,7 @@ csc wf node push <seq>                       # 例：001 / 002 / 003-deliver
 **流程**：
 ```
 1. 经编排器代调 POST /api/internal/workflow/init（幂等；def_slug + instance_id + team_id 从配置文件 / 环境变量）
-   → { wf_repo_path, instance_branch, ... }
+   → { wf_repo_path, wf_clone_url, wf_web_url, instance_branch, ... }
 2. switch team_ns_exists:
    - true:
      a. 解析 seq → 拼接节点分支名 node/<seq>
@@ -217,7 +218,7 @@ csc wf node list [--state=all|pending|merged|closed]
 
 **流程**：
 ```
-1. 经编排器代调 POST /api/internal/workflow/init（拿到 wf_repo_path + instance_branch）
+1. 经编排器代调 POST /api/internal/workflow/init（拿到 wf_repo_path + wf_clone_url + instance_branch）
 2. git fetch origin instance_branch
 3. 读 .workflow/node-prs.json（从 instance_branch HEAD）
 4. 对每个 PR 调 Gitea API 查状态
@@ -291,7 +292,7 @@ csc wf def update --def-file=<path-to-yaml>
 **流程**：
 ```
 1. 取 def_slug + team_id（§2 / §3 优先级链；不需要 instance_id）
-2. git clone <gitea_base_url>/<t-<team_short>>/wf-<def_slug>.git -b main /tmp/wf-def-<random>
+2. git clone <wf_clone_url> -b main /tmp/wf-def-<random>   # wf_clone_url 来自 init 响应（如本地无缓存则先代调 init）
 3. cp <def-file> /tmp/wf-def-<random>/definition.yaml
 4. git add definition.yaml && git commit -m "def: <change summary>"
 5. git push origin main:refs/heads/def-update-<short>   # 注意 push 到 feat branch 而非直接 main
@@ -463,7 +464,10 @@ csc wf pr close  <pr-number>
 
 ```yaml
 wf:
-  gitea_base_url: https://gitea.costrict.local    # 当前 tenant 的 Gitea base_url
+  # gitea_base_url: 已弃用（deprecated）作为 git remote URL 源——init 响应直接返回 wf_clone_url。
+  #                 仅保留作为 Gitea REST API（PR/review/merge/archive）调用的 base，
+  #                 且优先从 csc login 响应获取，本地配置仅 fallback。
+  gitea_base_url: https://gitea.costrict.local
   orchestrator_endpoint: https://orchestrator.costrict.local  # 编排器 base_url（用于代调内部接口）
   default_node_branch_prefix: "node/"             # 节点分支前缀
   default_def_branch_prefix: "def-update-"        # def update 分支前缀
@@ -480,6 +484,7 @@ instance_id: f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab
 team_id: 7f3c9a1e-d4b2-4c8e-9a3f-1b2c3d4e5f6a
 # 可选：init 响应缓存（避免重复代调）
 wf_repo_path: t-7f3c9a1e/wf-bug-fix-flow
+wf_clone_url: https://gitea.costrict.local/t-7f3c9a1e/wf-bug-fix-flow.git
 instance_branch: inst-f3a8b2c1
 ```
 

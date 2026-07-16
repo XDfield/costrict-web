@@ -54,6 +54,12 @@ output: kb_repo_path : string
         //   "t-9b8c7d6e/kb-gitea.costrict.local__team-x__internal-svc"
 ```
 
+> **算法 output vs HTTP 响应**：本算法只产出 `kb_repo_path`（路径段，与 Gitea 实例无关）。HTTP 端点层 `POST /api/internal/kb/ensure` 在算法外多拼一字段：
+> - `kb_clone_url` = `<tenant_gitea_base_url>/<kb_repo_path>.git` — 客户端 `git clone` / `push` / `pull` 直接用，**禁止**客户端自行拼 base_url（详见 [`CSC_KB_SUBCOMMAND_CONTRACT.md`](./CSC_KB_SUBCOMMAND_CONTRACT.md) §1.5 与 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §10.3.1 的 SoT 约定）
+> - `kb_web_url` = `<tenant_gitea_base_url>/<kb_repo_path>` — 浏览器跳转用
+>
+> `<tenant_gitea_base_url>` 由 server 从 `tenant_configs.<JWT.tenant_id>.git.base_url` 解析，对客户端透明。
+
 **owner 推导**：`t-<team_short>`，其中 `team_short = team_id`（去连字符）前 8 hex（详见 §3.0 与 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §18.3）。
 
 ---
@@ -361,14 +367,19 @@ server 行为：
    - 404 → 不存在分支:
      POST /admin/users/t-7f3c9a1e/repos ... 创建 repo（private）
      POST /repos/t-7f3c9a1e/kb-github.com__ownera__proj/branch_protections ... 配置 main 保护
-     返回 { kb_repo_path, team_ns_exists: true, created: true, algorithm_version: "v2" }
+     返回 {
+       kb_repo_path: "t-7f3c9a1e/kb-github.com__ownera__proj",
+       kb_clone_url: "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj.git",
+       kb_web_url:   "https://gitea.costrict.local/t-7f3c9a1e/kb-github.com__ownera__proj",
+       team_ns_exists: true, created: true, algorithm_version: "v2"
+     }
    - 200 → 存在分支:
-     返回 { kb_repo_path, team_ns_exists: true, created: false, algorithm_version: "v2" }
+     返回 { kb_repo_path, kb_clone_url, kb_web_url, team_ns_exists: true, created: false, algorithm_version: "v2" }
    - team ns 不存在（org 不存在）→ 412 TEAM_NS_NOT_INITIALIZED + hint
      返回 { error: "team_ns_not_initialized", hint: "call POST /api/internal/teams/:team_id/members:sync first" }
 
 5. csc 按响应行为:
-   - team_ns_exists=true → git push origin main（remote = <gitea_base>/t-7f3c9a1e/kb-github.com__ownera__proj）
+   - team_ns_exists=true → git push origin main（remote = response.kb_clone_url，csc 直接使用不再拼接）
    - team_ns_exists=false → 打印 hint, exit ≠ 0
 ```
 
