@@ -1,25 +1,50 @@
-// Package user implements cs-user's read-side data access — the methods
-// consumed by the read-through RPC client that costrict-web installs in P0-7
-// to delegate user lookups to this service.
+// Package user implements cs-user's data access — both the read-side
+// methods consumed by the read-through RPC client that costrict-web installs
+// in P0-7, and the write-side methods that ship in Phase 2 to unblock the
+// P0-8b operational cutover.
 //
-// This is a strict subset of server/internal/user/service.go's UserService.
-// Write paths (bind / unbind / transfer / GetOrCreate) deliberately stay
-// out of scope for P0-3: they depend on JWT-claims plumbing that lands in
-// Phase A. Adding them here would force a half-finished dependency surface
-// before the JWT side is designed.
+// Write paths do NOT verify JWT signatures — cs-user trusts the
+// X-Internal-Token middleware (cs-user/internal/middleware/internal_auth.go)
+// and treats JWTClaims as a pure data shape. No post-login hook fires here:
+// the systemrole / bootstrap logic stays in server, and the cache
+// invalidation responsibility is owned by server's RPCWriter (P0-8b) which
+// calls CachedService.InvalidateCache after every successful RPC write.
 package user
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Default cap on SearchUsers when the caller doesn't pass one. Keeps a
 // runaway query from yanking the whole table into memory if the RPC client
 // forgets to clamp.
 const defaultSearchLimit = 50
+
+// syncInterval bounds how often GetOrCreateUser re-syncs an existing user's
+// denormalized fields. Repeat logins inside this window skip the update
+// query — keeps the write path off the hot path on every page view.
+// Server's default is 15 minutes (server:557 region); we mirror it.
+const syncInterval = 15 * time.Minute
+
+// ErrLastIdentity signals an unbind refused because it would leave the user
+// with zero identities (which would orphan the user row — login flow has no
+// identity to re-bind on next visit). Maps to HTTP 409.
+var ErrLastIdentity = errors.New("cannot unbind last identity")
+
+// ErrExplicitlyUnbound signals a re-bind refused because the identity was
+// previously explicitly unbound and ForceRebind is not set. Maps to HTTP 409.
+// Server's same path returns nil silently; we surface a sentinel so the
+// caller (RPCWriter) can distinguish "skipped" from "succeeded".
+var ErrExplicitlyUnbound = errors.New("identity explicitly unbound; requires force_rebind")
 
 // Service exposes the read-side operations costrict-web needs.
 //
@@ -130,3 +155,533 @@ func (s *Service) ListIdentities(userSubjectID string) ([]*models.UserAuthIdenti
 // Surfaced as a sentinel so handlers can map it to 400 without sniffing
 // strings.
 var ErrEmptySubjectID = errors.New("subject_id must not be empty")
+
+// --- Write API (Phase 2) ---
+//
+// The 4 write methods below mirror server/internal/user/service.go's write
+// surface 1:1, with three deliberate divergences:
+//
+//  1. No writeMode gate — cs-user has no kill switch. Server-side RPCWriter
+//     owns the readonly gate via USER_SERVICE_WRITE_MODE.
+//  2. No notifyUserUpdated / runPostLoginHook calls — cache invalidation
+//     and the systemrole bootstrap hook live in server. RPCWriter calls
+//     CachedService.InvalidateCache after every successful RPC write.
+//  3. No createWecomChannelStateOnIDTrustBind / deleteWecomChannelStateOnIDTrustUnbind
+//     — wecom channel state is a server-side notification concern.
+//
+// All external-key derivations and identity-selection ranks are byte-identical
+// to server's helpers (see claims.go / identity.go) — load-bearing for the
+// P0-8b dual-write canary, where a divergence would split a user's
+// identities across DBs.
+
+// GetOrCreateUser is the upsert entry point for OAuth login. It runs the
+// full multi-lookup strategy (external_key → universal_id → casdoor_id →
+// sub → username) and either updates an existing user or creates a new one
+// plus a primary identity row. Mirrors server:557-870 — SyncUser collapses
+// into this method because cs-user has no post-login hook to suppress.
+//
+// Idempotent: a second call with the same claim inside syncInterval skips
+// the update query.
+func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	if claims == nil {
+		return nil, fmt.Errorf("nil JWT claims")
+	}
+	claims = normalizeJWTClaims(claims)
+
+	// 1. SubjectID is always generated locally and remains stable afterward.
+	subjectID := "usr_" + uuid.NewString()
+	externalKey := buildExternalKey(claims)
+
+	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
+		return nil, fmt.Errorf("no valid user identifier in JWT claims")
+	}
+
+	db := s.db.WithContext(ctx)
+
+	// 2. Try to get existing user by external identities first.
+	var user models.User
+	found := false
+
+	lookupKeys := []string{externalKey}
+	if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+		lookupKeys = append(lookupKeys, legacy)
+	}
+
+	for _, key := range lookupKeys {
+		if key == "" || found {
+			break
+		}
+		var identity models.UserAuthIdentity
+		if err := db.Where("external_key = ?", key).Take(&identity).Error; err == nil {
+			if err := db.Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
+				found = true
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
+		}
+	}
+	if !found {
+		for _, key := range lookupKeys {
+			if key == "" || found {
+				break
+			}
+			err := db.Where("external_key = ?", key).Take(&user).Error
+			if err == nil {
+				found = true
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+			}
+		}
+	}
+	if claims.UniversalID != "" {
+		err := db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
+		if err == nil {
+			found = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query user by universal_id: %w", err)
+		}
+	}
+	if !found && claims.ID != "" {
+		err := db.Where("casdoor_id = ?", claims.ID).Take(&user).Error
+		if err == nil {
+			found = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query user by id: %w", err)
+		}
+	}
+	if !found && claims.Sub != "" {
+		err := db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
+		if err == nil {
+			found = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query user by sub: %w", err)
+		}
+	}
+	if !found && claims.Name != "" {
+		err := db.Where("username = ?", claims.Name).Take(&user).Error
+		if err == nil {
+			found = true
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query user by username: %w", err)
+		}
+	}
+
+	now := time.Now()
+
+	if found {
+		// User exists; only update if it's been more than syncInterval since
+		// last sync. Reduces DB writes on every page view.
+		shouldUpdate := false
+		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > syncInterval {
+			shouldUpdate = true
+		}
+
+		// Determine the best provider rank from existing identities so a
+		// lower-ranked login provider can't clobber a name set by a
+		// higher-ranked one. Computed before any mutation.
+		bestExistingRank := 0
+		var existingIdentities []models.UserAuthIdentity
+		if err := db.Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
+			for _, id := range existingIdentities {
+				if r := providerRank(id.Provider); r > bestExistingRank {
+					bestExistingRank = r
+				}
+			}
+		}
+
+		if user.SubjectID == "" {
+			user.SubjectID = subjectID
+			shouldUpdate = true
+		}
+		if !user.IsActive {
+			user.IsActive = true
+			shouldUpdate = true
+		}
+		if claims.ID != "" && (user.CasdoorID == nil || *user.CasdoorID != claims.ID) {
+			user.CasdoorID = &claims.ID
+			shouldUpdate = true
+		}
+		if externalKey != "" && (user.ExternalKey == nil || *user.ExternalKey != externalKey) {
+			user.ExternalKey = &externalKey
+			shouldUpdate = true
+		}
+		if claims.Provider != "" && (user.AuthProvider == nil || *user.AuthProvider != claims.Provider) {
+			user.AuthProvider = &claims.Provider
+			shouldUpdate = true
+		}
+		if claims.ProviderUserID != "" && (user.ProviderUserID == nil || *user.ProviderUserID != claims.ProviderUserID) {
+			user.ProviderUserID = &claims.ProviderUserID
+			shouldUpdate = true
+		}
+		if claims.UniversalID != "" && (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != claims.UniversalID) {
+			user.CasdoorUniversalID = &claims.UniversalID
+			shouldUpdate = true
+		}
+		if claims.Sub != "" && (user.CasdoorSub == nil || *user.CasdoorSub != claims.Sub) {
+			user.CasdoorSub = &claims.Sub
+			shouldUpdate = true
+		}
+		if claims.Owner != "" && (user.Organization == nil || *user.Organization != claims.Owner) {
+			user.Organization = &claims.Owner
+			shouldUpdate = true
+		}
+		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
+			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= bestExistingRank {
+				user.DisplayName = &claims.PreferredUsername
+				shouldUpdate = true
+			}
+		}
+		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
+			user.Email = &claims.Email
+			shouldUpdate = true
+		}
+		if claims.Phone != "" && (user.Phone == nil || *user.Phone != claims.Phone) {
+			user.Phone = &claims.Phone
+			shouldUpdate = true
+		}
+		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
+			user.AvatarURL = &claims.Picture
+			shouldUpdate = true
+		}
+
+		// Calibrate display fields against the best existing identity to
+		// fix historical dirty data caused by the previous
+		// AuthProvider-based protection bug. Server:736-768.
+		if len(existingIdentities) > 0 {
+			var existingPtrs []*models.UserAuthIdentity
+			for idx := range existingIdentities {
+				existingPtrs = append(existingPtrs, &existingIdentities[idx])
+			}
+			bestIdentity := selectBestPrimary(existingPtrs)
+			if bestIdentity != nil {
+				if bestDN := ptrString(bestIdentity.DisplayName); bestDN != "" {
+					if providerRank(claims.Provider) < bestExistingRank && (user.DisplayName == nil || *user.DisplayName != bestDN) {
+						user.DisplayName = &bestDN
+						shouldUpdate = true
+					}
+				}
+				if bestEmail := ptrString(bestIdentity.Email); bestEmail != "" && strings.Contains(bestEmail, "@") {
+					if user.Email == nil || *user.Email != bestEmail {
+						user.Email = &bestEmail
+						shouldUpdate = true
+					}
+				}
+				if bestPhone := ptrString(bestIdentity.Phone); bestPhone != "" {
+					if user.Phone == nil || *user.Phone != bestPhone {
+						user.Phone = &bestPhone
+						shouldUpdate = true
+					}
+				}
+				if bestAvatar := ptrString(bestIdentity.AvatarURL); bestAvatar != "" {
+					if user.AvatarURL == nil || *user.AvatarURL != bestAvatar {
+						user.AvatarURL = &bestAvatar
+						shouldUpdate = true
+					}
+				}
+			}
+		}
+
+		if shouldUpdate {
+			user.LastSyncAt = &now
+			if err := db.Omit("subject_id").Save(&user).Error; err != nil {
+				return nil, fmt.Errorf("failed to update user: %w", err)
+			}
+		}
+		return &user, nil
+	}
+
+	// 3. User doesn't exist, create new user.
+	user = models.User{
+		SubjectID:          subjectID,
+		Username:           claims.Name,
+		DisplayName:        stringPtr(claims.PreferredUsername),
+		Email:              stringPtr(claims.Email),
+		Phone:              stringPtr(claims.Phone),
+		AvatarURL:          stringPtr(claims.Picture),
+		AuthProvider:       stringPtr(claims.Provider),
+		ExternalKey:        stringPtr(externalKey),
+		ProviderUserID:     stringPtr(claims.ProviderUserID),
+		CasdoorID:          stringPtr(claims.ID),
+		CasdoorUniversalID: stringPtr(claims.UniversalID),
+		CasdoorSub:         stringPtr(claims.Sub),
+		Organization:       stringPtr(claims.Owner),
+		IsActive:           true,
+		LastLoginAt:        &now,
+		LastSyncAt:         &now,
+	}
+
+	if err := db.Create(&user).Error; err != nil {
+		// Race: another caller created the same user concurrently. Try to
+		// resolve the winner via the same lookup chain so the caller still
+		// gets a usable row.
+		var existing models.User
+		query := db.Clauses(clause.Locking{Strength: "UPDATE"})
+		if externalKey != "" {
+			query = query.Where("external_key = ?", externalKey)
+			if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+				query = query.Or("external_key = ?", legacy)
+			}
+		}
+		query = query.Or("casdoor_universal_id = ?", claims.UniversalID).
+			Or("casdoor_id = ?", claims.ID).
+			Or("casdoor_sub = ?", claims.Sub)
+		if err := query.Take(&existing).Error; err == nil {
+			return &existing, nil
+		}
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	// Bind identity for newly created user.
+	if err := s.BindIdentityToUser(ctx, user.SubjectID, claims); err != nil && !errors.Is(err, ErrIdentityAlreadyBound) {
+		// Don't fail user creation if identity binding fails — the user row
+		// exists and is usable; the next login will retry the bind.
+		return nil, fmt.Errorf("failed to bind identity for new user: %w", err)
+	}
+
+	if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
+		return refreshed, nil
+	}
+	return &user, nil
+}
+
+// ErrIdentityAlreadyBound signals a bind refused because the identity row
+// already belongs to a different (non-deleted) user. Maps to HTTP 409.
+// Server uses a bare fmt.Errorf("identity_already_bound"); promoting to a
+// sentinel so handlers + tests can match without sniffing strings.
+var ErrIdentityAlreadyBound = errors.New("identity already bound to another user")
+
+// BindIdentityToUser attaches an identity to a user. Idempotent for the
+// same (user, identity) pair. Recovers soft-deleted identities rather than
+// creating duplicates (preserves audit history). Re-binding an
+// ExplicitlyUnbound identity requires ForceRebind — matches server:246-367.
+func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error {
+	if s == nil || s.db == nil {
+		return errors.New("user.Service: nil db")
+	}
+	if strings.TrimSpace(userSubjectID) == "" {
+		return fmt.Errorf("user_subject_id is required")
+	}
+	claims = normalizeJWTClaims(claims)
+	if claims == nil {
+		return fmt.Errorf("nil JWT claims")
+	}
+	externalKey := buildExternalKey(claims)
+	if externalKey == "" {
+		return fmt.Errorf("external key is required")
+	}
+	var opt models.BindIdentityOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing models.UserAuthIdentity
+		err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&existing).Error
+		if err == nil {
+			if existing.UserSubjectID != userSubjectID {
+				// Allow claiming if the identity was unbound (soft-deleted).
+				if !existing.DeletedAt.Valid {
+					return ErrIdentityAlreadyBound
+				}
+				updates := buildIdentityUpdates(&existing, claims)
+				updates["user_subject_id"] = userSubjectID
+				updates["deleted_at"] = nil
+				updates["explicitly_unbound"] = false
+				if len(updates) > 0 {
+					if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+						return err
+					}
+				}
+				return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+			}
+			// Same user — skip restoring explicitly-unbound identities
+			// unless ForceRebind is set. Server returns nil silently here;
+			// cs-user surfaces ErrExplicitlyUnbound so RPCWriter can
+			// distinguish "skipped" from "succeeded".
+			if existing.ExplicitlyUnbound && !opt.ForceRebind {
+				return ErrExplicitlyUnbound
+			}
+			updates := buildIdentityUpdates(&existing, claims)
+			if existing.DeletedAt.Valid {
+				updates["deleted_at"] = nil
+			}
+			if existing.ExplicitlyUnbound {
+				updates["explicitly_unbound"] = false
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+					return err
+				}
+			}
+			return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+			err := tx.Unscoped().Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
+			if err == nil {
+				if existing.ExplicitlyUnbound && !opt.ForceRebind {
+					return ErrExplicitlyUnbound
+				}
+				updates := buildIdentityUpdates(&existing, claims)
+				updates["external_key"] = externalKey
+				if existing.DeletedAt.Valid {
+					updates["deleted_at"] = nil
+				}
+				if existing.ExplicitlyUnbound {
+					updates["explicitly_unbound"] = false
+				}
+				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+					return err
+				}
+				return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+			}
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+		}
+
+		identity := buildUserAuthIdentity(userSubjectID, claims)
+		var currentPrimary models.UserAuthIdentity
+		primaryExists := tx.Where("user_subject_id = ? AND is_primary = ?", userSubjectID, true).Take(&currentPrimary).Error == nil
+		if !primaryExists {
+			identity.IsPrimary = true
+		} else if providerRank(identity.Provider) > providerRank(currentPrimary.Provider) {
+			if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+				return err
+			}
+			identity.IsPrimary = true
+		}
+
+		if err := tx.Create(&identity).Error; err != nil {
+			return err
+		}
+		return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+	})
+}
+
+// TransferIdentityToUser moves an identity (identified by external_key)
+// from its current owner to targetUserSubjectID. Used for account merging
+// when a user explicitly claims an identity bound to another account.
+// Mirrors server:372-427 — no notifyUserUpdated; RPCWriter handles cache.
+func (s *Service) TransferIdentityToUser(ctx context.Context, targetUserSubjectID string, externalKey string, _ string) error {
+	if s == nil || s.db == nil {
+		return errors.New("user.Service: nil db")
+	}
+	if targetUserSubjectID == "" || externalKey == "" {
+		return fmt.Errorf("target_user_subject_id and external_key are required")
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var identity models.UserAuthIdentity
+		if err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&identity).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("identity_not_found")
+			}
+			return err
+		}
+
+		oldUserSubjectID := identity.UserSubjectID
+		if oldUserSubjectID == targetUserSubjectID {
+			return nil // Already owned by this user.
+		}
+
+		now := time.Now()
+		updates := map[string]interface{}{
+			"user_subject_id": targetUserSubjectID,
+			"updated_at":      now,
+		}
+		if identity.DeletedAt.Valid {
+			updates["deleted_at"] = nil
+		}
+		if identity.ExplicitlyUnbound {
+			updates["explicitly_unbound"] = false
+		}
+		if err := tx.Model(&identity).Unscoped().Updates(updates).Error; err != nil {
+			return err
+		}
+
+		if err := refreshUserProfileFromIdentitiesTx(tx, targetUserSubjectID); err != nil {
+			return err
+		}
+		if oldUserSubjectID != targetUserSubjectID {
+			if err := refreshUserProfileFromIdentitiesTx(tx, oldUserSubjectID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// UnbindIdentityByProvider removes (soft-delete + ExplicitlyUnbound marker)
+// every identity matching the provider on the user. Refuses to unbind the
+// user's last identity — that would orphan the user row. Promotes the next
+// best-rank identity to primary if the unbind removed the primary.
+// Mirrors server:429-489 — no notifyUserUpdated; RPCWriter handles cache.
+func (s *Service) UnbindIdentityByProvider(ctx context.Context, userSubjectID string, provider string) error {
+	if s == nil || s.db == nil {
+		return errors.New("user.Service: nil db")
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var matched []*models.UserAuthIdentity
+		if err := tx.Where("user_subject_id = ? AND provider = ?", userSubjectID, provider).Find(&matched).Error; err != nil {
+			return err
+		}
+		if len(matched) == 0 {
+			return fmt.Errorf("identity not found")
+		}
+
+		var count int64
+		if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count <= int64(len(matched)) {
+			return ErrLastIdentity
+		}
+
+		hadPrimary := false
+		for _, id := range matched {
+			if id.IsPrimary {
+				hadPrimary = true
+			}
+			// Soft delete + ExplicitlyUnbound prevents auto-rebinding on
+			// next login (which would silently undo the user's intent).
+			if err := tx.Model(&models.UserAuthIdentity{}).
+				Where("id = ?", id.ID).
+				Updates(map[string]interface{}{
+					"explicitly_unbound": true,
+					"deleted_at":         time.Now(),
+				}).Error; err != nil {
+				return err
+			}
+		}
+
+		if hadPrimary {
+			var remaining []*models.UserAuthIdentity
+			if err := tx.Where("user_subject_id = ?", userSubjectID).Find(&remaining).Error; err != nil {
+				return err
+			}
+			best := selectBestPrimary(remaining)
+			if best != nil {
+				if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&models.UserAuthIdentity{}).Where("id = ?", best.ID).Update("is_primary", true).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+	})
+}
