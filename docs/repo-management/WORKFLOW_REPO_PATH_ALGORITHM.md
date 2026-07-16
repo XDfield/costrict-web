@@ -1,307 +1,388 @@
-# Workflow Repo 路径推断算法规范
+# Workflow Repo / Branch 路径推断算法规范
 
-| 版本 | v1.0 |
+| 版本 | v2.0 |
 |---|---|
 | 创建日期 | 2026-07-14 |
-| 依据 | [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) v2.16 §17 |
+| 最近更新 | 2026-07-15（v2.0：架构反转，类型 repo + 实例 branch 模型） |
+| 依据 | [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) v2.17 §4.7 / §17 / §18 |
 | 算法实现唯一归属 | **costrict-web server**（csc 不内置副本） |
 
-> 本规范定义 `(workflow_def_slug, instance_id) → wf_repo_path` 的**确定性纯函数**。相同输入在任何时间、任何 tenant、任何调用方（server 内部 / csc 经由 `POST /api/workflow/init` 返回值）必须得到完全相同的输出。
+> 本规范定义两个**确定性纯函数**：§A `(workflow_def_slug, team_id) → wf_repo_path` 决定类型 repo；§B `(instance_id) → instance_branch` 决定实例 branch。相同输入在任何时间、任何 tenant、任何调用方必须得到完全相同的输出。
+
+---
+
+## 0. 版本演进说明
+
+| 版本 | 日期 | 输入 | 输出 | 模型 | 触发变更 |
+|---|---|---|---|---|---|
+| v1.0 | 2026-07-14 | `(def_slug, instance_id)` | `costrict-workflow/<def>__<inst_short>` 单层路径 | 每实例一 repo | v2.16 引入 workflow repo |
+| **v2.0** | 2026-07-15 | §A `(def_slug, team_id)` + §B `(instance_id)` | §A 类型 repo `t-<team_short>/wf-<def_slug>` + §B instance branch `inst-<inst_short>` | 类型 repo + 实例 branch | v2.17 反转 v2.16 C 方案否决（详见 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §17.1.1） |
+
+**v1.0 → v2.0 兼容性**：v2.16 之前未实际部署 workflow repo（v1.0 仅文档定稿），**不存在迁移问题**。v2.0 直接覆盖 v1.0。
+
+**v1.0 → v2.0 模型差异**：
+- v1.0：1 def + 1 instance = **1 repo**（N instance = N repo）
+- v2.0：1 (team, def) = **1 类型 repo**，N instance = **N branch**（in 同一类型 repo）
 
 ---
 
 ## 1. 设计目标
 
-1. **唯一映射**：任意 `(workflow_def_slug, instance_id)` 在 tenant 内确定唯一 `wf_repo_path`，平台调度场景下"凭 instance_id 找 repo"无需任何 owner 上下文
-2. **Gitea 路径合规**：输出必须满足 Gitea `<owner>/<repo>` 2 层路径硬约束（owner = 固定 `costrict-workflow`，repo = 算法输出标识符）
-3. **可读性**：标识符保留 def_slug（人类可读 workflow 名）+ short_id（实例短标识），admin / owner 在 Gitea UI 列表能识别对应实例
-4. **冲突安全**：相同 def_slug 的不同 instance 不会碰撞；不同 def_slug 不会碰撞
-5. **零状态**：纯函数，无 DB 依赖、无 cache、无锁
+1. **类型聚合**：同一 (team, def_slug) 下所有实例聚合到**同一类型 repo**，不同实例以 branch 区分
+2. **team 隔离**：相同 def_slug 在不同 team 下产生**不同** wf_repo_path（team A 与 team B 对同一 workflow 各自维护独立类型 repo）
+3. **Gitea 路径合规**：输出必须满足 Gitea `<owner>/<repo>` 2 层路径硬约束（owner = `t-<team_short>`，repo = `wf-<def_slug>`）
+4. **可读性**：repo 标识符保留 def_slug 原意，admin / owner 在 Gitea UI 列表能识别对应 workflow def
+5. **冲突安全**：不同 def_slug 不会碰撞到同一 repo；branch 命名空间严格隔离（main / inst-* / node/*）
+6. **零状态**：纯函数，无 DB 依赖、无 cache、无锁
 
 ---
 
 ## 2. 输入 / 输出
 
-```
-input:  workflow_def_slug : string
-        // workflow 定义的 kebab-case slug，标识"哪一类 workflow"
-        // 例：
-        //   "bug-fix-flow"
-        //   "compliance-check"
-        //   "release-pipeline"
+### 2.1 §A wfRepoPath
 
-        instance_id : string
-        // 平台为 workflow 实例分配的 UUID（v4 / v7 均可）
+```
+input:  workflow_def_slug : string  (团队自定义的 def 标识符，转义规则见 §3.A.5)
+        team_id           : string  (UUIDv4)
+
         // 例：
-        //   "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab"
-        //   "a9e7d4f2-1234-5678-9abc-def012345678"
+        //   workflow_def_slug = "bug-fix-flow"
+        //   team_id           = "7f3c9a1e-d4b2-4c8e-9a3f-1b2c3d4e5f6a"
 
 output: wf_repo_path : string
-        // 形如 "costrict-workflow/<def_slug_escaped>__<short_id>"
+        // 形如 "t-<team_short>/wf-<def_slug_escaped>"
         // 例：
-        //   "costrict-workflow/bug-fix-flow__f3a8b2c1"
-        //   "costrict-workflow/compliance-check__a9e7d4f2"
+        //   "t-7f3c9a1e/wf-bug-fix-flow"
 ```
+
+### 2.2 §B wfBranchName
+
+```
+input:  instance_id : string  (UUIDv4，由 workflow 编排器分配)
+
+        // 例：
+        //   instance_id = "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab"
+
+output: instance_branch : string
+        // 形如 "inst-<inst_short_id>"（8 hex）
+        // 例：
+        //   "inst-f3a8b2c1"
+```
+
+**owner 推导**：`t-<team_short>`，其中 `team_short = team_id`（去连字符）前 8 hex（与 [`KB_REPO_PATH_ALGORITHM.md`](./KB_REPO_PATH_ALGORITHM.md) §3.0 一致）。
 
 ---
 
 ## 3. 算法步骤
 
+### §A wfRepoPath
+
 ```
-function wfRepoPath(workflow_def_slug: string, instance_id: string) -> string:
+function wfRepoPath(workflow_def_slug: string, team_id: string) -> string:
 
-  step 1  输入校验
-          if workflow_def_slug == "" or workflow_def_slug == null:
-              throw InvalidDefSlug
-          if instance_id == "" or instance_id == null:
-              throw InvalidInstanceId
-          if not matches(instance_id, "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"):
-              throw InvalidInstanceId    # 必须是合法 UUID
+  step A.0  team_short 推导
+            team_short = teamShortId(team_id)        # 见 §3.0
+            owner = "t-" + team_short
 
-  step 2  def_slug 归一化
-          slug = lowercase(workflow_def_slug)
-          slug = stripPrefix(slug, "-")    # 去前导连字符
-          slug = stripSuffix(slug, "-")    # 去尾部连字符
+  step A.1  def_slug 转义
+            escaped_slug = escapeDefSlug(workflow_def_slug)
 
-  step 3  def_slug 转义
-          function escapeSlug(s: string) -> string:
-              out = ""
-              for ch in s:
-                  if ch ∈ {[a-z],[0-9],'-'}:    # 经 step2 lowercase 后只剩小写
-                      out += ch
-                  else:
-                      out += "-"                  # 其他字符统一替换为连字符（保持 kebab-case 风格）
-              # 合并连续连字符
-              out = replaceAll(out, "--+", "-")
-              if out == "": out = "wf"             # 极端兜底
-              return out
-          escaped_slug = escapeSlug(slug)
-
-  step 4  instance_id 截短
-          # 取 UUID 第一段（前 8 个十六进制字符）作为 short_id
-          short_id = lowercase(instance_id.substring(0, 8))
-          # 例：UUID "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab" → "f3a8b2c1"
-
-  step 5  拼接
-          joined = escaped_slug + "__" + short_id
-          return "costrict-workflow/" + joined
+  step A.2  拼接 + wf- 前缀
+            return owner + "/" + "wf-" + escaped_slug
 ```
 
-### 3.1 关键归一化点
+#### §3.A.5 escapeDefSlug 规则
 
-| 差异源 | 归一化规则 | 示例 |
+```
+function escapeDefSlug(s: string) -> string:
+    out = ""
+    for ch in s:
+        if ch ∈ {[a-z],[0-9],'.','_','-'}:
+            out += ch
+        elif ch ∈ {[A-Z]}:
+            out += lowercase(ch)         # 大写字母转小写
+        else:
+            out += "_"
+    if out startsWith ".": out = "_" + out  # 不允许 "." 开头（wf- 前缀已挡，双保险）
+    if out == "": out = "unnamed"            # 空 slug 兜底
+    return out
+```
+
+> def_slug 由 team 自定义（不像 code_repo_url 来自外部 URL），输入约束相对宽松：调用方应保证 def_slug 符合 `[a-z0-9._-]+`；server 仅做兜底转义。
+
+### §B wfBranchName
+
+```
+function wfBranchName(instance_id: string) -> string:
+
+  step B.0  校验 instance_id 为合法 UUID
+            if instance_id 不是合法 UUID:
+                throw InvalidInstanceId
+
+  step B.1  截取前 8 hex
+            hex = instance_id.replace("-", "")
+            inst_short = hex[:8].toLowerCase()
+
+  step B.2  拼接 inst- 前缀
+            return "inst-" + inst_short
+```
+
+### 3.0 teamShortId（与 KB 算法 §3.0 完全一致）
+
+```
+function teamShortId(team_id: string) -> string:
+    if team_id 不是合法 UUID:
+        throw InvalidTeamId
+    hex = team_id.replace("-", "")        # 32 hex chars
+    return hex[:8].toLowerCase()          # 取前 8 hex，小写
+```
+
+### 3.7 关键归一化点
+
+| 维度 | 归一化规则 | 示例 |
 |---|---|---|
-| 大小写 | def_slug / instance_id 全部 lowercase | `Bug-Fix-Flow` ≡ `bug-fix-flow` |
-| 前导 / 尾部 `-` | 去除 | `-bug-fix-flow-` ≡ `bug-fix-flow` |
-| 非法字符 | 替换为 `-`（连续合并） | `bug_fix.flow` → `bug-fix-flow` |
-| UUID 形式 | 仅取首段 8 hex | 完整 UUID ≡ short_id |
-| UUID 大小写 | lowercase | `F3A8B2C1-...` ≡ `f3a8b2c1-...` |
-
-### 3.2 instance_id 来源约束
-
-instance_id 由平台 workflow 编排器（独立服务，不在本规范范围）在实例启动时一次性分配，**全 tenant 内唯一**。server / csc 端**不生成** instance_id，仅校验格式 + 取首段。
+| team_id | 取前 8 hex；大小写归一（UUID 实际不会出现大小写差异） | `7f3c9a1e-...` ≡ `7F3C9A1E-...` |
+| def_slug 大小写 | 大写字母转小写 | `Bug-Fix-Flow` ≡ `bug-fix-flow` |
+| def_slug 特殊字符 | 非 `[a-z0-9._-]` → `_` | `bug fix flow` → `bug_fix_flow` |
+| instance_id | 取前 8 hex；大小写归一 | `F3A8B2C1-...` ≡ `f3a8b2c1-...` |
 
 ---
 
 ## 4. 测试用例
 
-### 4.1 基础用例
+> 以下 §A 用例 `team_id = "7f3c9a1e-d4b2-4c8e-9a3f-1b2c3d4e5f6a"`（→ `t-7f3c9a1e`）
 
-| # | 输入 (def_slug, instance_id) | 期望输出 | 说明 |
+### 4.1 §A wfRepoPath 基础用例
+
+| # | 输入 (def_slug, team_id) | 期望输出 | 说明 |
 |---|---|---|---|
-| T01 | `("bug-fix-flow", "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` | 最常见场景 |
-| T02 | `("compliance-check", "a9e7d4f2-1234-5678-9abc-def012345678")` | `costrict-workflow/compliance-check__a9e7d4f2` | 长 slug |
-| T03 | `("release", "00000000-0000-0000-0000-000000000001")` | `costrict-workflow/release__00000000` | 全零 UUID 边界（仍合法） |
-| T04 | `("ci", "abcdef12-3456-7890-abcd-ef1234567890")` | `costrict-workflow/ci__abcdef12` | 短 slug |
+| W01 | `("bug-fix-flow", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-bug-fix-flow` | 标准 kebab-case slug |
+| W02 | `("release_v2", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-release_v2` | 允许 `_` |
+| W03 | `("ci.deploy", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-ci.deploy` | 允许 `.` |
+| W04 | `("Bug-Fix-Flow", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-bug-fix-flow` | 大写转小写 |
+| W05 | `("bug fix flow", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-bug_fix_flow` | 空格 → `_` |
+| W06 | `("release/v2", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-release_v2` | `/` → `_`（避免路径歧义） |
+| W07 | `("Bug.Fix_Flow-v2", 9b8c7d6e-...)` | `t-9b8c7d6e/wf-bug.fix_flow-v2` | 不同 team 不同 owner |
 
-### 4.2 字符转义用例
+### 4.2 §B wfBranchName 基础用例
 
-| # | 输入 | 期望输出 | 说明 |
+| # | 输入 (instance_id) | 期望输出 | 说明 |
 |---|---|---|---|
-| T10 | `("Bug_Fix.Flow", "f3a8b2c1-...")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` | `_` / `.` → `-` |
-| T11 | `("Bug--Fix__Flow", "f3a8b2c1-...")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` | 连续分隔符合并 |
-| T12 | `("-bug-fix-flow-", "f3a8b2c1-...")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` | 前导 / 尾部 `-` 去除 |
-| T13 | `("bug@fix#flow", "f3a8b2c1-...")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` | `@` / `#` → `-` |
-| T14 | `("Bug修复流程", "f3a8b2c1-...")` | `costrict-workflow/bug-__f3a8b2c1` | 中文 4 字符各转 `-`（共 4 个）经 step 3 连字符合并规则 `replaceAll("--+","-")` 后保留为单 `-`，最终 `bug-` + `__` + `f3a8b2c1` = `bug-__f3a8b2c1`（详见 B03 边界讨论） |
+| WB01 | `f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab` | `inst-f3a8b2c1` | 标准 UUID |
+| WB02 | `F3A8B2C1-9D7E-4A2B-8E1F-1234567890AB` | `inst-f3a8b2c1` | 大写 → 小写 |
+| WB03 | `00000000-0000-0000-0000-000000000001` | `inst-00000000` | 全 0 前缀（合法） |
 
 ### 4.3 等价类（必须输出相同）
 
 | 组 | 输入组 | 期望输出 |
 |---|---|---|
-| E01 | `("bug-fix-flow", "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab")` / `("Bug-Fix-Flow", "F3A8B2C1-9D7E-4A2B-8E1F-1234567890AB")` | `costrict-workflow/bug-fix-flow__f3a8b2c1` |
-| E02 | `("release_pipeline", "...")` / `("release-pipeline", "...")` / `("release.pipeline", "...")` | `costrict-workflow/release-pipeline__<short_id>` |
+| WE01 | `("bug-fix-flow", 7f3c9a1e-...)` / `("Bug-Fix-Flow", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-bug-fix-flow` |
+| WE02 | `("bug fix flow", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-bug_fix_flow`（与 WE01 输出不同——空格转 `_`，连字符保留） |
 
-### 4.4 非法输入（必须 throw）
+> **调用方应保证 def_slug 唯一性**——server 不主动 dedup "bug-fix-flow" 和 "bug fix flow" 为同一 slug。
+
+### 4.4 team_id 维度等价类
+
+| 组 | team_id 组 | def_slug | 期望 wf_repo_path |
+|---|---|---|---|
+| WT01 | `7f3c9a1e-...` | `bug-fix-flow` | `t-7f3c9a1e/wf-bug-fix-flow` |
+| WT02 | `9b8c7d6e-1234-...` | `bug-fix-flow` | `t-9b8c7d6e/wf-bug-fix-flow`（**与 WT01 不同**——team 隔离） |
+
+> WT01 vs WT02 验证：**相同 def_slug 在不同 team 下产生不同 wf_repo_path**——team A 与 team B 各自维护独立类型 repo（v2.17 设计原则）。
+
+### 4.5 非法输入（必须 throw）
 
 | # | 输入 | 拒绝原因 |
 |---|---|---|
-| X01 | `("", "f3a8b2c1-...")` | def_slug 为空 |
-| X02 | `(null, "f3a8b2c1-...")` | def_slug 为 null |
-| X03 | `("bug-fix-flow", "")` | instance_id 为空 |
-| X04 | `("bug-fix-flow", "not-a-uuid")` | instance_id 非 UUID 格式 |
-| X05 | `("bug-fix-flow", "f3a8b2c1")` | instance_id 缺少 UUID 完整分段 |
-| X06 | `("bug-fix-flow", "g3a8b2c1-9d7e-4a2b-8e1f-1234567890ab")` | instance_id 含非十六进制字符 `g` |
-| X07 | `("bug-fix-flow", null)` | instance_id 为 null |
+| X01 | `team_id = "not-a-uuid"` | team_id 非 UUID |
+| X02 | `team_id = ""` | team_id 空 |
+| X03 | `team_id = null` | team_id null |
+| X04 | `workflow_def_slug = ""` | def_slug 空（兜底转 "unnamed" 但调用方应禁止） |
+| X05 | `workflow_def_slug = null` | def_slug null |
+| X06 | `instance_id = "not-a-uuid"` | instance_id 非 UUID |
+| X07 | `instance_id = ""` | instance_id 空 |
+| X08 | `instance_id = null` | instance_id null |
 
-### 4.5 边界用例
+### 4.6 边界用例
 
 | # | 输入 | 期望输出 | 说明 |
 |---|---|---|---|
-| B01 | `("---", "f3a8b2c1-...")` | `costrict-workflow/wf__f3a8b2c1` | 全部字符被 strip / 替换后为空 → 兜底为 `wf` |
-| B02 | `("a", "00000000-0000-0000-0000-000000000000")` | `costrict-workflow/a__00000000` | 单字符 slug + 全零 UUID（合法） |
-| B03 | `("Bug修复流程", "f3a8b2c1-...")` | `costrict-workflow/bug-__f3a8b2c1` | "Bug修复流程" → step2 lowercase → "bug修复流程" → step3 escape：`b/u/g` 保留，4 个中文字符各转 `-` → `bug----` → step3 连字符合并 → `bug-`；最终 `bug-` + `__` + `f3a8b2c1` = `bug-__f3a8b2c1`（注意 `bug-` 尾部 `-` **不剥离**——stripSuffix 仅在 step2 一开始执行，step3 输出后不再处理） |
+| B01 | `(".hidden-def", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-_.hidden-def` | `.` 开头被 wf- 前缀挡掉（escape 仍双保险补 `_`） |
+| B02 | `("", 7f3c9a1e-...)` | 兜底 `t-7f3c9a1e/wf-unnamed` | 空 slug 兜底；调用方应禁止 |
+| B03 | `("中文-def", 7f3c9a1e-...)` | `t-7f3c9a1e/wf-__-def` | 中文 2 字符 → 各 `_`（共 2 个） |
+| B04 | `("a" * 100, 7f3c9a1e-...)` | 触发长度截断 | 见 §5 |
 
-> 边界用例 B03 在实际使用中极少出现（workflow def_slug 通常由平台预定义，规范为 `[a-z0-9-]`）。server 端**接受且不报错**——按算法确定性输出。csc 端建议在 workflow 定义注册阶段做规范化校验。
+### 4.7 branch 命名空间冲突（不能复用）
 
----
-
-## 5. Gitea 路径合规约束
-
-| 约束 | 满足方式 |
-|---|---|
-| 必须 `<owner>/<repo>` 2 层 | owner 固定 `costrict-workflow`，repo 为 `slug__short_id` 单层 |
-| repo 名字符集 `[a-z0-9._-]` | step 3 escape 兜底，所有非白名单字符 → `-`（白名单包含 `_`，但算法输出仅在分隔符 `__` 处出现） |
-| repo 名不以 `.` 开头 | def_slug 经 step3 输出绝不会以 `.` 开头（仅 `[a-z0-9-]`） |
-| repo 名长度 ≤ 64 | 见 §6（超长截断策略） |
-| repo 名全局唯一 | 由纯函数保证（相同输入 → 相同输出） |
+| # | 输入 | 期望 | 说明 |
+|---|---|---|---|
+| C01 | instance_id = `11111111-...` | `inst-11111111` | 与 `main` / `node/*` 无冲突（前缀隔离） |
+| C02 | instance_id = `00000000-...` | `inst-00000000` | 全 0 也合法（前缀 inst-） |
 
 ---
 
-## 6. 长度截断策略
+## 5. 长度截断策略
 
-Gitea repo 名上限 64 字符。算法输出 `repo_part = escaped_slug + "__" + short_id`，正常情况长度 = `len(escaped_slug) + 10`。当 `len(escaped_slug) > 54` 时（即 `repo_part` 超 64 字符），server 端在 step 5 末尾**仅对 escaped_slug 切片**，short_id 完全丢弃（其信息已纳入 hash 计算）：
+### 5.A wfRepoPath 截断
+
+Gitea repo 名上限 64 字符。考虑 `wf-` 前缀（3 字符）：
 
 ```
-repo_part = escaped_slug + "__" + short_id            # 正常形式
+repo_part = "wf-" + escaped_slug
 if len(repo_part) > 64:
-    # 触发条件：len(escaped_slug) > 54
-    hash_suffix = sha1(escaped_slug + "__" + short_id)[:8]   # 8 字符
-    # 截断后形式：truncated_slug + "~~" + hash
-    # 总长预算：slice_len + 2 ("~~") + 8 (hash) = 64
-    # ⇒ slice_len = 54
-    slice_len = 64 - 2 - 8                # = 54，常量（不依赖 len(escaped_slug)）
-    truncated_slug = escaped_slug[:slice_len]
-    repo_part = truncated_slug + "~~" + hash_suffix
+    hash_suffix = sha1(escaped_slug)[:8]
+    # 预算：3 (wf-) + slice + 2 ("~~") + 8 (hash) ≤ 64
+    # ⇒ slice ≤ 51
+    slice_len = 51
+    repo_part = "wf-" + escaped_slug[:slice_len] + "~~" + hash_suffix
 ```
-
-截断后形式与字段长度：
 
 | 字段 | 长度 |
 |---|---|
-| truncated_slug（escaped_slug 前 54 字符切片） | 54 |
-| `~~` 分隔符（切片与 hash 之间） | 2 |
-| 8 字符 hash（基于 escaped_slug + short_id 计算） | 8 |
+| `wf-` 前缀 | 3 |
+| 截断后的 escaped_slug 切片 | 51 |
+| `~~` 分隔符 | 2 |
+| 8 字符 hash | 8 |
 | **合计** | **= 64** |
 
-> 注意：截断后形式 `truncated_slug + "~~" + hash` **不再含 `__` 分隔符**——short_id 已被 hash 替代。这是与正常形式的结构差异，但 Gitea repo 名仅校验总长 + 字符集，不要求结构一致。
+### 5.B wfBranchName 截断
 
-**触发阈值**：`len(escaped_slug) > 54`（即 `len(repo_part) = len(escaped_slug) + 10 > 64`）。实际场景中 workflow def_slug 极少超过 30 字符，截断分支极少触发。
-
-**唯一性保证**：hash 基于 `escaped_slug + "__" + short_id` 计算——即使 short_id 在切片中丢失，仍被纳入 hash 防碰撞（碰撞概率 1/2^32 以内，对内部系统可接受）。相同 (escaped_slug, short_id) → 相同 hash → 相同输出（确定性保持）。
+branch 名上限 255 字符（Gitea），`inst-<8hex>` 仅 13 字符，**永不触发截断**。
 
 ---
 
-## 7. 算法版本化
+## 6. Gitea 路径合规约束
 
-### 7.1 当前版本
-
-- **算法版本**：v1
-- **生效日期**：2026-07-14
-- **依赖**：UUID 格式正则、SHA-1（仅截断分支）
-
-### 7.2 版本演进策略
-
-- v1 算法**不做兼容变更**（输出格式不可变）
-- 若必须演进（如改 escape 规则 / 改分隔符 / 改 short_id 长度）：
-
-  1. 引入 v2 算法
-  2. server 在 `POST /api/workflow/init` 响应中新增 `algorithm_version` 字段
-  3. 对 v1 创建的 repo **保留原路径**（server 维护 v1→v2 alias 表或迁移脚本）
-  4. csc 永远从 server 响应读取 path，不参与版本协商
-
-- 不引入路径前缀版本号（如 `costrict-workflow/v1/...`）—— Gitea 路径只支持 2 层
-
-### 7.3 测试集回归
-
-每次算法或实现变更必须跑通 §4 全部测试用例；新增用例追加到 §4 即可，无需版本号变更（只要输出与既有用例一致）。
-
----
-
-## 8. 与 csc / 平台编排器的契约
-
-| 调用方行为 | 合规要求 |
+| 约束 | 满足方式 |
 |---|---|
-| csc 不内置算法 | 路径来源仅来自 `POST /api/workflow/init` 响应的 `wf_repo_path` 字段 |
-| csc 不生成 instance_id | instance_id 由平台 workflow 编排器在实例启动时分配 |
-| 平台编排器校验 def_slug | 注册 workflow 定义时校验 def_slug 符合 `[a-z0-9-]+`（实际允许更宽，但建议规范化） |
-| 平台编排器校验 instance_id | 必须是合法 UUID v4 / v7 |
-| 错误处理 | server 返回 400（非法输入）时透传错误信息给调用方，不本地兜底 |
-
-server 行为：
-
-| server 行为 | 合规要求 |
-|---|---|
-| 接受 `(workflow_def_slug, instance_id)` | 必须 def_slug 非空 + instance_id 合法 UUID，否则 400 |
-| 内部计算 path | 使用本规范算法 |
-| 不持久化 path 表 | 路径每次实时计算（无 `wf_repos` 表） |
-| 与 Gitea 交互 | 用 admin PAT 操作 `costrict-workflow/<repo>` |
+| 必须 `<owner>/<repo>` 2 层 | owner = `t-<team_short>`（来自 team_id），repo = `wf-<escaped_slug>` |
+| repo 名字符集 `[a-z0-9._-]` | escapeDefSlug 兜底；`wf-` 前缀天然合规 |
+| repo 名不以 `.` 开头 | `wf-` 前缀保证（双保险：escapeDefSlug 也补 `_`） |
+| repo 名长度 ≤ 64 | 见 §5.A |
+| repo 名 team 内唯一 | 由纯函数保证（相同 `(def_slug, team_id)` → 相同输出） |
+| repo 名跨 team 独立 | owner 不同（`t-<team_short>` 不同） |
+| branch 名字符集 `[a-z0-9._/-]` | `inst-<8hex>` 全合规 |
+| branch 命名空间隔离 | `main` / `inst-*` / `node/<seq>-<slug>` 三类前缀严格隔离 |
 
 ---
 
-## 9. 示例：完整调用链
+## 7. 类型 repo 内部 branch 命名空间约定
+
+类型 repo `t-<team_short>/wf-<def_slug>` 内部 branch 命名空间：
+
+| branch 命名 | 用途 | 创建者 | 生命周期 |
+|---|---|---|---|
+| `main` | workflow def canonical 存储（仅 `definition.yaml`） | server 在类型 repo 首次创建时初始化 | 永久（随类型 repo） |
+| `inst-<inst_short>` | 单个实例的完整时间线（含 `.workflow/` 元数据 + `nodes/` 节点交付物） | server 在 `POST /api/internal/workflow/init` 时创建（base = main HEAD） | 实例 running / completed → archived |
+| `node/<seq>-<slug>` | 节点 feat 分支，base = `inst-<short>` | 节点执行器切分支 | merge 后删除 |
+
+> **branch 命名约定不在本算法范围内**——本算法仅规定 `inst-<short>` 的推导；`main` / `node/*` 是约定，由 csc / 节点执行器按 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) §17 遵守。
+
+---
+
+## 8. 算法版本化
+
+### 8.1 当前版本
+
+- **算法版本**：v2
+- **生效日期**：2026-07-15
+- **依赖**：UUID 解析、SHA-1（仅截断分支）
+
+### 8.2 版本演进策略
+
+- v2 算法**不做兼容变更**（输出格式不可变）
+- 若必须演进：
+  1. 引入 v3 算法
+  2. server 在 `POST /api/internal/workflow/init` 响应中保持 `algorithm_version` 字段
+  3. 对 v2 创建的类型 repo / branch **保留原路径**
+  4. csc 永远从 server 响应读取 path / branch，不参与版本协商
+
+### 8.3 v1.0 → v2.0 迁移
+
+**无需迁移**：v1.0 仅文档定稿，未实际部署；v2.0 直接覆盖。
+
+### 8.4 测试集回归
+
+每次算法或实现变更必须跑通 §4 全部测试用例。
+
+---
+
+## 9. 与 csc / server 的契约
+
+### 9.1 csc 行为
+
+| 行为 | 合规要求 |
+|---|---|
+| `csc wf init` | 通过编排器代调 `POST /api/internal/workflow/init`，从响应读 `wf_repo_path` + `instance_branch` |
+| `csc wf node push` | base branch = `instance_branch`（来自 init 响应）；**不向 main 直接 push 节点交付物** |
+| `csc wf def update` | base = `main`，PR 改 `definition.yaml`（团队级 def 演进） |
+| team_id 来源 | 从 csc config / 环境变量 / `.costrict/wf.yaml` 读取；csc **不反查** team 归属 |
+| 不内置算法 | path / branch 来源仅来自 server 响应 |
+
+### 9.2 server 行为
+
+| 行为 | 合规要求 |
+|---|---|
+| 接受 `workflow_def_slug` + `instance_id` + `team_id` | 类型校验，否则 400 |
+| 前置 team ns 校验 | 调本算法前先查 team ns Gitea org 是否存在；不存在返回 412 `TEAM_NS_NOT_INITIALIZED` |
+| 内部计算 path / branch | 使用本规范算法（v2） |
+| 不持久化 path 表 | 路径每次实时计算 |
+| 与 Gitea 交互 | 用 admin PAT 操作 `t-<team_short>/wf-<def_slug>` |
+
+---
+
+## 10. 示例：完整调用链
 
 ```
-平台编排器启动 workflow 实例：
-  def_slug    = "bug-fix-flow"
-  instance_id = "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab"
-  owner       = alice (触发者 JWT)
+编排器启动 workflow 实例:
+  workflow_def_slug = "bug-fix-flow"
+  instance_id       = "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab"
+  team_id           = "7f3c9a1e-d4b2-4c8e-9a3f-1b2c3d4e5f6a"
+  definition_snapshot = "<yaml>"
 
-1. 平台编排器 / alice 调用 POST /api/workflow/init
-   请求: {
-     "workflow_def_slug": "bug-fix-flow",
-     "instance_id": "f3a8b2c1-9d7e-4a2b-8e1f-1234567890ab",
-     "definition_snapshot": "<yaml 内容>",
-     "audit_config": { ... }
-   }
-   Header: Authorization: Bearer <alice JWT>
+1. 编排器调 POST /api/internal/workflow/init
+   Header: X-Internal-Service-Token
 
-2. server 内部执行算法:
-   slug       = "bug-fix-flow"
-   escaped    = "bug-fix-flow"
-   short_id   = "f3a8b2c1"
-   wf_repo_path = "costrict-workflow/bug-fix-flow__f3a8b2c1"
+2. server 内部执行算法 (v2):
+   team_short = "7f3c9a1e"
+   owner = "t-7f3c9a1e"
+   escaped_slug = "bug-fix-flow"
+   wf_repo_path = "t-7f3c9a1e/wf-bug-fix-flow"
+   inst_short = "f3a8b2c1"
+   instance_branch = "inst-f3a8b2c1"
 
 3. server 用 admin PAT 调 Gitea:
-   GET /repos/costrict-workflow/bug-fix-flow__f3a8b2c1
-   - 404 → 不存在分支:
-     POST /admin/users/costrict-workflow/repos ... 创建 repo（private）
-     PUT /repos/.../contents/.workflow/instance.json ... 写入实例元数据
-     PUT /repos/.../contents/.workflow/definition.snapshot.yaml ... 写入定义快照
-     PUT /repos/.../contents/.workflow/node-prs.json ... 写入空索引 "{}"
-     POST /repos/.../collaborators/alice ... 加 alice 为 owner permission
-     POST /repos/.../branch_protections ... 配置 main 保护（禁 force push / delete）
-     返回 { role: "owner", created: true }
-   - 200 → 存在分支:
-     GET /repos/.../collaborators/alice/permission
-     - permission == "owner" or "write": 返回 { role: ..., created: false }
-     - permission == "none":
-       GET /repos/... → owner username
-       返回 { role: "none", created: false, owner: {username, display_name}, hint: "..." }
+   GET /repos/t-7f3c9a1e/wf-bug-fix-flow
+   - 404 → 类型 repo 不存在分支:
+     POST /admin/users/t-7f3c9a1e/repos ... 创建 repo（private）
+     PUT /repos/.../contents/definition.yaml ... 写入 main（首次 canonical）
+     POST /repos/.../branch_protections ... 配置 main + inst-* 通配保护
+     POST /repos/.../branches ... base=main, ref=inst-f3a8b2c1
+     返回 { wf_repo_path, instance_branch: "inst-f3a8b2c1", created: {type_repo: true, instance_branch: true}, algorithm_version: "v2" }
+   - 200 → 类型 repo 存在:
+     GET /repos/.../contents/definition.yaml ... 读 main HEAD 校验与 definition_snapshot 一致
+     - 不一致 → 409 DEFINITION_DRIFT
+     - 一致 →
+       GET /repos/.../branches/inst-f3a8b2c1
+       - 404 → POST /repos/.../branches base=main ref=inst-f3a8b2c1 → created.instance_branch=true
+       - 200 → 幂等 no-op → created.instance_branch=false
+   - team ns 不存在（org 不存在）→ 412 TEAM_NS_NOT_INITIALIZED
 
-4. 调用方按响应行为:
-   - role=owner/write → 后续节点 push / PR 流程
-   - role=none → 打印 owner + hint, exit ≠ 0
+4. csc 按响应行为:
+   - team_ns_exists=true → 节点执行器后续切分支 node/<seq>-<slug>, base=inst-f3a8b2c1
+   - team_ns_exists=false → 打印 hint, exit ≠ 0
 ```
 
 ---
 
-## 10. 开放问题（暂不解决）
+## 11. 开放问题（暂不解决）
 
 | 问题 | 现状 | 后续 |
 |---|---|---|
-| workflow_def_slug 改名（如重新组织业务分类） | 旧 wf_repo_path 不会自动重新指向 | 暂不支持迁移；如需，owner 可手动 transfer 或在 Gitea UI rename（路径将不一致，server 重新 init 会创建新 repo） |
-| instance_id 碰撞（极小概率） | short_id 取前 8 hex，碰撞概率 1/16M | 实际场景下 tenant 内 workflow 实例数远低于碰撞阈值；如发生，server 建库时会因 Gitea repo 已存在而走"存在分支"路径，由调用方 owner 信息暴露冲突 |
-| def_slug 含保留字（如 `admin` / `system`） | 算法不拦截 | 建议在 workflow 定义注册阶段由平台编排器校验保留字 |
+| def_slug 重命名（团队想改名） | 类型 repo 路径不变；rename 会破坏既有 inst-* branch 的可读性 | 暂不支持；admin 可在 Gitea UI rename（路径将不一致，server 重新 init 会创建新类型 repo） |
+| 同 def_slug 跨 team 复用 | 不同 team_id → 不同 wf_repo_path | 设计上视为不同 workflow def，分别维护 |
+| instance_id 碰撞（前 8 hex 在同类型 repo 已被占用） | server init 返回 409 INSTANCE_BRANCH_CONFLICT | 调用方重新分配 instance_id |
+| branch 命名 `inst-*` 与未来其它前缀冲突 | 当前保留 `main` / `inst-*` / `node/*` | 后续扩展需用其它前缀（如 `archived/*`） |
 
 ---
 
@@ -309,4 +390,5 @@ server 行为：
 
 | 版本 | 日期 | 修订内容 |
 |---|---|---|
-| v1.0 | 2026-07-14 | 首次发布：定义 `(def_slug, instance_id) → wf_repo_path` 确定性纯函数算法、字符转义规则、长度截断策略、基础/转义/等价类/非法/边界共 20+ 测试用例、与 csc / server / 平台编排器的契约 |
+| v1.0 | 2026-07-14 | 首次发布：定义 `(def_slug, instance_id) → costrict-workflow/<def>__<inst_short>` 单层路径推断算法（每实例一 repo） |
+| v2.0 | 2026-07-15 | **架构反转：类型 repo + 实例 branch 模型**：①§A 拆分独立函数 `wfRepoPath(def_slug, team_id) → t-<team_short>/wf-<def_slug>`；②§B 拆分独立函数 `wfBranchName(instance_id) → inst-<inst_short>`；③新增 §0 v1.0 → v2.0 演进说明（明确无需迁移）；④新增 §3.A.5 `escapeDefSlug` 规则（含大写转小写）；⑤新增 §4 测试用例（W01-W07 / WB01-WB03 / WT01-WT02）；⑥新增 §5.A wfRepoPath 长度截断策略（考虑 `wf-` 前缀）；⑦新增 §7 类型 repo 内部 branch 命名空间约定（main / inst-* / node/*）；⑧§8 算法版本 v1 → v2；⑨§9 csc / server 契约更新（节点 PR base = `inst-<short>`、新增 def update 命令）；⑩§10 完整调用链更新（含 type repo 首次创建 / def drift 校验 / branch 幂等）；⑪依据 [`REPOSITORY_MANAGEMENT_SPEC.md`](./REPOSITORY_MANAGEMENT_SPEC.md) v2.17 §4.7 / §17 / §18，并对照 §17.1.1 v2.16 → v2.17 C 方案决策反转说明 |
