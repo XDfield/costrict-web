@@ -1,4 +1,4 @@
-.PHONY: help test test-race test-coverage vet build build-migrate migrate run clean fmt check swagger swagger-check
+.PHONY: help test test-race test-coverage vet build build-migrate build-etl migrate run-etl run clean fmt check swagger swagger-check
 
 SWAG_VERSION := v1.16.6
 SWAG := go run github.com/swaggo/swag/cmd/swag@$(SWAG_VERSION)
@@ -40,6 +40,11 @@ build-migrate:
 	mkdir -p bin
 	go build -trimpath -ldflags="-s -w" -o bin/cs-user-migrate ./cmd/migrate
 
+## build-etl: build the one-shot ETL tool into ./bin/
+build-etl:
+	mkdir -p bin
+	go build -trimpath -ldflags="-s -w" -o bin/cs-user-etl ./cmd/etl
+
 ## migrate: run pending migrations against the configured DB (alias for bin/cs-user-migrate up)
 migrate: build-migrate
 	./bin/cs-user-migrate up
@@ -47,6 +52,10 @@ migrate: build-migrate
 ## run: run cs-user locally (requires env vars — see README)
 run:
 	go run ./cmd/api
+
+## run-etl: run the ETL tool via go run (pass args via ETL_ARGS or directly)
+run-etl:
+	go run ./cmd/etl $(ETL_ARGS)
 
 ## clean: remove build artifacts
 clean:
