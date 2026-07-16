@@ -143,7 +143,7 @@ func (m *Module) GetUserProfileHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		subjectID := c.Param("id")
 
-		u, err := m.users.GetUserByID(subjectID)
+		u, err := m.users.GetUserByID(c.Request.Context(), subjectID)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return

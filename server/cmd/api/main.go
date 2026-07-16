@@ -124,7 +124,7 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
-	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes)
+	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
 
 	storageBackend, err := storage.NewFromEnv(ctx)
