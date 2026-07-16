@@ -33,7 +33,7 @@
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
-| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 2 | 5% | 🟡 进行中（A1 + A2 schema + models + tests 完成；A3-A8 待启动） |
+| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 3 | 8% | 🟡 进行中（A1 + A2 + A6 完成；A3 / A4 / A5 / A7 / A8 待启动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
@@ -352,11 +352,11 @@
 - [ ] **测试覆盖**：claim 字段 fixture 测试（覆盖 §9.6 双格式 reader 的 5 种场景）
 - [ ] **swagger 注解**：JWKS endpoint 的 `@Response` 引用 claims DTO
 
-### A6：default tenant 引导脚本
+### A6：default tenant 引导脚本 ✅
 
-- [ ] **实现**：`cs-user/migrations/202607XX_bootstrap_default_tenant.sql`
-- [ ] **测试覆盖**：脚本幂等性测试
-- [ ] **swagger 注解**：无
+- [x] **实现**：`cs-user/migrations/20260716170000_bootstrap_default_tenant.sql`（INSERT `tenant_id="default"` + `config_yaml="{}"`；`ON CONFLICT (tenant_id) DO NOTHING` 保证幂等；Down 仅删 default 行，保留 operator-supplied rows）
+- [x] **测试覆盖**：`cs-user/internal/migration/bootstrap_default_tenant_test.go`（4 测试：DefaultTenantInsertCreatesRow / UpIsIdempotent 双跑无重复 / ReUpAfterOperatorInsert operator YAML 不被覆盖 / DownRemovesDefaultRow 只删 default 保留其它租户）
+- [x] **swagger 注解**：无（数据库迁移）
 
 ### A7：接管 Casdoor OAuth `/oidc-auth/api/v1/plugin/login` 端点
 
