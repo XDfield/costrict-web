@@ -9,9 +9,11 @@ WORKDIR /src
 COPY cs-user/go.mod cs-user/go.sum* ./
 RUN go mod download
 
-# Build.
+# Build both binaries (API server + migrate tool) in one layer to share the
+# warm compile cache.
 COPY cs-user/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user-migrate ./cmd/migrate
 
 FROM alpine:3.20
 
@@ -20,6 +22,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 USER csuser
 COPY --from=builder /out/cs-user /app/cs-user
+COPY --from=builder /out/cs-user-migrate /app/cs-user-migrate
 
 EXPOSE 8081
 ENV CS_USER_HTTP_PORT=8081 \

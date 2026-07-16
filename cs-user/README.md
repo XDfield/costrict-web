@@ -21,7 +21,11 @@ export CS_USER_INTERNAL_TOKEN=dev-shared-secret-change-me
 export CS_USER_POSTGRES_USER=postgres
 export CS_USER_POSTGRES_PASSWORD=postgres
 
-# 2. Run
+# 2a. Standalone migration (recommended — explicit, no auto-magic)
+make migrate
+
+# 2b. Or run the API with auto-migrate enabled in dev
+export CS_USER_AUTO_MIGRATE=1
 go run ./cmd/api
 
 # 3. Health check (unauthenticated)
@@ -51,6 +55,10 @@ All config via env vars (prefix `CS_USER_`):
 | `CS_USER_POSTGRES_PASSWORD` | — | **required** |
 | `CS_USER_POSTGRES_SSLMODE` | `disable` | |
 | `CS_USER_INTERNAL_TOKEN` | — | **required** — shared secret for costrict-web calls |
+| `CS_USER_AUTO_MIGRATE` | unset | When truthy (`1`/`true`/`yes`), API binary runs pending migrations on boot. **Dev only** — prod uses the standalone `cs-user-migrate` binary (Helm pre-deploy hook). |
+| `DB_MAX_OPEN_CONNS` | `25` | gorm pool limit |
+| `DB_MAX_IDLE_CONNS` | `5` | gorm idle pool limit |
+| `DB_CONN_MAX_LIFETIME_MINUTES` | `60` | gorm connection max age |
 
 ## API documentation
 
@@ -96,13 +104,15 @@ CI runs automatically on every PR via [`.github/workflows/test.yml`](../.github/
 
 ### Test layout
 
-Tests are colocated with source (`foo_test.go` next to `foo.go`), matching the `server/` convention. Current coverage:
+Tests are colocated with source (`foo_test.go` next to `foo.go`), matching the `server/` convention. SQLite-dependent tests are tagged `//go:build cgo` so the package still compiles on hosts without a C toolchain (Linux CI runs them with cgo enabled). Current coverage:
 
 | Package | What's covered |
 |---|---|
 | `internal/config` | env parsing, defaults, required-field validation, DSN rendering |
 | `internal/middleware` | `X-Internal-Token` gating (missing / empty / wrong / correct / prefix-attack / empty-config defense) |
 | `internal/app` | `/healthz` + `/readyz` (OK + failing checker), internal route auth-gating, `nil` config panics, swagger UI route registration |
+| `internal/storage` | env-driven pool sizing (defaults + overrides + invalid input), DSN format, nil-config rejection, Ping OK / closed-DB fail / nil-Pool paths *(cgo-tagged sqlite tests)*, idempotent Close |
+| `internal/migration` | NewRunner validation (nil db / empty dialect / nil fs / unknown dialect), Up idempotency + Version advance + Down rollback *(cgo-tagged sqlite tests using synthetic fstest.MapFS — real Postgres-only migrations are verified via the standalone binary against a real DB)* |
 
 ## Deployment
 
@@ -112,11 +122,28 @@ Helm chart at [`deploy/charts/cs-user/`](../deploy/charts/cs-user/). Service is 
 
 | Phase | Scope | Status |
 |---|---|---|
-| P0-1 | Skeleton (gin + /healthz + config + Dockerfile + Helm chart) | ✅ this PR |
-| P0-2 | Postgres connection + goose migrations | 🔜 next |
-| P0-3 | User / UserAuthIdentity models + CRUD | 🔜 |
-| P0-4 | Internal auth middleware | ✅ this PR |
-| P0-5 | Helm chart | ✅ this PR |
+| P0-1 | Skeleton (gin + /healthz + config + Dockerfile + Helm chart) | ✅ |
+| P0-2 | Postgres connection + goose migrations | ✅ this PR |
+| P0-3 | User / UserAuthIdentity models + CRUD | 🔜 next |
+| P0-4 | Internal auth middleware | ✅ |
+| P0-5 | Helm chart | ✅ |
 | P0-6 | ETL script (dry-run + idempotent UPSERT) | 🔜 |
 | P0-7 | read-through RPC client in costrict-web | 🔜 |
 | P0-8 | costrict-web users table READONLY cutover | 🔜 |
+
+## Database migrations
+
+Migrations are goose SQL files under [`migrations/`](./migrations/), embedded into the binary via `//go:embed *.sql`. The same set ships in both the API and `cs-user-migrate` binaries.
+
+```bash
+# Standalone binary — recommended for prod (Helm pre-deploy hook)
+make build-migrate           # produces bin/cs-user-migrate
+./bin/cs-user-migrate up     # apply pending migrations
+./bin/cs-user-migrate version # inspect current schema version
+./bin/cs-user-migrate help
+
+# Dev auto-migrate (convenient, runs at API boot)
+CS_USER_AUTO_MIGRATE=1 go run ./cmd/api
+```
+
+The migrate binary acquires a PostgreSQL advisory lock (`pg_advisory_lock`) before running, so two replicas starting simultaneously cannot race. Lock keys intentionally differ from `server/`'s to avoid false-positive contention if both services ever share a host.

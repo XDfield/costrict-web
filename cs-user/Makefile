@@ -1,4 +1,4 @@
-.PHONY: help test test-race test-coverage vet build run clean fmt check swagger swagger-check
+.PHONY: help test test-race test-coverage vet build build-migrate migrate run clean fmt check swagger swagger-check
 
 SWAG_VERSION := v1.16.6
 SWAG := go run github.com/swaggo/swag/cmd/swag@$(SWAG_VERSION)
@@ -30,10 +30,19 @@ vet:
 fmt:
 	gofmt -s -w .
 
-## build: build the cs-user binary into ./bin/
+## build: build the cs-user API binary into ./bin/
 build:
 	mkdir -p bin
 	go build -trimpath -ldflags="-s -w" -o bin/cs-user ./cmd/api
+
+## build-migrate: build the standalone migrate binary into ./bin/
+build-migrate:
+	mkdir -p bin
+	go build -trimpath -ldflags="-s -w" -o bin/cs-user-migrate ./cmd/migrate
+
+## migrate: run pending migrations against the configured DB (alias for bin/cs-user-migrate up)
+migrate: build-migrate
+	./bin/cs-user-migrate up
 
 ## run: run cs-user locally (requires env vars — see README)
 run:
