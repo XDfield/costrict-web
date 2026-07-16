@@ -39,10 +39,15 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		return &NormalizedClaims{}
 	}
 
-	provider := str(claims, "provider")
+	// flat first → nested/renamed fallback（兼容旧 Casdoor flat JWT + 新 cs-user canonical JWT）
+	provider := firstNonEmpty(
+		str(claims, "provider"),
+		str(claims, "primary_provider"),
+	)
 	phone := firstNonEmpty(
 		str(claims, "phone_number"),
 		str(claims, "phone"),
+		strNested(claims, "user.phone"),
 	)
 	if provider == "" && phone != "" {
 		provider = "phone"
@@ -62,17 +67,24 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 	providerEmail := providerProp(properties, prefix, "email")
 	providerAvatar := providerProp(properties, prefix, "avatarUrl")
 
-	email := validatedEmail(firstNonEmpty(str(claims, "email"), providerEmail))
+	email := validatedEmail(firstNonEmpty(str(claims, "email"), strNested(claims, "user.email"), providerEmail))
 	if email == "" {
-		email = validatedEmail(firstNonEmpty(providerEmail, str(claims, "email")))
+		email = validatedEmail(firstNonEmpty(providerEmail, str(claims, "email"), strNested(claims, "user.email")))
 	}
 
 	if phone == "" && isLikelyPhone(providerEmail) {
 		phone = providerEmail
 	}
 
-	name := str(claims, "name")
-	displayName := firstNonEmpty(providerDisplayName, str(claims, "preferred_username"), str(claims, "displayName"), name)
+	name := firstNonEmpty(str(claims, "name"), strNested(claims, "user.display_name"))
+	displayName := firstNonEmpty(
+		providerDisplayName,
+		str(claims, "preferred_username"),
+		strNested(claims, "user.username"),
+		str(claims, "displayName"),
+		strNested(claims, "user.display_name"),
+		name,
+	)
 	username := ""
 
 	switch normalizedProvider(provider) {
@@ -80,7 +92,7 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		username = firstNonEmpty(providerUsername, name, usernameFromEmail(email))
 	case "idtrust":
 		username = firstNonEmpty(providerUserID, providerUsername)
-		displayName = firstNonEmpty(str(claims, "displayName"), providerDisplayName, username)
+		displayName = firstNonEmpty(str(claims, "displayName"), strNested(claims, "user.display_name"), providerDisplayName, username)
 		name = username
 	case "phone":
 		if phone != "" {
@@ -88,12 +100,12 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		} else {
 			username = stableNameFromSubject(firstNonEmpty(str(claims, "universal_id"), str(claims, "sub"), str(claims, "id")))
 		}
-		displayName = firstNonEmpty(str(claims, "displayName"), username)
+		displayName = firstNonEmpty(str(claims, "displayName"), strNested(claims, "user.display_name"), username)
 		if looksLikeUUID(name) {
 			name = username
 		}
 	default:
-		username = firstNonEmpty(providerUsername, str(claims, "preferred_username"), name, usernameFromEmail(email))
+		username = firstNonEmpty(providerUsername, str(claims, "preferred_username"), strNested(claims, "user.username"), name, usernameFromEmail(email))
 	}
 
 	if username == "" {
@@ -111,11 +123,12 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		str(claims, "picture"),
 		str(claims, "avatar"),
 		str(claims, "avatar_url"),
+		strNested(claims, "user.avatar_url"),
 		str(claims, "permanentAvatar"),
 	)
 
 	return &NormalizedClaims{
-		ID:                str(claims, "id"),
+		ID:                firstNonEmpty(str(claims, "id"), strNested(claims, "user.id")),
 		Sub:               str(claims, "sub"),
 		UniversalID:       str(claims, "universal_id", "universalId"),
 		Name:              name,
@@ -124,7 +137,7 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		Picture:           picture,
 		Owner:             str(claims, "owner"),
 		Provider:          normalizedProvider(provider),
-		ProviderUserID:    firstNonEmpty(providerUserID, str(claims, "id")),
+		ProviderUserID:    firstNonEmpty(providerUserID, str(claims, "id"), strNested(claims, "user.id")),
 		Phone:             phone,
 		Properties:        properties,
 	}
@@ -168,6 +181,40 @@ func str(claims map[string]any, keys ...string) string {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
 				return strings.TrimSpace(s)
 			}
+		}
+	}
+	return ""
+}
+
+// lookupNested 解析点号路径 "user.email" → claims["user"].(map)["email"]。
+// 用于新 cs-user JWT canonical 嵌套结构（MULTI_TENANCY §12.1）的字段访问。
+// 任一中段不是 map 或键缺失即返回 nil。
+func lookupNested(claims map[string]any, path string) any {
+	if claims == nil || path == "" {
+		return nil
+	}
+	parts := strings.Split(path, ".")
+	var cur any = claims
+	for _, p := range parts {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v, exists := m[p]
+		if !exists {
+			return nil
+		}
+		cur = v
+	}
+	return cur
+}
+
+// strNested 等价于 str()，但从嵌套路径取（如 "user.email"）。
+// 多个 path 时按顺序取第一个非空字符串。
+func strNested(claims map[string]any, paths ...string) string {
+	for _, p := range paths {
+		if v, ok := lookupNested(claims, p).(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
 		}
 	}
 	return ""
