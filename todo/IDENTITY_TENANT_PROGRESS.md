@@ -125,9 +125,11 @@
 - [x] **实现**：`cs-user/internal/etl/import.go`（compare-then-write 策略：load target by subject_id → 字段 diff → 仅写差异列；map-based update 正确处理 nil 清空；保留 target ID + CreatedAt；传播软删；事务包裹单批）
 - [x] **实现**：`cs-user/internal/etl/diff.go`（字段级 diff，区分 nil vs ""，bool / time / DeletedAt 全覆盖；ID + CreatedAt 明确排除）
 - [x] **验证**：行数对齐（CountUsers/CountAuthIdentities 双向断言）+ 抽样字段对比（dry-run FieldDiffRecords）+ `casdoor_universal_id` 唯一性预检（`ValidateSource` GROUP BY HAVING COUNT(*) > 1）
-- [x] **测试覆盖**：`etl/diff_test.go`（13 case：identical / string / ptr-string / nil-vs-empty / bool / time / DeletedAt / ID+CreatedAt 排除）+ `etl/export_test.go`（7 case：streaming order / 软删包含 / 空表 / batch=1 / 无效 batch size / nil DB / abort）+ `etl/import_test.go`（11 case：insert / no-diff skip / update / clear pointer / preserve ID+CreatedAt / propagate soft-delete / empty batch / nil DB / empty subject_id 跳过 / auth-identities 等价 / ValidateSource dups）
-- [x] **测试覆盖**：`etl/idempotent_test.go`（连续跑两次第二次 inserted=updated=0；单行 mutation 后只 1 update + 2 unchanged；双表端到端 parity）
-- [x] **测试覆盖**：`etl/dry_run_test.go`（dry-run 模式 target 行数 0 增长；FieldDiffs 准确；maxDiffRecords 上限；-1 unlimited；auth-identities 等价）
+- [x] **测试覆盖**：`etl/diff_test.go`（13 case：identical / string / ptr-string / nil-vs-empty / bool / time / DeletedAt / ID+CreatedAt 排除）+ `etl/export_test.go`（9 case：streaming order / 软删包含 / 空表 / batch=1 / 无效 batch size / nil DB / abort / auth-identities 流式 / CountUsers 含软删）+ `etl/import_test.go`（14 case：insert / no-diff skip / update / clear pointer / preserve ID+CreatedAt / propagate soft-delete / empty batch / nil DB / empty subject_id 跳过 / auth-identities 等价 × 3 / ValidateSource dups + no-dups）
+- [x] **测试覆盖**：`etl/idempotent_test.go`（4 case：连续跑两次第二次 inserted=updated=0；单行 mutation 后只 1 update + 2 unchanged；auth-identities 等价；双表端到端 parity）
+- [x] **测试覆盖**：`etl/dry_run_test.go`（5 case：dry-run target 0 增长 + DryRun flag；FieldDiffs 准确 + target 未被修改；maxDiffRecords 上限；-1 unlimited；auth-identities 等价）
+
+**测试总数**：45 case，全过（`go test -race ./internal/etl/` ~1.7s）。
 - [x] **swagger 注解**：无（ETL 是离线脚本，不是 HTTP endpoint）
 
 **实现说明 / 偏差**：
