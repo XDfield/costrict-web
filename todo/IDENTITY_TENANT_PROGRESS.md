@@ -33,7 +33,7 @@
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
-| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 3 | 8% | 🟡 进行中（A1 + A2 + A6 完成；A3 / A4 / A5 / A7 / A8 待启动） |
+| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 4 | 10% | 🟡 进行中（A1 + A2 + A6 + A4 service 层完成；A3 / A4b endpoint+server wiring / A5 / A7 / A8 待启动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
@@ -339,11 +339,12 @@
 - [ ] **swagger 注解**：`/.well-known/jwks.json` 加 `@Tags well-known` + 完整注解
 - [ ] **swagger 注解**：`make swagger` 重新生成
 
-### A4：OAuth callback 加 ApplyEnterpriseMapping
+### A4：OAuth callback 加 ApplyEnterpriseMapping ✅（service 层，endpoint + server wiring 待 follow-up）
 
-- [ ] **实现**：`cs-user/internal/user/service.go` 增加 `ApplyEnterpriseMapping` 步骤（按 `employment_providers.enabled` 门控）
-- [ ] **测试覆盖**：service 测试增加 employment provider 启用/禁用两种场景
-- [ ] **swagger 注解**：无（service 层逻辑）
+- [x] **实现**：`cs-user/internal/user/employment_mapping.go`（`Service.ApplyEnterpriseMapping` 方法 + `loadEnabledEmploymentProviders` YAML reader + `upsertEmploymentIdentity` 写入路径；按 `employment_providers.enabled` 门控；返回 `ErrEnterpriseMappingDisabled` sentinel 让 caller 区分"跳过"与"失败"；Phase A 只写最小字段 `user_subject_id` + `provider` + `sync_status="fresh"` + 24h `next_sync_due_at`，企业字段留 NULL 等真实 provider client + A5 扩展 claims 填充）
+- [x] **测试覆盖**：`cs-user/internal/user/employment_mapping_test.go`（`//go:build cgo`，8 测试：DisabledProvider 不写 / EnabledProvider_NewUser 创建正确字段 / EnabledProvider_ExistingUser update-in-place ID 不变 / EmptyConfigYAML `"{}"` 视为禁用 / MissingTenantConfig 行缺失视为禁用不报错 / MalformedYAML 报解析错误不静默禁用 / DefaultTenantID 空字符串 fallback 到 `"default"` / ValidationErrors 空 subject_id / 空 provider / PerProviderConfigIgnored 完整设计 YAML 解析不爆）
+- [x] **swagger 注解**：无（service 层逻辑）
+- [ ] **follow-up（A4b）**：暴露 cs-user 内部 endpoint + server OAuth callback wiring + 集成测试（独立 PR）
 
 ### A5：JWT claims 扩展
 
