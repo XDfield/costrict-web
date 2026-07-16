@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 38 | 53% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 完成，P0-5 部分） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 47 | 65% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-6 完成，P0-5 部分） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）四个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-6（ETL 脚本）或 P0-7（read-through RPC client）。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-6（ETL 脚本）五个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-7（read-through RPC client in server）——P0-6 数据已就位。
 
 ---
 
@@ -118,17 +118,24 @@
 - [ ] **测试覆盖**：`helm template` 输出 fixture 文件，断言关键 path（labels / env vars / networkPolicy selectors）
 - [ ] **swagger 注解**：无（chart 不暴露 endpoint）
 
-### P0-6：ETL 脚本（dry-run + idempotent UPSERT）🔜
+### P0-6：ETL 脚本（dry-run + idempotent UPSERT）✅
 
-- [ ] **实现**：`cs-user/cmd/etl/main.go`，支持 `--dry-run` / `--source-dsn` / `--target-dsn` / `--batch-size` flags
-- [ ] **实现**：`cs-user/internal/etl/export.go`（从 costrict-web DB 读 `users` + `user_auth_identities` 流式批读）
-- [ ] **实现**：`cs-user/internal/etl/import.go`（基于 `subject_id` UPSERT 到 cs-user DB，`ON CONFLICT (subject_id) DO UPDATE`）
-- [ ] **实现**：`cs-user/internal/etl/diff.go`（dry-run 模式产出字段级 diff 报告）
-- [ ] **验证**：行数对齐 + 抽样字段对比 + `casdoor_universal_id` 唯一性检查
-- [ ] **测试覆盖**：`etl/export_test.go` + `etl/import_test.go`（用 testcontainers 双 PG 实例，跑 ETL 后断言行数 + 字段一致性）
-- [ ] **测试覆盖**：`etl/idempotent_test.go`（连续跑两次，第二次 0 写入）
-- [ ] **测试覆盖**：`etl/dry_run_test.go`（dry-run 模式目标 DB 0 变化）
-- [ ] **swagger 注解**：无（ETL 是离线脚本，不是 HTTP endpoint）
+- [x] **实现**：`cs-user/cmd/etl/main.go`，支持 `--dry-run` / `--source-dsn` / `--target-dsn` / `--batch-size` flags（外加 `--max-diff-records` / `--skip-users` / `--skip-auth-identities` / `--report` / `--sqlite`）
+- [x] **实现**：`cs-user/internal/etl/export.go`（`users` + `user_auth_identities` 流式批读，keyset 分页 on `id`，`Unscoped()` 包含软删行，`ErrAbort` 提前终止）
+- [x] **实现**：`cs-user/internal/etl/import.go`（compare-then-write 策略：load target by subject_id → 字段 diff → 仅写差异列；map-based update 正确处理 nil 清空；保留 target ID + CreatedAt；传播软删；事务包裹单批）
+- [x] **实现**：`cs-user/internal/etl/diff.go`（字段级 diff，区分 nil vs ""，bool / time / DeletedAt 全覆盖；ID + CreatedAt 明确排除）
+- [x] **验证**：行数对齐（CountUsers/CountAuthIdentities 双向断言）+ 抽样字段对比（dry-run FieldDiffRecords）+ `casdoor_universal_id` 唯一性预检（`ValidateSource` GROUP BY HAVING COUNT(*) > 1）
+- [x] **测试覆盖**：`etl/diff_test.go`（13 case：identical / string / ptr-string / nil-vs-empty / bool / time / DeletedAt / ID+CreatedAt 排除）+ `etl/export_test.go`（7 case：streaming order / 软删包含 / 空表 / batch=1 / 无效 batch size / nil DB / abort）+ `etl/import_test.go`（11 case：insert / no-diff skip / update / clear pointer / preserve ID+CreatedAt / propagate soft-delete / empty batch / nil DB / empty subject_id 跳过 / auth-identities 等价 / ValidateSource dups）
+- [x] **测试覆盖**：`etl/idempotent_test.go`（连续跑两次第二次 inserted=updated=0；单行 mutation 后只 1 update + 2 unchanged；双表端到端 parity）
+- [x] **测试覆盖**：`etl/dry_run_test.go`（dry-run 模式 target 行数 0 增长；FieldDiffs 准确；maxDiffRecords 上限；-1 unlimited；auth-identities 等价）
+- [x] **swagger 注解**：无（ETL 是离线脚本，不是 HTTP endpoint）
+
+**实现说明 / 偏差**：
+
+- **没用 testcontainers 双 PG**：sqlite (cgo-tagged) 覆盖了所有 write 语义（INSERT / UPDATE / 软删传播 / nil 清空 / idempotency / dry-run）。postgres-only 的 `ON CONFLICT ... WHERE` / advisory lock 路径不在 ETL 包内（advisory lock 在 `cmd/migrate` 已用真 PG 验证；ETL 用 compare-then-write 而非 ON CONFLICT，所以 PG-specific 路径反而更少）。testcontainers 留给 P0-7 集成测试 binary（需要同时起 server + cs-user）一并接入。
+- **没用 `ON CONFLICT (subject_id) DO UPDATE`**：改成 compare-then-write（load target → diff → 仅写差异列）。原因：(1) 自然产出 inserted/updated/unchanged 三段统计，dry-run 复用同一逻辑；(2) 避免 `ON CONFLICT ... WHERE ROW(...) IS DISTINCT FROM ROW(...)` 在自增 ID + timestamp 列上的微妙语义；(3) 第二次跑 0 写入的 idempotency 由 diff 直接保证。
+- **`casdoor_universal_id` 重复检测** 是 WARN 不是 FAIL：重复会在 INSERT 时自然报错，中断本批事务；预先 WARN 让操作员决定是否清理源数据后再跑。
+- **map-based update**：gorm struct-based Updates 会吞掉零值（无法把 email 清成 NULL），所以 `buildUserUpdateMap` 用 `map[string]any` 显式列出差异列。
 
 ### P0-7：read-through RPC client in costrict-web 🔜
 

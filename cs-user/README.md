@@ -115,6 +115,7 @@ Tests are colocated with source (`foo_test.go` next to `foo.go`), matching the `
 | `internal/migration` | NewRunner validation (nil db / empty dialect / nil fs / unknown dialect), Up idempotency + Version advance + Down rollback *(cgo-tagged sqlite tests using synthetic fstest.MapFS — real Postgres-only migrations are verified via the standalone binary against a real DB)* |
 | `internal/user` | GetUserByID (found / not-found / soft-delete-hidden / empty-id), GetUsersByIDs (map shape / missing-omitted / empty-skip), SearchUsers (keyword / inactive-excluded / default limit) — *(cgo-tagged sqlite + gorm AutoMigrate)*; nil-db guards for every method |
 | `internal/handlers` | 4 read endpoints: happy path + 404 + 500-leak-prevention + body-validation (empty / oversized / negative / garbage limit); uses stubbed UserService interface, no DB required |
+| `internal/etl` | field-level diff (string / pointer-string / bool / time / DeletedAt / nil-vs-empty distinction / ID+CreatedAt exclusion); export streaming with keyset pagination + abort + soft-delete inclusion; idempotent UPSERT via compare-then-write (insert / update only-changed-columns / skip unchanged / clear pointer field to NULL / preserve target ID + CreatedAt / propagate soft-delete); dry-run mode (zero target writes + bounded FieldDiffs); source `casdoor_universal_id` duplicate detection; end-to-end source→target parity *(cgo-tagged sqlite tests for write semantics)* |
 
 ## Deployment
 
@@ -129,7 +130,7 @@ Helm chart at [`deploy/charts/cs-user/`](../deploy/charts/cs-user/). Service is 
 | P0-3 | User / UserAuthIdentity models + read-side CRUD | ✅ this PR |
 | P0-4 | Internal auth middleware | ✅ |
 | P0-5 | Helm chart | ✅ |
-| P0-6 | ETL script (dry-run + idempotent UPSERT) | 🔜 |
+| P0-6 | ETL script (dry-run + idempotent UPSERT) | ✅ this PR |
 | P0-7 | read-through RPC client in costrict-web | 🔜 |
 | P0-8 | costrict-web users table READONLY cutover | 🔜 |
 
@@ -163,3 +164,38 @@ CS_USER_AUTO_MIGRATE=1 go run ./cmd/api
 ```
 
 The migrate binary acquires a PostgreSQL advisory lock (`pg_advisory_lock`) before running, so two replicas starting simultaneously cannot race. Lock keys intentionally differ from `server/`'s to avoid false-positive contention if both services ever share a host.
+
+## ETL tool (P0-6)
+
+`cs-user-etl` is a one-shot CLI that copies `users` + `user_auth_identities` from costrict-web's PostgreSQL into cs-user's independent PostgreSQL. Idempotent by design — a re-run with no source changes produces zero writes.
+
+```bash
+make build-etl    # produces bin/cs-user-etl
+
+# Dry-run against prod snapshots — produces field-level diff report, writes nothing
+./bin/cs-user-etl \
+  --source-dsn "postgres://readonly:...@costrict-web-pg:5432/costrict_web?sslmode=require" \
+  --target-dsn "postgres://csuser:...@cs-user-pg:5432/cs_user?sslmode=require" \
+  --dry-run --max-diff-records 200 \
+  --report /tmp/etl-report.json
+
+# Real migration
+./bin/cs-user-etl \
+  --source-dsn "$ETL_SOURCE_DSN" \
+  --target-dsn "$ETL_TARGET_DSN" \
+  --batch-size 1000
+```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--source-dsn` | `$ETL_SOURCE_DSN` | costrict-web source PG (read-only role recommended) |
+| `--target-dsn` | `$ETL_TARGET_DSN` | cs-user target PG (write role) |
+| `--batch-size` | `500` | rows per fetch + commit cycle |
+| `--dry-run` | off | report what would change; write nothing |
+| `--max-diff-records` | `100` | cap on field-level diff records (`-1` = unlimited) |
+| `--skip-users` | off | skip users table |
+| `--skip-auth-identities` | off | skip user_auth_identities table |
+| `--report PATH` | unset | write JSON report to PATH (default: stderr summary only) |
+| `--sqlite` | off | dev-only: treat DSNs as sqlite file paths |
+
+Pre-flight check: `casdoor_universal_id` uniqueness is validated on source before the copy starts — duplicates are reported as warnings and surface as INSERT errors at the offending rows. Run `cs-user-migrate up` on target first; this tool does NOT auto-migrate.
