@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -342,7 +343,7 @@ func TestBindCallbackSuccess(t *testing.T) {
 	if location := w.Header().Get("Location"); location != "https://example.test/account?bind=success" {
 		t.Fatalf("expected redirect to account page with bind=success, got %q", location)
 	}
-	identities, err := UserModule.Service.ListUserIdentities(currentUser.SubjectID)
+	identities, err := UserModule.Service.ListUserIdentities(context.Background(), currentUser.SubjectID)
 	if err != nil {
 		t.Fatalf("list identities: %v", err)
 	}

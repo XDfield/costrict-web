@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -84,9 +85,9 @@ func (s *UserService) runPostLoginHook(u *models.User) {
 }
 
 // GetUserByID retrieves a user by ID
-func (s *UserService) GetUserByID(userID string) (*models.User, error) {
+func (s *UserService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
-	err := s.db.Where("subject_id = ?", userID).Take(&user).Error
+	err := s.db.WithContext(ctx).Where("subject_id = ?", userID).Take(&user).Error
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +95,13 @@ func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 }
 
 // GetUsersByIDs retrieves multiple users by their IDs
-func (s *UserService) GetUsersByIDs(userIDs []string) (map[string]*models.User, error) {
+func (s *UserService) GetUsersByIDs(ctx context.Context, userIDs []string) (map[string]*models.User, error) {
 	if len(userIDs) == 0 {
 		return make(map[string]*models.User), nil
 	}
 
 	var users []*models.User
-	err := s.db.Where("subject_id IN ?", userIDs).Find(&users).Error
+	err := s.db.WithContext(ctx).Where("subject_id IN ?", userIDs).Find(&users).Error
 	if err != nil {
 		return nil, err
 	}
@@ -225,9 +226,9 @@ func (s *UserService) UpdateUserLastLogin(subjectID string) error {
 		Update("last_login_at", now).Error
 }
 
-func (s *UserService) ListUserIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error) {
+func (s *UserService) ListUserIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error) {
 	var identities []*models.UserAuthIdentity
-	err := s.db.Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
+	err := s.db.WithContext(ctx).Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
 	return identities, err
 }
 
@@ -500,9 +501,9 @@ func (s *UserService) deleteWecomChannelStateOnIDTrustUnbind(tx *gorm.DB, userSu
 }
 
 // SearchUsers searches users by username or email keyword
-func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, error) {
+func (s *UserService) SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error) {
 	var users []*models.User
-	query := s.db.Where("is_active = ?", true)
+	query := s.db.WithContext(ctx).Where("is_active = ?", true)
 
 	if keyword != "" {
 		pattern := "%" + keyword + "%"
@@ -839,7 +840,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
 		}
 		s.notifyUserUpdated(user.SubjectID)
-		if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
+		if refreshed, err := s.GetUserByID(context.Background(), user.SubjectID); err == nil {
 			return refreshed, nil
 		}
 

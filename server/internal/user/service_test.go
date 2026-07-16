@@ -53,7 +53,7 @@ func TestUserServiceGetUserByID(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	got, err := svc.GetUserByID("u1")
+	got, err := svc.GetUserByID(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("GetUserByID error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestUserServiceGetUsersByIDs(t *testing.T) {
 		}
 	}
 
-	got, err := svc.GetUsersByIDs([]string{"u1", "u2", "u3"})
+	got, err := svc.GetUsersByIDs(context.Background(), []string{"u1", "u2", "u3"})
 	if err != nil {
 		t.Fatalf("GetUsersByIDs error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestUserServiceSearchUsers(t *testing.T) {
 		}
 	}
 
-	got, err := svc.SearchUsers("alice", 20)
+	got, err := svc.SearchUsers(context.Background(), "alice", 20)
 	if err != nil {
 		t.Fatalf("SearchUsers error: %v", err)
 	}
@@ -323,8 +323,7 @@ func TestUserServiceGetOrCreateUserKeepsLocalSubjectIDAcrossLogins(t *testing.T)
 
 func TestCachedUserServiceCacheFlow(t *testing.T) {
 	db := setupUserTestDB(t)
-	svc := NewCachedUserService(db)
-
+	svc := NewCachedUserService(NewUserService(db))
 	user := models.User{SubjectID: "u1", Username: "alice", IsActive: true}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
@@ -455,10 +454,9 @@ func TestParseJWTClaimsFromAccessTokenIDTrustUsesProperties(t *testing.T) {
 	}
 }
 
-func TestCachedUserServiceGetUsersByIDsAndWarmup(t *testing.T) {
+func TestCachedUserServiceGetUsersByIDs(t *testing.T) {
 	db := setupUserTestDB(t)
-	svc := NewCachedUserService(db)
-
+	svc := NewCachedUserService(NewUserService(db))
 	seed := []models.User{
 		{SubjectID: "u1", Username: "alice", IsActive: true},
 		{SubjectID: "u2", Username: "bob", IsActive: true},
@@ -468,10 +466,6 @@ func TestCachedUserServiceGetUsersByIDsAndWarmup(t *testing.T) {
 		if err := db.Create(&u).Error; err != nil {
 			t.Fatalf("seed user: %v", err)
 		}
-	}
-
-	if err := svc.WarmupCache(context.Background()); err != nil {
-		t.Fatalf("WarmupCache error: %v", err)
 	}
 
 	got, err := svc.GetUsersByIDs(context.Background(), []string{"u1", "u2", "u9"})
@@ -501,7 +495,7 @@ func TestBindIdentityToUserCreatesSecondaryIdentityAndPromotesByRank(t *testing.
 		t.Fatalf("bind github identity: %v", err)
 	}
 
-	identities, err := svc.ListUserIdentities(user.SubjectID)
+	identities, err := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if err != nil {
 		t.Fatalf("list identities: %v", err)
 	}
@@ -520,7 +514,7 @@ func TestBindIdentityToUserCreatesSecondaryIdentityAndPromotesByRank(t *testing.
 	if primaryCount != 1 {
 		t.Fatalf("expected exactly 1 primary identity, got %d", primaryCount)
 	}
-	refreshed, err := svc.GetUserByID(user.SubjectID)
+	refreshed, err := svc.GetUserByID(context.Background(), user.SubjectID)
 	if err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
@@ -544,7 +538,7 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
-	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	var githubIdentityID uint
 	for _, identity := range identities {
 		if identity.Provider == "github" {
@@ -557,7 +551,7 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
-	identities, _ = svc.ListUserIdentities(user.SubjectID)
+	identities, _ = svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if len(identities) != 1 || !identities[0].IsPrimary || identities[0].Provider != "phone" {
 		t.Fatalf("expected remaining phone identity to become primary, got %+v", identities)
 	}
@@ -590,7 +584,7 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		t.Fatalf("expected universal_id shared-uuid, got %+v", ghUser)
 	}
 
-	identities, _ := svc.ListUserIdentities(ghUser.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), ghUser.SubjectID)
 	if len(identities) != 1 {
 		t.Fatalf("expected 1 identity after github login, got %d", len(identities))
 	}
@@ -619,7 +613,7 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		t.Fatalf("expected same subject_id for same universal_id, got github=%s phone=%s", ghUser.SubjectID, phoneUser.SubjectID)
 	}
 
-	identities, err = svc.ListUserIdentities(ghUser.SubjectID)
+	identities, err = svc.ListUserIdentities(context.Background(), ghUser.SubjectID)
 	if err != nil {
 		t.Fatalf("list identities: %v", err)
 	}
@@ -635,7 +629,7 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		t.Fatalf("expected both github and phone identities, got %+v", identities)
 	}
 
-	refreshed, _ := svc.GetUserByID(ghUser.SubjectID)
+	refreshed, _ := svc.GetUserByID(context.Background(), ghUser.SubjectID)
 	if refreshed.Phone == nil || *refreshed.Phone != "15500000001" {
 		t.Fatalf("expected phone to be merged into user profile, got %+v", refreshed)
 	}
@@ -688,7 +682,7 @@ func TestGetOrCreateUserLegacyExternalKeyFallback(t *testing.T) {
 		t.Fatalf("expected match by legacy external_key, got %+v", user)
 	}
 
-	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if len(identities) != 1 {
 		t.Fatalf("expected 1 identity after legacy fallback, got %d", len(identities))
 	}
@@ -732,7 +726,7 @@ func TestUnbindIdentitySetsExplicitlyUnbound(t *testing.T) {
 	}
 
 	// Verify unbound identity doesn't appear in ListUserIdentities
-	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if len(identities) != 1 {
 		t.Fatalf("expected 1 identity in list (excluding unbound), got %d", len(identities))
 	}
@@ -782,7 +776,7 @@ func TestBindIdentityToUserSkipsExplicitlyUnbound(t *testing.T) {
 	}
 
 	// Verify identity still doesn't appear in ListUserIdentities
-	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if len(identities) != 1 {
 		t.Fatalf("expected 1 identity in list (re-binding should be prevented), got %d", len(identities))
 	}
@@ -833,7 +827,7 @@ func TestGetOrCreateUserDoesNotRebindExplicitlyUnbound(t *testing.T) {
 	}
 
 	// Verify identity still doesn't appear in ListUserIdentities
-	identities, _ := svc.ListUserIdentities(user.SubjectID)
+	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
 	if len(identities) != 1 {
 		t.Fatalf("expected 1 identity in list (GetOrCreateUser should not rebind), got %d", len(identities))
 	}

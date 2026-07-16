@@ -6,24 +6,29 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/patrickmn/go-cache"
-	"gorm.io/gorm"
 )
 
-// CachedUserService provides cached user lookup operations.
+// CachedUserService wraps a UserReader with an in-memory TTL cache for the
+// point-lookup methods (GetUserByID, GetUsersByIDs). List/search methods are
+// passed through without caching — their result sets are typically large and
+// change frequently, so caching them is more likely to mislead than to speed up.
 type CachedUserService struct {
-	db    *gorm.DB
-	cache *cache.Cache
+	reader UserReader
+	cache  *cache.Cache
 }
 
-// NewCachedUserService creates a CachedUserService with 10min TTL and 30min cleanup.
-func NewCachedUserService(db *gorm.DB) *CachedUserService {
+// NewCachedUserService creates a CachedUserService backed by the given reader.
+// The reader may be the local *UserService (default) or an *RPCClient that
+// proxies reads to cs-user.
+func NewCachedUserService(reader UserReader) *CachedUserService {
 	return &CachedUserService{
-		db:    db,
-		cache: cache.New(10*time.Minute, 30*time.Minute),
+		reader: reader,
+		cache:  cache.New(10*time.Minute, 30*time.Minute),
 	}
 }
 
-// GetUserByID gets a user by id, using in-memory cache first.
+// GetUserByID returns a user by subject id, serving from cache on hits and
+// filling the cache on misses.
 func (s *CachedUserService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
 	if cached, found := s.cache.Get(userID); found {
 		if user, ok := cached.(*models.User); ok {
@@ -31,16 +36,16 @@ func (s *CachedUserService) GetUserByID(ctx context.Context, userID string) (*mo
 		}
 	}
 
-	var user models.User
-	if err := s.db.WithContext(ctx).Where("subject_id = ?", userID).Take(&user).Error; err != nil {
+	user, err := s.reader.GetUserByID(ctx, userID)
+	if err != nil {
 		return nil, err
 	}
 
-	s.cache.Set(userID, &user, cache.DefaultExpiration)
-	return &user, nil
+	s.cache.Set(userID, user, cache.DefaultExpiration)
+	return user, nil
 }
 
-// GetUsersByIDs batch loads users, filling cache for misses.
+// GetUsersByIDs batch loads users, filling the cache for misses.
 func (s *CachedUserService) GetUsersByIDs(ctx context.Context, userIDs []string) (map[string]*models.User, error) {
 	result := make(map[string]*models.User, len(userIDs))
 	missing := make([]string, 0, len(userIDs))
@@ -59,12 +64,12 @@ func (s *CachedUserService) GetUsersByIDs(ctx context.Context, userIDs []string)
 		return result, nil
 	}
 
-	var users []*models.User
-	if err := s.db.WithContext(ctx).Where("subject_id IN ?", missing).Find(&users).Error; err != nil {
+	fetched, err := s.reader.GetUsersByIDs(ctx, missing)
+	if err != nil {
 		return nil, err
 	}
 
-	for _, user := range users {
+	for _, user := range fetched {
 		result[user.SubjectID] = user
 		s.cache.Set(user.SubjectID, user, cache.DefaultExpiration)
 	}
@@ -72,21 +77,19 @@ func (s *CachedUserService) GetUsersByIDs(ctx context.Context, userIDs []string)
 	return result, nil
 }
 
-// InvalidateCache removes one user's cache entry.
-func (s *CachedUserService) InvalidateCache(userID string) {
-	s.cache.Delete(userID)
+// SearchUsers is a non-cached pass-through to the underlying reader.
+func (s *CachedUserService) SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error) {
+	return s.reader.SearchUsers(ctx, keyword, limit)
 }
 
-// WarmupCache preloads active users into cache.
-func (s *CachedUserService) WarmupCache(ctx context.Context) error {
-	var users []*models.User
-	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Find(&users).Error; err != nil {
-		return err
-	}
+// ListUserIdentities is a non-cached pass-through to the underlying reader.
+func (s *CachedUserService) ListUserIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error) {
+	return s.reader.ListUserIdentities(ctx, userSubjectID)
+}
 
-	for _, user := range users {
-		s.cache.Set(user.SubjectID, user, cache.DefaultExpiration)
-	}
-
-	return nil
+// InvalidateCache removes one user's cache entry. This is the hook target for
+// UserService.SetOnUserUpdated so that writes invalidate the read cache
+// regardless of which backend (local or RPC) populated it.
+func (s *CachedUserService) InvalidateCache(userID string) {
+	s.cache.Delete(userID)
 }

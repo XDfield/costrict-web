@@ -192,7 +192,7 @@ func GetUserBasicInfo(c *gin.Context) {
 	if UserModule.CachedService != nil {
 		user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), userID)
 	} else if UserModule.Service != nil {
-		user, err = UserModule.Service.GetUserByID(userID)
+		user, err = UserModule.Service.GetUserByID(c.Request.Context(), userID)
 	} else {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
 		return
@@ -254,7 +254,7 @@ func SearchUsers(c *gin.Context) {
 	var results []userSearchResult
 
 	if UserModule != nil && UserModule.Service != nil {
-		users, err := UserModule.Service.SearchUsers(keyword, limit)
+		users, err := UserModule.Service.SearchUsers(c.Request.Context(), keyword, limit)
 		if err == nil && len(users) > 0 {
 			for _, u := range users {
 				results = append(results, userSearchResult{
