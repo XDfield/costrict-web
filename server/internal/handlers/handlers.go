@@ -724,11 +724,11 @@ func GetCurrentUser(c *gin.Context) {
 // @Router       /auth/identities [get]
 func ListBoundIdentities(c *gin.Context) {
 	currentUserID := c.GetString(middleware.UserIDKey)
-	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+	if currentUserID == "" || UserModule == nil || UserModule.CachedService == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	identities, err := UserModule.Service.ListUserIdentities(c.Request.Context(), currentUserID)
+	identities, err := UserModule.CachedService.ListUserIdentities(c.Request.Context(), currentUserID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list identities"})
 		return
