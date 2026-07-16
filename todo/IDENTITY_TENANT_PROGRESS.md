@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 60 | 83% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 完成，P0-8 待启动） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 65 | 90% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a 完成，P0-8b 待启动，blocked on cs-user Phase 2 write API） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）七个完整大任务。下一步推进 P0-8（costrict-web users 表 READONLY cutover）——server 已具备 RPC backend 能力，可通过 `USER_SERVICE_BACKEND=rpc` 灰度切换；cutover 前可先用 read-only canary 验证。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）七个半完整大任务。下一步推进 P0-8b（真正 READONLY cutover）——但 **P0-8b 阻塞在 cs-user Phase 2 write API**（当前 Phase 1 只有 4 个 read endpoints，无写 API；而 OAuth 登录走 `GetOrCreateUser` 写路径，所以 readonly 模式目前不可启用）。P0-8a 已准备好 kill switch（`USER_SERVICE_WRITE_MODE=readonly`），cs-user Phase 2 落地后即可激活；canary 可先用 `USER_SERVICE_BACKEND=rpc USER_SERVICE_WRITE_MODE=local` split-brain 配置验证 RPC 读路径。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
 
 ---
 
@@ -178,15 +178,35 @@
 - **`/health` 不反映 cs-user 可达性**：静态 200。带 cs-user ping 的 `/readyz` 留 P0-8。
 - **无 retry 无 metrics**：对齐 deptsync 约定；canary 数据显示抖动再 revisit。
 
-### P0-8：costrict-web users 表 READONLY cutover 🔜
+### P0-8a：应用层 write gate 🔧（preparation for P0-8 cutover）
 
-- [ ] **实现**：应用层 gate——server 内所有 user 写入路径（grep `models.User` 的 INSERT/UPDATE/DELETE）路由到 RPC，本地 DB 只读
+**Why split**: P0-8 原计划一步到位（DB trigger + 路由写 RPC + READONLY 锁表），但 Phase 1 cs-user 只有 4 个 read endpoints，无 write API；而 `GetOrCreateUser` 在每次 OAuth 登录触发——直接 block 写等于 break 登录。P0-8a 把代码侧 gate 准备好但**不激活**（默认 `WriteMode=local`，零行为变更）；P0-8b 是真正 cutover，阻塞在 cs-user Phase 2 write API。
+
+**实现**：
+- ✅ `USER_SERVICE_WRITE_MODE=local|readonly` 环境变量（默认 `local`，与 `USER_SERVICE_BACKEND` 同一组 config）
+- ✅ 5 个写方法（`GetOrCreateUser` / `BindIdentityToUser` / `TransferIdentityToUser` / `UnbindIdentityByProvider` / `SyncUser`）入口处 short-circuit 返 `ErrWriteBlocked` sentinel
+- ✅ Boot-time 校验：(local+local=ok / local+rpc=warn split-brain canary / readonly+local=fatal login broken / readonly+rpc=fatal no write API)
+- ✅ `readonly_test.go`：10 行 table-driven（5 方法 × 2 模式）+ `validateUserConfig` 4 组合 pure function 验证 + split-brain warn 实测
+- ✅ `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`：canary → cutover → rollback 完整操作手册
+- ✅ `validateUserConfig` 抽成 pure helper（消息 + shouldFatal）——避免 log.Fatalf 走 subprocess 测试
+
+**Known limitations**：
+- **`WriteMode=readonly` 当前不能启用**——任何部署翻这个开关都会 break 登录（boot fatal 在两处拦截）。Kill switch waiting for cs-user Phase 2.
+- **Gate 在 service 边界，非 per-method opt-out**：5 个方法一起翻。Canary 后如需细分再加，YAGNI 现在。
+- **`UpdateUserLastLogin` 未 gate**：grep 未发现 caller，疑似 dead code；删除属于独立 cleanup PR。
+- **No DB trigger / no backup test / no load test**：全部 defer 到 P0-8b（操作侧 cutover）。
+
+### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on cs-user Phase 2）
+
+- [ ] **实现**：cs-user Phase 2 write API（POST /users, bind/unbind/transfer endpoints）
+- [ ] **实现**：应用层 login 写路径 re-route 到 cs-user RPC（新增 `RPCWriter` 并列 `RPCClient`），移除 P0-8a 的 readonly+rpc boot fatal
 - [ ] **实现**：DB trigger 兜底——costrict-web `users` 表加 `BEFORE INSERT/UPDATE/DELETE` trigger 拒写（除 cutover 期间白名单）
 - [ ] **验证**：`grep -r "models.User" server/ | grep -E "(Create|Update|Delete)"` 输出清零（除 RPC client 自身）
 - [ ] **验证**：cutover 后连续 1 小时压测，`CachedUserService` 命中率 > 90%
 - [ ] **验证**：cs-user DB 独立备份 + 恢复测试通过
-- [ ] **测试覆盖**：`server/internal/user/readonly_test.go`（尝试写本地 user 表应失败 / 抛 trigger 错误）
-- [ ] **回滚预案**：保留 costrict-web DB 备份 30 天；提供 `USER_SERVICE_BACKEND=local` 一键回滚开关
+- [ ] **测试覆盖**：trigger 拒写测试（尝试写本地 user 表应失败 / 抛 trigger 错误）
+- [ ] **回滚预案**：保留 costrict-web DB 备份 30 天；提供 `USER_SERVICE_BACKEND=local USER_SERVICE_WRITE_MODE=local` 一键回滚开关
+- 📋 详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`
 - [ ] **swagger 注解**：无（cutover 是部署操作，不改 endpoint）
 
 ### Phase 0 完成标准（ADR §3.5 验收清单）
