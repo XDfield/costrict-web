@@ -78,59 +78,59 @@ func TestBuildExternalKey_Format(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
+		name   string
 		claims *models.JWTClaims
-		want  string
+		want   string
 	}{
 		{
-			name: "universal_id with provider",
+			name:   "universal_id with provider",
 			claims: &models.JWTClaims{Provider: "github", UniversalID: "uuid-1"},
-			want:  "casdoor:github:uuid-1",
+			want:   "casdoor:github:uuid-1",
 		},
 		{
-			name: "universal_id without provider",
+			name:   "universal_id without provider",
 			claims: &models.JWTClaims{UniversalID: "uuid-1"},
-			want:  "casdoor:uuid-1",
+			want:   "casdoor:uuid-1",
 		},
 		{
-			name: "sub fallback with provider",
+			name:   "sub fallback with provider",
 			claims: &models.JWTClaims{Provider: "phone", Sub: "sub-1"},
-			want:  "casdoor-sub:phone:sub-1",
+			want:   "casdoor-sub:phone:sub-1",
 		},
 		{
-			name: "sub fallback without provider",
+			name:   "sub fallback without provider",
 			claims: &models.JWTClaims{Sub: "sub-1"},
-			want:  "casdoor-sub:sub-1",
+			want:   "casdoor-sub:sub-1",
 		},
 		{
-			name: "id-only fallback",
+			name:   "id-only fallback",
 			claims: &models.JWTClaims{ID: "id-1"},
-			want:  "casdoor-id:id-1",
+			want:   "casdoor-id:id-1",
 		},
 		{
-			name: "provider uppercased gets normalized",
+			name:   "provider uppercased gets normalized",
 			claims: &models.JWTClaims{Provider: "GITHUB", UniversalID: "uuid-1"},
-			want:  "casdoor:github:uuid-1",
+			want:   "casdoor:github:uuid-1",
 		},
 		{
-			name: "provider trimmed",
+			name:   "provider trimmed",
 			claims: &models.JWTClaims{Provider: "  github  ", UniversalID: "uuid-1"},
-			want:  "casdoor:github:uuid-1",
+			want:   "casdoor:github:uuid-1",
 		},
 		{
-			name:  "empty claim returns empty",
+			name:   "empty claim returns empty",
 			claims: &models.JWTClaims{},
-			want:  "",
+			want:   "",
 		},
 		{
-			name:  "nil claim returns empty",
+			name:   "nil claim returns empty",
 			claims: nil,
-			want:  "",
+			want:   "",
 		},
 		{
-			name: "universal_id wins over sub and id",
+			name:   "universal_id wins over sub and id",
 			claims: &models.JWTClaims{UniversalID: "uuid-1", Sub: "sub-1", ID: "id-1"},
-			want:  "casdoor:uuid-1",
+			want:   "casdoor:uuid-1",
 		},
 	}
 	for _, c := range cases {

@@ -1,13 +1,15 @@
-// Package handlers exposes cs-user's read-side REST endpoints under
+// Package handlers exposes cs-user's REST endpoints under
 // /api/internal/users. All routes are gated by X-Internal-Token (registered
 // at the route-group level in internal/app); handlers themselves assume the
 // caller is already authenticated and focus on input parsing + DB calls.
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
@@ -27,9 +29,15 @@ type UsersAPI struct {
 // directly into its tests via a concrete type — keeps the substitution
 // seam explicit.
 type UserService interface {
+	// Reads (Phase 1).
 	GetUserByID(subjectID string) (*models.User, error)
 	GetUsersByIDs(subjectIDs []string) (map[string]*models.User, error)
 	SearchUsers(keyword string, limit int) ([]*models.User, error)
+	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
+	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error)
+	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
+	TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error
+	UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.
@@ -138,4 +146,220 @@ func (a *UsersAPI) SearchUsers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
+// --- Phase 2: Write API ---
+//
+// Each handler maps a service error to a stable HTTP code per the matrix:
+//   gorm.ErrRecordNotFound            → 404
+//   ErrEmptySubjectID / missing field → 400
+//   ErrLastIdentity                   → 409
+//   ErrExplicitlyUnbound              → 409
+//   ErrIdentityAlreadyBound           → 409
+//   other                             → 500
+
+// getOrCreateRequest is the body shape for POST /api/internal/users/get-or-create.
+// server's RPCWriter posts the JWTClaims it parsed from the OAuth callback;
+// the response is the upserted user row.
+type getOrCreateRequest struct {
+	models.JWTClaims
+}
+
+// GetOrCreate godoc
+//
+//	@Summary		Upsert user from JWT claims (login entry point)
+//	@Description	Idempotent upsert driven by the OAuth callback's parsed JWT claims. Multi-lookup strategy (external_key → universal_id → casdoor_id → sub → username). Creates a primary identity row when a new user is created.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			body	body		models.JWTClaims	true	"JWT claim payload (parsed — cs-user does not verify JWT signatures; the X-Internal-Token middleware authenticates the caller)"
+//	@Success		200		{object}	models.User
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/api/internal/users/get-or-create [post]
+func (a *UsersAPI) GetOrCreate(c *gin.Context) {
+	var req getOrCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	u, err := a.Svc.GetOrCreateUser(c.Request.Context(), &req.JWTClaims)
+	if err != nil {
+		// GetOrCreateUser returns plain fmt.Errorf for arg validation; the
+		// only way to distinguish 400 vs 500 is sniffing for the known
+		// "no valid user identifier" / "nil JWT claims" prefixes.
+		msg := err.Error()
+		switch {
+		case msg == "nil JWT claims" || strings.HasPrefix(msg, "no valid user identifier"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, u)
+}
+
+// bindIdentityRequest is the body shape for POST /api/internal/users/:subject_id/bind-identity.
+type bindIdentityRequest struct {
+	Claims  *models.JWTClaims           `json:"claims" binding:"required"`
+	Options *models.BindIdentityOptions `json:"options,omitempty"`
+}
+
+// BindIdentity godoc
+//
+//	@Summary		Bind an identity to a user
+//	@Description	Idempotent bind. Recovers soft-deleted identities instead of duplicating. Re-binding an explicitly-unbound identity requires options.force_rebind.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string				true	"Target user subject_id"
+//	@Param			body		body		bindIdentityRequest	true	"Claims to bind + optional BindIdentityOptions"
+//	@Success		204			{object}	nil
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/bind-identity [post]
+func (a *UsersAPI) BindIdentity(c *gin.Context) {
+	userSubjectID := c.Param("subject_id")
+	if userSubjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	var req bindIdentityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	var opts []models.BindIdentityOptions
+	if req.Options != nil {
+		opts = append(opts, *req.Options)
+	}
+	if err := a.Svc.BindIdentityToUser(c.Request.Context(), userSubjectID, req.Claims, opts...); err != nil {
+		switch {
+		case errors.Is(err, user.ErrExplicitlyUnbound), errors.Is(err, user.ErrIdentityAlreadyBound):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case isBindArgError(err):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// transferIdentityRequest is the body for POST /api/internal/users/transfer-identity.
+type transferIdentityRequest struct {
+	TargetUserSubjectID string `json:"target_user_subject_id" binding:"required"`
+	ExternalKey         string `json:"external_key" binding:"required"`
+	// SourceUserSubjectID is accepted for forwards compatibility with
+	// server's signature; cs-user identifies the identity purely by
+	// external_key.
+	SourceUserSubjectID string `json:"source_user_subject_id,omitempty"`
+}
+
+// TransferIdentity godoc
+//
+//	@Summary		Transfer an identity to another user
+//	@Description	Account-merge primitive. Moves the identity identified by external_key to the target user. No-op if the target already owns it.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			body	body		transferIdentityRequest	true	"Transfer target + identity key"
+//	@Success		204		{object}	nil
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/api/internal/users/transfer-identity [post]
+func (a *UsersAPI) TransferIdentity(c *gin.Context) {
+	var req transferIdentityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	if err := a.Svc.TransferIdentityToUser(c.Request.Context(), req.TargetUserSubjectID, req.ExternalKey, req.SourceUserSubjectID); err != nil {
+		msg := err.Error()
+		switch {
+		case msg == "identity_not_found":
+			c.JSON(http.StatusNotFound, gin.H{"error": msg})
+		case strings.Contains(msg, "are required"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// UnbindIdentity godoc
+//
+//	@Summary		Unbind all identities for a provider
+//	@Description	Soft-deletes every identity matching the provider on the user and marks them explicitly_unbound. Refuses to unbind the user's last identity. Promotes the next best-rank identity to primary if the unbind removed the primary.
+//	@Tags			users
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string	true	"User subject_id"
+//	@Param			provider	path		string	true	"Provider to unbind (e.g. github, phone, idtrust)"
+//	@Success		204			{object}	nil
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/identities/{provider} [delete]
+func (a *UsersAPI) UnbindIdentity(c *gin.Context) {
+	userSubjectID := c.Param("subject_id")
+	if userSubjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	provider := c.Param("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+
+	if err := a.Svc.UnbindIdentityByProvider(c.Request.Context(), userSubjectID, provider); err != nil {
+		switch {
+		case errors.Is(err, user.ErrLastIdentity):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case errors.Is(err, user.ErrEmptySubjectID):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			msg := err.Error()
+			switch {
+			case msg == "provider is required", msg == "identity not found":
+				// 400 / 404 distinction: missing-provider is a caller error
+				// (400); identity-not-found is closer to 404 but server
+				// returns 400 historically. Keep 404 to match REST semantics.
+				if msg == "identity not found" {
+					c.JSON(http.StatusNotFound, gin.H{"error": msg})
+				} else {
+					c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				}
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			}
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// isBindArgError returns true for the bind-related service errors that
+// indicate a caller programming error (400) rather than a server-side fault
+// (500). BindIdentityToUser uses plain fmt.Errorf for arg validation; the
+// messages are part of the contract.
+func isBindArgError(err error) bool {
+	msg := err.Error()
+	return msg == "user_subject_id is required" ||
+		msg == "nil JWT claims" ||
+		msg == "external key is required"
 }
