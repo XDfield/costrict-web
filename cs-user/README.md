@@ -121,6 +121,13 @@ Tests are colocated with source (`foo_test.go` next to `foo.go`), matching the `
 
 Helm chart at [`deploy/charts/cs-user/`](../deploy/charts/cs-user/). Service is cluster-internal only (no public exposure).
 
+**Secret strategy** (two tracks, identical pod env at runtime):
+
+- **Production**: leave `secrets.create=false` (default). Provision the Secret externally (sealed-secrets / external-secrets / `kubectl create secret`) and point `database.existingSecret` + `internalToken.existingSecret` at it. With both empty + `create=false`, the Deployment renders no `CS_USER_POSTGRES_PASSWORD` / `CS_USER_INTERNAL_TOKEN` env, so `config.Load()` panics on boot — fail-fast against silent misconfiguration.
+- **Dev / staging / CI**: set `secrets.create=true` + plaintext `secrets.databasePassword` / `secrets.internalToken`. The chart renders a Secret named `<release>-secrets` and auto-wires the Deployment to read it. `database.existingSecret` / `internalToken.existingSecret` left empty fall back to this chart-managed name.
+
+**Helm test** (`helm test <release>`): spawns a one-shot curl pod in the release namespace hitting `/healthz` + `/readyz` (both unauthenticated — see `internal/app/app.go`). Image configurable via `tests.curlImage` for air-gapped clusters. Internal-API coverage (X-Internal-Token gated) lives in the P0-7 end-to-end suite.
+
 ## Phase progression
 
 | Phase | Scope | Status |
