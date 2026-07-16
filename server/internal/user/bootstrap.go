@@ -18,6 +18,9 @@ import (
 // the identity. Granting roles during a third party's search of a user would
 // violate the "granted on the user's own verified login" invariant.
 func (s *UserService) SyncUser(claims *JWTClaims) (*models.User, error) {
+	if s.writeMode == WriteModeReadonly {
+		return nil, ErrWriteBlocked
+	}
 	return s.getOrCreateUser(claims)
 }
 
