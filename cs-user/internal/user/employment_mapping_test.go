@@ -290,15 +290,18 @@ func TestApplyEnterpriseMapping_ValidationErrors(t *testing.T) {
 	}
 }
 
-// TestApplyEnterpriseMapping_PerProviderConfigIgnored verifies that
-// per-provider subsections in the YAML (interval / on_login / field_map)
-// don't break parsing — Phase A reads only the enabled list, but the YAML
-// carries richer config that follow-up PRs will consume.
+// TestApplyEnterpriseMapping_PerProviderConfigIgnored verifies yaml.v3's
+// default tolerance for unmapped fields. Phase A reads only `enabled`;
+// the canonical per-provider config shape (provider_mapping.providers.<name>
+// in MULTI_TENANCY §9.3) is being finalized and will be modeled in the
+// follow-up PR that introduces real provider clients. This test pins the
+// tolerance contract so follow-ups can swap the YAML freely without
+// breaking Phase A's parse path.
 func TestApplyEnterpriseMapping_PerProviderConfigIgnored(t *testing.T) {
 	t.Parallel()
 	svc := newEmploymentMappingService(t)
-	// YAML carries the full design shape (MULTI_TENANCY §9.2 lines 589-597).
-	// Phase A must parse cleanly even though it only reads `enabled`.
+	// Synthetic richer-than-minimal YAML blob. Production shape may differ;
+	// what matters here is that the unmapped fields don't break parsing.
 	seedTenantConfig(t, svc, "default", `employment_providers:
   enabled: [idtrust, azure_ad]
   priority_providers: [idtrust, azure_ad]
