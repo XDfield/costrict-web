@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 50 | 69% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 完成，P0-7/8 待启动） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 60 | 83% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 完成，P0-8 待启动） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）六个完整大任务。下一步推进 P0-7（read-through RPC client in server）——cs-user 侧数据 + 服务 + chart 全部就位。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）七个完整大任务。下一步推进 P0-8（costrict-web users 表 READONLY cutover）——server 已具备 RPC backend 能力，可通过 `USER_SERVICE_BACKEND=rpc` 灰度切换；cutover 前可先用 read-only canary 验证。
 
 ---
 
@@ -147,17 +147,36 @@
 - **`casdoor_universal_id` 重复检测** 是 WARN 不是 FAIL：重复会在 INSERT 时自然报错，中断本批事务；预先 WARN 让操作员决定是否清理源数据后再跑。
 - **map-based update**：gorm struct-based Updates 会吞掉零值（无法把 email 清成 NULL），所以 `buildUserUpdateMap` 用 `map[string]any` 显式列出差异列。
 
-### P0-7：read-through RPC client in costrict-web 🔜
+### P0-7：read-through RPC client in costrict-web ✅
 
-- [ ] **实现**：`server/internal/user/rpc_client.go`（实现现有 `UserService` 接口，内部走 HTTP 调 cs-user `/api/internal/users/*`）
-- [ ] **实现**：`server/internal/user/cached_rpc.go`（包装 RPC client + 复用现有 `CachedUserService` LRU + TTL）
-- [ ] **实现**：失败降级策略——缓存命中返 stale + log warning；缓存未命中返 503
-- [ ] **实现**：`server/internal/config` 增加 cs-user endpoint + `X-Internal-Token` 配置项
-- [ ] **接线**：`server/cmd/api/main.go` 用 `cachedRPC` 替换 `cachedService`（环境门控：`USER_SERVICE_BACKEND=rpc|local`）
-- [ ] **测试覆盖**：`user/rpc_client_test.go`（用 `httptest` mock cs-user，覆盖 happy / 404 / 5xx / timeout）
-- [ ] **测试覆盖**：`user/cached_rpc_test.go`（缓存命中 / 失效 / stale 兜底 / 503 兜底）
-- [ ] **集成测试**：`server/internal/user/integration_test.go`（同时跑 server + cs-user，端到端验证 `GET /api/users/:id` 走 RPC）
-- [ ] **swagger 注解**：server 端 endpoint（`/api/users/:id` 等）注解保持不变（接口签名未变，只是内部实现切换）
+- [x] **实现**：`server/internal/user/reader.go` 新增 `UserReader` 接口（4 方法：GetUserByID / GetUsersByIDs / SearchUsers / ListUserIdentities，全部带 `ctx`）；`*UserService` 隐式实现
+- [x] **实现**：`server/internal/user/cached_service.go` 重构成包 `UserReader`（不再直接拿 `*gorm.DB`）；SearchUsers / ListUserIdentities 作为无缓存 pass-through；删除 `WarmupCache`（无 RPC 对应，prod 无 caller）
+- [x] **实现**：`server/internal/user/rpc_client.go` 新 RPCClient：4 个 endpoint（bare User / `{users:map}` / `{users:[]}` / `{identities:[]}` 三种 decode shape），HTTP 404 → `gorm.ErrRecordNotFound` bare sentinel，transport/timeout/5xx → `ErrRPCUnavailable`（wrapped），per-request `context.WithTimeout(ctx, ...)`（不复用 deptsync 的 `context.Background()` 短板）
+- [x] **实现**：`server/internal/config/config.go` 新增 `UserServiceConfig{Backend,BaseURL,InternalToken,TimeoutSec}` + 4 个 env（`USER_SERVICE_BACKEND` 默认 `"local"`、`USER_SERVICE_URL`、`USER_SERVICE_INTERNAL_TOKEN`、`USER_SERVICE_TIMEOUT_SECONDS` 默认 10）
+- [x] **接线**：`server/internal/user/user.go` `NewWithConfig(db, sync, cfg)` 根据 `cfg.Backend` 在 local `*UserService` 与 `*RPCClient` 之间选 Reader；CachedService 包 Reader；`SetOnUserUpdated(cached.InvalidateCache)` 钩子保留（本地写入立即失效缓存）
+- [x] **接线**：`server/cmd/api/main.go` 用新签名调用 + boot-time 校验：`Backend=="rpc"` 但 RPCClient 未配置时 `log.Fatalf` 防止静默 fallback
+- [x] **caller 迁移**：`handlers.go:731` (ListBoundIdentities) + `users.go:257` (SearchUsers) 从 `Service` 切到 `CachedService`，让 RPC backend 实际生效
+- [x] **caller 迁移**：Step 1 给 4 个读方法加 ctx 后传播到全部 14 处 caller（5 prod + 9 test），含 `s.db.WithContext(ctx)`
+- [x] **测试覆盖**：`user/rpc_client_test.go` 11 case（happy × 4 + 404 × 2 + 500 + timeout + !Configured + 3 种 empty/malformed body）
+- [x] **测试覆盖**：`user/cached_rpc_test.go` 2 case（GetUserByID cache miss→hit→invalidate、GetUsersByIDs cache miss→hit，用 atomic 计数 HTTP 调用）
+- [x] **集成测试**：`user/integration_test.go` 2 case（`NewWithConfig` 全链：RPC backend 端到端 cache 行为；local backend 默认行为不变）
+- [x] **swagger 注解**：handler 签名未变（`SearchUsers` / `ListBoundIdentities` / `GetUserBasicInfo` / 等）；`swag fmt -d` 零 diff
+
+**测试总数**：15 case，全过（`go test -race ./internal/user/...` ~3.3s）。
+
+**实现说明 / 偏差（与 progress doc 142-152 行原始规划对比）**：
+
+1. **没建独立 `cached_rpc.go` 文件**：`CachedUserService` 重构成包任意 `UserReader`，包装 RPCClient 自动生效，无需平行缓存类。原计划设想的"独立缓存文件"被接口重构吸收。
+2. **没做 stale-while-error 兜底**：progress doc 148 行原列"缓存命中返 stale + warning；缓存未命中返 503"。**主动放弃**，原因：(1) 默认 `local` backend 零行为变化；(2) RPC 模式用于 canary，silent stale fallback 会遮蔽 outage；(3) `patrickmn/go-cache` 不原生暴露 expired-but-not-evicted entries，实现 stale-while-error 需要扩展 TTL 的二级缓存（实质复杂度）。**caveat**：`/api/auth/me`（`handlers.go:669`）在 RPC outage 期间会返 500；canary runbook 必须监控这个 endpoint 的 500-rate。
+3. **没用 testcontainers / 真 cs-user E2E**：httptest mock 已覆盖 client + cache + 接线全路径。真 cs-user E2E（同时起两进程端到端）留 P0-8 单独测试 binary 接入。
+4. **`WarmupCache` 删除**：grep 确认无 prod caller，仅 `service_test.go:473` 一处测试；保留一个 RPC 无法实现的接口方法比删了更糟。
+5. **non-404 4xx 映射**：当前返 `fmt.Errorf("user rpc client: status %d", code)` 而非映射成 sentinel——cs-user 契约未列 4xx（除 404），实际不应触发；保留原始 status code 在错误消息里便于诊断。
+6. **`handlers/users.go:202` 仍用 `==` 比较 `gorm.ErrRecordNotFound`**：pre-existing pattern，非 P0-7 引入；RPC client 返 bare sentinel 所以 `==` 仍 work，但 follow-up 建议迁到 `errors.Is`。
+
+**已知限制**：
+- **RPC 模式下写后读 skew**：server 仍写本地（Phase 1 cs-user 无写 API），本地缓存失效钩子会触发，但 cs-user DB 只在下次 P0-6 ETL 跑后更新；10min 缓存 TTL 部分掩盖。最坏：刚绑定的 identity 在 backend=rpc 时 `/api/users/:id/auth-identities` 最长 ETL 间隔（默认 15min）不可见。**对策**：P0-8 cutover 前 backend 保持 local；backend=rpc 仅用于 read-only canary。
+- **`/health` 不反映 cs-user 可达性**：静态 200。带 cs-user ping 的 `/readyz` 留 P0-8。
+- **无 retry 无 metrics**：对齐 deptsync 约定；canary 数据显示抖动再 revisit。
 
 ### P0-8：costrict-web users 表 READONLY cutover 🔜
 
