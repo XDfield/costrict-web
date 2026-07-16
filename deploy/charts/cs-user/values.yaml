@@ -1,0 +1,83 @@
+# Default values for costrict-web-cs-user
+# See ADR_CS_USER_PHASE1_DECISIONS.md for design rationale.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/xdfield/costrict-web-cs-user
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # ClusterIP only — cs-user is cluster-internal, must NOT be exposed publicly
+  # (see ADR D8: network isolation + shared-secret auth).
+  type: ClusterIP
+  port: 8081
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+# cs-user has its own PostgreSQL instance (ADR D3: independent DB).
+database:
+  host: postgres-cs-user
+  port: 5432
+  name: cs_user
+  user: cs_user
+  sslMode: disable
+  existingSecret: ""
+  existingSecretKey: password
+
+# Shared secret for costrict-web → cs-user internal API auth (ADR D8).
+# Must be set via existingSecret in production; this empty default fails config.Load().
+internalToken:
+  existingSecret: ""
+  existingSecretKey: internal-token
+
+# Runtime env vars (CS_USER_ prefix applied in deployment template).
+extraEnv: []
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Restrict ingress to pods labeled costrict.io/cs-user-consumer=true in the same
+# namespace (defense in depth on top of X-Internal-Token). Disable if your
+# cluster CNI doesn't support NetworkPolicy.
+networkPolicy:
+  enabled: true

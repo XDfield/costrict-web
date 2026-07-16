@@ -4,6 +4,7 @@ use ./server
 
 use (
 	./client/go
+	./cs-user
 	./gateway
 	./proxy
 	./wecom-bot-proxy
