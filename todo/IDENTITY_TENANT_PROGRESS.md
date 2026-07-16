@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 28 | 39% | 🟡 进行中（P0-1 + P0-2 + P0-4 完成，P0-5 部分） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 38 | 53% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 完成，P0-5 部分） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-4（认证中间件）三个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-3（User / UserAuthIdentity 模型 + CRUD）。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）四个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-6（ETL 脚本）或 P0-7（read-through RPC client）。
 
 ---
 
@@ -82,20 +82,24 @@
 - [x] **CI 矩阵**：`go test -race ./...`（含 cgo-tagged sqlite 测试）全部 PASS；Linux + Windows 双平台均跑通
 - [x] **swagger 注解**：无新 endpoint（迁移是基础设施）；`make swagger` 重生成后 spec 无 diff
 
-### P0-3：User / UserAuthIdentity 模型 + CRUD service 🔜
+### P0-3：User / UserAuthIdentity 模型 + read-side CRUD ✅
 
-- [ ] **实现**：`cs-user/internal/models/user.go`（从 `server/internal/models` 迁移 `User` struct + GORM tags）
-- [ ] **实现**：`cs-user/internal/models/user_auth_identity.go`（迁移 `UserAuthIdentity` struct）
-- [ ] **实现**：`cs-user/internal/user/service.go`（迁移 `server/internal/user/service.go` 的 CRUD 方法：GetByID / GetByIDs / Search / GetOrCreate）
-- [ ] **实现**：`cs-user/internal/handlers/users.go`（REST handlers：`GET /api/internal/users/:id` / `GET /api/internal/users/by-ids` / `GET /api/internal/users/search`）
-- [ ] **实现**：`cs-user/internal/handlers/user_auth_identities.go`（`GET /api/internal/users/:id/auth-identities` / `POST .../bind` / `POST .../unbind`）
-- [ ] **实现**：`app.NewRouter` 中把上述 handler 注册到 `internal := r.Group("/api/internal", RequireInternalToken(...))`
-- [ ] **测试覆盖**：`models/constraints_test.go`（subject_id 唯一性 / external_key 组合键）
-- [ ] **测试覆盖**：`user/service_test.go`（每个 CRUD 方法至少 2 测试：found + not-found；用 sqlmock 或 testcontainers）
-- [ ] **测试覆盖**：`handlers/users_test.go`（每个 endpoint：happy path + 鉴权失败 + 输入校验失败）
-- [ ] **swagger 注解**：每个 handler 函数加完整注解（`@Param` 引用真实 request struct，`@Success` 引用 `models.User` / DTO）
-- [ ] **swagger 注解**：所有 `/api/internal/users/*` 路由挂 `@Security InternalToken`
-- [ ] **swagger 注解**：`make swagger` 重新生成 `docs/`
+- [x] **实现**：`cs-user/internal/models/models.go`（从 `server/internal/models` 迁移 `User` + `UserAuthIdentity` struct + GORM tags，schema 与 migrations/*.sql 1:1 对应）
+- [x] **实现**：`cs-user/internal/user/service.go`（read 方法子集：GetUserByID / GetUsersByIDs / SearchUsers / ListIdentities）
+- [x] **暂缓**：write 路径（bind / unbind / transfer / GetOrCreate）—— 依赖 JWT claims 管道，留给 Phase A
+- [x] **实现**：`cs-user/internal/handlers/users.go`（3 read handlers：GET /:subject_id / POST /by-ids / GET /search）
+- [x] **实现**：`cs-user/internal/handlers/user_auth_identities.go`（1 read handler：GET /:subject_id/auth-identities）
+- [x] **接线**：`app.NewRouter` 改签名为 `(cfg, Deps)`，Deps 携带 `Users` + `AuthIdentities` service + ReadyChecker；nil service → 503 stub（保持 swagger spec 一致）；注册到 `internal := r.Group("/api/internal", RequireInternalToken(...))`
+- [x] **测试覆盖**：`internal/user/service_test.go`（cgo-tagged sqlite + gorm AutoMigrate；GetByID found/not-found/soft-delete-hidden/empty-id；GetByIDs map-shape/missing-omitted/empty-skip；Search keyword/inactive-excluded/default-limit；ListIdentities primary-first/empty-id/no-rows；nil-db 守卫覆盖每个方法）
+- [x] **测试覆盖**：`internal/handlers/users_test.go`（4 endpoint：happy + 404 + 500-leak-prevention + body-validation [empty / oversized / negative / garbage limit]，stub UserService 无需 DB）
+- [x] **测试覆盖**：`internal/handlers/user_auth_identities_test.go`（happy + empty-result + 500-leak-prevention）
+- [x] **测试覆盖**：`internal/app/app_test.go` 更新为 Deps 签名（保持原有 health/ping/swagger/auth-gating 覆盖）
+- [x] **GORM 坑修复**：`SearchUsers` keyword 过滤的 AND/OR 优先级用括号包住（否则 SQL 把 `(is_active AND username LIKE) OR display_name LIKE` 拆错，inactive 行漏出）
+- [x] **GORM 坑修复**：测试 seed 时 `IsActive=false` 被 gorm zero-value omission 吞掉 + Create 后 column-default 读回结构体覆盖；用 `desiredActive := u.IsActive` 在 Create 前捕获 + Create 后 Update 强制写入
+- [ ] **测试覆盖**：`models/constraints_test.go`（subject_id 唯一性 / external_key 组合键）*(留到 P0-6 ETL 阶段做集成测试时一并覆盖，单测 sqlite + AutoMigrate 不一定能完全反映 PG 真实约束)*
+- [x] **swagger 注解**：4 个新 handler 加完整注解（`@Param` 引用 path/query，`@Success` 引用 `models.User` / `models.UserAuthIdentity`；schema 已由 swag 自动生成）
+- [x] **swagger 注解**：所有 `/api/internal/users/*` 路由挂 `@Security InternalToken`
+- [x] **swagger 注解**：`make swagger` 重生成 `docs/`，spec 现含 5 endpoints + 2 model schemas
 
 ### P0-4：内部 API 共享密钥认证中间件 ✅
 

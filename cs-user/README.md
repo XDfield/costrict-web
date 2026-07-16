@@ -110,9 +110,11 @@ Tests are colocated with source (`foo_test.go` next to `foo.go`), matching the `
 |---|---|
 | `internal/config` | env parsing, defaults, required-field validation, DSN rendering |
 | `internal/middleware` | `X-Internal-Token` gating (missing / empty / wrong / correct / prefix-attack / empty-config defense) |
-| `internal/app` | `/healthz` + `/readyz` (OK + failing checker), internal route auth-gating, `nil` config panics, swagger UI route registration |
+| `internal/app` | `/healthz` + `/readyz` (OK + failing checker), internal route auth-gating, `nil` config panics, swagger UI route registration, Deps wiring (nil service → 503 stub) |
 | `internal/storage` | env-driven pool sizing (defaults + overrides + invalid input), DSN format, nil-config rejection, Ping OK / closed-DB fail / nil-Pool paths *(cgo-tagged sqlite tests)*, idempotent Close |
 | `internal/migration` | NewRunner validation (nil db / empty dialect / nil fs / unknown dialect), Up idempotency + Version advance + Down rollback *(cgo-tagged sqlite tests using synthetic fstest.MapFS — real Postgres-only migrations are verified via the standalone binary against a real DB)* |
+| `internal/user` | GetUserByID (found / not-found / soft-delete-hidden / empty-id), GetUsersByIDs (map shape / missing-omitted / empty-skip), SearchUsers (keyword / inactive-excluded / default limit) — *(cgo-tagged sqlite + gorm AutoMigrate)*; nil-db guards for every method |
+| `internal/handlers` | 4 read endpoints: happy path + 404 + 500-leak-prevention + body-validation (empty / oversized / negative / garbage limit); uses stubbed UserService interface, no DB required |
 
 ## Deployment
 
@@ -123,13 +125,27 @@ Helm chart at [`deploy/charts/cs-user/`](../deploy/charts/cs-user/). Service is 
 | Phase | Scope | Status |
 |---|---|---|
 | P0-1 | Skeleton (gin + /healthz + config + Dockerfile + Helm chart) | ✅ |
-| P0-2 | Postgres connection + goose migrations | ✅ this PR |
-| P0-3 | User / UserAuthIdentity models + CRUD | 🔜 next |
+| P0-2 | Postgres connection + goose migrations | ✅ |
+| P0-3 | User / UserAuthIdentity models + read-side CRUD | ✅ this PR |
 | P0-4 | Internal auth middleware | ✅ |
 | P0-5 | Helm chart | ✅ |
 | P0-6 | ETL script (dry-run + idempotent UPSERT) | 🔜 |
 | P0-7 | read-through RPC client in costrict-web | 🔜 |
 | P0-8 | costrict-web users table READONLY cutover | 🔜 |
+
+## Internal endpoints
+
+All routes under `/api/internal/*` require the `X-Internal-Token` shared secret and are consumed only by `costrict-web/server`'s read-through RPC client. See Swagger UI for full schema.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/internal/ping` | Handshake — verify shared secret |
+| GET | `/api/internal/users/{subject_id}` | Fetch one user by subject_id (404 if missing) |
+| POST | `/api/internal/users/by-ids` | Batch-resolve up to 500 subject_ids → user map (missing omitted) |
+| GET | `/api/internal/users/search?keyword=&limit=` | LIKE search across username / display_name / email (active only; default limit 50, max 200) |
+| GET | `/api/internal/users/{subject_id}/auth-identities` | List a user's bound external identities (primary first) |
+
+**Deferred to Phase A** (depend on JWT-claims plumbing): bind / unbind / transfer / GetOrCreate.
 
 ## Database migrations
 

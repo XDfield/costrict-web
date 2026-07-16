@@ -37,6 +37,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
+	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"go.uber.org/zap"
 )
 
@@ -68,6 +69,11 @@ func main() {
 		zap.String("host", cfg.Postgres.Host),
 		zap.String("db", cfg.Postgres.Database))
 
+	// Construct the user Service bound to the pool. P0-3 wires only the
+	// read methods; write methods (bind/unbind/transfer) land in Phase A
+	// once JWT-claims plumbing is available.
+	userSvc := user.NewService(pool.Gorm)
+
 	// Dev-mode auto-migrate: when CS_USER_AUTO_MIGRATE is truthy ("1"/"true"),
 	// apply pending migrations inline at boot so local dev doesn't need a
 	// separate migrate invocation. Prod wiring (Helm pre-deploy hook calling
@@ -93,7 +99,11 @@ func main() {
 
 	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
 	// actual DB reachability via Ping.
-	r := app.NewRouter(cfg, pool)
+	r := app.NewRouter(cfg, app.Deps{
+		ReadyChecker:   pool,
+		Users:          userSvc,
+		AuthIdentities: userSvc,
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTP.Port,
