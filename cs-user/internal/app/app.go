@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -68,9 +69,12 @@ func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
 	return r
 }
 
-// registerUserRoutes wires GET /users/* endpoints. When deps.Users is nil
-// (e.g. unit tests that only exercise health/ping), routes resolve to a
-// 503 stub so the path always exists in the swagger spec.
+// registerUserRoutes wires GET + POST /users/* endpoints. When deps.Users
+// is nil (e.g. unit tests that only exercise health/ping), routes resolve
+// to a 503 stub so the path always exists in the swagger spec.
+//
+// Phase 1: read endpoints (GET).
+// Phase 2: write endpoints (POST/DELETE) — see handlers/users.go.
 func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	usersAPI := handlers.UsersAPI{Svc: deps.Users}
 	if deps.Users == nil {
@@ -81,6 +85,14 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	users.GET("/:subject_id", usersAPI.GetUser)
 	users.POST("/by-ids", usersAPI.GetUsersByIDs)
 	users.GET("/search", usersAPI.SearchUsers)
+
+	// Phase 2 write endpoints.
+	users.POST("/get-or-create", usersAPI.GetOrCreate)
+	users.POST("/transfer-identity", usersAPI.TransferIdentity)
+	// These two share the :subject_id path param with GetUser; gin's path
+	// tree accepts distinct method+suffix combinations without conflict.
+	users.POST("/:subject_id/bind-identity", usersAPI.BindIdentity)
+	users.DELETE("/:subject_id/identities/:provider", usersAPI.UnbindIdentity)
 }
 
 // registerAuthIdentityRoutes wires GET /users/:subject_id/auth-identities.
@@ -160,6 +172,18 @@ func (unavailableUserService) GetUsersByIDs([]string) (map[string]*models.User, 
 }
 func (unavailableUserService) SearchUsers(string, int) ([]*models.User, error) {
 	return nil, errServiceUnavailable
+}
+func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) BindIdentityToUser(_ context.Context, _ string, _ *models.JWTClaims, _ ...models.BindIdentityOptions) error {
+	return errServiceUnavailable
+}
+func (unavailableUserService) TransferIdentityToUser(_ context.Context, _, _, _ string) error {
+	return errServiceUnavailable
+}
+func (unavailableUserService) UnbindIdentityByProvider(_ context.Context, _, _ string) error {
+	return errServiceUnavailable
 }
 
 type unavailableAuthIdentityService struct{}
