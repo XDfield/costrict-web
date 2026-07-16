@@ -342,7 +342,7 @@
 ### A4：OAuth callback 加 ApplyEnterpriseMapping ✅（service 层，endpoint + server wiring 待 follow-up）
 
 - [x] **实现**：`cs-user/internal/user/employment_mapping.go`（`Service.ApplyEnterpriseMapping` 方法 + `loadEnabledEmploymentProviders` YAML reader + `upsertEmploymentIdentity` 写入路径；按 `employment_providers.enabled` 门控；返回 `ErrEnterpriseMappingDisabled` sentinel 让 caller 区分"跳过"与"失败"；Phase A 只写最小字段 `user_subject_id` + `provider` + `sync_status="fresh"` + 24h `next_sync_due_at`，企业字段留 NULL 等真实 provider client + A5 扩展 claims 填充）
-- [x] **测试覆盖**：`cs-user/internal/user/employment_mapping_test.go`（`//go:build cgo`，8 测试：DisabledProvider 不写 / EnabledProvider_NewUser 创建正确字段 / EnabledProvider_ExistingUser update-in-place ID 不变 / EmptyConfigYAML `"{}"` 视为禁用 / MissingTenantConfig 行缺失视为禁用不报错 / MalformedYAML 报解析错误不静默禁用 / DefaultTenantID 空字符串 fallback 到 `"default"` / ValidationErrors 空 subject_id / 空 provider / PerProviderConfigIgnored 完整设计 YAML 解析不爆）
+- [x] **测试覆盖**：`cs-user/internal/user/employment_mapping_test.go`（`//go:build cgo`，9 测试：DisabledProvider 不写 / EnabledProvider_NewUser 创建正确字段 / EnabledProvider_ExistingUser update-in-place ID 不变 / EmptyConfigYAML `"{}"` 视为禁用 / MissingTenantConfig 行缺失视为禁用不报错 / MalformedYAML 报解析错误不静默禁用 / DefaultTenantID 空字符串 fallback 到 `"default"` / ValidationErrors 空 subject_id / 空 provider / PerProviderConfigIgnored 富 YAML 解析不爆）
 - [x] **swagger 注解**：无（service 层逻辑）
 - [ ] **follow-up（A4b）**：暴露 cs-user 内部 endpoint + server OAuth callback wiring + 集成测试（独立 PR）
 
