@@ -253,8 +253,8 @@ func SearchUsers(c *gin.Context) {
 	limit := 20
 	var results []userSearchResult
 
-	if UserModule != nil && UserModule.Service != nil {
-		users, err := UserModule.Service.SearchUsers(c.Request.Context(), keyword, limit)
+	if UserModule != nil && UserModule.CachedService != nil {
+		users, err := UserModule.CachedService.SearchUsers(c.Request.Context(), keyword, limit)
 		if err == nil && len(users) > 0 {
 			for _, u := range users {
 				results = append(results, userSearchResult{
