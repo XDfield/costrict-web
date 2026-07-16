@@ -1,0 +1,9 @@
+apiVersion: v2
+appVersion: 0.0.1
+description: Costrict cs-user - User identity service (Phase 1: user data ownership + read-through RPC)
+maintainers:
+- name: costrict
+  url: https://github.com/costrict
+name: costrict-web-cs-user
+type: application
+version: 0.0.1
