@@ -51,6 +51,25 @@ internalToken:
   existingSecret: ""
   existingSecretKey: internal-token
 
+# Chart-managed Secret — opt-in. When create=true, the chart renders a
+# Secret named <release>-secrets containing the database password and the
+# internal token from the plaintext values below, AND auto-wires the
+# Deployment to reference it (existingSecret above falls back to this
+# name when left empty). Intended for dev / staging / CI only.
+#
+# Production should leave create=false and provision the Secret via
+# sealed-secrets / external-secrets / kubectl create secret, then point
+# database.existingSecret + internalToken.existingSecret at it.
+secrets:
+  create: false
+  databasePassword: ""   # ignored unless create=true
+  internalToken: ""      # ignored unless create=true
+
+# Helm test pod — invoked by `helm test <release>`. The curl image is
+# configurable so air-gapped clusters can point at a mirror.
+tests:
+  curlImage: "curlimages/curl:8.10.1"
+
 # Runtime env vars (CS_USER_ prefix applied in deployment template).
 extraEnv: []
 

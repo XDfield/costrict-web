@@ -52,18 +52,26 @@ spec:
               value: {{ .Values.database.user | quote }}
             - name: CS_USER_POSTGRES_SSLMODE
               value: {{ .Values.database.sslMode | quote }}
-            {{- if .Values.database.existingSecret }}
+            {{- $dbSecret := .Values.database.existingSecret }}
+            {{- if and (not $dbSecret) .Values.secrets.create }}
+            {{- $dbSecret = printf "%s-secrets" .Release.Name }}
+            {{- end }}
+            {{- if $dbSecret }}
             - name: CS_USER_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.database.existingSecret }}
+                  name: {{ $dbSecret }}
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
-            {{- if .Values.internalToken.existingSecret }}
+            {{- $tokenSecret := .Values.internalToken.existingSecret }}
+            {{- if and (not $tokenSecret) .Values.secrets.create }}
+            {{- $tokenSecret = printf "%s-secrets" .Release.Name }}
+            {{- end }}
+            {{- if $tokenSecret }}
             - name: CS_USER_INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.internalToken.existingSecret }}
+                  name: {{ $tokenSecret }}
                   key: {{ .Values.internalToken.existingSecretKey }}
             {{- end }}
             {{- with .Values.extraEnv }}

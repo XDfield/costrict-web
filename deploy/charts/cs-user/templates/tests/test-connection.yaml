@@ -1,0 +1,56 @@
+{{/*
+Helm test pod — invoked by `helm test <release>`. Spawns a one-shot curl
+container in the release namespace that hits the liveness + readiness
+endpoints and asserts a 200 from each. Runs unauthenticated — healthz and
+readyz are intentionally outside the X-Internal-Token gate (see
+internal/app/app.go).
+
+The test does NOT exercise the internal API surface (those need the shared
+secret). For internal-API integration coverage, see the E2E suite planned
+for P0-7 (server + cs-user end-to-end via read-through RPC client).
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  containers:
+    - name: curl
+      image: {{ .Values.tests.curlImage | default "curlimages/curl:8.10.1" }}
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          svc={{ .Release.Name }}
+          port={{ .Values.service.port }}
+          echo "Probing http://${svc}:${port}/healthz ..."
+          curl --silent --show-error --fail --max-time 5 "http://${svc}:${port}/healthz"
+          echo "OK: /healthz returned 200"
+          echo "Probing http://${svc}:${port}/readyz ..."
+          curl --silent --show-error --fail --max-time 5 "http://${svc}:${port}/readyz"
+          echo "OK: /readyz returned 200"
