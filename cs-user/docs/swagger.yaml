@@ -1,4 +1,98 @@
 basePath: /
+definitions:
+  github_com_costrict_costrict-web_cs-user_internal_models.User:
+    properties:
+      auth_provider:
+        type: string
+      avatar_url:
+        type: string
+      casdoor_id:
+        type: string
+      casdoor_sub:
+        type: string
+      casdoor_universal_id:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      external_key:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      last_login_at:
+        type: string
+      last_sync_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      provider_user_id:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.UserAuthIdentity:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      explicitly_unbound:
+        type: boolean
+      external_key:
+        type: string
+      external_subject:
+        type: string
+      external_user_id:
+        type: string
+      id:
+        type: integer
+      is_primary:
+        type: boolean
+      issuer:
+        type: string
+      last_login_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      provider:
+        type: string
+      provider_user_id:
+        type: string
+      updated_at:
+        type: string
+      user_subject_id:
+        type: string
+    type: object
+  internal_handlers.byIDsRequest:
+    properties:
+      ids:
+        items:
+          type: string
+        maxItems: 500
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
 host: localhost:8081
 info:
   contact: {}
@@ -40,6 +134,178 @@ paths:
       summary: Internal handshake
       tags:
       - internal
+  /api/internal/users/{subject_id}:
+    get:
+      description: Returns the user record matching the given subject_id. 404 when
+        not found. Internal-only — requires the shared secret.
+      parameters:
+      - description: User subject_id (stable application-level identifier)
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get a user by subject_id
+      tags:
+      - users
+  /api/internal/users/{subject_id}/auth-identities:
+    get:
+      description: Returns every external login identity bound to the user, ordered
+        so the primary identity surfaces first. Empty list when the user has none.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              identities:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.UserAuthIdentity'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List a user's auth identities
+      tags:
+      - auth-identities
+  /api/internal/users/by-ids:
+    post:
+      consumes:
+      - application/json
+      description: Returns a subject_id → user map. Missing IDs are silently omitted;
+        callers compare lengths to detect partial misses. Capped at 500 IDs per request.
+      parameters:
+      - description: Subject IDs to resolve
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.byIDsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              users:
+                additionalProperties:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Batch-resolve users by subject_id
+      tags:
+      - users
+  /api/internal/users/search:
+    get:
+      description: Returns active users whose username / display_name / email match
+        the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200.
+      parameters:
+      - description: Search keyword (matched against username / display_name / email)
+        in: query
+        name: keyword
+        type: string
+      - description: Max results (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              users:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Search active users
+      tags:
+      - users
   /healthz:
     get:
       description: Always returns 200 once the process is up. Unauthenticated — safe
