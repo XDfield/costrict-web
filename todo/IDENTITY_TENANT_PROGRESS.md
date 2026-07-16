@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 75 | 91% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API 完成；P0-8b 待启动，blocked on server-side RPCWriter） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 80 | 98% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter 完成；P0-8b 剩余：DB trigger + 操作侧 cutover） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ **cs-user Phase 2 write API（5 endpoints 在一个 PR）** 八个半完整大任务。下一步推进 P0-8b（真正 READONLY cutover）—— **cs-user 侧写 API 已 unblock**（POST `/api/internal/users/get-or-create`、`/:subject_id/bind-identity`、`/transfer-identity`、DELETE `/:subject_id/identities/:provider` 全部上线，faithful-port server 五个写方法的业务规则：external-key 格式 / providerRank 排序 / soft-delete 恢复 / last-identity 不变量 / syncInterval 跳过）；**P0-8b 剩余阻塞点**在 server 侧 RPCWriter client（接线 OAuth callback 到 cs-user 写路径）+ 移除 P0-8a 的 readonly+rpc boot fatal + DB trigger。Canary 可先用 `USER_SERVICE_BACKEND=rpc USER_SERVICE_WRITE_MODE=local` split-brain 配置验证 RPC 读路径。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
 
 ---
 
@@ -196,12 +196,14 @@
 - **`UpdateUserLastLogin` 未 gate**：grep 未发现 caller，疑似 dead code；删除属于独立 cleanup PR。
 - **No DB trigger / no backup test / no load test**：全部 defer 到 P0-8b（操作侧 cutover）。
 
-### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on server-side RPCWriter）
+### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on DB trigger + 操作侧 cutover）
 
-> **cs-user Phase 2 write API 已 shipped（5 endpoints，一个 PR）** — 详见下方 P0-8b/Phase 2 详情。下一步 unblock 点是 server 侧 RPCWriter client 接线 + 移除 P0-8a 的 readonly+rpc boot fatal。
+> **应用层 RPCWriter + DualWriter 已 shipped（一个 PR）** — server 侧 5 个 OAuth/admin 写路径全部走 `UserModule.Writer`，按 `(Backend, WriteMode)` 矩阵选 writer：`local+local`→UserService，`rpc+local`→DualWriter（dual-write canary，primary=local authoritative，secondary=cs-user best-effort），`rpc+readonly`→RPCWriter（cs-user sole write authority）。P0-8a 的 readonly+rpc boot fatal 已移除（RPCWriter 现在是合法 writer）。
+>
+> **下一步 unblock 点**：DB trigger + 操作侧 cutover sequence（详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary → 24h convergence check → readonly+rpc cutover）。
 
 - [x] **实现**：cs-user Phase 2 write API（POST `/users/get-or-create`、`/:subject_id/bind-identity`、`/transfer-identity`，DELETE `/:subject_id/identities/:provider`）
-- [ ] **实现**：应用层 login 写路径 re-route 到 cs-user RPC（新增 `RPCWriter` 并列 `RPCClient`），移除 P0-8a 的 readonly+rpc boot fatal
+- [x] **实现**：应用层 login 写路径 re-route 到 cs-user RPC（新增 `RPCWriter` 并列 `RPCClient`），移除 P0-8a 的 readonly+rpc boot fatal
 - [ ] **实现**：DB trigger 兜底——costrict-web `users` 表加 `BEFORE INSERT/UPDATE/DELETE` trigger 拒写（除 cutover 期间白名单）
 - [ ] **验证**：`grep -r "models.User" server/ | grep -E "(Create|Update|Delete)"` 输出清零（除 RPC client 自身）
 - [ ] **验证**：cutover 后连续 1 小时压测，`CachedUserService` 命中率 > 90%
@@ -210,6 +212,60 @@
 - [ ] **回滚预案**：保留 costrict-web DB 备份 30 天；提供 `USER_SERVICE_BACKEND=local USER_SERVICE_WRITE_MODE=local` 一键回滚开关
 - 📋 详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`
 - [ ] **swagger 注解**：无（cutover 是部署操作，不改 endpoint）
+
+#### server-side RPCWriter 实现详情（已完成）
+
+新增 `server/internal/user/{writer.go, rpc_writer.go, rpc_writer_test.go}`，修改 `user.go` / `readonly_test.go` / `handlers/{handlers.go, users.go}`。一个 PR 落地。
+
+**`UserWriter` interface（writer.go）** — 5 个方法签名与 `*UserService` 既有写方法 byte-identical（包括无 ctx 参数），让 local backend 直接 satisfy 接口、零修改。RPCWriter 内部用 `context.Background()` + `httpClient.Timeout` 作为请求边界（写路径不可中断，否则 cs-user 会进入不一致状态）。
+
+**`RPCWriter` client（rpc_writer.go）** — embed `*RPCClient` 复用 baseURL/token/HTTPClient 配置（读+写共用一套 wire format：X-Internal-Token + 10s timeout + 5xx→ErrRPCUnavailable 映射）。新增 `doCapture(ctx, method, path, body)` 返回 `(status, body, transportError)`，写路径需要 inspect response body 以区分 same-status-different-meaning 响应（cs-user 把两种 bind 冲突都返 HTTP 409）。
+
+**两处 error 字符串归一化**（保证 handler 端 substring 匹配 across backends）：
+
+| cs-user 返回 | HTTP | RPCWriter 行为 | Why |
+|---|---|---|---|
+| `identity explicitly unbound; requires force_rebind` | 409 | 返回 `nil`（no-op） | 匹配 server 本地 writer `service.go:290` 的 no-op 语义 |
+| `identity already bound to another user` | 409 | 返回 `errors.New("identity_already_bound")` | `handlers.go:566` 靠精确匹配 redirect 到 merge-identity 流程 |
+| `identity_not_found` | 404 | surface verbatim | `handlers.go:833` 精确匹配 |
+| `cannot unbind last identity` / `identity not found` | 409 / 404 | surface verbatim | `handlers.go:766` 精确匹配 |
+| 其他 4xx | 4xx | `parseErrorBody` 提取 `{"error":"..."}` envelope 返 verbatim | 通用合约 |
+| 5xx / transport | — | `fmt.Errorf("%w: ...", ErrRPCUnavailable)` | 与 read path 一致，handler 层 503 |
+
+**`DualWriter`（writer.go）** — P0-8 cutover step 3 的 canary posture（`rpc+local`）。每个写先打 Primary（UserService，authoritative），成功后 best-effort 同步打 Secondary（RPCWriter）。Primary 错误透传给 caller；Secondary 错误只 `logger.Warn`、**绝不 fail request**——canary 的意义就是在不破坏用户流程的前提下暴露 RPC divergence。Secondary 是同步调用以便观察 divergence；如果成为性能瓶颈再改 fire-and-forget（YAGNI 当前）。
+
+**Writer 选择矩阵**（`user.go: NewWithConfig`）：
+
+| Backend | WriteMode | Reader | Writer | Posture |
+|---|---|---|---|---|
+| local | local | UserService | UserService | 默认（无变化） |
+| local | readonly | — | — | **fatal**（login broken，无收益） |
+| rpc | local | RPCClient | DualWriter(svc, rpc) | dual-write canary |
+| rpc | readonly | RPCClient | RPCWriter | cs-user authoritative（cutover 终态） |
+
+**Re-route 调用点**（6 处 production call sites，全部从 `UserModule.Service.X` 改为 `UserModule.Writer.X`）：
+
+- `handlers/handlers.go:436` OAuth callback `GetOrCreateUser`（new user）
+- `handlers/handlers.go:534` OAuth callback `GetOrCreateUser`（current user）
+- `handlers/handlers.go:565` OAuth provider binding `BindIdentityToUser(opts.ForceRebind=true)`
+- `handlers/handlers.go:765` admin unbind `UnbindIdentityByProvider`
+- `handlers/handlers.go:832` admin transfer `TransferIdentityToUser`
+- `handlers/users.go:324` user-search backfill `SyncUser`
+
+注：`service.go:861` `SyncUser → BindIdentityToUser` 的内部递归保留 `s.BindIdentityToUser(...)`——这是 UserService 内部逻辑，不该绕过自身。post-login hook 仍在 UserService 内部触发（DualWriter 只把 Primary 的成功结果透传，不会重跑 hook）。
+
+**Test coverage**（`rpc_writer_test.go`，14 个 test cases）：
+
+- 5 个方法各 happy path（assert path/method/auth/body shape）
+- BindIdentityToUser 3 个 409 cases（explicitly_unbound→nil / identity_already_bound→token / 其他→verbatim）
+- 5xx → ErrRPCUnavailable；4xx → verbatim server message
+- NotConfigured → ErrNotConfigured（5 方法都验证）
+- DualWriter 4 cases（primary success fan-out / primary failure skips secondary / secondary failure doesn't fail request / nil secondary）
+- `parseErrorBody` 5 cases（envelope / empty / non-json / empty error / missing field）
+
+**Validation matrix test**（`readonly_test.go: TestValidateUserConfig`）— 4 个组合的 `(msg, fatal)` 断言；新增 3 个 NewWithConfig 集成测试（local+local→UserService / rpc+local→DualWriter / rpc+readonly→RPCWriter）确认 writer 类型断言。
+
+`cd server && go test ./internal/user/... ./internal/handlers/... -count=1 -race` 全绿。
 
 #### cs-user Phase 2 write API 详情（已完成）
 

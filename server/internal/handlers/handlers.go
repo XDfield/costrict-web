@@ -433,7 +433,7 @@ func AuthCallback(c *gin.Context) {
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
 				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
 			}
-			if _, err := UserModule.Service.GetOrCreateUser(claims); err != nil {
+			if _, err := UserModule.Writer.GetOrCreateUser(claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
 			}
 		} else if userErr != nil {
@@ -531,7 +531,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
 		return
 	}
-	currentUser, err := UserModule.Service.GetOrCreateUser(currentClaims)
+	currentUser, err := UserModule.Writer.GetOrCreateUser(currentClaims)
 	if err != nil || currentUser == nil || currentUser.SubjectID != state.UserSubjectID {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid binding session"})
 		return
@@ -562,7 +562,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		return
 	}
 	fmt.Printf("[bindAuthCallback] branch=proceed_to_bind provider_match_ok=%v\n", strings.EqualFold(claims.Provider, state.Provider))
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
+	if err := UserModule.Writer.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
 			fmt.Printf("[bindAuthCallback] branch=identity_already_bound claims.Provider=%q\n", claims.Provider)
 			externalKey := userpkg.BuildExternalKey(claims)
@@ -762,7 +762,7 @@ func UnbindIdentity(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 		return
 	}
-	if err := UserModule.Service.UnbindIdentityByProvider(currentUserID, provider); err != nil {
+	if err := UserModule.Writer.UnbindIdentityByProvider(currentUserID, provider); err != nil {
 		if err.Error() == "cannot unbind last identity" || err.Error() == "identity not found" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -829,7 +829,7 @@ func ConfirmMergeIdentity(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "merge_token_user_mismatch"})
 		return
 	}
-	if err := UserModule.Service.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
+	if err := UserModule.Writer.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
 		if err.Error() == "identity_not_found" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "identity_not_found"})
 			return

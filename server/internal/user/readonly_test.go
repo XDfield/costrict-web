@@ -198,28 +198,28 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 func seedUserForBindTest(t *testing.T, db *gorm.DB, subjectID, universalID string) *models.User {
 	t.Helper()
 	u := &models.User{
-		SubjectID:         subjectID,
-		Username:          subjectID,
+		SubjectID:          subjectID,
+		Username:           subjectID,
 		CasdoorUniversalID: strPtr(universalID),
-		IsActive:          true,
+		IsActive:           true,
 	}
 	if err := db.Create(u).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	github := &models.UserAuthIdentity{
 		UserSubjectID: subjectID,
-		Provider:       "github",
-		ExternalKey:    universalID,
-		IsPrimary:      true,
+		Provider:      "github",
+		ExternalKey:   universalID,
+		IsPrimary:     true,
 	}
 	if err := db.Create(github).Error; err != nil {
 		t.Fatalf("seed github identity: %v", err)
 	}
 	phone := &models.UserAuthIdentity{
 		UserSubjectID: subjectID,
-		Provider:       "phone",
-		ExternalKey:    subjectID + "-phone",
-		IsPrimary:      false,
+		Provider:      "phone",
+		ExternalKey:   subjectID + "-phone",
+		IsPrimary:     false,
 	}
 	if err := db.Create(phone).Error; err != nil {
 		t.Fatalf("seed phone identity: %v", err)
@@ -240,17 +240,17 @@ func rowCount(t *testing.T, db *gorm.DB) (int, int) {
 }
 
 // TestNewWithConfig_BootValidation confirms the four (Backend, WriteMode)
-// combinations behave as documented:
+// combinations behave as documented post-P0-8b:
 //   - readonly + local  -> fatal (login broken, no benefit)
-//   - readonly + rpc    -> fatal (cs-user Phase 2 write API not yet shipped)
-//   - local + rpc       -> warn (split-brain canary)
+//   - readonly + rpc    -> ok (cs-user Phase 2 write API is the writer via RPCWriter)
+//   - local + rpc       -> warn (dual-write canary: local authoritative, cs-user best-effort)
 //   - local + local     -> ok (default)
 //
 // We can't call log.Fatalf directly in a test (it os.Exit()s). Instead we
 // exercise the gate plumbing via SetWriteMode on a UserService constructed
 // through the simple constructor, and verify the gate value rounds-trips.
-// The fatal paths are exercised via TestNewWithConfig_Fatals, which captures
-// the os.Exit by running NewWithConfig in a subprocess.
+// The fatal combination (readonly+local) is asserted via TestValidateUserConfig,
+// which exercises the pure helper without triggering log.Fatalf.
 func TestNewWithConfig_DefaultWriteModeRoundTrips(t *testing.T) {
 	t.Parallel()
 	db := setupUserTestDB(t)
@@ -273,7 +273,7 @@ func TestNewWithConfig_DefaultWriteModeRoundTrips(t *testing.T) {
 }
 
 // TestValidateUserConfig exercises every (Backend, WriteMode) combination and
-// confirms the validation matrix matches the documented P0-8a contract. This
+// confirms the validation matrix matches the documented P0-8b contract. This
 // is the test that backs NewWithConfig's log.Fatalf — by extracting the
 // validation into a pure helper we can assert on the message text without
 // spawning subprocesses.
@@ -303,18 +303,18 @@ func TestValidateUserConfig(t *testing.T) {
 			wantSubstr: "USER_SERVICE_WRITE_MODE=readonly with USER_SERVICE_BACKEND=local",
 		},
 		{
-			name:       "readonly+rpc fatal no write API",
+			name:       "readonly+rpc ok cs-user authoritative (P0-8b)",
 			backend:    config.UserServiceBackendRPC,
 			mode:       config.UserServiceWriteModeReadonly,
-			wantFatal:  true,
-			wantSubstr: "cs-user has no write API yet",
+			wantFatal:  false,
+			wantSubstr: "",
 		},
 		{
-			name:       "local+rpc warn split-brain",
+			name:       "local+rpc warn dual-write canary",
 			backend:    config.UserServiceBackendRPC,
 			mode:       config.UserServiceWriteModeLocal,
 			wantFatal:  false,
-			wantSubstr: "split-brain",
+			wantSubstr: "dual-write canary",
 		},
 	}
 	for _, c := range cases {
@@ -338,9 +338,10 @@ func TestValidateUserConfig(t *testing.T) {
 	}
 }
 
-// TestNewWithConfig_SplitBrainWarns verifies the local+rpc canary combination
-// boots successfully and emits the split-brain warning.
-func TestNewWithConfig_SplitBrainWarns(t *testing.T) {
+// TestNewWithConfig_DualWriteCanaryWarns verifies the local+rpc canary
+// combination boots successfully, emits the dual-write canary warning, and
+// wires a DualWriter that fans writes out to both UserService and RPCWriter.
+func TestNewWithConfig_DualWriteCanaryWarns(t *testing.T) {
 	t.Parallel()
 	// Backend=rpc with valid URL+token so rpc.Configured() returns true.
 	db := setupUserTestDB(t)
@@ -353,9 +354,63 @@ func TestNewWithConfig_SplitBrainWarns(t *testing.T) {
 	if mod.Service.writeMode != WriteModeLocal {
 		t.Fatalf("expected writeMode=local, got %q", mod.Service.writeMode)
 	}
-	// Reader should be the RPC client in split-brain mode.
+	// Reader should be the RPC client in canary mode.
 	if _, ok := mod.Reader.(*RPCClient); !ok {
 		t.Fatalf("expected *RPCClient reader, got %T", mod.Reader)
+	}
+	// Writer should be a DualWriter combining UserService (primary) and
+	// RPCWriter (secondary).
+	dw, ok := mod.Writer.(*DualWriter)
+	if !ok {
+		t.Fatalf("expected *DualWriter writer, got %T", mod.Writer)
+	}
+	if dw.Primary != mod.Service {
+		t.Fatalf("DualWriter primary should be the UserService")
+	}
+	if _, ok := dw.Secondary.(*RPCWriter); !ok {
+		t.Fatalf("DualWriter secondary should be *RPCWriter, got %T", dw.Secondary)
+	}
+}
+
+// TestNewWithConfig_ReadonlyRPCSelectsRPCWriter verifies the readonly+rpc
+// production cutover posture boots cleanly (no fatal), selects RPCWriter as
+// the sole writer, and gates local UserService writes off.
+func TestNewWithConfig_ReadonlyRPCSelectsRPCWriter(t *testing.T) {
+	t.Parallel()
+	db := setupUserTestDB(t)
+	mod := NewWithConfig(db, 0, config.UserServiceConfig{
+		Backend:       config.UserServiceBackendRPC,
+		BaseURL:       "http://cs-user.test",
+		InternalToken: "test-token",
+		WriteMode:     config.UserServiceWriteModeReadonly,
+	})
+	// Local writes are gated off in this posture; only RPCWriter is exposed.
+	if mod.Service.writeMode != WriteModeReadonly {
+		t.Fatalf("expected writeMode=readonly, got %q", mod.Service.writeMode)
+	}
+	if _, ok := mod.Writer.(*RPCWriter); !ok {
+		t.Fatalf("expected *RPCWriter writer, got %T", mod.Writer)
+	}
+	if _, ok := mod.Reader.(*RPCClient); !ok {
+		t.Fatalf("expected *RPCClient reader, got %T", mod.Reader)
+	}
+}
+
+// TestNewWithConfig_LocalLocalUsesUserServiceWriter verifies the default
+// posture routes writes through the UserService directly (no DualWriter or
+// RPCWriter in the path).
+func TestNewWithConfig_LocalLocalUsesUserServiceWriter(t *testing.T) {
+	t.Parallel()
+	db := setupUserTestDB(t)
+	mod := NewWithConfig(db, 0, config.UserServiceConfig{
+		Backend:   config.UserServiceBackendLocal,
+		WriteMode: config.UserServiceWriteModeLocal,
+	})
+	if mod.Writer != mod.Service {
+		t.Fatalf("expected Writer to be the UserService directly, got %T", mod.Writer)
+	}
+	if _, ok := mod.Reader.(*UserService); !ok {
+		t.Fatalf("expected *UserService reader, got %T", mod.Reader)
 	}
 }
 
