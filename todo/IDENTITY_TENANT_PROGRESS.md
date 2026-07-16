@@ -38,7 +38,7 @@
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-6（ETL 脚本）五个完整大任务 + P0-5（Helm chart）部分（缺 secret.yaml + chart 测试）。下一步推进 P0-7（read-through RPC client in server）——P0-6 数据已就位。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）六个完整大任务。下一步推进 P0-7（read-through RPC client in server）——cs-user 侧数据 + 服务 + chart 全部就位。
 
 ---
 
