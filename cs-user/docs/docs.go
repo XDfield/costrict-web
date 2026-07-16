@@ -136,6 +136,67 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/get-or-create": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Idempotent upsert driven by the OAuth callback's parsed JWT claims. Multi-lookup strategy (external_key → universal_id → casdoor_id → sub → username). Creates a primary identity row when a new user is created.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Upsert user from JWT claims (login entry point)",
+                "parameters": [
+                    {
+                        "description": "JWT claim payload (parsed — cs-user does not verify JWT signatures; the X-Internal-Token middleware authenticates the caller)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/search": {
             "get": {
                 "security": [
@@ -182,6 +243,75 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/transfer-identity": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Account-merge primitive. Moves the identity identified by external_key to the target user. No-op if the target already owns it.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Transfer an identity to another user",
+                "parameters": [
+                    {
+                        "description": "Transfer target + identity key",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.transferIdentityRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -336,6 +466,164 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/{subject_id}/bind-identity": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Idempotent bind. Recovers soft-deleted identities instead of duplicating. Re-binding an explicitly-unbound identity requires options.force_rebind.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Bind an identity to a user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target user subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Claims to bind + optional BindIdentityOptions",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.bindIdentityRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/{subject_id}/identities/{provider}": {
+            "delete": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Soft-deletes every identity matching the provider on the user and marks them explicitly_unbound. Refuses to unbind the user's last identity. Promotes the next best-rank identity to primary if the unbind removed the primary.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Unbind all identities for a provider",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider to unbind (e.g. github, phone, idtrust)",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/healthz": {
             "get": {
                 "description": "Always returns 200 once the process is up. Unauthenticated — safe for K8s livenessProbe.",
@@ -402,6 +690,52 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions": {
+            "type": "object",
+            "properties": {
+                "force_rebind": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "owner": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "picture": {
+                    "type": "string"
+                },
+                "preferred_username": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "provider_user_id": {
+                    "type": "string"
+                },
+                "sub": {
+                    "type": "string"
+                },
+                "universal_id": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_models.User": {
             "type": "object",
             "properties": {
@@ -526,6 +860,20 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.bindIdentityRequest": {
+            "type": "object",
+            "required": [
+                "claims"
+            ],
+            "properties": {
+                "claims": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims"
+                },
+                "options": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions"
+                }
+            }
+        },
         "internal_handlers.byIDsRequest": {
             "type": "object",
             "required": [
@@ -539,6 +887,25 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "internal_handlers.transferIdentityRequest": {
+            "type": "object",
+            "required": [
+                "external_key",
+                "target_user_subject_id"
+            ],
+            "properties": {
+                "external_key": {
+                    "type": "string"
+                },
+                "source_user_subject_id": {
+                    "description": "SourceUserSubjectID is accepted for forwards compatibility with\nserver's signature; cs-user identifies the identity purely by\nexternal_key.",
+                    "type": "string"
+                },
+                "target_user_subject_id": {
+                    "type": "string"
                 }
             }
         }
