@@ -1,5 +1,35 @@
 basePath: /
 definitions:
+  github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions:
+    properties:
+      force_rebind:
+        type: boolean
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims:
+    properties:
+      email:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      owner:
+        type: string
+      phone:
+        type: string
+      picture:
+        type: string
+      preferred_username:
+        type: string
+      provider:
+        type: string
+      provider_user_id:
+        type: string
+      sub:
+        type: string
+      universal_id:
+        type: string
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_models.User:
     properties:
       auth_provider:
@@ -82,6 +112,15 @@ definitions:
       user_subject_id:
         type: string
     type: object
+  internal_handlers.bindIdentityRequest:
+    properties:
+      claims:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      options:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions'
+    required:
+    - claims
+    type: object
   internal_handlers.byIDsRequest:
     properties:
       ids:
@@ -92,6 +131,22 @@ definitions:
         type: array
     required:
     - ids
+    type: object
+  internal_handlers.transferIdentityRequest:
+    properties:
+      external_key:
+        type: string
+      source_user_subject_id:
+        description: |-
+          SourceUserSubjectID is accepted for forwards compatibility with
+          server's signature; cs-user identifies the identity purely by
+          external_key.
+        type: string
+      target_user_subject_id:
+        type: string
+    required:
+    - external_key
+    - target_user_subject_id
     type: object
 host: localhost:8081
 info:
@@ -218,6 +273,110 @@ paths:
       summary: List a user's auth identities
       tags:
       - auth-identities
+  /api/internal/users/{subject_id}/bind-identity:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent bind. Recovers soft-deleted identities instead of duplicating.
+        Re-binding an explicitly-unbound identity requires options.force_rebind.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Claims to bind + optional BindIdentityOptions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bindIdentityRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Bind an identity to a user
+      tags:
+      - users
+  /api/internal/users/{subject_id}/identities/{provider}:
+    delete:
+      description: Soft-deletes every identity matching the provider on the user and
+        marks them explicitly_unbound. Refuses to unbind the user's last identity.
+        Promotes the next best-rank identity to primary if the unbind removed the
+        primary.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Provider to unbind (e.g. github, phone, idtrust)
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Unbind all identities for a provider
+      tags:
+      - users
   /api/internal/users/by-ids:
     post:
       consumes:
@@ -262,6 +421,47 @@ paths:
       summary: Batch-resolve users by subject_id
       tags:
       - users
+  /api/internal/users/get-or-create:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent upsert driven by the OAuth callback's parsed JWT claims.
+        Multi-lookup strategy (external_key → universal_id → casdoor_id → sub → username).
+        Creates a primary identity row when a new user is created.
+      parameters:
+      - description: JWT claim payload (parsed — cs-user does not verify JWT signatures;
+          the X-Internal-Token middleware authenticates the caller)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Upsert user from JWT claims (login entry point)
+      tags:
+      - users
   /api/internal/users/search:
     get:
       description: Returns active users whose username / display_name / email match
@@ -304,6 +504,50 @@ paths:
       security:
       - InternalToken: []
       summary: Search active users
+      tags:
+      - users
+  /api/internal/users/transfer-identity:
+    post:
+      consumes:
+      - application/json
+      description: Account-merge primitive. Moves the identity identified by external_key
+        to the target user. No-op if the target already owns it.
+      parameters:
+      - description: Transfer target + identity key
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.transferIdentityRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Transfer an identity to another user
       tags:
       - users
   /healthz:
