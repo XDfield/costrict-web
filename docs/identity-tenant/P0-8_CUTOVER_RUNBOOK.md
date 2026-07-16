@@ -81,13 +81,33 @@ authority.
    (cs-user writes flow, costrict-web still writes locally as belt-and-suspenders).
 4. Verify dual-write convergence for 24h.
 5. Roll replicas to `USER_SERVICE_WRITE_MODE=readonly` — local writes blocked.
-6. Apply the DB trigger migration (P0-8b scope) that rejects any direct write
-   to the `users` table outside the application session.
+6. The DB trigger migration (`20260716000000_create_users_readonly_trigger.sql`)
+   ships ahead of cutover as a no-op — the trigger function only rejects writes
+   when GUC `app.users_readonly_cutover` is set to `on`. Activate the GUC at the
+   database level so all new sessions inherit it:
+   ```sql
+   ALTER DATABASE <costrict_web_db_name> SET app.users_readonly_cutover = 'on';
+   ```
+   Existing connections must reconnect to pick up the GUC. Restarting the API
+   and worker pods is the simplest way to ensure every connection has the
+   setting. After this step, any direct write to `users` (outside RPCWriter's
+   cs-user path) raises:
+   ```
+   ERROR: users table is read-only post P0-8b cutover (GUC app.users_readonly_cutover=on).
+   ```
+   Maintenance writes bypass within a single session via
+   `SET app.users_readonly_cutover = 'off';`.
 7. Monitor for 1 hour. Cache hit rate on `CachedUserService` should be > 90%.
 
 **Rollback**:
-- Set `USER_SERVICE_WRITE_MODE=local`, restart. Writes resume.
-- Drop the DB trigger.
+- Set `USER_SERVICE_WRITE_MODE=local`, restart. Writes resume through
+  `UserService` again (DualWriter if `USER_SERVICE_BACKEND=rpc`).
+- Disable the DB trigger GUC:
+  ```sql
+  ALTER DATABASE <costrict_web_db_name> SET app.users_readonly_cutover = 'off';
+  ```
+  (or `DROP TRIGGER users_readonly_before_write ON users;` as a heavier hammer).
+  No migration revert needed — the trigger is a no-op when the GUC is off.
 - (Last resort) restore DB snapshot. cs-user DB is authoritative after cutover;
   restoring costrict-web DB alone will not roll back user state.
 

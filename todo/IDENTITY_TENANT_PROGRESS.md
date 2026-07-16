@@ -32,7 +32,7 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 80 | 98% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter 完成；P0-8b 剩余：DB trigger + 操作侧 cutover） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
@@ -196,15 +196,15 @@
 - **`UpdateUserLastLogin` 未 gate**：grep 未发现 caller，疑似 dead code；删除属于独立 cleanup PR。
 - **No DB trigger / no backup test / no load test**：全部 defer 到 P0-8b（操作侧 cutover）。
 
-### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on DB trigger + 操作侧 cutover）
+### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on 操作侧 cutover）
 
-> **应用层 RPCWriter + DualWriter 已 shipped（一个 PR）** — server 侧 5 个 OAuth/admin 写路径全部走 `UserModule.Writer`，按 `(Backend, WriteMode)` 矩阵选 writer：`local+local`→UserService，`rpc+local`→DualWriter（dual-write canary，primary=local authoritative，secondary=cs-user best-effort），`rpc+readonly`→RPCWriter（cs-user sole write authority）。P0-8a 的 readonly+rpc boot fatal 已移除（RPCWriter 现在是合法 writer）。
+> **应用层 + DB 兜底 已 shipped（两个 PR）** — server 侧 5 个 OAuth/admin 写路径全部走 `UserModule.Writer`，按 `(Backend, WriteMode)` 矩阵选 writer：`local+local`→UserService，`rpc+local`→DualWriter（dual-write canary，primary=local authoritative，secondary=cs-user best-effort），`rpc+readonly`→RPCWriter（cs-user sole write authority）。P0-8a 的 readonly+rpc boot fatal 已移除（RPCWriter 现在是合法 writer）。DB trigger 兜底已上线（gate 在 GUC `app.users_readonly_cutover`，默认 OFF，operator 在 runbook step 6 激活）。
 >
-> **下一步 unblock 点**：DB trigger + 操作侧 cutover sequence（详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary → 24h convergence check → readonly+rpc cutover）。
+> **下一步 unblock 点**：纯操作侧 cutover sequence（详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-7：dual-write canary 24h → readonly+rpc cutover → 激活 DB trigger GUC → 1h 压测验收）。所有应用 + DB 层代码均已就绪。
 
 - [x] **实现**：cs-user Phase 2 write API（POST `/users/get-or-create`、`/:subject_id/bind-identity`、`/transfer-identity`，DELETE `/:subject_id/identities/:provider`）
 - [x] **实现**：应用层 login 写路径 re-route 到 cs-user RPC（新增 `RPCWriter` 并列 `RPCClient`），移除 P0-8a 的 readonly+rpc boot fatal
-- [ ] **实现**：DB trigger 兜底——costrict-web `users` 表加 `BEFORE INSERT/UPDATE/DELETE` trigger 拒写（除 cutover 期间白名单）
+- [x] **实现**：DB trigger 兜底——`server/migrations/20260716000000_create_users_readonly_trigger.sql`：trigger 函数 gate 在 GUC `app.users_readonly_cutover` 上，默认 OFF（no-op），operator 在 runbook step 6 用 `ALTER DATABASE ... SET app.users_readonly_cutover = 'on'` 激活。允许提前部署不阻塞 dual-write canary
 - [ ] **验证**：`grep -r "models.User" server/ | grep -E "(Create|Update|Delete)"` 输出清零（除 RPC client 自身）
 - [ ] **验证**：cutover 后连续 1 小时压测，`CachedUserService` 命中率 > 90%
 - [ ] **验证**：cs-user DB 独立备份 + 恢复测试通过
