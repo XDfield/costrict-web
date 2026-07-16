@@ -32,13 +32,13 @@
 
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
-| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 72 | 65 | 90% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a 完成，P0-8b 待启动，blocked on cs-user Phase 2 write API） |
+| Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 75 | 91% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API 完成；P0-8b 待启动，blocked on server-side RPCWriter） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 0 | 0% | ⏳ 待启动 |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 0 | 0% | ⏳ 待启动 |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
-> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）七个半完整大任务。下一步推进 P0-8b（真正 READONLY cutover）——但 **P0-8b 阻塞在 cs-user Phase 2 write API**（当前 Phase 1 只有 4 个 read endpoints，无写 API；而 OAuth 登录走 `GetOrCreateUser` 写路径，所以 readonly 模式目前不可启用）。P0-8a 已准备好 kill switch（`USER_SERVICE_WRITE_MODE=readonly`），cs-user Phase 2 落地后即可激活；canary 可先用 `USER_SERVICE_BACKEND=rpc USER_SERVICE_WRITE_MODE=local` split-brain 配置验证 RPC 读路径。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
+> **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ **cs-user Phase 2 write API（5 endpoints 在一个 PR）** 八个半完整大任务。下一步推进 P0-8b（真正 READONLY cutover）—— **cs-user 侧写 API 已 unblock**（POST `/api/internal/users/get-or-create`、`/:subject_id/bind-identity`、`/transfer-identity`、DELETE `/:subject_id/identities/:provider` 全部上线，faithful-port server 五个写方法的业务规则：external-key 格式 / providerRank 排序 / soft-delete 恢复 / last-identity 不变量 / syncInterval 跳过）；**P0-8b 剩余阻塞点**在 server 侧 RPCWriter client（接线 OAuth callback 到 cs-user 写路径）+ 移除 P0-8a 的 readonly+rpc boot fatal + DB trigger。Canary 可先用 `USER_SERVICE_BACKEND=rpc USER_SERVICE_WRITE_MODE=local` split-brain 配置验证 RPC 读路径。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
 
 ---
 
@@ -196,9 +196,11 @@
 - **`UpdateUserLastLogin` 未 gate**：grep 未发现 caller，疑似 dead code；删除属于独立 cleanup PR。
 - **No DB trigger / no backup test / no load test**：全部 defer 到 P0-8b（操作侧 cutover）。
 
-### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on cs-user Phase 2）
+### P0-8b：costrict-web users 表 READONLY cutover 🔜（blocked on server-side RPCWriter）
 
-- [ ] **实现**：cs-user Phase 2 write API（POST /users, bind/unbind/transfer endpoints）
+> **cs-user Phase 2 write API 已 shipped（5 endpoints，一个 PR）** — 详见下方 P0-8b/Phase 2 详情。下一步 unblock 点是 server 侧 RPCWriter client 接线 + 移除 P0-8a 的 readonly+rpc boot fatal。
+
+- [x] **实现**：cs-user Phase 2 write API（POST `/users/get-or-create`、`/:subject_id/bind-identity`、`/transfer-identity`，DELETE `/:subject_id/identities/:provider`）
 - [ ] **实现**：应用层 login 写路径 re-route 到 cs-user RPC（新增 `RPCWriter` 并列 `RPCClient`），移除 P0-8a 的 readonly+rpc boot fatal
 - [ ] **实现**：DB trigger 兜底——costrict-web `users` 表加 `BEFORE INSERT/UPDATE/DELETE` trigger 拒写（除 cutover 期间白名单）
 - [ ] **验证**：`grep -r "models.User" server/ | grep -E "(Create|Update|Delete)"` 输出清零（除 RPC client 自身）
@@ -208,6 +210,34 @@
 - [ ] **回滚预案**：保留 costrict-web DB 备份 30 天；提供 `USER_SERVICE_BACKEND=local USER_SERVICE_WRITE_MODE=local` 一键回滚开关
 - 📋 详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`
 - [ ] **swagger 注解**：无（cutover 是部署操作，不改 endpoint）
+
+#### cs-user Phase 2 write API 详情（已完成）
+
+5 个 server 写方法的 RPC counterparts，一个 PR 落地（commits `feat(cs-user)` × 4 + `docs(cs-user)` × 1）：
+
+| Endpoint | Server method | Notes |
+|---|---|---|
+| POST `/api/internal/users/get-or-create` | `GetOrCreateUser` + `SyncUser` | SyncUser 折叠进去（cs-user 无 post-login hook） |
+| POST `/api/internal/users/:subject_id/bind-identity` | `BindIdentityToUser` | Body: JWTClaims + BindIdentityOptions |
+| POST `/api/internal/users/transfer-identity` | `TransferIdentityToUser` | Body: targetUserSubjectID + externalKey |
+| DELETE `/api/internal/users/:subject_id/identities/:provider` | `UnbindIdentityByProvider` | Path params only |
+
+**Faithful-port 不变量（security/correctness invariants）**：
+
+- `buildExternalKey` 格式：`casdoor:<provider>:<universal_id>`（与 server byte-identical，否则 dual-write canary 时跨 DB lookup 会 miss）
+- `providerRank`：idtrust=300 / github=200 / phone=100 / default=0（驱动 primary 级联）
+- Soft-delete recovery：bind 恢复 soft-deleted identity 而非插重复行
+- Last-identity invariant：unbind 拒绝让用户变成零 identity
+- syncInterval skip：`GetOrCreateUser` 在 15min 内重复调用跳过 update
+- Subject ID 格式：新用户 `"usr_" + uuid.NewString()`
+
+**Three deliberate divergences from server**（cs-user 不复刻）：
+
+1. No writeMode gate（无 kill switch；server-side RPCWriter 持有 readonly gate via `USER_SERVICE_WRITE_MODE`）
+2. No `notifyUserUpdated`（cache invalidation 是 server 侧 via RPCWriter 调 `CachedService.InvalidateCache`）
+3. No `runPostLoginHook`（systemrole bootstrap 留在 server）
+
+**新增 error sentinels**（map to HTTP 409）：`ErrLastIdentity` / `ErrExplicitlyUnbound` / `ErrIdentityAlreadyBound`。
 
 ### Phase 0 完成标准（ADR §3.5 验收清单）
 
