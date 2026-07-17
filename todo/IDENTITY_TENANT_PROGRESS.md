@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 8 | 29% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B3b.2b-step2c picker UI redirect + B3b.2c cross-tenant 检测 + B4-B7 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 9 | 32% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2b-step2c picker UI redirect + B3b.2c cross-tenant 检测 + B4-B6 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -468,7 +468,7 @@
 - [ ] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
 - [ ] **B5**：应用层所有 query 经 `tenantScope(ctx)` helper
 - [ ] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）
-- [ ] **B7**：`(tenant_id, username)` 联合唯一索引，`email` 保持全局唯一
+- [x] **B7**：`(tenant_id, username)` 联合唯一索引，`email` 保持全局唯一 — 见 cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql（已完成 2026-07-17）
 
 **每个任务的测试 + swagger 子项同 Phase 0/A 模板**：迁移配 testcontainers up/down；query 改动配 sqlmock 注入测试；新 admin endpoint 配完整 swagger 注解 + InternalToken security。
 
@@ -633,10 +633,23 @@
 - [ ] picker endpoint `/api/tenant/suggest?email=...` — server 侧 wrapper 转发到 cs-user（前端 picker UI 调这个，不是直接打 internal endpoint）
 - [ ] 前端 picker 页面 + 选择回调路由
 
-**B3b.2c（待启动）** — cross-tenant 访问检测：
+**B3b.2c（待启动 — 受 B4/A7 阻塞）** — cross-tenant 访问检测：
 
 - [ ] JWT claims 加 `tenant_id` 字段（server/internal/middleware/auth.go AuthClaims + server/internal/user/service.go JWTClaims）
 - [ ] middleware 比对 JWT `tenant_id` vs cookie `cs_tenant_slug`，不匹配 → 401/403 + 提示切换（设计 §5.3 场景 C）
+- **阻塞依赖**：当前 `zgsmAdminToken` cookie 直接装 Casdoor 签的 JWT（Phase A），server 无 self-sign 能力（`ErrSelfSignUnavailable`，Phase A7 待启动）。所以 JWT claims 嵌 tenant_id 这条路径暂时不通。替代方案 — HMAC 签名的 `cs_auth_tenant` side-channel cookie（server 在登录时设置，后续 request 比对该 cookie 与 runtime-resolved slug）— 已在 B3b.2c 设计文档草拟，等 Phase A7 决策后再实施。
+
+### B7 实现细节（已完成 2026-07-17）
+
+- **migration**：`cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql`
+  - `ALTER TABLE users DROP CONSTRAINT IF EXISTS idx_user_username` + `DROP INDEX IF EXISTS idx_user_username`（两条语句幂等覆盖 CONSTRAINT 形式与 INDEX 形式两种历史风格）
+  - `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tenant_username ON users(tenant_id, username)`
+  - Down 回滚到全局唯一（若已有跨 tenant 同名用户，回滚会失败 — 预期，回滚到 Phase B 前的多租户状态本身就不一致）
+- **不动 email / external_key**：
+  - `users.email` 全局唯一保留 — SSO 桥接、密码找回、邮件通知都依赖 email 全局唯一
+  - `user_auth_identities.external_key`（形如 `{provider}:{provider_user_id}`）全局唯一保留 — 跨 tenant SSO 去重锚点，是 B3b 后续跨 tenant 身份合并（identity transfer）链路的基石
+- **数据兼容**：当前所有用户 tenant_id='default'（B2 回填），现有 'alice/default' 在迁移后仍唯一不冲突。新建 tenant 后才有真正的多 tenant 用户重叠场景
+- **应用层无改动**：`GetOrCreateUser` / `SyncUser` 都是按 `(sub, universal_id)` 找用户，不依赖 username 唯一性；service 层不需要随本迁移改动
 
 ### B3b.2a 实现细节
 
