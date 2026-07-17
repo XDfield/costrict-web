@@ -284,6 +284,11 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
+	// Phase B3b.2a: extract tenant slug (X-Tenant-Id / cs_tenant_slug cookie /
+	// Host subdomain) and stash in request ctx so RPC client forwards it to
+	// cs-user. Runs before OptionalAuth so even unauthenticated routes (JWKS,
+	// health, swagger) resolve a slug if the cookie/subdomain is present.
+	r.Use(middleware.ResolveTenantSlug(cfg.UserService.ApexDomains))
 
 	// Device heartbeat uses its own device token authentication.
 	// Register before OptionalAuth to avoid unnecessary Casdoor validation

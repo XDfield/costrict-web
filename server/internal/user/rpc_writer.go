@@ -346,6 +346,13 @@ func (w *RPCWriter) doCapture(ctx context.Context, method, path string, body []b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Phase B3b.2b TODO: forward tenant slug here once RPCWriter methods
+	// accept ctx — today every public writer method hardcodes
+	// context.Background() so no slug ever reaches this site. The OAuth
+	// callback rework in B3b.2b will thread ctx from handlers.RWMutex
+	// through UserWriter interface → DualWriter → RPCWriter, at which
+	// point the same `if slug := tenantSlugFromContext(ctx); slug != ""`
+	// injection lands here.
 
 	resp, err := w.client.httpClient.Do(req)
 	if err != nil {
