@@ -18,6 +18,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/costrict/costrict-web/server/internal/tenant"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -449,6 +450,45 @@ func AuthCallback(c *gin.Context) {
 			}
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
 				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
+			}
+			// Phase B3b.2b-step2b: §5 Try 2 — when middleware's subdomain
+			// lookup (Try 1) missed, resolve by email domain via cs-user.
+			// Unique hit → set cs_tenant_slug cookie + re-inject slug into
+			// the request context so the upcoming write ops (GetOrCreateUser,
+			// ApplyEnterpriseMapping, ReissueToken) forward the right
+			// X-Tenant-Id to cs-user. Ambiguous → picker redirect
+			// (Phase B3b.2b-step2c — until the picker frontend lands we
+			// log + fall through so login is never blocked). Miss / error
+			// → fall through to default tenant.
+			//
+			// Local-mode (Module.TenantResolver == nil) skips this block —
+			// there's no tenant data on this side (ADR D1).
+			try2Ctx := c.Request.Context()
+			if existingSlug := tenant.SlugFromContext(try2Ctx); existingSlug == "" &&
+				claims.Email != "" && UserModule != nil && UserModule.TenantResolver != nil {
+				res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, claims.Email)
+				if resErr != nil {
+					fmt.Printf("[WARN] ResolveTenantByEmail failed during auth callback (falling through to default tenant): %v\n", resErr)
+				} else if res != nil {
+					switch res.Status {
+					case "ok":
+						if res.Slug != "" {
+							c.Request = c.Request.WithContext(tenant.WithSlug(try2Ctx, res.Slug))
+							// Sticky cookie: future requests carry the slug
+							// through Layer 2 without re-resolving. Same
+							// Secure flag as the auth cookie.
+							c.SetCookie(middleware.TenantSlugCookie, res.Slug,
+								int(365*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+						}
+					case "ambiguous":
+						// TODO(B3b.2b-step2c): redirect to /tenant/picker
+						// with state token + candidates. Until the picker
+						// UI ships, log + fall through so login succeeds
+						// against the default tenant rather than dead-ending.
+						fmt.Printf("[INFO] tenant resolution ambiguous for email=%s, %d candidate(s); picker not yet implemented, falling through to default tenant\n",
+							claims.Email, len(res.Candidates))
+					}
+				}
 			}
 			if created, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
