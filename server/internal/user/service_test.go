@@ -160,7 +160,7 @@ func TestUserServiceGetOrCreateUserCreate(t *testing.T) {
 		Owner:             "org",
 	}
 
-	user, err := svc.GetOrCreateUser(claims)
+	user, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser create error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 		Owner:             "org",
 	}
 
-	user, err := svc.GetOrCreateUser(claims)
+	user, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser update error: %v", err)
 	}
@@ -274,11 +274,11 @@ func TestUserServiceGetOrCreateUserMatchesByExternalKey(t *testing.T) {
 		ProviderUserID:    "18633160",
 	}
 
-	user, err := svc.GetOrCreateUser(claims)
+	user, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser error: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, claims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, claims); err != nil {
 		t.Fatalf("bind identity: %v", err)
 	}
 	if user.SubjectID != "legacy-u1" {
@@ -305,11 +305,11 @@ func TestUserServiceGetOrCreateUserKeepsLocalSubjectIDAcrossLogins(t *testing.T)
 		Email:             "alice@example.com",
 	}
 
-	first, err := svc.GetOrCreateUser(claims)
+	first, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("first GetOrCreateUser error: %v", err)
 	}
-	second, err := svc.GetOrCreateUser(claims)
+	second, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("second GetOrCreateUser error: %v", err)
 	}
@@ -482,16 +482,16 @@ func TestBindIdentityToUserCreatesSecondaryIdentityAndPromotesByRank(t *testing.
 	svc := NewUserService(db)
 
 	phoneClaims := &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}
-	user, err := svc.GetOrCreateUser(phoneClaims)
+	user, err := svc.GetOrCreateUser(context.Background(),phoneClaims)
 	if err != nil {
 		t.Fatalf("create phone user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, phoneClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, phoneClaims); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
 	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001", Picture: "https://avatars.example.com/a.png"}
-	if err := svc.BindIdentityToUser(user.SubjectID, githubClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, githubClaims); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
 
@@ -527,15 +527,15 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewUserService(db)
 
-	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	user, err := svc.GetOrCreateUser(context.Background(),&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	// Explicitly bind the github identity since GetOrCreateUser might not auto-bind
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 	identities, _ := svc.ListUserIdentities(context.Background(), user.SubjectID)
@@ -548,7 +548,7 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	if githubIdentityID == 0 {
 		t.Fatal("expected github identity to exist")
 	}
-	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+	if err := svc.UnbindIdentityByProvider(context.Background(),user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
 	identities, _ = svc.ListUserIdentities(context.Background(), user.SubjectID)
@@ -573,11 +573,11 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		Picture:           "https://avatars.example.com/gh.png",
 	}
 
-	ghUser, err := svc.GetOrCreateUser(githubClaims)
+	ghUser, err := svc.GetOrCreateUser(context.Background(),githubClaims)
 	if err != nil {
 		t.Fatalf("create github user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(ghUser.SubjectID, githubClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),ghUser.SubjectID, githubClaims); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
 	if ghUser.CasdoorUniversalID == nil || *ghUser.CasdoorUniversalID != "shared-uuid" {
@@ -602,11 +602,11 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		Phone:             "15500000001",
 	}
 
-	phoneUser, err := svc.GetOrCreateUser(phoneClaims)
+	phoneUser, err := svc.GetOrCreateUser(context.Background(),phoneClaims)
 	if err != nil {
 		t.Fatalf("get or create phone user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(phoneUser.SubjectID, phoneClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),phoneUser.SubjectID, phoneClaims); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 	if phoneUser.SubjectID != ghUser.SubjectID {
@@ -671,11 +671,11 @@ func TestGetOrCreateUserLegacyExternalKeyFallback(t *testing.T) {
 		ProviderUserID:    "gh-001",
 	}
 
-	user, err := svc.GetOrCreateUser(claims)
+	user, err := svc.GetOrCreateUser(context.Background(),claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser error: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, claims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, claims); err != nil {
 		t.Fatalf("bind identity: %v", err)
 	}
 	if user.SubjectID != "legacy-u1" {
@@ -696,19 +696,19 @@ func TestUnbindIdentitySetsExplicitlyUnbound(t *testing.T) {
 	svc := NewUserService(db)
 
 	// Create user with github + phone identities
-	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	user, err := svc.GetOrCreateUser(context.Background(),&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
 	// Unbind github identity
-	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+	if err := svc.UnbindIdentityByProvider(context.Background(),user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
 
@@ -740,25 +740,25 @@ func TestBindIdentityToUserSkipsExplicitlyUnbound(t *testing.T) {
 	svc := NewUserService(db)
 
 	// Create user with github + phone identities
-	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	user, err := svc.GetOrCreateUser(context.Background(),&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
 	// Unbind github identity
-	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+	if err := svc.UnbindIdentityByProvider(context.Background(),user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
 
 	// Simulate concurrent request with old JWT token trying to rebind github
 	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}
-	if err := svc.BindIdentityToUser(user.SubjectID, githubClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, githubClaims); err != nil {
 		t.Fatalf("BindIdentityToUser should not error on explicitly unbound identity, got: %v", err)
 	}
 
@@ -790,25 +790,25 @@ func TestGetOrCreateUserDoesNotRebindExplicitlyUnbound(t *testing.T) {
 	svc := NewUserService(db)
 
 	// Create user with github + phone identities
-	user, err := svc.GetOrCreateUser(&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
+	user, err := svc.GetOrCreateUser(context.Background(),&JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(),user.SubjectID, &JWTClaims{ID: "phone-id", Sub: "phone-sub", UniversalID: "phone-uuid", Name: "phone_15500000001", PreferredUsername: "ph_15500000001", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
 	// Unbind github identity
-	if err := svc.UnbindIdentityByProvider(user.SubjectID, "github"); err != nil {
+	if err := svc.UnbindIdentityByProvider(context.Background(),user.SubjectID, "github"); err != nil {
 		t.Fatalf("unbind github identity: %v", err)
 	}
 
 	// Simulate login callback with old github JWT token
 	githubClaims := &JWTClaims{ID: "gh-id", Sub: "gh-sub", UniversalID: "gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}
-	_, err = svc.GetOrCreateUser(githubClaims)
+	_, err = svc.GetOrCreateUser(context.Background(),githubClaims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser should not error on explicitly unbound identity, got: %v", err)
 	}

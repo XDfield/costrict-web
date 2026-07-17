@@ -2,6 +2,7 @@ package user
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,7 +77,7 @@ func TestRPCWriter_GetOrCreateUser_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	u, err := w.GetOrCreateUser(&JWTClaims{UniversalID: "uuid-1", Name: "alice"})
+	u, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1", Name: "alice"})
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestRPCWriter_GetOrCreateUser_5xxMapsToErrRPCUnavailable(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(&JWTClaims{UniversalID: "uuid-1"})
+	_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRPCWriter_GetOrCreateUser_4xxSurfacesServerMessage(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(&JWTClaims{})
+	_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -137,7 +138,7 @@ func TestRPCWriter_GetOrCreateUser_NilClaimsRejected(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(nil)
+	_, err := w.GetOrCreateUser(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "nil JWT claims") {
 		t.Fatalf("expected nil JWT claims error, got %v", err)
 	}
@@ -157,7 +158,7 @@ func TestRPCWriter_SyncUser_DelegatesToGetOrCreateEndpoint(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, err := w.SyncUser(&JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if _, err := w.SyncUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("SyncUser: %v", err)
 	}
 	if !hitGetOrCreate {
@@ -177,7 +178,7 @@ func TestRPCWriter_BindIdentityToUser_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.BindIdentityToUser("usr_target", &JWTClaims{UniversalID: "uuid-1", Provider: "github"}, BindIdentityOptions{ForceRebind: true}); err != nil {
+	if err := w.BindIdentityToUser(context.Background(), "usr_target", &JWTClaims{UniversalID: "uuid-1", Provider: "github"}, BindIdentityOptions{ForceRebind: true}); err != nil {
 		t.Fatalf("BindIdentityToUser: %v", err)
 	}
 	// Body should be the bind envelope with claims + options.
@@ -203,7 +204,7 @@ func TestRPCWriter_BindIdentityToUser_OmitsOptionsWhenDefault(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.BindIdentityToUser("usr_target", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if err := w.BindIdentityToUser(context.Background(), "usr_target", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("BindIdentityToUser: %v", err)
 	}
 	var body struct {
@@ -224,7 +225,7 @@ func TestRPCWriter_BindIdentityToUser_ExplicitlyUnboundReturnsNil(t *testing.T) 
 	w := newTestRPCWriter(t, srv.URL)
 
 	// Must return nil (no-op) — matches server's local writer at service.go:290.
-	if err := w.BindIdentityToUser("usr_target", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if err := w.BindIdentityToUser(context.Background(), "usr_target", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("explicitly_unbound should map to nil, got %v", err)
 	}
 }
@@ -237,7 +238,7 @@ func TestRPCWriter_BindIdentityToUser_AlreadyBoundReturnsServerToken(t *testing.
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.BindIdentityToUser("usr_target", &JWTClaims{UniversalID: "uuid-1"})
+	err := w.BindIdentityToUser(context.Background(), "usr_target", &JWTClaims{UniversalID: "uuid-1"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -255,7 +256,7 @@ func TestRPCWriter_BindIdentityToUser_Other4xxSurfacesServerMessage(t *testing.T
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.BindIdentityToUser("usr_target", &JWTClaims{})
+	err := w.BindIdentityToUser(context.Background(), "usr_target", &JWTClaims{})
 	if err == nil || err.Error() != "external key is required" {
 		t.Fatalf("expected verbatim server message, got %v", err)
 	}
@@ -273,7 +274,7 @@ func TestRPCWriter_TransferIdentityToUser_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.TransferIdentityToUser("usr_target", "casdoor:github:uuid-1", "usr_source"); err != nil {
+	if err := w.TransferIdentityToUser(context.Background(), "usr_target", "casdoor:github:uuid-1", "usr_source"); err != nil {
 		t.Fatalf("TransferIdentityToUser: %v", err)
 	}
 	var body struct {
@@ -297,7 +298,7 @@ func TestRPCWriter_TransferIdentityToUser_NotFoundSurfacesServerMessage(t *testi
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.TransferIdentityToUser("usr_target", "casdoor:github:uuid-x", "")
+	err := w.TransferIdentityToUser(context.Background(), "usr_target", "casdoor:github:uuid-x", "")
 	// handlers.go:833 matches on this exact string — byte-for-byte required.
 	if err == nil || err.Error() != "identity_not_found" {
 		t.Fatalf("expected identity_not_found, got %v", err)
@@ -316,7 +317,7 @@ func TestRPCWriter_UnbindIdentityByProvider_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.UnbindIdentityByProvider("usr_target", "github"); err != nil {
+	if err := w.UnbindIdentityByProvider(context.Background(), "usr_target", "github"); err != nil {
 		t.Fatalf("UnbindIdentityByProvider: %v", err)
 	}
 	if cap.Body != nil && len(cap.Body) != 0 {
@@ -332,7 +333,7 @@ func TestRPCWriter_UnbindIdentityByProvider_LastIdentityConflictSurfacesServerMe
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.UnbindIdentityByProvider("usr_target", "github")
+	err := w.UnbindIdentityByProvider(context.Background(), "usr_target", "github")
 	// handlers.go:766 matches on this exact string — byte-for-byte required.
 	if err == nil || err.Error() != "cannot unbind last identity" {
 		t.Fatalf("expected cannot unbind last identity, got %v", err)
@@ -345,11 +346,14 @@ func TestRPCWriter_NotConfiguredReturnsErrNotConfigured(t *testing.T) {
 	t.Parallel()
 	w := NewRPCWriter(config.UserServiceConfig{Backend: config.UserServiceBackendRPC}) // no URL/token
 	for name, fn := range map[string]func() error{
-		"get-or-create": func() error { _, err := w.GetOrCreateUser(&JWTClaims{UniversalID: "x"}); return err },
-		"sync":          func() error { _, err := w.SyncUser(&JWTClaims{UniversalID: "x"}); return err },
-		"bind":          func() error { return w.BindIdentityToUser("usr", &JWTClaims{UniversalID: "x"}) },
-		"transfer":      func() error { return w.TransferIdentityToUser("usr", "key", "") },
-		"unbind":        func() error { return w.UnbindIdentityByProvider("usr", "github") },
+		"get-or-create": func() error {
+			_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "x"})
+			return err
+		},
+		"sync":     func() error { _, err := w.SyncUser(context.Background(), &JWTClaims{UniversalID: "x"}); return err },
+		"bind":     func() error { return w.BindIdentityToUser(context.Background(), "usr", &JWTClaims{UniversalID: "x"}) },
+		"transfer": func() error { return w.TransferIdentityToUser(context.Background(), "usr", "key", "") },
+		"unbind":   func() error { return w.UnbindIdentityByProvider(context.Background(), "usr", "github") },
 	} {
 		name, fn := name, fn
 		t.Run(name, func(t *testing.T) {
@@ -367,48 +371,48 @@ func TestRPCWriter_NotConfiguredReturnsErrNotConfigured(t *testing.T) {
 // exercise DualWriter's primary/secondary fan-out semantics without spinning
 // up an httptest server.
 type recordingWriter struct {
-	getOrCreate           int
-	sync                  int
-	bind                  int
-	transfer              int
-	unbind                int
+	getOrCreate            int
+	sync                   int
+	bind                   int
+	transfer               int
+	unbind                 int
 	applyEnterpriseMapping int
-	reissueToken          int
-	reissueTokenFn        func(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
-	primaryError          error // forces a non-nil return from all methods when set
+	reissueToken           int
+	reissueTokenFn         func(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
+	primaryError           error // forces a non-nil return from all methods when set
 }
 
-func (r *recordingWriter) GetOrCreateUser(_ *JWTClaims) (*models.User, error) {
+func (r *recordingWriter) GetOrCreateUser(_ context.Context, _ *JWTClaims) (*models.User, error) {
 	r.getOrCreate++
 	if r.primaryError != nil {
 		return nil, r.primaryError
 	}
 	return &models.User{SubjectID: "usr_recording"}, nil
 }
-func (r *recordingWriter) SyncUser(_ *JWTClaims) (*models.User, error) {
+func (r *recordingWriter) SyncUser(_ context.Context, _ *JWTClaims) (*models.User, error) {
 	r.sync++
 	if r.primaryError != nil {
 		return nil, r.primaryError
 	}
 	return &models.User{SubjectID: "usr_recording"}, nil
 }
-func (r *recordingWriter) BindIdentityToUser(_ string, _ *JWTClaims, _ ...BindIdentityOptions) error {
+func (r *recordingWriter) BindIdentityToUser(_ context.Context, _ string, _ *JWTClaims, _ ...BindIdentityOptions) error {
 	r.bind++
 	return r.primaryError
 }
-func (r *recordingWriter) TransferIdentityToUser(_, _, _ string) error {
+func (r *recordingWriter) TransferIdentityToUser(_ context.Context, _, _, _ string) error {
 	r.transfer++
 	return r.primaryError
 }
-func (r *recordingWriter) UnbindIdentityByProvider(_, _ string) error {
+func (r *recordingWriter) UnbindIdentityByProvider(_ context.Context, _, _ string) error {
 	r.unbind++
 	return r.primaryError
 }
-func (r *recordingWriter) ApplyEnterpriseMapping(_, _ string) error {
+func (r *recordingWriter) ApplyEnterpriseMapping(_ context.Context, _, _ string) error {
 	r.applyEnterpriseMapping++
 	return r.primaryError
 }
-func (r *recordingWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (r *recordingWriter) ReissueToken(_ context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
 	r.reissueToken++
 	if r.reissueTokenFn != nil {
 		return r.reissueTokenFn(userSubjectID, claims, audience)
@@ -425,7 +429,7 @@ func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if _, err := dw.GetOrCreateUser(&JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
 	if primary.getOrCreate != 1 || secondary.getOrCreate != 1 {
@@ -440,7 +444,7 @@ func TestDualWriter_PrimaryFailureSkipsSecondary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if _, err := dw.GetOrCreateUser(&JWTClaims{UniversalID: "uuid-1"}); err == nil || !errors.Is(err, primaryErr) {
+	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err == nil || !errors.Is(err, primaryErr) {
 		t.Fatalf("expected primary error to propagate, got %v", err)
 	}
 	if secondary.getOrCreate != 0 {
@@ -456,7 +460,7 @@ func TestDualWriter_SecondaryFailureDoesNotFailRequest(t *testing.T) {
 
 	// Primary succeeds → request succeeds even though secondary fails.
 	// Secondary failure is logged but not surfaced.
-	if _, err := dw.GetOrCreateUser(&JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("secondary failure must not fail the request, got %v", err)
 	}
 	if secondary.getOrCreate != 1 {
@@ -469,7 +473,7 @@ func TestDualWriter_NilSecondarySkipsFanOut(t *testing.T) {
 	primary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: nil}
 
-	if err := dw.BindIdentityToUser("usr", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if err := dw.BindIdentityToUser(context.Background(), "usr", &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("BindIdentityToUser: %v", err)
 	}
 	if primary.bind != 1 {
@@ -522,7 +526,7 @@ func TestRPCWriter_ApplyEnterpriseMapping_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+	if err := w.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); err != nil {
 		t.Fatalf("ApplyEnterpriseMapping: %v", err)
 	}
 	if cap.AuthHeader != "test-internal-token" {
@@ -558,7 +562,7 @@ func TestRPCWriter_ApplyEnterpriseMapping_DisabledIsSuccess(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if err := w.ApplyEnterpriseMapping("usr_alice", "github"); err != nil {
+	if err := w.ApplyEnterpriseMapping(context.Background(), "usr_alice", "github"); err != nil {
 		t.Fatalf("disabled response must be nil error, got %v", err)
 	}
 }
@@ -574,7 +578,7 @@ func TestRPCWriter_ApplyEnterpriseMapping_5xxMapsToErrRPCUnavailable(t *testing.
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	err := w.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust")
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -591,7 +595,7 @@ func TestRPCWriter_ApplyEnterpriseMapping_4xxSurfacesServerMessage(t *testing.T)
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	err := w.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	err := w.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -608,7 +612,7 @@ func TestRPCWriter_ApplyEnterpriseMapping_NotConfigured(t *testing.T) {
 	if w.Configured() {
 		t.Fatal("writer should be unconfigured with empty URL+token")
 	}
-	if err := w.ApplyEnterpriseMapping("usr_alice", "idtrust"); !errors.Is(err, ErrNotConfigured) {
+	if err := w.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
 }
@@ -624,7 +628,7 @@ func TestDualWriter_ApplyEnterpriseMapping_FansOut(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+	if err := dw.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); err != nil {
 		t.Fatalf("ApplyEnterpriseMapping: %v", err)
 	}
 	if primary.applyEnterpriseMapping != 1 {
@@ -644,7 +648,7 @@ func TestDualWriter_ApplyEnterpriseMapping_SecondaryErrorDoesNotFail(t *testing.
 	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+	if err := dw.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); err != nil {
 		t.Fatalf("secondary failure must not bubble up, got %v", err)
 	}
 	if secondary.applyEnterpriseMapping != 1 {
@@ -662,7 +666,7 @@ func TestDualWriter_ApplyEnterpriseMapping_PrimaryErrorFails(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	err := dw.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust")
 	if err == nil || !strings.Contains(err.Error(), "local primary exploded") {
 		t.Fatalf("expected primary error to surface, got %v", err)
 	}
@@ -678,7 +682,7 @@ func TestDualWriter_ApplyEnterpriseMapping_NilSecondarySkipsFanOut(t *testing.T)
 	primary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: nil}
 
-	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+	if err := dw.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); err != nil {
 		t.Fatalf("ApplyEnterpriseMapping with nil Secondary: %v", err)
 	}
 	if primary.applyEnterpriseMapping != 1 {
@@ -703,7 +707,7 @@ func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	token, exp, err := w.ReissueToken("usr_alice", &JWTClaims{
+	token, exp, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{
 		UniversalID: "uuid-alice",
 		Name:        "Alice",
 	}, nil)
@@ -751,7 +755,7 @@ func TestRPCWriter_ReissueToken_AudienceForwarded(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken("usr_alice", nil, []string{"csc-cli", "ops-portal"}); err != nil {
+	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", nil, []string{"csc-cli", "ops-portal"}); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -773,7 +777,7 @@ func TestRPCWriter_ReissueToken_NilAudienceOmitted(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken("usr_alice", nil, nil); err != nil {
+	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", nil, nil); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -792,7 +796,7 @@ func TestRPCWriter_ReissueToken_EmptySubjectIDRejected(t *testing.T) {
 	defer srv.Close()
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken("", &JWTClaims{}, nil)
+	_, _, err := w.ReissueToken(context.Background(), "", &JWTClaims{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty user_subject_id") {
 		t.Fatalf("expected empty-subject error, got %v", err)
 	}
@@ -806,7 +810,7 @@ func TestRPCWriter_ReissueToken_NotConfigured(t *testing.T) {
 	if w.Configured() {
 		t.Fatal("writer should be unconfigured with empty URL+token")
 	}
-	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
@@ -821,7 +825,7 @@ func TestRPCWriter_ReissueToken_5xxMapsToErrRPCUnavailable(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -837,7 +841,7 @@ func TestRPCWriter_ReissueToken_4xxSurfacesServerMessage(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if err == nil || err.Error() != "user_subject_id is required" {
 		t.Fatalf("expected server message, got %v", err)
 	}
@@ -853,7 +857,7 @@ func TestRPCWriter_ReissueToken_EmptyTokenInResponseErrors(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty token") {
 		t.Fatalf("expected empty-token error, got %v", err)
 	}
@@ -873,7 +877,7 @@ func TestDualWriter_ReissueToken_BypassesPrimary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	token, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	token, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
@@ -897,7 +901,7 @@ func TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable(t *te
 	primary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: nil}
 
-	_, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
@@ -916,7 +920,7 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	_, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	_, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "cs-user unreachable") {
 		t.Fatalf("expected secondary error to propagate, got %v", err)
 	}
@@ -930,7 +934,7 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 func TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable(t *testing.T) {
 	t.Parallel()
 	var s *UserService // method receiver is nil-safe — no db needed
-	token, _, err := s.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	token, _, err := s.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil)
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
@@ -948,12 +952,12 @@ func TestUserService_ApplyEnterpriseMapping_LocalStubIsNoOp(t *testing.T) {
 	t.Parallel()
 	svc := &UserService{}
 
-	if err := svc.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+	if err := svc.ApplyEnterpriseMapping(context.Background(), "usr_alice", "idtrust"); err != nil {
 		t.Fatalf("local stub should be no-op nil, got %v", err)
 	}
 	// Empty args must also be safe — the OAuth callback may fire this hook
 	// before validation runs on the cs-user side.
-	if err := svc.ApplyEnterpriseMapping("", ""); err != nil {
+	if err := svc.ApplyEnterpriseMapping(context.Background(), "", ""); err != nil {
 		t.Fatalf("local stub with empty args should still be no-op nil, got %v", err)
 	}
 }

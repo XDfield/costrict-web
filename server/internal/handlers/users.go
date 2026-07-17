@@ -321,7 +321,7 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 		// effects such as bootstrap platform-admin granting.
 		if user, err := UserModule.Service.FindUserByClaims(claims); err == nil && user != nil {
 			// User exists, sync if needed
-			_, _ = UserModule.Writer.SyncUser(claims)
+			_, _ = UserModule.Writer.SyncUser(context.Background(), claims)
 		}
 	}
 }

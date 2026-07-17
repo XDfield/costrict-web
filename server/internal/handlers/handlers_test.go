@@ -257,7 +257,7 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
@@ -309,12 +309,12 @@ func TestBindCallbackSuccess(t *testing.T) {
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
 	// Explicitly bind phone identity since GetOrCreateUser might not auto-bind
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(context.Background(), currentUser.SubjectID, &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
@@ -364,15 +364,15 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
-	otherUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
+	otherUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed other user: %v", err)
 	}
-	if err := UserModule.Service.BindIdentityToUser(otherUser.SubjectID, &userpkg.JWTClaims{ID: "bound-gh-id", Sub: "bound-gh-sub", UniversalID: "bound-gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(context.Background(), otherUser.SubjectID, &userpkg.JWTClaims{ID: "bound-gh-id", Sub: "bound-gh-sub", UniversalID: "bound-gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("seed occupied identity: %v", err)
 	}
 
@@ -895,7 +895,7 @@ type callbackStubWriter struct {
 	reissueErr    error
 }
 
-func (c *callbackStubWriter) ReissueToken(_ string, _ *userpkg.JWTClaims, _ []string) (string, time.Time, error) {
+func (c *callbackStubWriter) ReissueToken(_ context.Context, _ string, _ *userpkg.JWTClaims, _ []string) (string, time.Time, error) {
 	c.reissueCalls++
 	if c.reissueErr != nil {
 		return "", time.Time{}, c.reissueErr

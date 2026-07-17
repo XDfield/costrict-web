@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -26,25 +27,26 @@ var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (ser
 // (Backend, WriteMode) combination — see user.go for the selection matrix.
 //
 // Signatures intentionally match *UserService's existing write methods
-// verbatim — including the lack of a context.Context parameter — so the local
-// backend satisfies the interface without modification. RPCWriter uses
-// context.Background() internally with the configured per-request timeout as
-// the bound; cancellation is not exposed because writes are infrequent
-// (login + admin actions) and aborting mid-write would leave cs-user in an
-// inconsistent state.
+// verbatim. Phase B3b.2b added a leading context.Context parameter to every
+// method — RPCWriter uses it to forward the tenant slug (and future tracing
+// span) as X-Tenant-Id on the outbound cs-user RPC, and the local UserService
+// threads it down to its GORM queries. RPCWriter still wraps the ctx with a
+// per-request timeout internally (rpc_client.go defaultTimeout); cancellation
+// is best-effort and mid-write aborts leave cs-user in whatever state the
+// partial request produced.
 type UserWriter interface {
-	GetOrCreateUser(claims *JWTClaims) (*models.User, error)
-	SyncUser(claims *JWTClaims) (*models.User, error)
-	BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error
-	TransferIdentityToUser(targetUserSubjectID string, externalKey string, sourceUserSubjectID string) error
-	UnbindIdentityByProvider(userSubjectID string, provider string) error
+	GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error)
+	SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error)
+	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error
+	TransferIdentityToUser(ctx context.Context, targetUserSubjectID string, externalKey string, sourceUserSubjectID string) error
+	UnbindIdentityByProvider(ctx context.Context, userSubjectID string, provider string) error
 	// ApplyEnterpriseMapping refreshes the user's employment_identities
 	// snapshot on cs-user. Server has no local employment_identities table,
 	// so the local UserService satisfies this with a no-op (see
 	// service.go); only RPCWriter actually performs a write. Best-effort at
 	// every caller — login must never block on this.
 	// Added in Phase A4b.
-	ApplyEnterpriseMapping(userSubjectID string, provider string) error
+	ApplyEnterpriseMapping(ctx context.Context, userSubjectID string, provider string) error
 	// ReissueToken mints a cs-user-signed JWT carrying enterprise claims
 	// (Phase A7). The local UserService has no RSA signing key and returns
 	// ErrSelfSignUnavailable unconditionally; only RPCWriter (Backend=rpc)
@@ -55,7 +57,7 @@ type UserWriter interface {
 	// as best-effort: when ReissueToken fails the cookie keeps the Casdoor
 	// token, when it succeeds the cookie gets the cs-user token.
 	// Added in Phase A7b.
-	ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
+	ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
 }
 
 // DualWriter is the canary posture selected by USER_SERVICE_BACKEND=rpc with
@@ -83,13 +85,13 @@ type DualWriter struct {
 // GetOrCreateUser delegates to Primary (which fires the post-login hook) and
 // best-effort replicates to Secondary. Returns Primary's user; Secondary
 // divergence is logged only.
-func (d *DualWriter) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
-	u, err := d.Primary.GetOrCreateUser(claims)
+func (d *DualWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+	u, err := d.Primary.GetOrCreateUser(ctx, claims)
 	if err != nil {
 		return nil, err
 	}
 	if d.Secondary != nil {
-		if _, secErr := d.Secondary.GetOrCreateUser(claims); secErr != nil {
+		if _, secErr := d.Secondary.GetOrCreateUser(ctx, claims); secErr != nil {
 			logger.Warn("[user-dual-write] secondary GetOrCreateUser failed: %v", secErr)
 		}
 	}
@@ -100,13 +102,13 @@ func (d *DualWriter) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 // SyncUser is the background-reconciliation path (no post-login hook), so
 // divergences here surface stale search results rather than broken logins —
 // still logged but lower urgency.
-func (d *DualWriter) SyncUser(claims *JWTClaims) (*models.User, error) {
-	u, err := d.Primary.SyncUser(claims)
+func (d *DualWriter) SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+	u, err := d.Primary.SyncUser(ctx, claims)
 	if err != nil {
 		return nil, err
 	}
 	if d.Secondary != nil {
-		if _, secErr := d.Secondary.SyncUser(claims); secErr != nil {
+		if _, secErr := d.Secondary.SyncUser(ctx, claims); secErr != nil {
 			logger.Warn("[user-dual-write] secondary SyncUser failed: %v", secErr)
 		}
 	}
@@ -118,12 +120,12 @@ func (d *DualWriter) SyncUser(claims *JWTClaims) (*models.User, error) {
 // expected during canary (cs-user may already have the identity from a prior
 // ETL tick) and is downgraded to a debug log — Primary's result is what the
 // handler acts on.
-func (d *DualWriter) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
-	if err := d.Primary.BindIdentityToUser(userSubjectID, claims, opts...); err != nil {
+func (d *DualWriter) BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+	if err := d.Primary.BindIdentityToUser(ctx, userSubjectID, claims, opts...); err != nil {
 		return err
 	}
 	if d.Secondary != nil {
-		if secErr := d.Secondary.BindIdentityToUser(userSubjectID, claims, opts...); secErr != nil {
+		if secErr := d.Secondary.BindIdentityToUser(ctx, userSubjectID, claims, opts...); secErr != nil {
 			logger.Warn("[user-dual-write] secondary BindIdentityToUser failed: %v", secErr)
 		}
 	}
@@ -133,12 +135,12 @@ func (d *DualWriter) BindIdentityToUser(userSubjectID string, claims *JWTClaims,
 // TransferIdentityToUser delegates to Primary and best-effort replicates to
 // Secondary. The third argument (sourceUserSubjectID) is accepted for
 // interface symmetry; cs-user identifies the identity purely by external_key.
-func (d *DualWriter) TransferIdentityToUser(targetUserSubjectID, externalKey, sourceUserSubjectID string) error {
-	if err := d.Primary.TransferIdentityToUser(targetUserSubjectID, externalKey, sourceUserSubjectID); err != nil {
+func (d *DualWriter) TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error {
+	if err := d.Primary.TransferIdentityToUser(ctx, targetUserSubjectID, externalKey, sourceUserSubjectID); err != nil {
 		return err
 	}
 	if d.Secondary != nil {
-		if secErr := d.Secondary.TransferIdentityToUser(targetUserSubjectID, externalKey, sourceUserSubjectID); secErr != nil {
+		if secErr := d.Secondary.TransferIdentityToUser(ctx, targetUserSubjectID, externalKey, sourceUserSubjectID); secErr != nil {
 			logger.Warn("[user-dual-write] secondary TransferIdentityToUser failed: %v", secErr)
 		}
 	}
@@ -147,12 +149,12 @@ func (d *DualWriter) TransferIdentityToUser(targetUserSubjectID, externalKey, so
 
 // UnbindIdentityByProvider delegates to Primary and best-effort replicates to
 // Secondary.
-func (d *DualWriter) UnbindIdentityByProvider(userSubjectID, provider string) error {
-	if err := d.Primary.UnbindIdentityByProvider(userSubjectID, provider); err != nil {
+func (d *DualWriter) UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error {
+	if err := d.Primary.UnbindIdentityByProvider(ctx, userSubjectID, provider); err != nil {
 		return err
 	}
 	if d.Secondary != nil {
-		if secErr := d.Secondary.UnbindIdentityByProvider(userSubjectID, provider); secErr != nil {
+		if secErr := d.Secondary.UnbindIdentityByProvider(ctx, userSubjectID, provider); secErr != nil {
 			logger.Warn("[user-dual-write] secondary UnbindIdentityByProvider failed: %v", secErr)
 		}
 	}
@@ -168,12 +170,12 @@ func (d *DualWriter) UnbindIdentityByProvider(userSubjectID, provider string) er
 // Errors from Secondary are logged but never returned: this method is fired
 // from the OAuth callback's post-GetOrCreateUser hook, and employment mapping
 // is a bonus feature that must never block login.
-func (d *DualWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error {
-	if err := d.Primary.ApplyEnterpriseMapping(userSubjectID, provider); err != nil {
+func (d *DualWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, provider string) error {
+	if err := d.Primary.ApplyEnterpriseMapping(ctx, userSubjectID, provider); err != nil {
 		return err
 	}
 	if d.Secondary != nil {
-		if secErr := d.Secondary.ApplyEnterpriseMapping(userSubjectID, provider); secErr != nil {
+		if secErr := d.Secondary.ApplyEnterpriseMapping(ctx, userSubjectID, provider); secErr != nil {
 			logger.Warn("[user-dual-write] secondary ApplyEnterpriseMapping failed: %v", secErr)
 		}
 	}
@@ -189,11 +191,11 @@ func (d *DualWriter) ApplyEnterpriseMapping(userSubjectID, provider string) erro
 // When Secondary is nil (e.g. a future single-primary config), returns
 // ErrSelfSignUnavailable so the OAuth callback surfaces the misconfiguration.
 // Phase A7b.
-func (d *DualWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (d *DualWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
 	if d.Secondary == nil {
 		return "", time.Time{}, ErrSelfSignUnavailable
 	}
-	token, exp, err := d.Secondary.ReissueToken(userSubjectID, claims, audience)
+	token, exp, err := d.Secondary.ReissueToken(ctx, userSubjectID, claims, audience)
 	if err != nil {
 		// Log + propagate. Unlike ApplyEnterpriseMapping (pure best-effort),
 		// ReissueToken errors must reach the OAuth callback so it can decide

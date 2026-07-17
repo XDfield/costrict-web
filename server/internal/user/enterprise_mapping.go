@@ -20,14 +20,18 @@
 
 package user
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ApplyEnterpriseMapping is the local-backend stub. Server has no
 // employment_identities table; employment mapping only takes effect once the
 // deployment cutover to cs-user (USER_SERVICE_BACKEND=rpc). Returns nil
 // unconditionally so callers can fire it from best-effort hooks without a
 // local-mode conditional.
-func (s *UserService) ApplyEnterpriseMapping(userSubjectID, provider string) error {
+func (s *UserService) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, provider string) error {
+	_ = ctx
 	_ = userSubjectID
 	_ = provider
 	return nil
@@ -42,7 +46,8 @@ func (s *UserService) ApplyEnterpriseMapping(userSubjectID, provider string) err
 //
 // The audience parameter is accepted for interface symmetry with RPCWriter.
 // It's ignored (no signer to honor it).
-func (s *UserService) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (s *UserService) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+	_ = ctx
 	_ = userSubjectID
 	_ = claims
 	_ = audience
