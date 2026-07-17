@@ -644,6 +644,183 @@
 - **设计决定**：用 `tenant_slug` claim 而非 `tenant_id` 做比较 — 避免每次请求做 slug→tenant_id 查询（RPC 调用）。两个 claim 可以并存于 JWT（`tenant_id` 留给未来 RLS / 多租户查询）。`tenant_slug` 空表示 pre-cutover Casdoor token，middleware 自动跳过 — 灰度兼容。
 - **HMAC side-channel cookie 方案废弃**：A7 cs-user self-sign 基础设施已就绪，JWT-claim 路径更干净（无额外 cookie，无 HMAC 密钥管理）。
 
+### B6 设计草案（待实施 — PostgreSQL RLS 兜底）
+
+> 本节为 **设计草案**，不是已完成工作。Phase B 当前态势（B3b.2c + B4 + B5 三层覆盖）已堵住应用层跨 tenant 越权；B6 的目标是堵住**绕过 cs-user 直接查 DB** 这条剩余攻击面。设计依据来自 `docs/identity-tenant/MULTI_TENANCY_DESIGN.md` §10.2 + 附录 C，但需要按 B1 的 schema 偏离（TEXT 而非 UUID）做适配。
+
+#### 目标 / 非目标
+
+- ✅ **目标**：DB 层强制 `tenant_id` 过滤；即使 cs-user 应用层 bug 漏带 `WHERE tenant_id = ?`（B5 的 `tenant.Scope(ctx)` 因写路径未覆盖 / 未来重构手滑），DB 也不会返回跨 tenant 行
+- ✅ **目标**：跨 tenant 平台管理路径走独立角色 + SECURITY DEFINER 函数（不依赖应用层 GUC）
+- ✅ **目标**：可灰度（shadow 模式先观察 RLS 拒绝事件，再 enforce）
+- ❌ **非目标**：业务库（costrict-web server 的 capability_items 等）的 RLS — 见 MULTI_TENANCY §22.3，留作独立后续
+- ❌ **非目标**：替代 B5 应用层 scoping — RLS 是兜底，应用层仍要先过滤（RLS 命中率高 = 应用层覆盖率差，是 smell）
+
+#### 范围：覆盖的表
+
+当前 cs-user 已落地的 tenant-scoped 表：
+
+| 表 | tenant_id 列 | 已有索引 |
+|----|--------------|----------|
+| `users` | TEXT NOT NULL DEFAULT 'default' (B2) | `idx_users_tenant_id` + `idx_users_tenant_username` (B7) |
+| `user_auth_identities` | TEXT NOT NULL DEFAULT 'default' (B2) | `idx_user_auth_identities_tenant_id` |
+| `employment_identities` | TEXT NOT NULL DEFAULT 'default' (B2) | `idx_employment_identities_tenant_id` + `idx_employment_identities_tenant_user` |
+
+**不覆盖**的表（无 tenant 维度或不存在）：
+- `tenants` / `tenant_admins` / `tenant_configs` — tenant 元数据本身，跨 tenant 可见（admin 路径）
+- `user_profile` / `user_system_roles` / `user_gitea_binding` / `username_history` — MULTI_TENANCY 附录 C 列出但 cs-user 尚未落地；这些表首次落地时必须同步加 RLS（在各自迁移文件里）
+- default tenant 行（`tenant_id = 'default'`）—— RLS 把它当普通 tenant，所有 default-tenant 行对运行时可见
+
+#### 三角色矩阵
+
+| 角色 | LOGIN | BYPASSRLS | 用途 | 备注 |
+|------|-------|-----------|------|------|
+| `cs_user_owner` | NO | NO | DDL / migration；table owner | FORCE RLS 让 owner 也受约束；migration 期间临时 DISABLE |
+| `cs_user_app` | NO | NO | cs-user 服务运行时（普通 tenant 查询） | 通过 GORM pool 连接，由 GUC 注入当前 tenant |
+| `cs_user_platform_admin` | NO | NO | 平台管理跨 tenant 读 | 走 SECURITY DEFINER 函数显式跳过 RLS，**禁止普通连接设 GUC 绕过** |
+
+**LOGIN 角色**（应用层连接用，从对应 NOLOGIN 角色继承）：
+- `cs_user_app_login` MEMBER OF `cs_user_app` —— cs-user 服务 DSN
+- `cs_user_pa_login` MEMBER OF `cs_user_platform_admin` —— 平台管理专用 DSN（独立 pool）
+
+`cs_user_owner` 不需要 LOGIN —— DDL 通过 migration runner 临时提权运行（`SET ROLE cs_user_owner`），migration 结束 `RESET ROLE` 并 re-enable RLS。
+
+#### RLS Policy 定义
+
+```sql
+-- 1. 启用 + FORCE（所有 tenant-scoped 表）
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+ALTER TABLE user_auth_identities FORCE ROW LEVEL SECURITY;
+ALTER TABLE employment_identities FORCE ROW LEVEL SECURITY;
+
+-- 2. 三角色（NOLOGIN，靠 LOGIN 角色 MEMBER OF 继承）
+CREATE ROLE cs_user_owner NOLOGIN NOBYPASSRLS;
+CREATE ROLE cs_user_app    NOLOGIN NOBYPASSRLS;
+CREATE ROLE cs_user_platform_admin NOLOGIN NOBYPASSRLS;
+
+-- 3. cs_user_app 强制按 session 变量过滤
+--    注意：B1 偏离 = TEXT 而非 UUID，所以无 ::UUID cast（与 MULTI_TENANCY 附录 C 不同）
+--    NULLIF(..., '') 让 GUC 未设时 fallback 到 NULL，三值逻辑下 cs_user_app 永远看不到任何行
+--    （fail-closed：宁可全错，也不漏一行跨 tenant 数据）
+CREATE POLICY tenant_isolation_app ON users
+    FOR ALL
+    TO cs_user_app
+    USING (tenant_id = NULLIF(current_setting('cs_user.tenant_id', true), ''))
+    WITH CHECK (tenant_id = NULLIF(current_setting('cs_user.tenant_id', true), ''));
+
+-- 同样 policy 复制到 user_auth_identities / employment_identities（三张表独立 POLICY）
+-- ...
+
+-- 4. cs_user_platform_admin 不挂任何 POLICY —— 它走 SECURITY DEFINER 函数跳过 RLS
+--    （见下方 platform_admin 路径）
+
+-- 5. cs_user_owner：FORCE RLS 下也受 POLICY 约束，但 owner 是 POLICY 的默认 target，
+--    不显式声明就意味着无 POLICY 命中 → 全表不可见。给 owner 一条 "DENY ALL"：
+CREATE POLICY tenant_isolation_owner_deny ON users
+    FOR ALL
+    TO cs_user_owner
+    USING (false)
+    WITH CHECK (false);
+-- （这条让 owner 在 RLS 启用期间无法读写；migration 期间 DISABLE RLS 才能改数据）
+```
+
+#### GUC 注入点（cs-user 侧）
+
+cs-user 用 GORM，需要 hook 在每个 request-scoped tx 开始时执行 `SET LOCAL cs_user.tenant_id = ?`。两个候选方案：
+
+**方案 A — GORM Callbacks（推荐）**
+
+注册 `Before("create", "query", "update", "delete")` callback，从 `db.Statement.Context` 取 tenant_id 并 `EXEC 'SET LOCAL cs_user.tenant_id = ' || quote($1)`。优点：自动覆盖所有 GORM 路径，零侵入；缺点：raw SQL（`db.Raw`）若不走 callback 链会漏（但 cs-user 内部全 GORM）。
+
+**方案 B — 显式 tx 包装**
+
+`tenant.RunInTx(ctx, tenantID, fn)` helper 强制每个请求 handler 显式开 tx 并设 GUC。优点：白盒；缺点：所有 handler 改造，工作量大，且容易漏写。
+
+**决定：方案 A**。在 `cs-user/internal/storage/postgres.go::Open` 里注册全局 GORM Callback，从 ctx 读 `tenant.IDFromContext(ctx)` 并 `SET LOCAL`。`IDFromContext` fallback 到 `tenant.DefaultTenantID = "default"` —— pre-cutover 单租户请求自动看到 default tenant 行（与 B2 回填等价行为）。
+
+#### platform_admin 跨 tenant 路径
+
+```sql
+-- 专用 SECURITY DEFINER 函数，绕过 RLS 读所有 tenant。
+-- `SET LOCAL row_security = off` 是 PG 官方推荐的 RLS 旁路方式（PG 13+），
+-- 在 SECURITY DEFINER 函数内生效且作用域限定到本次调用 —— 比 MULTI_TENANCY
+-- 附录 C 的"函数 owner 是 cs_user_owner"做法更稳（避免 owner-deny POLICY
+-- 自相矛盾：FORCE RLS 下 owner 也被 deny，函数以 owner 身份反而查不到行）。
+CREATE OR REPLACE FUNCTION cs_user_list_all_users()
+RETURNS SETOF users
+LANGUAGE sql SECURITY DEFINER SET search_path = cs_user, pg_temp AS $$
+    SET LOCAL row_security = off;
+    SELECT * FROM users;
+$$;
+-- 仅 cs_user_platform_admin 角色有 EXECUTE 权限
+REVOKE ALL ON FUNCTION cs_user_list_all_users() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION cs_user_list_all_users() TO cs_user_platform_admin;
+```
+
+#### 灰度策略（必做，不能直接 enforce）
+
+直接 ENABLE + FORCE RLS 风险：cs-user 应用层若有未覆盖路径（B5 write 方法未 scope / 任何遗漏的 raw query），RLS 会**静默**返回空结果集（POLICY 命中后行被过滤），用户感知是"数据丢失"。
+
+**Shadow 模式**（MULTI_TENANCY §N2 推荐）：
+1. **阶段 1 — ENABLE without FORCE**：`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`（不加 FORCE）—— table owner（cs_user_owner，即 migration 角色）仍能 bypass，应用层不受影响；但 cs_user_app_login 已受 POLICY 约束
+2. **阶段 2 — 应用层 GUC 注入先跑通**：先实现 GORM Callback + GUC 注入，让所有 cs-user 请求都正确 SET LOCAL；观察 1 周无空结果异常
+3. **阶段 3 — FORCE + audit log**：加 FORCE，配 PG `ROW SECURITY VIOLATION` 事件监听（pgaudit 或 log_analyzer），发现违规即告警
+4. **阶段 4 — 真正 enforce**：默认 ON；shadow 模式作为可回滚开关（`SECURITY_SCAN_SHORT_CIRCUIT_DISABLED` 同款 env 模式：设 `B6_RLS_SHADOW_MODE=true` 回到阶段 2）
+
+#### 测试矩阵（testcontainers）
+
+新文件 `cs-user/internal/storage/rls_test.go`，用 testcontainers-go 起真实 PG：
+
+| 用例 | 期望 |
+|------|------|
+| `cs_user_app_login` + GUC 设为 tenant A | 只看到 tenant A 的 users / identities |
+| `cs_user_app_login` + GUC 未设 | 0 行（fail-closed） |
+| `cs_user_app_login` + GUC 设为 tenant A + 写 tenant B 行 | WITH CHECK 拒绝 |
+| `cs_user_app_login` + 跨 tenant JOIN（A.user × B.identity） | join 结果空 |
+| `cs_user_pa_login` + `list_all_users()` 函数 | 看到所有 tenant 行 |
+| `cs_user_owner` + 直接 SELECT（FORCE 已启） | 0 行（owner-deny POLICY） |
+| `cs_user_owner` + DISABLE RLS + SELECT | 全部行（migration 路径） |
+
+**sqlite 不支持 RLS** —— 现有 cs-user sqlite 测试套件（service_test 等）跑不了 RLS 用例。RLS 测试必须 testcontainers-only，build tag `//go:build cgo` 配合 testcontainers-go（已有 `runner_cgo_test.go` 先例）。
+
+#### 与 B5 write 方法 scoping 的关系
+
+B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
+- **B6 enforce 前**：write path 未 scope 是真实漏洞（DB default 保证新建行 tenant_id='default'，但 UPDATE/DELETE WHERE 漏 tenant_id 会跨 tenant 改）
+- **B6 enforce 后**：write path 未 scope 也被 RLS WITH CHECK 兜住（INSERT/UPDATE 必须满足 `tenant_id = current_setting`，否则拒绝）
+
+**结论**：B5 write scoping 仍应做（应用层性能 + 可读性 + RLS 兜底失效时的防御），但 B6 落地后它的紧迫度从 P1 降到 P2。建议 B6 enforce（阶段 4）后再补 B5 write scoping，作为 defense-in-depth 加固。
+
+#### 工作量估算
+
+| 子任务 | 估算 |
+|--------|------|
+| migration SQL（三角色 + POLICY × 3 表 + SECURITY DEFINER 函数） | 0.5 天 |
+| GORM Callback + GUC 注入 + tenant_id ctx 透传 | 1 天 |
+| testcontainers RLS 测试套件（7 用例） | 1.5 天 |
+| 灰度 shadow 模式 + env flag + audit log | 0.5 天 |
+| 文档 + code review | 0.5 天 |
+| **合计** | **4 天** |
+
+分 2 个 PR：
+- **PR-1**：migration + GORM Callback + GUC 注入 + 测试（ENABLE without FORCE，shadow 阶段）
+- **PR-2**：FORCE + audit log + 正式 enforce（观察 1 周后）
+
+#### 待决问题（需用户拍板）
+
+1. **平台管理跨 tenant 路径当前是否启用？** 如果没有现成的"看所有 tenant 用户"功能，platform_admin 角色和 SECURITY DEFINER 函数可以延后到 Phase C（admin API）一起做，B6 只覆盖 cs_user_app 路径
+2. **`SET LOCAL row_security = off` 是否符合安全审计要求？** 比 MULTI_TENANCY 附录 C 的 owner-as-definer 更稳但更新；如果有合规要求严格按附录 C 实现，需要补 `cs_user_pa_admin_definer` 角色
+3. **GORM Callback vs 显式 tx 包装**：我倾向 Callback（零侵入），但 Callback 难调试（全局副作用）；如果团队偏好显式，方案 B 也可以
+
+#### 参考实现 / 文档
+
+- `docs/identity-tenant/MULTI_TENANCY_DESIGN.md` §10.2（L864）—— 主体设计
+- `docs/identity-tenant/MULTI_TENANCY_DESIGN.md` 附录 C（L2946）—— 完整参考实现（注意：用 `::UUID` cast，B6 需改 TEXT）
+- PostgreSQL 官方文档 [43.1. RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) —— `SET LOCAL row_security = off` 在 SECURITY DEFINER 函数内的用法
+- `cs-user/migrations/20260717120000_add_tenant_id_to_user_tables.sql` —— B2 schema 实际形态
+
+---
+
 ### B7 实现细节（已完成 2026-07-17）
 
 - **migration**：`cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql`
