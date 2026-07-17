@@ -53,7 +53,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeLocal,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.GetOrCreateUser(baseClaims("github", "sub-goc-local"))
+				_, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-local"))
 				return err
 			},
 			wantBlocked: false,
@@ -63,7 +63,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeReadonly,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.GetOrCreateUser(baseClaims("github", "sub-goc-ro"))
+				_, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-ro"))
 				return err
 			},
 			wantBlocked: true,
@@ -73,7 +73,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeLocal,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.SyncUser(baseClaims("github", "sub-sync-local"))
+				_, err := svc.SyncUser(context.Background(), baseClaims("github", "sub-sync-local"))
 				return err
 			},
 			wantBlocked: false,
@@ -83,7 +83,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeReadonly,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.SyncUser(baseClaims("github", "sub-sync-ro"))
+				_, err := svc.SyncUser(context.Background(), baseClaims("github", "sub-sync-ro"))
 				return err
 			},
 			wantBlocked: true,
@@ -95,7 +95,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 				return seedUserForBindTest(t, db, "sub-bind-local", "uuid-bind-local")
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
-				return svc.BindIdentityToUser(seed.SubjectID, baseClaims("phone", "sub-bind-local-extra"))
+				return svc.BindIdentityToUser(context.Background(), seed.SubjectID, baseClaims("phone", "sub-bind-local-extra"))
 			},
 			wantBlocked: false,
 		},
@@ -106,7 +106,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 				return seedUserForBindTest(t, db, "sub-bind-ro", "uuid-bind-ro")
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
-				return svc.BindIdentityToUser(seed.SubjectID, baseClaims("phone", "sub-bind-ro-extra"))
+				return svc.BindIdentityToUser(context.Background(), seed.SubjectID, baseClaims("phone", "sub-bind-ro-extra"))
 			},
 			wantBlocked: true,
 		},
@@ -117,7 +117,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 				return seedUserForBindTest(t, db, "sub-unbind-local", "uuid-unbind-local")
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
-				return svc.UnbindIdentityByProvider(seed.SubjectID, "github")
+				return svc.UnbindIdentityByProvider(context.Background(), seed.SubjectID, "github")
 			},
 			wantBlocked: false,
 		},
@@ -128,7 +128,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 				return seedUserForBindTest(t, db, "sub-unbind-ro", "uuid-unbind-ro")
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
-				return svc.UnbindIdentityByProvider(seed.SubjectID, "github")
+				return svc.UnbindIdentityByProvider(context.Background(), seed.SubjectID, "github")
 			},
 			wantBlocked: true,
 		},
@@ -141,7 +141,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
 				// external_key for the seeded github identity — see seedUserForBindTest.
-				return svc.TransferIdentityToUser(seed.SubjectID, "uuid-xfer-local", "")
+				return svc.TransferIdentityToUser(context.Background(), seed.SubjectID, "uuid-xfer-local", "")
 			},
 			wantBlocked: false,
 		},
@@ -152,7 +152,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 				return seedUserForBindTest(t, db, "sub-xfer-ro", "uuid-xfer-ro")
 			},
 			act: func(t *testing.T, svc *UserService, seed *models.User) error {
-				return svc.TransferIdentityToUser(seed.SubjectID, "uuid-xfer-ro", "")
+				return svc.TransferIdentityToUser(context.Background(), seed.SubjectID, "uuid-xfer-ro", "")
 			},
 			wantBlocked: true,
 		},

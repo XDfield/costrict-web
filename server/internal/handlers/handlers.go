@@ -450,7 +450,7 @@ func AuthCallback(c *gin.Context) {
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
 				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
 			}
-			if created, err := UserModule.Writer.GetOrCreateUser(claims); err != nil {
+			if created, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
 			} else if created != nil {
 				// Phase A4b: refresh the user's employment_identities snapshot
@@ -461,7 +461,7 @@ func AuthCallback(c *gin.Context) {
 				// UserService stub is a no-op; RPCWriter + DualWriter forward
 				// the actual write to cs-user.
 				if claims.Provider != "" {
-					if err := UserModule.Writer.ApplyEnterpriseMapping(created.SubjectID, claims.Provider); err != nil {
+					if err := UserModule.Writer.ApplyEnterpriseMapping(c.Request.Context(), created.SubjectID, claims.Provider); err != nil {
 						fmt.Printf("[WARN] ApplyEnterpriseMapping failed during auth callback: %v\n", err)
 					}
 				}
@@ -473,7 +473,7 @@ func AuthCallback(c *gin.Context) {
 				// dual and single lives in the verifier (JWKS chain), not
 				// here — the cookie value is the cs-user JWT either way.
 				if jwtSignMode != config.JWTSignModeOff {
-					if newToken, _, err := UserModule.Writer.ReissueToken(created.SubjectID, claims, nil); err != nil {
+					if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), created.SubjectID, claims, nil); err != nil {
 						fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
 					} else {
 						cookieToken = newToken
@@ -575,7 +575,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
 		return
 	}
-	currentUser, err := UserModule.Writer.GetOrCreateUser(currentClaims)
+	currentUser, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), currentClaims)
 	if err != nil || currentUser == nil || currentUser.SubjectID != state.UserSubjectID {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid binding session"})
 		return
@@ -606,7 +606,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		return
 	}
 	fmt.Printf("[bindAuthCallback] branch=proceed_to_bind provider_match_ok=%v\n", strings.EqualFold(claims.Provider, state.Provider))
-	if err := UserModule.Writer.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
+	if err := UserModule.Writer.BindIdentityToUser(c.Request.Context(), currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
 			fmt.Printf("[bindAuthCallback] branch=identity_already_bound claims.Provider=%q\n", claims.Provider)
 			externalKey := userpkg.BuildExternalKey(claims)
@@ -806,7 +806,7 @@ func UnbindIdentity(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 		return
 	}
-	if err := UserModule.Writer.UnbindIdentityByProvider(currentUserID, provider); err != nil {
+	if err := UserModule.Writer.UnbindIdentityByProvider(c.Request.Context(), currentUserID, provider); err != nil {
 		if err.Error() == "cannot unbind last identity" || err.Error() == "identity not found" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -873,7 +873,7 @@ func ConfirmMergeIdentity(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "merge_token_user_mismatch"})
 		return
 	}
-	if err := UserModule.Writer.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
+	if err := UserModule.Writer.TransferIdentityToUser(c.Request.Context(), currentUserID, ms.ExternalKey, ms.Provider); err != nil {
 		if err.Error() == "identity_not_found" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "identity_not_found"})
 			return
