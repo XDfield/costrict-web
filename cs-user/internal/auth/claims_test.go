@@ -296,3 +296,121 @@ func TestEnterpriseClaims_NilReceiverInterfaceSafety(t *testing.T) {
 // ptrStr is a test-only helper that takes a string literal and returns a
 // pointer to a copy. Mirrors the nullable enterprise column shape.
 func ptrStr(s string) *string { return &s }
+
+// --- Phase C1: permission claims (TenantRoles / PlatformAdmin / PlatformScope) ---
+
+// TestNewEnterpriseClaims_PermissionFieldsRoundTrip verifies the constructor
+// carries the new permission fields straight through to the claims struct.
+// Phase C1: tenant_admins / platform_admins rows are translated into these
+// claims at reissue-token time.
+func TestNewEnterpriseClaims_PermissionFieldsRoundTrip(t *testing.T) {
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Subject:       "usr_perm",
+		TTL:           time.Hour,
+		TenantID:      "t-acme",
+		TenantRoles:   []string{"tenant_admin", "owner"},
+		PlatformAdmin: true,
+		PlatformScope: "full",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	if len(c.TenantRoles) != 2 || c.TenantRoles[0] != "tenant_admin" || c.TenantRoles[1] != "owner" {
+		t.Errorf("TenantRoles: got %v", c.TenantRoles)
+	}
+	if !c.PlatformAdmin {
+		t.Errorf("PlatformAdmin: got false, want true")
+	}
+	if c.PlatformScope != "full" {
+		t.Errorf("PlatformScope: got %q, want %q", c.PlatformScope, "full")
+	}
+}
+
+// TestEnterpriseClaims_PermissionJSONShape verifies the marshalled JSON
+// carries the new permission keys (snake_case) so server-side parsers can
+// read them post-JWT-decode.
+func TestEnterpriseClaims_PermissionJSONShape(t *testing.T) {
+	c, _ := NewEnterpriseClaims(IssuanceParams{
+		Subject:       "usr_shape",
+		TTL:           time.Hour,
+		TenantID:      "t-acme",
+		TenantRoles:   []string{"tenant_admin"},
+		PlatformAdmin: true,
+		PlatformScope: "support",
+	}, fixedNow)
+
+	var raw map[string]any
+	bs, _ := json.Marshal(c)
+	if err := json.Unmarshal(bs, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if roles, ok := raw["tenant_roles"].([]any); !ok || len(roles) != 1 || roles[0] != "tenant_admin" {
+		t.Errorf("tenant_roles shape wrong: %v", raw["tenant_roles"])
+	}
+	if pa, ok := raw["platform_admin"].(bool); !ok || !pa {
+		t.Errorf("platform_admin shape wrong: %v", raw["platform_admin"])
+	}
+	if scope, ok := raw["platform_scope"].(string); !ok || scope != "support" {
+		t.Errorf("platform_scope shape wrong: %v", raw["platform_scope"])
+	}
+}
+
+// TestEnterpriseClaims_PermissionOmitempty verifies that a regular tenant
+// member (no roles, not platform_admin) does NOT carry the permission keys
+// in the marshalled JSON — keeps the token minimal and avoids leaking empty
+// arrays/fields that downstream parsers might mishandle.
+func TestEnterpriseClaims_PermissionOmitempty(t *testing.T) {
+	c, _ := NewEnterpriseClaims(IssuanceParams{
+		Subject:  "usr_regular",
+		TTL:      time.Hour,
+		TenantID: "t-acme",
+		// TenantRoles nil/empty, PlatformAdmin false, PlatformScope empty
+	}, fixedNow)
+	bs, _ := json.Marshal(c)
+	jsonStr := string(bs)
+	for _, banned := range []string{"tenant_roles", "platform_admin", "platform_scope"} {
+		if strings.Contains(jsonStr, banned) {
+			t.Errorf("regular-user JSON should omit %q; got %s", banned, jsonStr)
+		}
+	}
+}
+
+// TestEnterpriseClaims_PermissionFieldsSignAndVerify ensures the new claims
+// survive the sign+parse roundtrip via RSA JWT — middleware on server side
+// reads them out of the parsed token.
+func TestEnterpriseClaims_PermissionFieldsSignAndVerify(t *testing.T) {
+	pk := newRSAKey(t)
+	signer := pemEncode(t, pk)
+	now := time.Now()
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Subject:       "usr_perm",
+		TTL:           time.Hour,
+		TenantID:      "t-acme",
+		TenantRoles:   []string{"owner"},
+		PlatformAdmin: true,
+		PlatformScope: "full",
+	}, now)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	signed, err := signer.SignJWT(c, now)
+	if err != nil {
+		t.Fatalf("SignJWT: %v", err)
+	}
+	parsed, err := jwt.ParseWithClaims(signed, &EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	if err != nil {
+		t.Fatalf("ParseWithClaims: %v", err)
+	}
+	got, ok := parsed.Claims.(*EnterpriseClaims)
+	if !ok {
+		t.Fatalf("parsed claims type: %T", parsed.Claims)
+	}
+	if len(got.TenantRoles) != 1 || got.TenantRoles[0] != "owner" {
+		t.Errorf("TenantRoles after parse: got %v", got.TenantRoles)
+	}
+	if !got.PlatformAdmin || got.PlatformScope != "full" {
+		t.Errorf("PlatformAdmin/Scope after parse: %v / %q", got.PlatformAdmin, got.PlatformScope)
+	}
+}

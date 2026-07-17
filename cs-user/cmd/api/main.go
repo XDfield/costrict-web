@@ -122,6 +122,7 @@ func main() {
 		Users:            userSvc,
 		AuthIdentities:   userSvc,
 		EmploymentReader: userSvc,
+		PermissionReader: userSvc,
 		Signer:           signer,
 		TenantResolver:   tenant.NewResolver(pool.Gorm),
 	})

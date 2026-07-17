@@ -37,6 +37,12 @@ type AuthAPI struct {
 	Svc    EmploymentReader
 	Signer *auth.Signer
 	JWT    config.JWTConfig
+	// Permissions optionally carries the Phase C1 permission readers. When
+	// nil, no permission claims are populated (graceful — used during the
+	// Phase C1 灰度 rollout before middlewares enforce the new claims).
+	// When set, the handler queries both GetPlatformAdmin + ListActiveTenantRoles
+	// and translates the result into the corresponding JWT claims.
+	Permissions PermissionReader
 }
 
 // EmploymentReader is the subset of *user.Service the reissue flow needs.
@@ -44,6 +50,19 @@ type AuthAPI struct {
 // — sqlite-backed fakes substitute without spinning a real Service.
 type EmploymentReader interface {
 	GetEmploymentIdentity(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
+}
+
+// PermissionReader is the Phase C1 subset of *user.Service the reissue flow
+// needs to populate the platform_admin / platform_scope / tenant_roles JWT
+// claims. Same interface-for-testability rationale as EmploymentReader.
+//
+// Both methods use the graceful-degradation contract: missing data surfaces
+// as (nil, nil) / empty slice — not an error — so a regular tenant member
+// without admin roles still gets a valid token, just without the permission
+// claims (TestReissueToken_NoPermissionRowStillIssuesToken locks this in).
+type PermissionReader interface {
+	GetPlatformAdmin(ctx context.Context, userSubjectID string) (*models.PlatformAdmin, error)
+	ListActiveTenantRoles(ctx context.Context, userSubjectID, tenantID string) ([]string, error)
 }
 
 // reissueTokenRequest is the body shape for POST
@@ -150,17 +169,47 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	}
 	// employment == nil is success — user has no enterprise snapshot yet.
 
+	// Phase C1: populate permission claims from tenant_admins +
+	// platform_admins. Skipped entirely when Permissions is nil (灰度
+	// rollout: callers that haven't wired the new readers yet). Errors here
+	// surface as 500 — both methods only return errors on real DB faults;
+	// missing data is (nil,nil) / empty slice, not error.
+	var platformAdmin bool
+	var platformScope string
+	var tenantRoles []string
+	if a.Permissions != nil {
+		pa, err := a.Permissions.GetPlatformAdmin(c.Request.Context(), req.UserSubjectID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		if pa != nil {
+			platformAdmin = true
+			platformScope = pa.Scope
+		}
+
+		roles, err := a.Permissions.ListActiveTenantRoles(c.Request.Context(), req.UserSubjectID, tenantID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		tenantRoles = roles
+	}
+
 	now := time.Now()
 	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
-		Issuer:     a.JWT.Issuer,
-		Subject:    req.UserSubjectID,
-		Audience:   audience,
-		TTL:        a.JWT.TTL,
-		JTI:        uuid.NewString(),
-		Identity:   req.Identity,
-		Employment: employment,
-		TenantID:   tenantID,
-		TenantSlug: tenantSlug,
+		Issuer:        a.JWT.Issuer,
+		Subject:       req.UserSubjectID,
+		Audience:      audience,
+		TTL:           a.JWT.TTL,
+		JTI:           uuid.NewString(),
+		Identity:      req.Identity,
+		Employment:    employment,
+		TenantID:      tenantID,
+		TenantSlug:    tenantSlug,
+		TenantRoles:   tenantRoles,
+		PlatformAdmin: platformAdmin,
+		PlatformScope: platformScope,
 	}, now)
 	if err != nil {
 		// NewEnterpriseClaims only fails on empty Subject (caught above by

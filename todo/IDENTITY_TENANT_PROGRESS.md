@@ -33,9 +33,9 @@
 | 阶段 | 主题 | 子任务数 | 已完成 | 完成度 | 状态 |
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
-| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
+| Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
+| Phase C | 三级权限 + admin API | ~16 | 1 | 6% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin API 待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -451,6 +451,12 @@
 - [ ] assistant-ui SSE/WebSocket 连接正常
 - [ ] quota-manager `/quota-manager/api/v1/*` 调用 `AuthUser.ID` 解析成功
 - [x] cs-cloud + costrict-web 双格式 reader 已落地（§9.6）— costrict-web 端实现位于 `server/internal/authidentity/normalize.go:NormalizeClaimsMap`（flat first → nested/renamed fallback，line 42 注释明确 "兼容旧 Casdoor flat JWT + 新 cs-user canonical JWT"），覆盖 email/phone/name/username/picture/provider 全字段。cs-cloud 端 reader 落在 opencode 仓库（`D:\DEV\opencode\packages\opencode\internal\provider\jwt.go`），costrict-web 仓库外。
+- [x] **代码级 acceptance bar（2026-07-17）** — cs-user 仓库内可锁定的端到端 contract，由 `cs-user/internal/handlers/phasea_integration_test.go` 覆盖：
+  - `TestPhaseA_FullContextEndToEnd`：reissue-token + JWKS 端到端 — 用 JWKS 端点返回的公钥（非测试自身私钥）验证签发的 token，断言 standard / OIDC identity / enterprise / tenant / permission 五组 claim 全部正确填充。
+  - `TestPhaseA_GrayReleaseMinimalToken`：灰度路径（无 PermissionReader + 无 employment 行）— 仍签发可验证 token，且 JSON 省略 enterprise + permission claim 组（pre-cutover relying party 只看到 standard + tenant）。
+  - `TestPhaseA_JWKSKidMatchesSignerKid`：token kid header 与 JWKS 端点 kid 一致（依赖方多 key 轮换场景下选对 key）。
+  - `TestPhaseA_TokenExpiryMatchesConfigTTL`：exp 与配置 1h TTL 一致（cookie MaxAge 依赖此契约）。
+  - 余下 L447-452 + L454 acceptance 项为集成 / 运维级（cs-cloud / csc / assistant-ui / quota-manager 真实下游 + 30 天灰度），由 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` 同款运维 runbook 驱动，不能在本仓库单元测试覆盖。
 - [ ] 30 天灰度结束关闭 Casdoor JWT 签名 24 小时无异常
 
 ---
@@ -464,7 +470,14 @@
 - [x] **B2**：给 `users` / `user_auth_identities` / `employment_identities` 加 `tenant_id` 列 + 索引（`user_profile` 表尚未存在，待其首次落地时一并加入）— 详见下方"B2 实现细节"
 
 - [x] **B3**：tenant resolution — `tenant.Resolver` 三层 fallback primitives（slug / email-domain / email）+ email_domains typed reader。HTTP middleware / cookie / session / Casdoor redirect 拆到 **B3b**（下一子任务）。— 详见下方"B3 实现细节"
-- [ ] **B3**：tenant resolution（subdomain → email domain → 显式选择）
+- [x] **B3b.1**：cs-user HTTP middleware 解析三层信号（`X-Tenant-Id` header → `cs_tenant_slug` cookie → Host subdomain）— 详见下方"B3b.1 实现细节"
+- [x] **B3b.2a**：server 端 ctx 助手 + RPC `X-Tenant-Id` 转发 — 详见下方"B3b.2a 实现细节"
+- [x] **B3b.2b-step1**：RPCWriter + UserWriter 接口接受 ctx（write-path slug 转发真正生效）
+- [x] **B3b.2b-step2a**：cs-user endpoint `POST /api/internal/tenants/resolve-by-email`（picker candidate source）
+- [x] **B3b.2b-step2b**：server RPC client + AuthCallback Try 2 注入（email-domain → slug → cookie）
+- [x] **B3b.2b-step2c**：picker suggestion endpoint `/api/tenants/suggest`（server 侧 wrapper，pre-login 可调）
+- [ ] **B3b.2b-step2d**：AuthCallback `ambiguous` 分支 picker redirect — **待前端 picker 页面落地后启用**（独立前端 PR，本仓库 server 工作流外）
+- [x] **B3b.2c**：cross-tenant 检测（JWT `tenant_slug` claim 比对 + `TenantMatch` middleware 401）
 - [x] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
 - [x] **B5**：应用层 query 经 `tenant.Scope(ctx)` helper（cs-user 侧 primitive + 4 个 read 方法迁移；write 方法待 follow-up）— 详见下方"B5 实现细节"
 - [~] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）— **已降级为未来工作（2026-07-17）**，不进 Phase B 范围。设计草案见下方"B6 设计草案"，待触发条件满足后再启动
@@ -945,12 +958,51 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 
 ## 阶段 C：三级权限 + admin API
 
-- [ ] **C1**：权限模型表 + 中间件（platform_admin / tenant_admin / tenant_member）
+- [x] **C1**：权限模型表 + 中间件（platform_admin / tenant_admin / tenant_member）— 详见下方"C1 实现细节"
 - [ ] **C2**：platform_admin API（tenant CRUD、跨 tenant 审计）
 - [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）
 - [ ] **C4**：越权防护 + 审计日志
 
 **测试覆盖重点**：每个 admin endpoint 必须覆盖"角色不符 → 403"路径；swagger 注解挂 `@Security` 双重（InternalToken + BearerAuth 角色注解）。
+
+### C1：权限模型表 + 中间件（已落地）
+
+- [x] **实现**：`cs-user/migrations/20260717190000_create_platform_admins.sql` —
+  - `platform_admins` 表（4 列 + PK）：`user_id VARCHAR(191) PRIMARY KEY`（每用户一行）/ `granted_by VARCHAR(191) NOT NULL` / `granted_at TIMESTAMPTZ NOT NULL DEFAULT now()` / `scope VARCHAR(32) NOT NULL DEFAULT 'full'`（full | support | read_only，应用层枚举校验，无 CHECK 约束）
+  - 外键：`fk_platform_admins_user` (CASCADE — 删用户自动撤销授权) + `fk_platform_admins_granted_by` (RESTRICT — 防止删除有授权记录的授予者)
+  - 索引：`idx_platform_admins_scope`（platform_admin lookup by scope，e.g. "show all read_only admins"）
+  - **无 revoked_at** — lifecycle 是 DELETE-only（hard revoke），审计 trail 落 `user_center_audit_log`（§16.2），区别于 tenant_admins 的 soft-revoke
+  - **无 bootstrap INSERT** — 第一条 platform_admin 由 operator 手动 SQL 注入（详见决策记录）
+- [x] **模型**：`cs-user/internal/models/platform_admin.go` — `PlatformAdmin` 结构体 + 三个 scope 常量（`PlatformScopeFull` / `PlatformScopeSupport` / `PlatformScopeReadOnly`），`TableName()` 返回 `platform_admins`
+- [x] **service 读取方法**：`cs-user/internal/user/permission.go` —
+  - `GetPlatformAdmin(ctx, userSubjectID) (*models.PlatformAdmin, error)` — 单行 lookup；`(nil, nil)` 表示非 platform admin（graceful degradation，镜像 `GetEmploymentIdentity` 契约）
+  - `ListActiveTenantRoles(ctx, userSubjectID, tenantID) ([]string, error)` — 多行 lookup，`WHERE revoked_at IS NULL`；返回 role names 列表（空 slice = regular member）
+  - sentinel errors：`ErrEmptySubjectID` / `ErrEmptyTenantID`（caller-programming error，handler 映射 400）
+- [x] **JWT claims 扩展**：`cs-user/internal/auth/claims.go` — `EnterpriseClaims` 加三个字段（`TenantRoles []string` / `PlatformAdmin bool` / `PlatformScope string`，全 omitempty），`IssuanceParams` 加对应输入字段，`NewEnterpriseClaims` 透传
+- [x] **reissue-token wiring**：`cs-user/internal/handlers/auth.go` — 新增 `PermissionReader` interface（可选注入，nil 时跳过 = 灰度模式），`AuthAPI.Permissions` 字段；`ReissueToken` 在 employment read 后调用 `GetPlatformAdmin` + `ListActiveTenantRoles`，结果翻译为 JWT claims
+- [x] **server JWT 解析扩展**：`server/internal/middleware/auth.go` — `AuthClaims` + `CasdoorUserInfo` 加 `PlatformAdmin bool` / `PlatformScope string` / `TenantRoles []string` 字段；`parseJWTToken` 从 MapClaims 提取（`NormalizeClaimsMap` 不覆盖 Phase C1 字段）；`setAuthContext` 透传
+- [x] **permission middlewares**：`server/internal/middleware/permission.go` —
+  - `RequirePlatformAdmin(scopeArgs...)` — platform_admin=true 必须；scope allowlist 可选过滤
+  - `RequireTenantAdmin(roles...)` — tenant_admin role 命中即可；platform admin 短路（§14.3 super-tenant）；空 role args = 任意 tenant_admin role
+  - `RequireTenantMember` — 仅要求 AuthClaims.TenantID 非空（baseline gate）
+  - 全部：缺 AuthClaimsKey → 401；存在但权限不足 → 403（区分"未登录" vs "权限不够"）
+- [x] **app wiring**：`cs-user/cmd/api/main.go` + `cs-user/internal/app/app.go` — `Deps.PermissionReader` 字段（生产 = 同一个 `*user.Service`），`registerAuthRoutes` 注入到 `AuthAPI.Permissions`
+
+**测试覆盖**（全绿）：
+- `cs-user/internal/models/platform_admin_test.go`（5 测试）— PK 唯一、scope 默认 full、UPDATE lifecycle、DELETE revoke
+- `cs-user/internal/auth/claims_test.go`（+4 测试）— permission fields round-trip / JSON shape / omitempty / sign+verify
+- `cs-user/internal/user/permission_test.go`（8 测试）— GetPlatformAdmin 三态（happy / not-found-nil / empty-arg-err）+ ListActiveTenantRoles 四态（happy / skips-revoked / tenant-scoped / empty-args-err）
+- `cs-user/internal/handlers/auth_test.go`（+5 测试）— permission claims populated / no-reader-still-issues / regular-member-omits-claims / platform-error-500 / tenant-roles-error-500
+- `server/internal/middleware/permission_test.go`（13 测试）— RequirePlatformAdmin 5 / RequireTenantAdmin 6 / RequireTenantMember 3 / non-AuthClaims-value 防护
+
+**决策记录**：
+1. **无 env-var auto-bootstrap**：第一条 platform_admin 由 operator 通过 SQL migration 手动 INSERT（或运维脚本）；不做 env-var 自动 bootstrap，避免"机器一启动 root 就被自动赋权"的安全 footgun
+2. **no revoked_at**：platform_admins 是 hard-delete lifecycle（DELETE 撤销），区别于 tenant_admins 的 soft-revoke；审计 trail 落 user_center_audit_log（§16.2）
+3. **no CHECK constraint on scope**：scope enum 由应用层校验（PlatformScope* 常量集），DB 不加 CHECK — 添加新 scope 不需要 migration，匹配 tenant_admins role 的同样决策
+4. **PermissionReader 可选注入**：handler 的 `Permissions` 字段为 nil 时跳过 lookup（灰度模式）；这样 C1 上线时可以只开 schema + claims，不激活 middleware，再单独激活 middleware 强制
+5. **platform admin super-tenant**：`RequireTenantAdmin` 中 platform admin 短路通过 — 平台级管理员本质是跨 tenant 的（§14.3）
+
+
 
 ---
 

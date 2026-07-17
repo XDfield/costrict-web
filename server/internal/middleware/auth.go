@@ -48,6 +48,21 @@ type AuthClaims struct {
 	// cross-tenant detection (B3b.2c). Empty claim → middleware skips
 	// comparison (graceful pre-cutover behavior).
 	TenantSlug string
+	// PlatformAdmin (Phase C1): populated ONLY when the JWT carries the
+	// `platform_admin` claim — i.e. cs-user-signed tokens issued after the
+	// Phase C1 reissue-token wiring. False for Casdoor-issued tokens and
+	// cs-user tokens for non-platform-admin users. When true, PlatformScope
+	// carries the granularity (full / support / read_only). Consumed by
+	// RequirePlatformAdmin middleware (§15.1 auth chain).
+	PlatformAdmin bool
+	// PlatformScope (Phase C1): granularity of the platform-admin grant.
+	// Only meaningful when PlatformAdmin is true. Empty otherwise.
+	PlatformScope string
+	// TenantRoles (Phase C1): the user's active roles on AuthClaims.TenantID
+	// (e.g. ["owner"]). Empty for regular tenant members. Consumed by
+	// RequireTenantAdmin middleware. Sourced from the `tenant_roles` JWT
+	// claim which cs-user populates from tenant_admins WHERE revoked_at IS NULL.
+	TenantRoles []string
 }
 
 var subjectResolver SubjectResolver
@@ -324,6 +339,18 @@ type CasdoorUserInfo struct {
 	// tokens (pre-cutover). Read directly from the MapClaims map because
 	// authidentity.NormalizeClaimsMap only handles standard Casdoor fields.
 	TenantSlug string `json:"tenant_slug,omitempty"`
+	// PlatformAdmin (Phase C1): true when the JWT carries
+	// `platform_admin:true` — only emitted by cs-user for users with a row
+	// in platform_admins. Read straight from the map (NormalizeClaimsMap
+	// doesn't handle Phase C1 fields). Consumed by RequirePlatformAdmin.
+	PlatformAdmin bool `json:"platform_admin,omitempty"`
+	// PlatformScope (Phase C1): the granularity string (full / support /
+	// read_only). Only meaningful when PlatformAdmin is true.
+	PlatformScope string `json:"platform_scope,omitempty"`
+	// TenantRoles (Phase C1): user's active roles on TenantID. Sourced from
+	// the `tenant_roles` JWT array claim emitted by cs-user. nil/empty for
+	// regular tenant members.
+	TenantRoles []string `json:"tenant_roles,omitempty"`
 }
 
 type casdoorUserinfoResponse struct {
@@ -381,6 +408,19 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	// tokens (pre-cutover); the TenantContext middleware falls back to
 	// tenant.DefaultTenantID before storing in ctx.
 	tenantID, _ := claims["tenant_id"].(string)
+	// Phase C1: platform_admin / platform_scope / tenant_roles — emitted by
+	// cs-user's reissue-token handler post Phase C1 wiring. Read straight
+	// from the map; NormalizeClaimsMap doesn't cover Phase C1 fields.
+	platformAdmin, _ := claims["platform_admin"].(bool)
+	platformScope, _ := claims["platform_scope"].(string)
+	var tenantRoles []string
+	if raw, ok := claims["tenant_roles"].([]any); ok {
+		for _, r := range raw {
+			if s, ok := r.(string); ok {
+				tenantRoles = append(tenantRoles, s)
+			}
+		}
+	}
 
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
@@ -394,6 +434,9 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		Phone:             normalized.Phone,
 		TenantID:          tenantID,
 		TenantSlug:        tenantSlug,
+		PlatformAdmin:     platformAdmin,
+		PlatformScope:     platformScope,
+		TenantRoles:       tenantRoles,
 	}, nil
 }
 
@@ -461,17 +504,20 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	userID := userInfo.Sub
 	userName := userInfo.PreferredUsername
 	authClaims := AuthClaims{
-		ID:                userInfo.ID,
-		Sub:               userInfo.Sub,
-		UniversalID:       userInfo.UniversalID,
-		Name:              userInfo.Name,
+		ID:             userInfo.ID,
+		Sub:             userInfo.Sub,
+		UniversalID:    userInfo.UniversalID,
+		Name:           userInfo.Name,
 		PreferredUsername: userInfo.PreferredUsername,
-		Email:             userInfo.Email,
-		Provider:          userInfo.Provider,
-		ProviderUserID:    userInfo.ProviderUserID,
-		Phone:             userInfo.Phone,
-		TenantID:          userInfo.TenantID,
-		TenantSlug:        userInfo.TenantSlug,
+		Email:          userInfo.Email,
+		Provider:       userInfo.Provider,
+		ProviderUserID: userInfo.ProviderUserID,
+		Phone:          userInfo.Phone,
+		TenantID:       userInfo.TenantID,
+		TenantSlug:     userInfo.TenantSlug,
+		PlatformAdmin:  userInfo.PlatformAdmin,
+		PlatformScope:  userInfo.PlatformScope,
+		TenantRoles:    userInfo.TenantRoles,
 	}
 	if subjectResolver != nil {
 		resolvedID, resolvedName, err := subjectResolver(authClaims)

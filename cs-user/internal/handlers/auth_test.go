@@ -32,6 +32,21 @@ func (s stubEmploymentReader) GetEmploymentIdentity(ctx context.Context, id stri
 	return s.fn(ctx, id)
 }
 
+// stubPermissionReader lets handler tests pin GetPlatformAdmin +
+// ListActiveTenantRoles responses without a DB. Phase C1.
+type stubPermissionReader struct {
+	platformFn    func(ctx context.Context, userSubjectID string) (*models.PlatformAdmin, error)
+	tenantRolesFn func(ctx context.Context, userSubjectID, tenantID string) ([]string, error)
+}
+
+func (s stubPermissionReader) GetPlatformAdmin(ctx context.Context, id string) (*models.PlatformAdmin, error) {
+	return s.platformFn(ctx, id)
+}
+
+func (s stubPermissionReader) ListActiveTenantRoles(ctx context.Context, userSubjectID, tenantID string) ([]string, error) {
+	return s.tenantRolesFn(ctx, userSubjectID, tenantID)
+}
+
 // newAuthAPI builds a minimal gin engine wired only with the reissue-token
 // route. Returns the api + engine so each test injects its own
 // stubEmploymentReader + signer.
@@ -459,5 +474,180 @@ func TestReissueToken_BadJSONMaps400(t *testing.T) {
 	r.ServeHTTP(rw, req)
 	if rw.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rw.Code)
+	}
+}
+
+// --- Phase C1: permission claims wiring ---
+
+// noPermReader is the canonical "user is a regular tenant member" stub:
+// both lookups return empty/nil. Used to verify the omitempty path.
+func noPermReader() stubPermissionReader {
+	return stubPermissionReader{
+		platformFn:    func(context.Context, string) (*models.PlatformAdmin, error) { return nil, nil },
+		tenantRolesFn: func(context.Context, string, string) ([]string, error) { return nil, nil },
+	}
+}
+
+// TestReissueToken_PermissionClaimsPopulated verifies the happy path: when
+// Permissions is wired and the user has both platform_admin + tenant_admin
+// rows, the corresponding JWT claims surface in the signed token.
+func TestReissueToken_PermissionClaimsPopulated(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.Permissions = stubPermissionReader{
+		platformFn: func(_ context.Context, id string) (*models.PlatformAdmin, error) {
+			if id != "usr_root" {
+				t.Errorf("platform lookup id: got %q, want usr_root", id)
+			}
+			return &models.PlatformAdmin{UserID: id, Scope: models.PlatformScopeFull}, nil
+		},
+		tenantRolesFn: func(_ context.Context, id, tenant string) ([]string, error) {
+			if id != "usr_root" || tenant != "default" {
+				t.Errorf("tenant_roles lookup args: id=%q tenant=%q", id, tenant)
+			}
+			return []string{models.TenantRoleOwner}, nil
+		},
+	}
+
+	body := reissueTokenRequest{UserSubjectID: "usr_root"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	parsed, _ := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if !got.PlatformAdmin {
+		t.Errorf("PlatformAdmin: got false, want true")
+	}
+	if got.PlatformScope != models.PlatformScopeFull {
+		t.Errorf("PlatformScope: got %q, want %q", got.PlatformScope, models.PlatformScopeFull)
+	}
+	if len(got.TenantRoles) != 1 || got.TenantRoles[0] != models.TenantRoleOwner {
+		t.Errorf("TenantRoles: got %v, want [owner]", got.TenantRoles)
+	}
+}
+
+// TestReissueToken_NoPermissionReaderStillIssuesToken verifies graceful
+// degradation: when Permissions is nil (灰度 rollout — caller hasn't wired
+// the new readers), the issued token simply omits the permission claims.
+// The handler must NOT fail.
+func TestReissueToken_NoPermissionReaderStillIssuesToken(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	// api.Permissions intentionally left nil — Phase A 灰度 mode.
+
+	body := reissueTokenRequest{UserSubjectID: "usr_alice"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	parsed, _ := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if got.PlatformAdmin {
+		t.Errorf("PlatformAdmin should be false when Permissions is nil")
+	}
+	if got.PlatformScope != "" {
+		t.Errorf("PlatformScope should be empty when Permissions is nil, got %q", got.PlatformScope)
+	}
+	if len(got.TenantRoles) != 0 {
+		t.Errorf("TenantRoles should be empty when Permissions is nil, got %v", got.TenantRoles)
+	}
+}
+
+// TestReissueToken_RegularMemberOmitsClaims verifies the omitempty path at
+// the wire level: a regular tenant member (no admin rows) gets a token that
+// does NOT carry tenant_roles / platform_admin / platform_scope keys. Locks
+// in the contract that downstream parsers can distinguish "regular member"
+// from "admin" purely by claim presence.
+func TestReissueToken_RegularMemberOmitsClaims(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.Permissions = noPermReader()
+
+	body := reissueTokenRequest{UserSubjectID: "usr_regular"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	// Re-issue via parse + marshal to inspect JSON shape. The signer's own
+	// public key (held by the test) is used so signature verification passes.
+	var resp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	parsed, _ := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	if parsed == nil {
+		t.Fatal("token did not parse")
+	}
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if got.PlatformAdmin || got.PlatformScope != "" || len(got.TenantRoles) != 0 {
+		t.Errorf("regular member should not carry permission claims: %+v", got)
+	}
+}
+
+// TestReissueToken_PlatformLookupErrorMaps500 verifies DB-side faults in the
+// platform-admin lookup surface as 500 (server fault), distinguishing from
+// the (nil,nil) graceful-degradation path.
+func TestReissueToken_PlatformLookupErrorMaps500(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.Permissions = stubPermissionReader{
+		platformFn:    func(context.Context, string) (*models.PlatformAdmin, error) { return nil, errors.New("db dead") },
+		tenantRolesFn: func(context.Context, string, string) ([]string, error) { return nil, nil },
+	}
+
+	body := reissueTokenRequest{UserSubjectID: "usr_alice"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "db dead") {
+		t.Errorf("body leaks internal error: %s", w.Body.String())
+	}
+}
+
+// TestReissueToken_TenantRolesLookupErrorMaps500 mirrors the above for the
+// tenant-roles path.
+func TestReissueToken_TenantRolesLookupErrorMaps500(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.Permissions = stubPermissionReader{
+		platformFn:    func(context.Context, string) (*models.PlatformAdmin, error) { return nil, nil },
+		tenantRolesFn: func(context.Context, string, string) ([]string, error) { return nil, errors.New("db dead") },
+	}
+
+	body := reissueTokenRequest{UserSubjectID: "usr_alice"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }

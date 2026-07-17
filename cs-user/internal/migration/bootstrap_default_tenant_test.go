@@ -55,7 +55,7 @@ DROP TABLE tenant_configs;
 
 func a2AndBootstrapFS() fstest.MapFS {
 	return fstest.MapFS{
-		"20260716160000_create_tenant_configs.sql":   {Data: []byte(a2Synthetic)},
+		"20260716160000_create_tenant_configs.sql":    {Data: []byte(a2Synthetic)},
 		"20260716170000_bootstrap_default_tenant.sql": {Data: []byte(a6Synthetic)},
 	}
 }

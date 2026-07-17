@@ -64,6 +64,18 @@ type EnterpriseClaims struct {
 	// slug (cookie / subdomain) for cross-tenant detection (B3b.2c). Empty
 	// for Casdoor-issued tokens (pre-cutover) — comparison must skip.
 	TenantSlug string `json:"tenant_slug,omitempty"`
+
+	// --- Permission (Phase C1 — populated from tenant_admins + platform_admins) ---
+	// TenantRoles lists the user's active roles on their current tenant
+	// (TenantID). Sourced from tenant_admins rows WHERE revoked_at IS NULL.
+	// Empty for users who are not tenant admins (regular tenant members).
+	// Format: []string e.g. ["tenant_admin"] or ["owner","admin"].
+	TenantRoles []string `json:"tenant_roles,omitempty"`
+	// PlatformAdmin marks the user as a platform-level admin (cross-tenant
+	// authority). When true, PlatformScope carries the granularity
+	// (full / support / read_only). When false, PlatformScope is ignored.
+	PlatformAdmin bool   `json:"platform_admin,omitempty"`
+	PlatformScope string `json:"platform_scope,omitempty"`
 }
 
 // jwt.Claims interface — implementation wires standard fields into jwt/v5's
@@ -143,6 +155,15 @@ type IssuanceParams struct {
 	// slug — empty means "leave the JWT claim unset" (e.g. Casdoor-token
 	// re-sign under pre-cutover conditions).
 	TenantSlug string
+	// TenantRoles lists the user's active roles on their current tenant
+	// (Phase C1 — sourced from tenant_admins WHERE revoked_at IS NULL).
+	// Empty / nil for users with no admin role on the tenant.
+	TenantRoles []string
+	// PlatformAdmin + PlatformScope mark the user as a platform-level
+	// admin (Phase C1 — sourced from platform_admins). When PlatformAdmin
+	// is false, PlatformScope is ignored.
+	PlatformAdmin bool
+	PlatformScope string
 }
 
 // ErrEmptySubject is returned by NewEnterpriseClaims when Subject is empty.
@@ -175,15 +196,18 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 	notBefore := now
 	expiry := now.Add(params.TTL)
 	c := &EnterpriseClaims{
-		Issuer:     params.Issuer,
-		Subject:    params.Subject,
-		IssuedAt:   &issuedAt,
-		NotBefore:  &notBefore,
-		Expiry:     &expiry,
-		Audience:   params.Audience,
-		JTI:        params.JTI,
-		TenantID:   params.TenantID,
-		TenantSlug: params.TenantSlug,
+		Issuer:        params.Issuer,
+		Subject:       params.Subject,
+		IssuedAt:      &issuedAt,
+		NotBefore:     &notBefore,
+		Expiry:        &expiry,
+		Audience:      params.Audience,
+		JTI:           params.JTI,
+		TenantID:      params.TenantID,
+		TenantSlug:    params.TenantSlug,
+		TenantRoles:   params.TenantRoles,
+		PlatformAdmin: params.PlatformAdmin,
+		PlatformScope: params.PlatformScope,
 	}
 
 	if params.Identity != nil {
