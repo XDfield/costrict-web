@@ -551,6 +551,20 @@ func main() {
 				platformTenants.POST("/:id/delete", platformTenantAPI.PlatformDeleteTenant)
 			}
 
+			// Phase C3.1 — tenant-admin user listing. First real wiring
+			// of middleware.RequireTenantAdmin (previously test-only).
+			// tenant_admin JWT carries tenant_id + tenant_roles[]; the
+			// handler derives X-Tenant-Id from AuthClaims.TenantSlug
+			// (fallback TenantID for legacy tokens) and the RPC client
+			// forwards it — cs-user's ResolveTenant middleware pins the
+			// query via tenant.Scope(ctx).
+			tenantUserAPI := &handlers.TenantUserAPI{
+				Svc: buildTenantUserService(userModule),
+			}
+			tenantUsers := authed.Group("/tenant/users")
+			tenantUsers.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantUsers.GET("", tenantUserAPI.ListTenantUsers)
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -952,6 +966,20 @@ func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, er
 // in local backend mode there is no tenant data on this side, so it
 // returns nil and handlers answer 502.
 func buildPlatformTenantService(module *userpkg.Module) handlers.PlatformTenantService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantUserService returns the tenant-admin user listing service
+// for Phase C3.1. Same *RPCClient as platform tenants — single transport
+// per server instance (Module.TenantResolver) handles every cs-user RPC.
+// nil in local backend mode; handlers return 502.
+func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
 	if module == nil {
 		return nil
 	}
