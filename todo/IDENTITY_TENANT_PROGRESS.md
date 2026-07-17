@@ -35,7 +35,7 @@
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 1 | 6% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin API 待启动） |
+| Phase C | 三级权限 + admin API | ~16 | 2 | 13% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；跨 tenant 用户 ops / audit-log infra / email allowlist 等 C2 其他切片待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -959,7 +959,7 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 ## 阶段 C：三级权限 + admin API
 
 - [x] **C1**：权限模型表 + 中间件（platform_admin / tenant_admin / tenant_member）— 详见下方"C1 实现细节"
-- [ ] **C2**：platform_admin API（tenant CRUD、跨 tenant 审计）
+- [x] **C2**：platform_admin tenant CRUD API（7 endpoints）— 详见下方"C2 实现细节"；跨 tenant 用户 ops / audit-log infra / email allowlist 等其他 C2 切片未做（用户明确选 Tenant CRUD 切片优先）
 - [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）
 - [ ] **C4**：越权防护 + 审计日志
 
@@ -1001,6 +1001,74 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 3. **no CHECK constraint on scope**：scope enum 由应用层校验（PlatformScope* 常量集），DB 不加 CHECK — 添加新 scope 不需要 migration，匹配 tenant_admins role 的同样决策
 4. **PermissionReader 可选注入**：handler 的 `Permissions` 字段为 nil 时跳过 lookup（灰度模式）；这样 C1 上线时可以只开 schema + claims，不激活 middleware，再单独激活 middleware 强制
 5. **platform admin super-tenant**：`RequireTenantAdmin` 中 platform admin 短路通过 — 平台级管理员本质是跨 tenant 的（§14.3）
+
+
+
+### C2 实现细节：platform_admin tenant CRUD API（已落地 2026-07-17）
+
+**端点**（7 个，两层 ADR D1 模式 — cs-user 内部 + server 公开代理）：
+
+| cs-user 内部（InternalAuth）| server 公开（RequirePlatformAdmin）| 行为 |
+|---|---|---|
+| `GET /api/internal/platform/tenants` | `GET /api/platform/tenants` | 分页列表（`limit` / `offset` / `status` 过滤）|
+| `POST /api/internal/platform/tenants` | `POST /api/platform/tenants` | 创建租户；slug 校验 + email_domains 非冲突 |
+| `GET /api/internal/platform/tenants/:id` | `GET /api/platform/tenants/:id` | 单租户；`:id` 接受 `tenant_id` OR `slug` |
+| `PATCH /api/internal/platform/tenants/:id` | `PATCH /api/platform/tenants/:id` | 部分更新（display_name / edition / email_domains / features / limits / settings）|
+| `POST /api/internal/platform/tenants/:id/suspend` | `POST /api/platform/tenants/:id/suspend` | active → suspended |
+| `POST /api/internal/platform/tenants/:id/restore` | `POST /api/platform/tenants/:id/restore` | suspended → active |
+| `POST /api/internal/platform/tenants/:id/delete` | `POST /api/platform/tenants/:id/delete` | active\|suspended → deleted + `deletion_requested_at = now` |
+
+**生命周期状态机**：
+```
+       create          suspend         restore
+[ ] ──────────► [active] ◄─────────► [suspended]
+                  │                     │
+                  │    delete           │  delete
+                  └──────► [deleted] ◄──┘
+                            (deletion_requested_at = now;
+                             30-day grace cron → hard delete is OUT OF SCOPE)
+```
+非法状态转移返回 409（`ErrInvalidStateTransition`）。
+
+**Sentinel → HTTP 映射**（两层都一致）：
+- `ErrTenantNotFound` → 404
+- `ErrSlugTaken` / `ErrEmailDomainConflict` / `ErrInvalidStateTransition` → 409
+- `ErrInvalidSlug` / `ErrInvalidEdition` / `ErrInvalidDisplayName` / `ErrInvalidEmailDomains` → 400
+- server 端额外：`ErrRPCUnavailable` / `ErrNotConfigured` → 502
+
+**分层文件**：
+- `cs-user/internal/tenant/admin.go` — `Admin` 服务（write/lifecycle），独立于 `Resolver`（read）
+- `cs-user/internal/tenant/admin_test.go` — 23 测试（sqlite :memory: + `//go:build cgo`）
+- `cs-user/internal/handlers/platform_tenants.go` — `PlatformTenantsAPI`（7 handlers + swagger）
+- `cs-user/internal/handlers/platform_tenants_test.go` — 16 handler 测试
+- `cs-user/internal/app/app.go` — `Deps.TenantAdmin` 字段 + `registerPlatformTenantRoutes` 注册 + `unavailablePlatformTenantService` 503 stub
+- `cs-user/cmd/api/main.go` — `tenant.NewAdmin(pool.Gorm)` 注入
+- `cs-user/docs/{docs.go,swagger.json,swagger.yaml}` — `make swagger` 重生成（`@Tags platform-tenants`）
+- `server/internal/user/rpc_client_platform_tenant.go` — 7 RPC 方法 + 8 sentinel（distinct from cs-user's；ADR D1 类型解耦）
+- `server/internal/user/rpc_client_platform_tenant_test.go` — 14 测试（httptest stub）
+- `server/internal/handlers/platform_tenant.go` — `PlatformTenantAPI`（7 thin handlers）
+- `server/internal/handlers/platform_tenant_test.go` — 14 handler 测试
+- `server/cmd/api/main.go` — `buildPlatformTenantService(module)` helper + `platformTenants` route group（首次 wiring `middleware.RequirePlatformAdmin`）
+
+**关键决策**：
+
+1. **Slug 校验 AS-IS**：`CreateTenant` 不预规范化 slug 大小写，直接按 `[a-z0-9-]{3,32}` 校验 — 客户端传 `"Acme"` 直接 400 而不是 silently 改成 `"acme"`。客户端 bug 值得显式暴露。
+2. **slug + tenant_id immutable on PATCH**：PATCH 请求体里有 slug 字段就忽略（不是 400），匹配"partial update"语义；status 变更只能走 suspend/restore/delete 端点。
+3. **`deletion_requested_at` vs `deleted_at` 区分**：前者是设计 30-day grace 标记（本 PR 设置），后者是 gorm soft-delete 列（hard-delete cron 后续设置）。
+4. **email_domains 冲突检测 O(N)**：当前实现扫描所有 tenants 的 domains，对当前规模（<100 tenants per 设计 §3.3）足够；Postgres GIN index + exclusion constraint 优化 deferred。
+5. **server 端 sentinel 独立于 cs-user**：`user.ErrSlugTaken` ≠ `tenant.ErrSlugTaken`（不同包，不同 error var），避免 server ↔ cs-user 类型耦合（ADR D1）。
+6. **legacy `systemrole.RequirePlatformAdmin` 不动**：旧 `/api/admin/*` 路由继续用 role-based 中间件；新 `/api/platform/tenants` 用 JWT-claim-based。Consolidation 是独立 PR（影响所有旧 admin 路由，需要单独 rollback 方案）。
+7. **RPC unavailable → 502**：server 本地 backend 模式下 `UserModule.TenantResolver == nil`（ADR D1 — 本地无 tenant 数据），handler 返回 502 而不是 404，提示运维 backend 配错。
+
+**out-of-scope（显式）**：
+- 创建首位 tenant_admin — 设计 §4.2 提及，C3（tenant_admin API）own
+- `user_center_audit_log` 写入（§16.2）— C4 own；当前只 structured logger 写 actor + action 字段
+- webhook fanout（`tenant.created` / `tenant.suspended` / `tenant.restored` / `tenant.deletion_requested`）— Phase E4 own
+- 30-day grace 后的 hard-delete cron — 独立 PR + runbook
+- email_domains GIN index — 优化 deferred
+- 跨 tenant 用户 ops / audit-log query / email allowlist — 其他 C2 切片，未做
+
+**测试**：cs-user tenant 23 + handler 16 + swagger pass；server RPC 14 + handler 14；gofmt / go vet clean；`make swagger` 重生成 clean。Phase A 4 个集成测试不受影响（reissue-token 路径未改）。
 
 
 
