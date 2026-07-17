@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 + B5 write 方法 scoping 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -873,6 +873,25 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 - **stub 模式**：测试用 `stubTenantResolver` 直接实现 `TenantResolver` interface，closure 字段控制每个用例的 outcome；不需要起 httptest server，因为 suggest handler 只消费 Go-level `TenantEmailResolution`，不碰 wire format
 - **swagger 注释**：handler 携带完整 `@Summary / @Description / @Tags / @Param / @Success / @Failure / @Router` 注释。注：当前仓库 `make swagger` 因 pre-existing `server/internal/audit/handlers.go` ParseComment 错误无法 regen（与本次改动无关）；swagger spec 已经 stale 多个 commit。本增量的注释已通过 `swag fmt` 校验语法，等 audit handlers 修复后 regen 会自动包含本端点
 - **ADR D1 强化**：endpoint 在 local backend 模式明确返回 503 而非伪装数据 — 提醒调用方"此部署没有 tenant 数据"，避免 silent fallback 掩盖配置错误
+
+### B5 write 方法 scoping follow-up 实现细节（已完成 2026-07-17）
+
+承接 B5（read 方法 scoping）的 follow-up：把 4 个 write 方法 + 1 个共享 tx helper 全部纳入 `tenant.Scope(ctx)` 覆盖。
+
+- **覆盖范围**：
+  - `GetOrCreateUser` — 8 个 lookup 查询 + 新建 user Create 路径 + race retry 路径
+  - `BindIdentityToUser` — tx 内 3 个 lookup + 2 个 Model.Updates + 1 个 Create + 1 个 primary 检测
+  - `TransferIdentityToUser` — tx 内 1 个 lookup + 1 个 Model.Updates + 2 次 refreshUserProfileFromIdentitiesTx
+  - `UnbindIdentityByProvider` — tx 内 2 个 lookup + 1 个 count + 1 个 Model.Updates 循环 + 1 个 primary 重新选择
+  - `refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)` — 签名加 ctx 参数，内部 lookup/Updates/Save 全 scope
+- **关键修复点（避坑）**：
+  - **scope 不能挂在 db handle 上**：原本写成 `db := s.db.WithContext(ctx).Scopes(tenant.Scope(ctx))` — `db.Create(&user)` 因此返回 "record not found"（GORM Statement 在 Scopes 后被 WHERE 污染，Create 路径行为异常）。改为 `db := s.db.WithContext(ctx)` + 每个 lookup 单独 `.Scopes(tenantScope)`。Create / Updates 走 scope-in-chain 模式而非 handle-scoped。
+  - **Create 路径显式设 TenantID**：`user.TenantID = tenant.IDFromContext(ctx)` 和 `identity.TenantID = tenant.IDFromContext(ctx)`。否则依赖 GORM 列默认值 `'default'` — 多租户场景下 acme.com 登录的用户会被错误归入 default tenant。B6 RLS 兜底取消后这是**唯一**保证新建行 tenant_id 正确的机制，P1 紧迫度。
+  - **TransferIdentityToUser 不允许跨 tenant**：scope 应用后，外部 caller 若尝试 transfer 另一个 tenant 的 identity，lookup 直接 `record not found`（identity_not_found），fail-closed。这是有意的安全边界 — 跨 tenant 身份转移需要专门 admin 路径（Phase C）。
+- **`refreshUserProfileFromIdentitiesTx` 签名变更**：`(tx, userSubjectID)` → `(ctx, tx, userSubjectID)`。3 个 tx 方法内调用全部更新。`identity_test.go` 里 3 个直接调用也更新（注入 `context.Background()`，sqlite 测试库无 tenant 概念，scope 退化为 `WHERE tenant_id = 'default'`，与列默认值匹配，不影响行为）。
+- **scope 函数复用**：`scope := tenant.Scope(ctx)` 在每个方法开头捕获一次，闭包内 tenant_id 已固定，多处复用安全（pure function）。
+- **测试覆盖**：现有 `service_test.go` / `service_write_test.go` / `identity_test.go` 全部 PASS（无 tenant 上下文场景走 DefaultTenantID = "default"，与 B2 列默认值匹配，行为不变）。未新增 cross-tenant 测试用例 — sqlite 无法测真实 cross-tenant（需 testcontainers），且 B5 read scoping 已有等价行为验证。Cross-tenant fail-closed 行为是 scope 应用机制的直接结果，单测覆盖应用链路即可。
+- **GORM 行为说明**：`.Scopes(scope).Where(...)` 在 GORM v2 上是创建新 Statement 实例并附加条件，对原 db handle 无副作用；`.Scopes()` 后链式 `.Create()` / `.Updates()` 行为正常。这是反复实测后的结论，不是 GORM 文档承诺。
 
 ### B5 实现细节（已完成 2026-07-17）
 
