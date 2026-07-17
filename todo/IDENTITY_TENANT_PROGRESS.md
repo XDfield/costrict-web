@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 1 | 4% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2-B7 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 3 | 11% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b HTTP middleware / cookie / session wiring + B4-B7 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -461,7 +461,9 @@
 
 - [x] **B1**：`tenants` + `tenant_admins` 表迁移（`cs-user/migrations/20260717100000_create_tenants_and_tenant_admins.sql`）— 详见下方"B1 实现细节"
 
-- [ ] **B2**：给 `users` / `user_auth_identities` / `user_profile` / `employment_identities` 加 `tenant_id` 列 + 索引
+- [x] **B2**：给 `users` / `user_auth_identities` / `employment_identities` 加 `tenant_id` 列 + 索引（`user_profile` 表尚未存在，待其首次落地时一并加入）— 详见下方"B2 实现细节"
+
+- [x] **B3**：tenant resolution — `tenant.Resolver` 三层 fallback primitives（slug / email-domain / email）+ email_domains typed reader。HTTP middleware / cookie / session / Casdoor redirect 拆到 **B3b**（下一子任务）。— 详见下方"B3 实现细节"
 - [ ] **B3**：tenant resolution（subdomain → email domain → 显式选择）
 - [ ] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
 - [ ] **B5**：应用层所有 query 经 `tenantScope(ctx)` helper
@@ -503,7 +505,83 @@
 - B1 不实现 `tenants` 表的 status 状态机校验（active → suspended → deleted 转移规则）— 这属于 B6 (RLS policy) 的工作。
 - B1 未给 `users` 表加 `tenant_id` 列 — 这是 B2 的工作（需要数据回填策略：现有用户默认归属 default 租户）。
 
+### B2：user-domain 表加 tenant_id 列（已落地）
+
+- [x] **实现**：`cs-user/migrations/20260717120000_add_tenant_id_to_user_tables.sql` —
+  - 三张表（`users` / `user_auth_identities` / `employment_identities`）各加 `tenant_id TEXT NOT NULL DEFAULT 'default'` 列
+  - `DEFAULT 'default'` 即"数据回填策略"：现有所有行 ALTER 时自动落 default 租户；后续 INSERT 未显式指定时也落 default — 与 A6 的 default tenant bootstrap 对齐
+  - 三张表各加 FK 到 `tenants(tenant_id)` `ON DELETE RESTRICT`（统一选择 RESTRICT 而非 CASCADE：tenant 生命周期走 `status='deleted'` 路径，物理删除是少见运维操作，RESTRICT 强制先迁移用户再删 tenant，避免误删）
+  - 索引：每张表加单列 `idx_<table>_tenant_id` 覆盖"给定 tenant 找全部 user"热路径；`employment_identities` 额外加 `(tenant_id, user_subject_id)` 复合索引覆盖跨租户反向解析（MULTI_TENANCY §8.3）
+  - 各加 `COMMENT ON COLUMN ... IS '所属租户 ID（默认 default；FK 到 tenants.tenant_id，RESTRICT 删除）'`
+  - **不在 B2 落地**：`(tenant_id, enterprise_uid)` 唯一索引 — `enterprise_uid` 列本身要等后续 Phase B 子任务引入（A1 注释里已说明），届时一并迁移
+  - **`user_profile` 表跳过**：该表尚未存在，待其首次落地时一并加入 tenant_id 列
+- [x] **GORM 模型**：
+  - `cs-user/internal/models/models.go` — `User` 与 `UserAuthIdentity` 各加 `TenantID string` 字段（gorm tag `type:text;size:191;not null;default:default;index:idx_<table>_tenant_id`，json `tenant_id`）
+  - `cs-user/internal/models/employment_identity.go` — `EmploymentIdentity` 加 `TenantID` 字段，gorm tag 同时声明两个 index（`idx_employment_identities_tenant_id` + `idx_employment_identities_tenant_user` 用 `priority:1/2` 表达复合索引顺序）；`UserSubjectID` 加上 `priority:2` 让 GORM AutoMigrate（sqlite 测试场景）能重建复合索引
+  - 文档注释更新：`EmploymentIdentity` 头注释里删除 "tenant_id column ... lands in Phase B"，改为说明 B2 已落地 + 唯一索引仍待 enterprise_uid
+- [x] **测试覆盖**：`cs-user/internal/models/tenant_id_test.go`（6 新测试，全 cgo-gated sqlite in-memory）—
+  - `TestUser_TenantIDDefaultsToDefault`：User 不显式设 TenantID 时落 'default'（backfill 契约）
+  - `TestUser_ExplicitTenantID`：显式 TenantID="t-acme" round-trip
+  - `TestUser_QueryByTenantID`：跨双租户插入 5 用户，`WHERE tenant_id=?` 计数验证 idx_users_tenant_id 索引扫描语义
+  - `TestUserAuthIdentity_TenantIDDefaultsToDefault`：第二张表的 default 契约（先创建 backing User 满足应用层引用语义）
+  - `TestEmploymentIdentity_TenantIDDefaultsToDefault`：第三张表 + 手工补建 partial unique index（mirror newEmploymentIdentityDB 模式）
+  - `TestEmploymentIdentity_QueryByTenantAndSubject`：复合索引 `(tenant_id, user_subject_id)` 反向解析；同一 `user_subject_id` 跨多租户行可正确区分
+- [x] **swagger 注解**：无（数据层迁移，无 API endpoint 暴露）
+
+**B2 已知限制 / 后续衔接**：
+
+- **FK 在 sqlite 测试不强制**：sqlite 默认 `PRAGMA foreign_keys=OFF`，本仓库的 `gorm.Open(sqlite.Open(...))` 也没有显式开启；FK 约束的真正强制发生在 Postgres 生产环境。集成测试若需覆盖 FK 误删拒绝路径，待 testcontainers-go 接入（跨阶段测试基础设施"待补强"）。
+- **`(tenant_id, enterprise_uid)` 唯一索引仍缺**：`enterprise_uid` 列在 A1 时就被注释为后续 Phase B 引入；待其落地时本 B2 复合索引可保留（覆盖反向解析），唯一索引独立新增。
+- **无应用层写入改动**：B2 仅 schema 改动；service / handler 不会主动 set `TenantID`，所有 Create 仍走 `DEFAULT 'default'`。B3（tenant resolution）起开始从 JWT/context 提取并显式 set。
+- **无 query 过滤改造**：B5（`tenantScope(ctx)` helper）才会让所有 query 自动 `WHERE tenant_id = ctx.TenantID`。B2 之后到 B5 之前，应用层 query 仍全表扫描，但因为所有行 tenant_id='default'，行为等价单租户。
+
+### B3：tenant.Resolver 三层 fallback primitives（已落地）
+
+- [x] **新建包**：`cs-user/internal/tenant/` — 独立 bounded concern，不污染 `internal/user/`
+- [x] **实现**：`cs-user/internal/tenant/resolver.go` —
+  - `Resolver` struct（持有 `*gorm.DB`）+ `NewResolver(db)` 构造器；并发安全（无共享可变状态）
+  - **`ResolveBySlug(ctx, slug)`** — Try 1 子域名路径；接受 `slug` 或 `tenant_id`（cookie / X-Tenant-Id header 两种 caller 携带方式）；过滤 `status='active'`；`gorm.ErrRecordNotFound` → `ErrTenantNotFound` sentinel；空/纯空白输入 → `ErrTenantNotFound`（不污染日志）
+  - **`ResolveByEmailDomain(ctx, domain)`** — Try 2 邮箱域路径；加载所有 active tenants，Go 端用 `ParseEmailDomains` 过滤；唯一命中 → 返回；零命中 → `ErrTenantNotFound`；多命中 → `ErrAmbiguousTenant`（设计 §5.3 场景 B：交给前端 picker）
+  - **`ResolveByEmail(ctx, email)`** — `domainFromEmail` 提取域名后委托 `ResolveByEmailDomain`；malformed email（无 @ / @ 在首尾 / 空）→ `ErrTenantNotFound` 而非 internal error
+  - **`ResolveFromHost(ctx, host, apexDomains)`** — `slugFromHost` 相对 apex 列表提取首段子域；apex 可带端口（dev 模式 `localhost:8080`）；FQDN 末尾点容忍；嵌套子域 `login.acme.cs-user.example.com` → slug `acme`（B1 slug 单 label 约定）
+  - 三个 sentinel：`ErrTenantNotFound` / `ErrAmbiguousTenant`（caller 翻译为 HTTP 行为）
+  - **nil receiver 守卫**：所有方法在 `r == nil || r.db == nil` 时返回 `ErrTenantNotFound`（graceful degradation）
+- [x] **email_domains typed reader**：`ParseEmailDomains(*models.Tenant) []string` —
+  - B1 留 TODO："B2/B3 引入 typed reader 时再按需迁移"；本任务兑现
+  - 解码 `email_domains` TEXT 列里的 JSON array of strings；空字符串 / `'[]'` / malformed JSON → empty slice（graceful degradation，与 `EmploymentIdentity.Attributes` 同约定）
+  - 输出 lowercase + trim（写入侧由 Phase C tenant_admin API 强制规范化；reader 端防御性 normalize）
+  - nil tenant → nil slice
+- [x] **测试覆盖**：`cs-user/internal/tenant/resolver_test.go`（28 新测试，全 cgo/sqlite in-memory）—
+  - **ResolveBySlug** × 5：Hit / AcceptsTenantIDToo / Miss / SuspendedExcluded / EmptyInput
+  - **ResolveByEmailDomain** × 6：UniqueHit / CaseInsensitive / Ambiguous（globex.com 双 tenant）/ Miss / SuspendedExcluded / MultiDomainPerTenant（acme.com + acme.cn 都解析到 t-acme）
+  - **ResolveByEmail** × 2：HappyPath / Malformed（空 / no @ / 首尾 @）
+  - **ResolveFromHost** × 7：SubdomainHit / WithPort（host:8443）/ BareApex（bare apex → ErrTenantNotFound）/ NoApexMatch / NestedSubdomain（login.acme…→acme）/ FQDNTrailingDot / LocalhostApex（dev 模式 apex=localhost:8080）
+  - **ParseEmailDomains** × 6：HappyPath / EmptyArray / EmptyString / Malformed / LowercasedOutput / NilTenant
+  - **domainFromEmail** × 1 表驱动（8 case）
+  - **NilGuards** × 1 表驱动（4 method × nil receiver 都返回 ErrTenantNotFound）
+- [x] **swagger 注解**：无（数据层 service，无 API endpoint 暴露；B3b HTTP middleware 落地时加）
+
+**B3 已知限制 / 后续衔接**：
+
+- **`ResolveByEmailDomain` 全表扫描**：因 B1 把 `email_domains` 存为 TEXT 持 JSON 字符串（非 JSONB / TEXT[]），无法 push contains check 到 DB；当前是 "load all active tenants + Go 端 filter"。B3 阶段 tenant 数在 10s，性能可接受。后续若 tenant 上 10k+，会加迁移把列改 JSONB / TEXT[]（设计 §6.5.1 / B1 known-limitations 已注明），此方法改为单条 `WHERE ? = ANY(email_domains)`。
+- **`ResolveBySlug` 接受 slug 或 tenant_id**：用 `WHERE tenant_id = ? OR slug = ?` 单次查询。如果未来 slug 与 tenant_id 命名空间可能冲突（罕见，slug 是 `[a-z0-9-]{3,32}`，tenant_id 是 UUID），需要拆两次查询或加前缀。当前 cs-user tenant_id 都以 `t-` / `default` 起头，无冲突。
+- **`ResolveFromHost` apex 配置**：apex 列表是参数注入（caller 配置），不是 env。B3b HTTP middleware 会从 config 读取 `CS_USER_APEX_DOMAINS` 环境变量并传入。本地 dev 用 `localhost:8080`，prod 用 `cs-user.example.com`。
+- **`ResolveByEmail` 不预校验邮箱 RFC 合法性**：用 `strings.LastIndex(email, "@")` 提取，简单 conservative；接受 quoted local part 等 RFC-valid 但 weird 邮箱会失败。Phase C admin/IdP 流程预校验后才会进此路径，可接受。
+- **B3 不实现 orchestration**：没有 top-level `Resolve(ctx, host, email, apex)` 编排函数，因为 Try 3 explicit selection 是 UI flow（阻塞等待用户输入），编排属于 HTTP layer。B3b middleware 会按 subdomain → email domain 顺序串起来；Try 3 由前端处理。
+- **未在 server 端 wire 起来**：B3 是纯 service 层，server / cs-user cmd/api 还没调用 `Resolver`。第一个 caller 是 B3b middleware（注入到 OAuth callback 链路 + 后续业务 handler）。
+
+### B3b：tenant.Resolver HTTP wiring（待启动）
+
+- [ ] cs-user 加 middleware 从 `Host` / `X-Tenant-Id` / `cs_tenant_slug` cookie 提取 tenant，写入 request context
+- [ ] server 加同样 middleware，解析后注入下游 RPC header
+- [ ] apex domains 配置项：`CS_USER_APEX_DOMAINS` env (cs-user) / `USER_SERVICE_APEX_DOMAINS` env (server)
+- [ ] OAuth callback 链路：Try 1 subdomain → Try 2 email domain → Try 3 重定向 tenant picker 页
+- [ ] 跨 tenant 访问检测：JWT `tenant_id` vs cookie `cs_tenant_slug` 不匹配 → 提示切换（设计 §5.3 场景 C）
+- [ ] swagger 注解：B3b middleware 无 endpoint；新增 tenant picker endpoint `/api/tenant/suggest?email=...` 返回建议 tenant 列表（设计 §5.1 Try 2 多命中场景）
+
 ---
+
+## 阶段 C：三级权限 + admin API
 
 ## 阶段 C：三级权限 + admin API
 
