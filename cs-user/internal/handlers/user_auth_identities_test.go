@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -10,11 +11,11 @@ import (
 )
 
 type stubAuthIdentityService struct {
-	listIdentities func(string) ([]*models.UserAuthIdentity, error)
+	listIdentities func(context.Context, string) ([]*models.UserAuthIdentity, error)
 }
 
-func (s stubAuthIdentityService) ListIdentities(id string) ([]*models.UserAuthIdentity, error) {
-	return s.listIdentities(id)
+func (s stubAuthIdentityService) ListIdentities(ctx context.Context, id string) ([]*models.UserAuthIdentity, error) {
+	return s.listIdentities(ctx, id)
 }
 
 func newAuthIdentitiesAPI(svc AuthIdentityService) (*AuthIdentitiesAPI, *gin.Engine) {
@@ -30,7 +31,7 @@ func TestListIdentities_HappyPath(t *testing.T) {
 		{UserSubjectID: "subj-1", Provider: "casdoor", ExternalKey: "casdoor:1"},
 	}
 	_, r := newAuthIdentitiesAPI(stubAuthIdentityService{
-		listIdentities: func(id string) ([]*models.UserAuthIdentity, error) {
+		listIdentities: func(_ context.Context, id string) ([]*models.UserAuthIdentity, error) {
 			if id != "subj-1" {
 				t.Errorf("handler passed id=%q want subj-1", id)
 			}
@@ -46,7 +47,7 @@ func TestListIdentities_HappyPath(t *testing.T) {
 
 func TestListIdentities_EmptyResult(t *testing.T) {
 	_, r := newAuthIdentitiesAPI(stubAuthIdentityService{
-		listIdentities: func(string) ([]*models.UserAuthIdentity, error) { return nil, nil },
+		listIdentities: func(context.Context, string) ([]*models.UserAuthIdentity, error) { return nil, nil },
 	})
 
 	w := doJSON(t, r, http.MethodGet, "/api/internal/users/none/auth-identities", nil)
@@ -57,7 +58,7 @@ func TestListIdentities_EmptyResult(t *testing.T) {
 
 func TestListIdentities_ServiceError(t *testing.T) {
 	_, r := newAuthIdentitiesAPI(stubAuthIdentityService{
-		listIdentities: func(string) ([]*models.UserAuthIdentity, error) {
+		listIdentities: func(context.Context, string) ([]*models.UserAuthIdentity, error) {
 			return nil, errors.New("db down")
 		},
 	})
