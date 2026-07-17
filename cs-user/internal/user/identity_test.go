@@ -3,6 +3,7 @@
 package user
 
 import (
+	"context"
 	"testing"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
@@ -108,7 +109,7 @@ func TestRefreshUserProfileFromIdentitiesTx_PromotesNewPrimary(t *testing.T) {
 	_ = phoneIdentity
 	_ = githubIdentity
 
-	err := refreshUserProfileFromIdentitiesTx(svc.db, "subj-promote")
+	err := refreshUserProfileFromIdentitiesTx(context.Background(), svc.db, "subj-promote")
 	if err != nil {
 		t.Fatalf("refreshUserProfileFromIdentitiesTx: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 	})
 
 	// First call writes the changes (denormalizes display_name onto user).
-	if err := refreshUserProfileFromIdentitiesTx(svc.db, "subj-noop"); err != nil {
+	if err := refreshUserProfileFromIdentitiesTx(context.Background(), svc.db, "subj-noop"); err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
 	var afterFirst models.User
@@ -172,7 +173,7 @@ func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 	}
 
 	// Second call should be a no-op — same data, no field changes.
-	if err := refreshUserProfileFromIdentitiesTx(svc.db, "subj-noop"); err != nil {
+	if err := refreshUserProfileFromIdentitiesTx(context.Background(), svc.db, "subj-noop"); err != nil {
 		t.Fatalf("second refresh: %v", err)
 	}
 	var afterSecond models.User
@@ -191,7 +192,7 @@ func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 // can map it to HTTP 404.
 func TestRefreshUserProfileFromIdentitiesTx_UserNotFound(t *testing.T) {
 	svc := newTestService(t)
-	err := refreshUserProfileFromIdentitiesTx(svc.db, "no-such-user")
+	err := refreshUserProfileFromIdentitiesTx(context.Background(), svc.db, "no-such-user")
 	if err == nil {
 		t.Fatal("expected error for missing user, got nil")
 	}
