@@ -1,11 +1,25 @@
 package user
 
 import (
+	"context"
 	"log"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"gorm.io/gorm"
 )
+
+// TenantResolver is the read-side surface for tenant lookups against cs-user
+// (Phase B3b.2b-step2b). Local-mode has no tenant data — the server deliberately
+// does not duplicate cs-user's tenants table (ADR D1) — so in local mode
+// Module.TenantResolver is nil and handlers must skip the §5 Try 2 layer.
+// In rpc mode, *RPCClient satisfies this interface.
+type TenantResolver interface {
+	// ResolveTenantByEmail asks cs-user "which tenant does this email belong
+	// to?" Returns a non-nil Resolution whose Status field discriminates the
+	// three semantic outcomes (ok / ambiguous / not_found). Empty email →
+	// Status="not_found", no error. Transport / 5xx → wrapped ErrRPCUnavailable.
+	ResolveTenantByEmail(ctx context.Context, email string) (*TenantEmailResolution, error)
+}
 
 // Module wires the user subsystem together. It exposes:
 //   - Service: the local write-path service (always present; provides the
@@ -20,11 +34,16 @@ import (
 //     combining both for the rpc+local canary posture. Handlers must call
 //     Writer.X — never Service.X directly — so the (Backend, WriteMode) env
 //     vars are the single knob for write routing.
+//   - TenantResolver: cs-user-backed tenant lookup (Phase B3b.2b-step2b). Nil
+//     in local mode (no tenant data on this side); *RPCClient in rpc mode.
+//     Handlers must nil-check before invoking — a nil value means "Try 2 is
+//     unavailable, fall through to default tenant".
 type Module struct {
-	Service       *UserService
-	CachedService *CachedUserService
-	Reader        UserReader
-	Writer        UserWriter
+	Service        *UserService
+	CachedService  *CachedUserService
+	Reader         UserReader
+	Writer         UserWriter
+	TenantResolver TenantResolver
 }
 
 // New is the production convenience constructor: local backend, default sync
@@ -110,12 +129,23 @@ func NewWithConfig(db *gorm.DB, syncIntervalMinutes int, cfg config.UserServiceC
 	cached := NewCachedUserService(reader)
 	svc.SetOnUserUpdated(cached.InvalidateCache)
 
-	return &Module{
+	m := &Module{
 		Service:       svc,
 		CachedService: cached,
 		Reader:        reader,
 		Writer:        writer,
 	}
+	// Phase B3b.2b-step2b: in rpc mode the same *RPCClient that backs Reader
+	// also satisfies TenantResolver (it has the ResolveTenantByEmail method
+	// added in rpc_client_tenant.go). Local mode has no tenant data on this
+	// side (ADR D1), so TenantResolver stays nil and handlers must skip the
+	// §5 Try 2 layer.
+	if cfg.Backend == config.UserServiceBackendRPC {
+		if rpc, ok := reader.(*RPCClient); ok && rpc != nil {
+			m.TenantResolver = rpc
+		}
+	}
+	return m
 }
 
 // validateUserConfig inspects the (Backend, WriteMode) combination and returns
