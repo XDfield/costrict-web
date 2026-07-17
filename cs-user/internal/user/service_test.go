@@ -3,6 +3,7 @@
 package user
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -94,7 +95,7 @@ func TestGetUserByID_Found(t *testing.T) {
 		u.SubjectID, u.Username = "subj-found", "bob"
 	})
 
-	got, err := svc.GetUserByID("subj-found")
+	got, err := svc.GetUserByID(context.Background(), "subj-found")
 	if err != nil {
 		t.Fatalf("GetUserByID: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestGetUserByID_Found(t *testing.T) {
 
 func TestGetUserByID_NotFoundReturnsErrRecordNotFound(t *testing.T) {
 	svc := newTestService(t)
-	_, err := svc.GetUserByID("does-not-exist")
+	_, err := svc.GetUserByID(context.Background(), "does-not-exist")
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Errorf("got %v, want gorm.ErrRecordNotFound", err)
 	}
@@ -113,7 +114,7 @@ func TestGetUserByID_NotFoundReturnsErrRecordNotFound(t *testing.T) {
 
 func TestGetUserByID_EmptySubjectErrors(t *testing.T) {
 	svc := newTestService(t)
-	if _, err := svc.GetUserByID(""); !errors.Is(err, ErrEmptySubjectID) {
+	if _, err := svc.GetUserByID(context.Background(), ""); !errors.Is(err, ErrEmptySubjectID) {
 		t.Errorf("got %v, want ErrEmptySubjectID", err)
 	}
 }
@@ -125,7 +126,7 @@ func TestGetUserByID_DeletedUserNotVisible(t *testing.T) {
 		t.Fatalf("soft delete: %v", err)
 	}
 
-	if _, err := svc.GetUserByID("soft-deleted"); !errors.Is(err, gorm.ErrRecordNotFound) {
+	if _, err := svc.GetUserByID(context.Background(), "soft-deleted"); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Errorf("got %v, want ErrRecordNotFound for soft-deleted row", err)
 	}
 }
@@ -135,7 +136,7 @@ func TestGetUsersByIDs_ReturnsMap(t *testing.T) {
 	seedUser(t, svc, func(u *models.User) { u.SubjectID, u.Username = "a", "alice" })
 	seedUser(t, svc, func(u *models.User) { u.SubjectID, u.Username = "b", "bob" })
 
-	got, err := svc.GetUsersByIDs([]string{"a", "b", "missing"})
+	got, err := svc.GetUsersByIDs(context.Background(), []string{"a", "b", "missing"})
 	if err != nil {
 		t.Fatalf("GetUsersByIDs: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestGetUsersByIDs_ReturnsMap(t *testing.T) {
 
 func TestGetUsersByIDs_EmptyInputSkipsDB(t *testing.T) {
 	svc := newTestService(t)
-	got, err := svc.GetUsersByIDs(nil)
+	got, err := svc.GetUsersByIDs(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("nil input: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestSearchUsers_KeywordMatches(t *testing.T) {
 	seedUser(t, svc, func(u *models.User) { u.Username = "bob"; u.Email = strPtr("bob@elsewhere.com") })
 	seedUser(t, svc, func(u *models.User) { u.Username = "malice"; u.Email = strPtr("mal@x.com") })
 
-	got, err := svc.SearchUsers("ali", 10)
+	got, err := svc.SearchUsers(context.Background(), "ali", 10)
 	if err != nil {
 		t.Fatalf("SearchUsers: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestSearchUsers_InactiveExcluded(t *testing.T) {
 	seedUser(t, svc, func(u *models.User) { u.Username = "alice-active"; u.IsActive = true })
 	seedUser(t, svc, func(u *models.User) { u.Username = "alice-inactive"; u.IsActive = false })
 
-	got, err := svc.SearchUsers("alice", 10)
+	got, err := svc.SearchUsers(context.Background(), "alice", 10)
 	if err != nil {
 		t.Fatalf("SearchUsers: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestSearchUsers_DefaultLimitApplies(t *testing.T) {
 		})
 	}
 
-	got, err := svc.SearchUsers("", 0) // limit=0 → default
+	got, err := svc.SearchUsers(context.Background(), "", 0) // limit=0 → default
 	if err != nil {
 		t.Fatalf("SearchUsers: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestListIdentities_OrdersPrimaryFirst(t *testing.T) {
 		i.UserSubjectID, i.Provider, i.ExternalKey, i.IsPrimary = "subj-1", "casdoor", "casdoor:1", true
 	})
 
-	got, err := svc.ListIdentities("subj-1")
+	got, err := svc.ListIdentities(context.Background(), "subj-1")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}
@@ -238,14 +239,14 @@ func TestListIdentities_OrdersPrimaryFirst(t *testing.T) {
 
 func TestListIdentities_EmptySubjectErrors(t *testing.T) {
 	svc := newTestService(t)
-	if _, err := svc.ListIdentities(""); !errors.Is(err, ErrEmptySubjectID) {
+	if _, err := svc.ListIdentities(context.Background(), ""); !errors.Is(err, ErrEmptySubjectID) {
 		t.Errorf("got %v, want ErrEmptySubjectID", err)
 	}
 }
 
 func TestListIdentities_NoRowsReturnsEmpty(t *testing.T) {
 	svc := newTestService(t)
-	got, err := svc.ListIdentities("no-such-user")
+	got, err := svc.ListIdentities(context.Background(), "no-such-user")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}
@@ -259,16 +260,16 @@ func TestListIdentities_NoRowsReturnsEmpty(t *testing.T) {
 // that forget to inject one).
 func TestService_NilDBGuards(t *testing.T) {
 	svc := &Service{}
-	if _, err := svc.GetUserByID("x"); err == nil {
+	if _, err := svc.GetUserByID(context.Background(), "x"); err == nil {
 		t.Error("GetUserByID on nil db should error")
 	}
-	if _, err := svc.GetUsersByIDs([]string{"x"}); err == nil {
+	if _, err := svc.GetUsersByIDs(context.Background(), []string{"x"}); err == nil {
 		t.Error("GetUsersByIDs on nil db should error")
 	}
-	if _, err := svc.SearchUsers("x", 1); err == nil {
+	if _, err := svc.SearchUsers(context.Background(), "x", 1); err == nil {
 		t.Error("SearchUsers on nil db should error")
 	}
-	if _, err := svc.ListIdentities("x"); err == nil {
+	if _, err := svc.ListIdentities(context.Background(), "x"); err == nil {
 		t.Error("ListIdentities on nil db should error")
 	}
 }

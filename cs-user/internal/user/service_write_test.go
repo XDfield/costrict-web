@@ -52,7 +52,7 @@ func TestGetOrCreateUser_NewUserCreatesRowAndPrimaryIdentity(t *testing.T) {
 	}
 
 	// Verify identity row exists with IsPrimary=true.
-	identities, err := svc.ListIdentities(user.SubjectID)
+	identities, err := svc.ListIdentities(context.Background(), user.SubjectID)
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestBindIdentityToUser_NewIdentityOnExistingUser(t *testing.T) {
 		t.Fatalf("BindIdentityToUser: %v", err)
 	}
 
-	identities, err := svc.ListIdentities("subj-bind")
+	identities, err := svc.ListIdentities(context.Background(), "subj-bind")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestBindIdentityToUser_Idempotent(t *testing.T) {
 		t.Fatalf("second BindIdentityToUser: %v", err)
 	}
 
-	identities, err := svc.ListIdentities("subj-idem-bind")
+	identities, err := svc.ListIdentities(context.Background(), "subj-idem-bind")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestBindIdentityToUser_PrimaryCascadePromotesHigherRank(t *testing.T) {
 		t.Fatalf("BindIdentityToUser idtrust: %v", err)
 	}
 
-	identities, err := svc.ListIdentities("subj-cascade")
+	identities, err := svc.ListIdentities(context.Background(), "subj-cascade")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}

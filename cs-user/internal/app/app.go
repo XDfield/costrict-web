@@ -234,13 +234,13 @@ func (stubReady) Ready() error { return nil }
 // refuse traffic.
 type unavailableUserService struct{}
 
-func (unavailableUserService) GetUserByID(string) (*models.User, error) {
+func (unavailableUserService) GetUserByID(_ context.Context, _ string) (*models.User, error) {
 	return nil, errServiceUnavailable
 }
-func (unavailableUserService) GetUsersByIDs([]string) (map[string]*models.User, error) {
+func (unavailableUserService) GetUsersByIDs(_ context.Context, _ []string) (map[string]*models.User, error) {
 	return nil, errServiceUnavailable
 }
-func (unavailableUserService) SearchUsers(string, int) ([]*models.User, error) {
+func (unavailableUserService) SearchUsers(_ context.Context, _ string, _ int) ([]*models.User, error) {
 	return nil, errServiceUnavailable
 }
 func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
@@ -261,7 +261,7 @@ func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.E
 
 type unavailableAuthIdentityService struct{}
 
-func (unavailableAuthIdentityService) ListIdentities(string) ([]*models.UserAuthIdentity, error) {
+func (unavailableAuthIdentityService) ListIdentities(_ context.Context, _ string) ([]*models.UserAuthIdentity, error) {
 	return nil, errServiceUnavailable
 }
 

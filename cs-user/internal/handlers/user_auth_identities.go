@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -17,9 +18,10 @@ type AuthIdentitiesAPI struct {
 }
 
 // AuthIdentityService is the subset of *user.Service the auth-identities
-// handlers need. Mirrors the UserService seam in users.go.
+// handlers need. Mirrors the UserService seam in users.go. B5: ctx carries
+// the tenant signal used by tenant.Scope.
 type AuthIdentityService interface {
-	ListIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error)
+	ListIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error)
 }
 
 // ListIdentities godoc
@@ -41,7 +43,7 @@ func (a *AuthIdentitiesAPI) ListIdentities(c *gin.Context) {
 		return
 	}
 
-	identities, err := a.Svc.ListIdentities(subjectID)
+	identities, err := a.Svc.ListIdentities(c.Request.Context(), subjectID)
 	if err != nil {
 		if errors.Is(err, user.ErrEmptySubjectID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})

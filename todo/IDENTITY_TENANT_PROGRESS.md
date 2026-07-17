@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 11 | 39% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B3b.2b-step2c picker UI redirect + B5 tenantScope query helper + B6 RLS 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c picker UI redirect + B6 RLS + B5 write 方法 scoping 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -466,7 +466,7 @@
 - [x] **B3**：tenant resolution — `tenant.Resolver` 三层 fallback primitives（slug / email-domain / email）+ email_domains typed reader。HTTP middleware / cookie / session / Casdoor redirect 拆到 **B3b**（下一子任务）。— 详见下方"B3 实现细节"
 - [ ] **B3**：tenant resolution（subdomain → email domain → 显式选择）
 - [x] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
-- [ ] **B5**：应用层所有 query 经 `tenantScope(ctx)` helper
+- [x] **B5**：应用层 query 经 `tenant.Scope(ctx)` helper（cs-user 侧 primitive + 4 个 read 方法迁移；write 方法待 follow-up）— 详见下方"B5 实现细节"
 - [ ] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）
 - [x] **B7**：`(tenant_id, username)` 联合唯一索引，`email` 保持全局唯一 — 见 cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql（已完成 2026-07-17）
 
@@ -655,6 +655,23 @@
   - `user_auth_identities.external_key`（形如 `{provider}:{provider_user_id}`）全局唯一保留 — 跨 tenant SSO 去重锚点，是 B3b 后续跨 tenant 身份合并（identity transfer）链路的基石
 - **数据兼容**：当前所有用户 tenant_id='default'（B2 回填），现有 'alice/default' 在迁移后仍唯一不冲突。新建 tenant 后才有真正的多 tenant 用户重叠场景
 - **应用层无改动**：`GetOrCreateUser` / `SyncUser` 都是按 `(sub, universal_id)` 找用户，不依赖 username 唯一性；service 层不需要随本迁移改动
+
+### B5 实现细节（已完成 2026-07-17）
+
+- **scope = cs-user 侧 read 方法**：design §10.1 明确要求"cs-user 所有 service 方法签名强制带 ctx，DB query 自动加 WHERE tenant_id = ?"。server 侧不持有 tenant-scoped 表（ADR D1 — cs-user owns users + tenants），所以 B5 落地在 cs-user。
+- **新增 primitive**（`cs-user/internal/tenant/context.go`）：
+  - `DefaultTenantID = "default"` 常量（与 server 端 mirror；B2 回填后所有行都是 'default'，pre-cutover 单租户行为等价）
+  - `IDFromContext(ctx) string` — 从 `*models.Tenant` 解析 canonical tenant_id，空则 fallback 到 DefaultTenantID；保证 caller 永远拿到非空值
+  - `Scope(ctx) func(*gorm.DB) *gorm.DB` — 返回 GORM scope，应用 `WHERE tenant_id = ?`；pass 给 `db.Scopes(tenant.Scope(ctx))`
+- **迁移的 4 个 read 方法**（`cs-user/internal/user/service.go`）：`GetUserByID` / `GetUsersByIDs` / `SearchUsers` / `ListIdentities` 签名加 `ctx context.Context` 首参；每个 query 加 `.WithContext(ctx).Scopes(tenant.Scope(ctx))`。同步更新：
+  - `handlers/users.go` UserService interface + 3 call sites（`c.Request.Context()` 透传）
+  - `handlers/user_auth_identities.go` AuthIdentityService interface + 1 call site
+  - `app/app.go` `unavailableUserService` + `unavailableAuthIdentityService` stubs（`_ context.Context` 占位）
+  - `handlers/{users,user_auth_identities}_test.go` stub signatures + closure 签名
+  - `internal/user/service_test.go` + `service_write_test.go` 所有 call sites（`context.Background()`）
+- **write 方法（GetOrCreateUser / BindIdentityToUser / TransferIdentityToUser / UnbindIdentityByProvider）暂未应用 Scope**：write 路径有复杂 tx 逻辑（identity cascade / primary 切换 / refreshUserProfileFromIdentitiesTx），机械加 Scope 风险高。B2 已确保所有新建行 tenant_id='default'（DB default），数据正确性已保证；query scoping 是 defense-in-depth，由 B6 RLS 兜底。Write 方法 scoping 列为 follow-up（与 B6 一起做更稳）。
+- **单租户安全性**：DefaultTenantID fallback 确保 `WHERE tenant_id = 'default'` 查到与 pre-B5 全表扫描等价的结果集；可增量推进无需 flag。所有现有 sqlite + gorm 测试无需改动 fixture（默认 ctx 即 default tenant）即继续通过。
+- **B6 RLS 之前的安全态势**：B3b.2c + B4 + B5 三层覆盖（slug 比较 → ctx 注入 → query scope）；剩余攻击面是绕过 cs-user 直接查 DB（B6 RLS 解决）+ write path 未 scope（DB default + B2 回填保证正确性）。
 
 ### B4 实现细节（已完成 2026-07-17）
 

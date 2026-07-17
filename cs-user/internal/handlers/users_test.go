@@ -21,9 +21,9 @@ func init() { gin.SetMode(gin.TestMode) }
 // method field is optional; a nil field panics so a forgotten write test
 // fails loudly instead of silently returning zero values.
 type stubUserService struct {
-	getByID                func(string) (*models.User, error)
-	getByIDs               func([]string) (map[string]*models.User, error)
-	searchUsers            func(string, int) ([]*models.User, error)
+	getByID                func(context.Context, string) (*models.User, error)
+	getByIDs               func(context.Context, []string) (map[string]*models.User, error)
+	searchUsers            func(context.Context, string, int) ([]*models.User, error)
 	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
 	transfer               func(context.Context, string, string, string) error
@@ -31,23 +31,23 @@ type stubUserService struct {
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 }
 
-func (s stubUserService) GetUserByID(id string) (*models.User, error) {
+func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
 	if s.getByID == nil {
 		panic("stubUserService.getByID not wired")
 	}
-	return s.getByID(id)
+	return s.getByID(ctx, id)
 }
-func (s stubUserService) GetUsersByIDs(ids []string) (map[string]*models.User, error) {
+func (s stubUserService) GetUsersByIDs(ctx context.Context, ids []string) (map[string]*models.User, error) {
 	if s.getByIDs == nil {
 		panic("stubUserService.getByIDs not wired")
 	}
-	return s.getByIDs(ids)
+	return s.getByIDs(ctx, ids)
 }
-func (s stubUserService) SearchUsers(kw string, lim int) ([]*models.User, error) {
+func (s stubUserService) SearchUsers(ctx context.Context, kw string, lim int) ([]*models.User, error) {
 	if s.searchUsers == nil {
 		panic("stubUserService.searchUsers not wired")
 	}
-	return s.searchUsers(kw, lim)
+	return s.searchUsers(ctx, kw, lim)
 }
 func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
 	if s.getOrCreate == nil {
@@ -119,7 +119,7 @@ func doJSON(t *testing.T, r *gin.Engine, method, path string, body any) *httptes
 func TestGetUser_HappyPath(t *testing.T) {
 	want := &models.User{SubjectID: "subj-1", Username: "alice"}
 	api, r := newUsersAPI(stubUserService{
-		getByID: func(id string) (*models.User, error) {
+		getByID: func(_ context.Context, id string) (*models.User, error) {
 			if id != "subj-1" {
 				t.Errorf("handler passed id=%q, want subj-1", id)
 			}
@@ -143,7 +143,7 @@ func TestGetUser_HappyPath(t *testing.T) {
 
 func TestGetUser_NotFound(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getByID: func(string) (*models.User, error) { return nil, gorm.ErrRecordNotFound },
+		getByID: func(context.Context, string) (*models.User, error) { return nil, gorm.ErrRecordNotFound },
 	})
 
 	w := doJSON(t, r, http.MethodGet, "/api/internal/users/missing", nil)
@@ -154,7 +154,7 @@ func TestGetUser_NotFound(t *testing.T) {
 
 func TestGetUser_ServiceError(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getByID: func(string) (*models.User, error) { return nil, errors.New("db dead") },
+		getByID: func(context.Context, string) (*models.User, error) { return nil, errors.New("db dead") },
 	})
 
 	w := doJSON(t, r, http.MethodGet, "/api/internal/users/x", nil)
@@ -169,7 +169,7 @@ func TestGetUser_ServiceError(t *testing.T) {
 
 func TestGetUsersByIDs_HappyPath(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getByIDs: func(ids []string) (map[string]*models.User, error) {
+		getByIDs: func(_ context.Context, ids []string) (map[string]*models.User, error) {
 			if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
 				t.Errorf("handler passed ids=%v, want [a b]", ids)
 			}
@@ -221,7 +221,7 @@ func TestGetUsersByIDs_RejectsOversizedBatch(t *testing.T) {
 func TestSearchUsers_HappyPath(t *testing.T) {
 	called := false
 	_, r := newUsersAPI(stubUserService{
-		searchUsers: func(kw string, lim int) ([]*models.User, error) {
+		searchUsers: func(_ context.Context, kw string, lim int) ([]*models.User, error) {
 			called = true
 			if kw != "ali" {
 				t.Errorf("keyword: got %q want ali", kw)
@@ -247,7 +247,7 @@ func TestSearchUsers_HappyPath(t *testing.T) {
 
 func TestSearchUsers_ClampsLimit(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		searchUsers: func(_ string, lim int) ([]*models.User, error) {
+		searchUsers: func(_ context.Context, _ string, lim int) ([]*models.User, error) {
 			if lim != 200 {
 				t.Errorf("limit not clamped: got %d want 200", lim)
 			}

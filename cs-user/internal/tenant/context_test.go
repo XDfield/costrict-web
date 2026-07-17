@@ -56,3 +56,42 @@ func TestWithTenant_NilValueMeansNoSignal(t *testing.T) {
 		t.Errorf("FromContext after nil-set: got %v, want nil", got)
 	}
 }
+
+func TestIDFromContext_ResolvesTenantID(t *testing.T) {
+	t2 := &models.Tenant{TenantID: "t-acme", Slug: "acme"}
+	ctx := WithTenant(context.Background(), t2)
+	if got := IDFromContext(ctx); got != "t-acme" {
+		t.Errorf("IDFromContext: got %q, want t-acme", got)
+	}
+}
+
+func TestIDFromContext_FallsBackToDefault(t *testing.T) {
+	// Empty ctx and nil-tenant ctx both fall back to DefaultTenantID — the
+	// single-tenant safety property (B5).
+	if got := IDFromContext(context.Background()); got != DefaultTenantID {
+		t.Errorf("IDFromContext(empty): got %q, want %q", got, DefaultTenantID)
+	}
+	if got := IDFromContext(nil); got != DefaultTenantID {
+		t.Errorf("IDFromContext(nil): got %q, want %q", got, DefaultTenantID)
+	}
+	ctx := WithTenant(context.Background(), nil)
+	if got := IDFromContext(ctx); got != DefaultTenantID {
+		t.Errorf("IDFromContext(nil-tenant): got %q, want %q", got, DefaultTenantID)
+	}
+}
+
+func TestIDFromContext_EmptyTenantIDFallsBack(t *testing.T) {
+	// Defensive: a tenant row with empty TenantID (shouldn't happen in prod
+	// but possible in tests) must still produce a usable scope value.
+	t2 := &models.Tenant{TenantID: ""}
+	ctx := WithTenant(context.Background(), t2)
+	if got := IDFromContext(ctx); got != DefaultTenantID {
+		t.Errorf("IDFromContext(empty-id tenant): got %q, want %q", got, DefaultTenantID)
+	}
+}
+
+func TestDefaultTenantIDConstant(t *testing.T) {
+	if DefaultTenantID != "default" {
+		t.Errorf("DefaultTenantID = %q, want 'default'", DefaultTenantID)
+	}
+}
