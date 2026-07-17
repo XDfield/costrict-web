@@ -34,6 +34,7 @@ import (
 
 	_ "github.com/costrict/costrict-web/cs-user/docs"
 	"github.com/costrict/costrict-web/cs-user/internal/app"
+	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
@@ -97,12 +98,30 @@ func main() {
 		logger.Info("auto-migrate applied")
 	}
 
+	// Load the JWT signer when configured (Phase A3). When the env var is
+	// unset, signer stays nil and /.well-known/jwks returns 503 — this keeps
+	// Phase A boot optional so a deployment that hasn't cutover to JWT
+	// self-signing can still run. A7 (OAuth callback takeover) will tighten
+	// this to required.
+	var signer *auth.Signer
+	if cfg.JWT.SigningKeyPath != "" {
+		signer, err = auth.NewSignerFromPEMPath(cfg.JWT.SigningKeyPath)
+		if err != nil {
+			logger.Fatal("load JWT signing key", zap.String("path", cfg.JWT.SigningKeyPath), zap.Error(err))
+		}
+		logger.Info("JWT signer loaded", zap.String("kid", signer.KID()))
+	} else {
+		logger.Warn("CS_USER_JWT_SIGNING_KEY_PATH unset — /.well-known/jwks returns 503; JWT issuance disabled")
+	}
+
 	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
 	// actual DB reachability via Ping.
 	r := app.NewRouter(cfg, app.Deps{
-		ReadyChecker:   pool,
-		Users:          userSvc,
-		AuthIdentities: userSvc,
+		ReadyChecker:     pool,
+		Users:            userSvc,
+		AuthIdentities:   userSvc,
+		EmploymentReader: userSvc,
+		Signer:           signer,
 	})
 
 	srv := &http.Server{

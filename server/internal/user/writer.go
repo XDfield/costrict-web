@@ -1,9 +1,23 @@
 package user
 
 import (
+	"errors"
+	"time"
+
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 )
+
+// ErrSelfSignUnavailable is returned by UserService.ReissueToken on the local
+// backend — server has no RSA signing key configured; JWT self-signing
+// requires USER_SERVICE_BACKEND=rpc so the call routes through RPCWriter →
+// cs-user. The OAuth callback treats this as a non-fatal fallback (Phase A8
+// 灰度): when JWT_SIGN_MODE=dual|single and Backend=local, deployment config
+// is contradictory — login falls back to the Casdoor token with a WARN log
+// rather than refusing service.
+//
+// Added in Phase A7b; docstring updated in Phase A8.
+var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (server has no local signer)")
 
 // UserWriter is the write-side seam over user data, the write-path counterpart
 // to UserReader. *UserService satisfies it directly (local DB); RPCWriter
@@ -24,6 +38,24 @@ type UserWriter interface {
 	BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error
 	TransferIdentityToUser(targetUserSubjectID string, externalKey string, sourceUserSubjectID string) error
 	UnbindIdentityByProvider(userSubjectID string, provider string) error
+	// ApplyEnterpriseMapping refreshes the user's employment_identities
+	// snapshot on cs-user. Server has no local employment_identities table,
+	// so the local UserService satisfies this with a no-op (see
+	// service.go); only RPCWriter actually performs a write. Best-effort at
+	// every caller — login must never block on this.
+	// Added in Phase A4b.
+	ApplyEnterpriseMapping(userSubjectID string, provider string) error
+	// ReissueToken mints a cs-user-signed JWT carrying enterprise claims
+	// (Phase A7). The local UserService has no RSA signing key and returns
+	// ErrSelfSignUnavailable unconditionally; only RPCWriter (Backend=rpc)
+	// can fulfill this. DualWriter routes to Secondary directly, bypassing
+	// the no-op Primary.
+	//
+	// Returns (token, expiresAt, err). Callers (OAuth callback) treat errors
+	// as best-effort: when ReissueToken fails the cookie keeps the Casdoor
+	// token, when it succeeds the cookie gets the cs-user token.
+	// Added in Phase A7b.
+	ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
 }
 
 // DualWriter is the canary posture selected by USER_SERVICE_BACKEND=rpc with
@@ -125,4 +157,49 @@ func (d *DualWriter) UnbindIdentityByProvider(userSubjectID, provider string) er
 		}
 	}
 	return nil
+}
+
+// ApplyEnterpriseMapping delegates to Primary (which is the local UserService —
+// a no-op, since the server has no employment_identities table) and then to
+// Secondary (the RPCWriter, which forwards the actual write to cs-user). The
+// Primary call is preserved for interface symmetry and so a future local
+// implementation could be slotted in without touching DualWriter.
+//
+// Errors from Secondary are logged but never returned: this method is fired
+// from the OAuth callback's post-GetOrCreateUser hook, and employment mapping
+// is a bonus feature that must never block login.
+func (d *DualWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error {
+	if err := d.Primary.ApplyEnterpriseMapping(userSubjectID, provider); err != nil {
+		return err
+	}
+	if d.Secondary != nil {
+		if secErr := d.Secondary.ApplyEnterpriseMapping(userSubjectID, provider); secErr != nil {
+			logger.Warn("[user-dual-write] secondary ApplyEnterpriseMapping failed: %v", secErr)
+		}
+	}
+	return nil
+}
+
+// ReissueToken routes to Secondary (RPCWriter → cs-user) and skips Primary
+// entirely. Unlike the other DualWriter methods, Primary cannot fulfill this:
+// the local UserService has no RSA signing key. Routing through Primary would
+// always return ErrSelfSignUnavailable and mask Secondary's result. Secondary
+// is authoritative for token issuance.
+//
+// When Secondary is nil (e.g. a future single-primary config), returns
+// ErrSelfSignUnavailable so the OAuth callback surfaces the misconfiguration.
+// Phase A7b.
+func (d *DualWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+	if d.Secondary == nil {
+		return "", time.Time{}, ErrSelfSignUnavailable
+	}
+	token, exp, err := d.Secondary.ReissueToken(userSubjectID, claims, audience)
+	if err != nil {
+		// Log + propagate. Unlike ApplyEnterpriseMapping (pure best-effort),
+		// ReissueToken errors must reach the OAuth callback so it can decide
+		// whether to fall back to the Casdoor token or fail the request.
+		logger.Warn("[user-dual-write] secondary ReissueToken failed: %v", err)
+		return "", time.Time{}, err
+	}
+	return token, exp, nil
 }
