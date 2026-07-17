@@ -199,6 +199,31 @@ definitions:
       total:
         type: integer
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync:
+    properties:
+      interval:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider:
+    properties:
+      enabled:
+        type: boolean
+      enterprise_sync:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync'
+      field_map:
+        additionalProperties:
+          type: string
+        type: object
+      rank:
+        type: integer
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping:
+    properties:
+      providers:
+        additionalProperties:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider'
+        type: object
+    type: object
   internal_handlers.applyEnterpriseMappingRequest:
     properties:
       provider:
@@ -803,6 +828,79 @@ paths:
       summary: Update tenant config (tenant admin)
       tags:
       - tenant-config
+  /api/internal/tenant/provider-mapping:
+    get:
+      description: Returns the typed provider_mapping subsection of the caller's tenant_configs.config_yaml.
+        Missing subsection returns {"providers":{}} — every tenant implicitly has
+        an empty mapping. Sibling YAML keys are not echoed here; use /api/internal/tenant/config
+        for the raw blob.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Read provider_mapping (tenant admin)
+      tags:
+      - tenant-provider-mapping
+    put:
+      consumes:
+      - application/json
+      description: PUT (full replace) of the provider_mapping subsection. Sibling
+        YAML sections (employment_providers, features, etc.) are preserved verbatim
+        via yaml.v3 Node-based merge. Provider names must match ^[a-z0-9_]{1,64}$;
+        rank non-negative; enterprise_sync.interval a positive Go duration capped
+        at 30 days. Enabled defaults to true when omitted.
+      parameters:
+      - description: Typed provider_mapping
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update provider_mapping (tenant admin)
+      tags:
+      - tenant-provider-mapping
   /api/internal/tenants/resolve-by-email:
     post:
       consumes:
