@@ -531,6 +531,26 @@ func main() {
 				platformAdmin.DELETE("/tags/:id", handlers.DeleteTagHandler(tagSvc))
 			}
 
+			// Phase C2 — platform-admin tenant CRUD. First real wiring of the
+			// C1 middleware.RequirePlatformAdmin (JWT-claim-based; distinct
+			// from the legacy systemrole.RequirePlatformAdmin above, which
+			// stays on /tags). cs-user owns tenant data (ADR D1); RPCClient
+			// proxies. When UserModule.TenantResolver is nil (local backend
+			// mode), handlers return 502.
+			platformTenantSvc := buildPlatformTenantService(userModule)
+			platformTenantAPI := &handlers.PlatformTenantAPI{Svc: platformTenantSvc}
+			platformTenants := authed.Group("/platform/tenants")
+			platformTenants.Use(middleware.RequirePlatformAdmin())
+			{
+				platformTenants.GET("", platformTenantAPI.PlatformListTenants)
+				platformTenants.POST("", platformTenantAPI.PlatformCreateTenant)
+				platformTenants.GET("/:id", platformTenantAPI.PlatformGetTenant)
+				platformTenants.PATCH("/:id", platformTenantAPI.PlatformUpdateTenant)
+				platformTenants.POST("/:id/suspend", platformTenantAPI.PlatformSuspendTenant)
+				platformTenants.POST("/:id/restore", platformTenantAPI.PlatformRestoreTenant)
+				platformTenants.POST("/:id/delete", platformTenantAPI.PlatformDeleteTenant)
+			}
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -924,4 +944,19 @@ func (p deptSyncDepartmentProvider) GetUserDepartments(deptSyncUserID string) ([
 
 func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, error) {
 	return p.client.GetDepartmentPath(deptID)
+}
+
+// buildPlatformTenantService returns the platform-admin tenant CRUD service
+// used by Phase C2 handlers. In rpc backend mode it's the same *RPCClient
+// that backs Module.TenantResolver (cs-user owns tenant data per ADR D1);
+// in local backend mode there is no tenant data on this side, so it
+// returns nil and handlers answer 502.
+func buildPlatformTenantService(module *userpkg.Module) handlers.PlatformTenantService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
 }
