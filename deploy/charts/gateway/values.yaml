@@ -120,10 +120,9 @@ readinessProbe:
 # nginx-router 中间层配置。
 # 启用后，由 OpenResty 负责从 /device/{deviceID}/... 提取 deviceID、
 # 一致性哈希(chash)路由以及发现 Gateway Pod。
-# 支持三种发现模式：
-#   dns            - 解析 Gateway headless Service DNS A 记录（默认，兼容旧行为）
-#   static         - 解析固定的 StatefulSet Pod FQDN 列表
-#   server-registry- 从 Server /internal/gateway/list 拉取在线 Gateway 的 internalURL
+# 支持两种发现模式：
+#   dns    - 解析 Gateway headless Service DNS A 记录（默认，兼容旧行为）
+#   static - 解析固定的 StatefulSet Pod FQDN 列表
 # APISIX 退化为薄 WebSocket 透传层，不再需要 K8s 服务发现及对应 RBAC。
 nginxRouter:
   enabled: false
@@ -137,7 +136,7 @@ nginxRouter:
     port: 8080
   # Gateway Pod 发现相关
   discovery:
-    # 发现模式：dns | static | server-registry
+    # 发现模式：dns | static
     mode: "dns"
     # dns 模式下解析的 headless Service；留空时使用 <release>-headless.<namespace>.svc.cluster.local
     headlessServiceName: ""
@@ -153,10 +152,6 @@ nginxRouter:
     #   - "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local"
     #   - "costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local"
     staticFQDNs: []
-    # server-registry 模式下 Server 的地址，用于拉取在线 Gateway 列表
-    serverUrl: ""
-  # server-registry 模式下访问 Server 内部接口的共享密钥，与 Gateway 的 INTERNAL_SECRET 一致
-  internalSecret: ""
   # DNS 服务器地址；多个地址可用空格/逗号分隔。
   # 留空时由 nginx-router 在启动时从 Pod 的 /etc/resolv.conf 自动探测。
   # 仅在 hostNetwork、自定义 dnsConfig 等非常规场景需要显式指定。

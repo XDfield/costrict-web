@@ -32,10 +32,6 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-          env:
-            # server-registry 模式下需要；static/dns 模式下可留空。
-            - name: INTERNAL_SECRET
-              value: "<INTERNAL_SECRET>"
           volumeMounts:
             - name: config
               mountPath: /usr/local/openresty/nginx/conf/nginx.conf
@@ -44,6 +40,10 @@ spec:
             - name: config
               mountPath: /usr/local/openresty/site/lualib/router.lua
               subPath: router.lua
+              readOnly: true
+            - name: config
+              mountPath: /usr/local/openresty/site/lualib/dns_utils.lua
+              subPath: dns_utils.lua
               readOnly: true
             - name: tmp
               mountPath: /tmp

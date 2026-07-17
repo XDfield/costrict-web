@@ -129,22 +129,6 @@ func (r *GatewayRegistry) notifyOffline(deviceIDs []string) {
 	r.onDevicesOffline(deviceIDs)
 }
 
-// ListLiveGateways returns all gateways whose heartbeat has not timed out.
-func (r *GatewayRegistry) ListLiveGateways() ([]*GatewayInfo, error) {
-	gateways, err := r.store.ListGateways()
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UnixMilli()
-	var live []*GatewayInfo
-	for _, gw := range gateways {
-		if now-gw.LastHeartbeat <= GatewayHeartbeatTimeoutMs {
-			live = append(live, gw)
-		}
-	}
-	return live, nil
-}
-
 func (r *GatewayRegistry) GetDeviceGateway(deviceID string) (*GatewayInfo, error) {
 	gwID, err := r.store.GetDeviceGateway(deviceID)
 	if err != nil {

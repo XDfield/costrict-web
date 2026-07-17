@@ -193,23 +193,7 @@ websocat "wss://api.example.com/device/test-device-001/tunnel?token=xxx"
 - **Pod 重建**：
   StatefulSet Pod 名不变，IP 可能变化。nginx-router 每 5 秒刷新 FQDN，自动解析到新 IP，**无需手动修改 IP**。
 
-## 5. 备选：server-registry 发现模式
-
-如果容器云甚至连单个 Pod FQDN 的 DNS 解析都不稳定，可以启用 `server-registry` 模式：
-
-```bash
-helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
-  --namespace costrict \
-  --set statefulSet.enabled=true \
-  --set nginxRouter.enabled=true \
-  --set nginxRouter.discovery.mode=server-registry \
-  --set nginxRouter.discovery.serverUrl="http://costrict-web-api:8080" \
-  --set nginxRouter.internalSecret="your-internal-secret"
-```
-
-此模式下 nginx-router 每 5 秒调用 Server 的 `GET /internal/gateway/list` 接口，拉取当前在线 Gateway 的 `internalURL`，完全绕过 DNS。需要 nginx-router 与 Server 内网可达。
-
-## 6. 从 DaemonSet / Deployment 迁移
+## 5. 从 DaemonSet / Deployment 迁移
 
 1. 以新 release 名（如 `costrict-web-gateway-ss`）部署 StatefulSet，避免标签冲突。
 2. 更新 APISIX 路由指向新的 nginx-router Service。
@@ -217,9 +201,9 @@ helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
 4. 下线旧的 DaemonSet / Deployment。
 5. 旧 Gateway ID 会在 60 秒心跳超时后从 `GatewayRegistry` 自动清理。
 
-## 7. 常见问题
+## 6. 常见问题
 
-### 7.1 nginx-router 发现不到 Gateway
+### 6.1 nginx-router 发现不到 Gateway
 
 - 检查 FQDN 是否正确：`costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local`
 - 在 nginx-router Pod 内执行解析测试：
@@ -228,13 +212,13 @@ helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
   ```
 - 如果 `/etc/resolv.conf` 自动探测失败（如 hostNetwork、自定义 `dnsConfig`），可显式设置 `nginxRouter.resolver` 或 `CLUSTER_DNS` 占位符。
 
-### 7.2 同一 deviceID 路由到不同 Pod
+### 6.2 同一 deviceID 路由到不同 Pod
 
 - 检查所有 nginx-router 副本的 `/router_status` 返回的 IP 列表是否一致。
 - 确保 FQDN 列表在所有副本中相同，且解析结果一致。
 - StatefulSet Pod 重建后 IP 变化是正常的，但多个副本必须在同一时间点看到相同的有序 IP 集合。
 
-### 7.3 从 StatefulSet 回滚到 DaemonSet
+### 6.3 从 StatefulSet 回滚到 DaemonSet
 
 - 切换 `statefulSet.enabled=false`、`daemonSet.enabled=true`。
 - 注意 `GATEWAY_ID` 会从 Pod 名变为 Node 名，已绑定设备会重新分配。
