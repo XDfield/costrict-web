@@ -9,17 +9,20 @@ import (
 // EmploymentIdentity is the per-user enterprise-identity snapshot written by
 // ApplyEnterpriseMapping in the OAuth callback (lands in Phase A4).
 //
-// Phase A scope: ONE snapshot row per user (partial unique index on
-// user_subject_id WHERE deleted_at IS NULL enforced in the migration).
-// Single-tenant mode — the tenant_id column + (tenant_id, enterprise_uid)
-// unique index land in Phase B (MULTI_TENANCY §6.5.1, §8.3).
+// Phase B2 added TenantID + FK to tenants(tenant_id) + the (tenant_id,
+// user_subject_id) composite index. The (tenant_id, enterprise_uid) unique
+// index still waits on enterprise_uid itself landing in a later Phase B step
+// (MULTI_TENANCY §6.5.1, §8.3) — the A1 partial unique index on
+// user_subject_id WHERE deleted_at IS NULL stays as the per-tenant-scope
+// uniqueness guarantee until then.
 //
 // App-layer references to users.subject_id (no SQL FK — same convention as
 // UserAuthIdentity). Sync cadence is driven by next_sync_due_at + the
 // provider TTL configured in tenant_configs.
 type EmploymentIdentity struct {
 	ID                       uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserSubjectID            string         `gorm:"index:idx_employment_identities_user_subject_id;not null;size:191" json:"user_subject_id"`
+	TenantID                 string         `gorm:"type:text;size:191;not null;default:default;index:idx_employment_identities_tenant_id,priority:1;index:idx_employment_identities_tenant_user,priority:1" json:"tenant_id"`
+	UserSubjectID            string         `gorm:"index:idx_employment_identities_user_subject_id;not null;size:191;index:idx_employment_identities_tenant_user,priority:2" json:"user_subject_id"`
 	Provider                 string         `gorm:"index:idx_employment_identities_provider;size:64;not null" json:"provider"`
 	EmployeeNumber           *string        `gorm:"size:191" json:"employee_number"`
 	CostCenter               *string        `gorm:"index:idx_employment_identities_cost_center;size:191" json:"cost_center"`

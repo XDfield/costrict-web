@@ -18,6 +18,7 @@ import (
 // tables and request context; the auto-increment ID is internal-only.
 type User struct {
 	ID                 uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	TenantID           string         `gorm:"type:text;size:191;not null;default:default;index:idx_users_tenant_id" json:"tenant_id"`
 	SubjectID          string         `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"`
 	Username           string         `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`
 	DisplayName        *string        `gorm:"size:191" json:"display_name"`
@@ -51,6 +52,7 @@ func (User) TableName() string { return "users" }
 // identity" semantics in bind/transfer flows.
 type UserAuthIdentity struct {
 	ID                uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	TenantID          string         `gorm:"type:text;size:191;not null;default:default;index:idx_user_auth_identities_tenant_id" json:"tenant_id"`
 	UserSubjectID     string         `gorm:"index:idx_user_auth_identities_user_subject_id;not null;size:191" json:"user_subject_id"`
 	Provider          string         `gorm:"size:64;not null" json:"provider"`
 	Issuer            *string        `gorm:"size:255" json:"issuer"`
