@@ -84,6 +84,10 @@ type UserServiceConfig struct {
 	InternalToken string // X-Internal-Token value sent to cs-user
 	TimeoutSec    int    // per-request HTTP timeout in seconds, default 10
 	WriteMode     string // "local" (default, writes go through UserService) or "readonly" (writes return ErrWriteBlocked)
+	// ApexDomains enables Host-subdomain tenant-slug resolution (Phase B3b.2a).
+	// Empty (default) disables the subdomain layer — local dev mode. Prod
+	// sets e.g. USER_SERVICE_APEX_DOMAINS=example.com,example.cn.
+	ApexDomains []string
 }
 
 // Backend values for UserServiceConfig.Backend.
@@ -262,6 +266,7 @@ func Load() *Config {
 			InternalToken: getEnv("USER_SERVICE_INTERNAL_TOKEN", ""),
 			TimeoutSec:    getEnvInt("USER_SERVICE_TIMEOUT_SECONDS", 10),
 			WriteMode:     getEnv("USER_SERVICE_WRITE_MODE", UserServiceWriteModeLocal),
+			ApexDomains:   getEnvSlice("USER_SERVICE_APEX_DOMAINS", nil),
 		},
 		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
