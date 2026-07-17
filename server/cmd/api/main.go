@@ -387,6 +387,13 @@ func main() {
 		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
+		// Phase B3b.2b-step2c: tenant picker suggestion endpoint. Public read
+		// (OptionalAuth) so the pre-login picker page can call it after the
+		// OAuth callback redirects with an ambiguous state. Wrapper over cs-user
+		// ResolveTenantByEmail; returns 503 in local backend mode (no tenant
+		// data on this side per ADR D1).
+		api.GET("/tenants/suggest", handlers.SuggestTenant)
+
 		api.POST("/releases", middleware.SystemTokenAuth(cfg.SystemToken), handlers.CreateReleaseHandler(updateSvc))
 
 		// Items read (anonymous can preview public items)

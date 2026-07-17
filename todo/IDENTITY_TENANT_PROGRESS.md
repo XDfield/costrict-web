@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c picker UI redirect + B6 RLS + B5 write 方法 scoping 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 + B6 RLS + B5 write 方法 scoping 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -627,11 +627,11 @@
 - [x] 测试：9 个 RPC client 用例（unique hit / ambiguous / not_found / 空 email 短路 / 5xx / 404 / 转发现有 slug / 未配置 / 未知 status）+ 接口 conformance 检查 `*RPCClient` 满足 `TenantResolver`
 - [x] **效果**：当用户来自未配置 subdomain 的链接（直连顶级域名 / 邮件链接 / SSO 入口），登录后自动归属其 email 域名对应的 tenant，后续请求 cookie 自动携带 slug，无需每次重解析
 
-**B3b.2b-step2c（待启动）** — picker UI redirect：
+**B3b.2b-step2c（部分完成 2026-07-17 — server 端 picker suggestion endpoint 已落地）** — picker UI redirect：
 
-- [ ] AuthCallback `ambiguous` 分支：redirect 到 `/tenant/picker?candidates=...&state=...`（前端渲染候选 list，用户选择后 POST 回来 set cookie + 重放登录）
-- [ ] picker endpoint `/api/tenant/suggest?email=...` — server 侧 wrapper 转发到 cs-user（前端 picker UI 调这个，不是直接打 internal endpoint）
-- [ ] 前端 picker 页面 + 选择回调路由
+- [ ] AuthCallback `ambiguous` 分支：redirect 到 `/tenant/picker?candidates=...&state=...`（前端渲染候选 list，用户选择后 POST 回来 set cookie + 重放登录）。**待前端 picker 页面落地后再启用** — 当前仍 fall through 到 default tenant，避免 redirect 到 404 死链
+- [x] picker endpoint `/api/tenant/suggest?email=...` — server 侧 wrapper 转发到 cs-user（前端 picker UI 调这个，不是直接打 internal endpoint）。已落地 `server/internal/handlers/tenant.go::SuggestTenant` + 路由 `api.GET("/tenants/suggest", ...)`（位于 OptionalAuth 区，pre-login 可调）；9 个测试覆盖 ok / ambiguous / not_found / 空 email 400 / local mode 503 / RPC unavailable 502 / 其他 error 502 / 未知 status 规范化为 not_found / nil 响应防御
+- [ ] 前端 picker 页面 + 选择回调路由（独立前端 PR，不在本仓库 server 工作流范围内）
 
 **B3b.2c（已完成 2026-07-17）** — cross-tenant 访问检测（JWT `tenant_slug` claim 路径）：
 
@@ -655,6 +655,34 @@
   - `user_auth_identities.external_key`（形如 `{provider}:{provider_user_id}`）全局唯一保留 — 跨 tenant SSO 去重锚点，是 B3b 后续跨 tenant 身份合并（identity transfer）链路的基石
 - **数据兼容**：当前所有用户 tenant_id='default'（B2 回填），现有 'alice/default' 在迁移后仍唯一不冲突。新建 tenant 后才有真正的多 tenant 用户重叠场景
 - **应用层无改动**：`GetOrCreateUser` / `SyncUser` 都是按 `(sub, universal_id)` 找用户，不依赖 username 唯一性；service 层不需要随本迁移改动
+
+### B3b.2b-step2c 实现细节（部分完成 2026-07-17 — server 端 picker suggestion endpoint）
+
+- **范围声明**：本增量只落地 server 端 suggestion endpoint + 路由 + handler + 测试。AuthCallback `ambiguous` 分支的 picker redirect **没有启用** — 前端 picker 页面尚未存在，启用 redirect 会落到 404 死链。当前 AuthCallback `ambiguous` 仍 log + fall through 到 default tenant，登录不被阻塞。前端 picker 落地后启用 redirect 是一个独立的小增量。
+- **NEW handler**（`server/internal/handlers/tenant.go`）：
+  - `SuggestTenant(c *gin.Context)` — wrapper around `UserModule.TenantResolver.ResolveTenantByEmail`，专为前端 picker UI 设计
+  - 输入：`email` query param（trim 后非空校验，空则 400）
+  - 输出：`tenantSuggestResponse{status, slug?, tenant_id?, candidates?}`，三态镜像 cs-user 内部协议（ok / ambiguous / not_found）
+  - 未知 status 字符串规范化为 `not_found`（cs-user 协议演进时的 fallback safety net，不让前端死在不认识的 discriminator 上）
+- **路由注册**（`server/cmd/api/main.go`）：`api.GET("/tenants/suggest", handlers.SuggestTenant)` 位于公开 OptionalAuth 区（与 `/users/names` / `/users/info` 同层）— picker 页面在 pre-login 状态下调用，不能 gate 在 RequireAuth 之后
+- **错误码语义**：
+  - 400 — 空 email（客户端 bug）
+  - 503 — UserModule 或 TenantResolver 为 nil（local backend 模式，ADR D1 — server 不持有 tenant 数据）；503 而非 404 让前端区分"feature 在此部署禁用"vs"端点路径错误"
+  - 502 — RPC 不可用（ErrRPCUnavailable）或任何非预期 resolver error；不泄漏内部错误文本到 body
+  - 200 — 所有三种语义状态（ok / ambiguous / not_found）；discriminator 在 body.status 字段，与 cs-user 内部 RPC 协议对齐
+- **测试**（`server/internal/handlers/tenant_test.go`，9 用例）：
+  - `TestSuggestTenant_Ok` — 唯一命中返回 slug+tenant_id
+  - `TestSuggestTenant_Ambiguous` — 多命中返回 candidates 数组
+  - `TestSuggestTenant_NotFound` — 无命中所有字段空
+  - `TestSuggestTenant_EmptyEmailReturns400` — whitespace-only email 短路 400，不调用 resolver
+  - `TestSuggestTenant_LocalModeReturns503` — TenantResolver nil（local backend）返回 503
+  - `TestSuggestTenant_RPCUnavailableReturns502` — `errors.Is(err, ErrRPCUnavailable)` 路径
+  - `TestSuggestTenant_OtherErrorReturns502` — 非 sentinel error 也走 502，且 body 不泄漏 "boom"
+  - `TestSuggestTenant_UnknownStatusNormalizesToNotFound` — cs-user 协议演进兜底
+  - `TestSuggestTenant_NilResponseReturns502` — 防御 (nil, nil) contract 违反（ResolveTenantByEmail 文档承诺不返回，但跨服务边界不信任）
+- **stub 模式**：测试用 `stubTenantResolver` 直接实现 `TenantResolver` interface，closure 字段控制每个用例的 outcome；不需要起 httptest server，因为 suggest handler 只消费 Go-level `TenantEmailResolution`，不碰 wire format
+- **swagger 注释**：handler 携带完整 `@Summary / @Description / @Tags / @Param / @Success / @Failure / @Router` 注释。注：当前仓库 `make swagger` 因 pre-existing `server/internal/audit/handlers.go` ParseComment 错误无法 regen（与本次改动无关）；swagger spec 已经 stale 多个 commit。本增量的注释已通过 `swag fmt` 校验语法，等 audit handlers 修复后 regen 会自动包含本端点
+- **ADR D1 强化**：endpoint 在 local backend 模式明确返回 503 而非伪装数据 — 提醒调用方"此部署没有 tenant 数据"，避免 silent fallback 掩盖配置错误
 
 ### B5 实现细节（已完成 2026-07-17）
 
