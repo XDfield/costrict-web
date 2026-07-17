@@ -1,4 +1,4 @@
-{{- if .Values.nginxRouter.enabled }}
+{{- if or .Values.nginxRouter.enabled .Values.statefulSet.enabled }}
 apiVersion: v1
 kind: Service
 metadata:

@@ -1,0 +1,25 @@
+# Gateway headless Service for StatefulSet stable network identity.
+# Replace the following placeholders before applying:
+#   <NAMESPACE>          - your namespace
+#   <RELEASE_NAME>       - your release name (e.g. costrict-web-gateway)
+#   <GATEWAY_PORT>       - Gateway container port (default 8081)
+apiVersion: v1
+kind: Service
+metadata:
+  name: <RELEASE_NAME>-headless
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: <RELEASE_NAME>
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: false
+  ports:
+    - port: <GATEWAY_PORT>
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: <RELEASE_NAME>

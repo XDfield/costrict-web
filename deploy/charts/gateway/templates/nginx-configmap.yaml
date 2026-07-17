@@ -1,4 +1,5 @@
 {{- if .Values.nginxRouter.enabled }}
+{{- $headlessName := .Values.nginxRouter.discovery.headlessServiceName | default (printf "%s-headless" .Release.Name) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -36,11 +37,7 @@ data:
         uwsgi_temp_path       /tmp/uwsgi_temp;
         scgi_temp_path        /tmp/scgi_temp;
 
-        # DNS resolver for Kubernetes headless Service lookups
-        resolver {{ .Values.nginxRouter.resolver }} valid=5s;
-        resolver_timeout 2s;
-
-        # Shared across workers: JSON-encoded discovered pod list
+        # Shared across workers: JSON-encoded discovered pod list and DNS metadata
         lua_shared_dict router_state 1m;
 
         lua_package_path "/usr/local/openresty/site/lualib/?.lua;;";
@@ -54,22 +51,37 @@ data:
             end
 
             local router = require "router"
+            local dns_utils = require "dns_utils"
             local state = ngx.shared.router_state
 
-            local headless_fqdn = "{{ .Release.Name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
             local gateway_port = {{ .Values.nginxRouter.discovery.gatewayPort }}
             local refresh_ms = {{ .Values.nginxRouter.discovery.refreshIntervalMs }}
-            local resolver_addr = "{{ .Values.nginxRouter.resolver }}"
-
             -- Refresh at least once per second; never 0 (which would busy-loop).
             local refresh_interval = math.max(refresh_ms / 1000, 1)
             -- Expire the cached pod list if discovery stops succeeding, so we
             -- stop routing to a stale set rather than holding it forever.
             local ttl_seconds = math.max(refresh_interval * 3, 30)
 
+            {{- if eq .Values.nginxRouter.discovery.mode "dns" }}
+            -- Helm renders the FQDN base without cluster domain; the domain is
+            -- detected at runtime from /etc/resolv.conf (or overridden in values).
+            local headless_base = "{{ $headlessName }}.{{ .Release.Namespace }}.svc"
+            local resolver_override = "{{ .Values.nginxRouter.resolver }}"
+            local domain_override   = "{{ .Values.nginxRouter.discovery.clusterDomain }}"
+
+            -- Detect nameservers + cluster domain once per worker startup.
+            local nameservers, cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)
+            local headless_fqdn = headless_base .. "." .. cluster_domain
+
+            ngx.log(ngx.INFO,
+                "nginx-router dns config: source=", dns_source,
+                " nameservers=[", table.concat(nameservers, ","), "]",
+                " domain=", cluster_domain,
+                " fqdn=", headless_fqdn)
+
             local function discover_and_update(premature)
                 if premature then return end
-                local ips, err = router.resolve_ips(headless_fqdn, gateway_port, resolver_addr)
+                local ips, err = router.resolve_ips(headless_fqdn, gateway_port, nameservers)
                 if not ips then
                     ngx.log(ngx.ERR, "discovery failed: ", err)
                     return
@@ -88,7 +100,66 @@ data:
                 end
 
                 state:set("ips", encoded, ttl_seconds)
+
+                -- Also store DNS metadata for /router_status.
+                local meta_ok, meta = pcall(router.cjson.encode, {
+                    source = dns_source,
+                    nameservers = nameservers,
+                    cluster_domain = cluster_domain,
+                })
+                if meta_ok then
+                    state:set("dns_meta", meta, ttl_seconds)
+                end
             end
+            {{- else if eq .Values.nginxRouter.discovery.mode "static" }}
+            local resolver_override = "{{ .Values.nginxRouter.resolver }}"
+            local domain_override   = "{{ .Values.nginxRouter.discovery.clusterDomain }}"
+            -- For static FQDN mode we still need a nameserver to resolve each Pod FQDN.
+            -- Auto-detect from /etc/resolv.conf unless explicitly overridden.
+            local nameservers, cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)
+
+            ngx.log(ngx.INFO,
+                "nginx-router static fqdn config: source=", dns_source,
+                " nameservers=[", table.concat(nameservers, ","), "]")
+
+            local static_fqdns = {
+                {{- range .Values.nginxRouter.discovery.staticFQDNs }}
+                "{{ . }}",
+                {{- end }}
+            }
+
+            local function discover_and_update(premature)
+                if premature then return end
+                local ips, err = router.resolve_static_fqdns(static_fqdns, gateway_port, nameservers)
+                if not ips then
+                    ngx.log(ngx.ERR, "static fqdn discovery failed: ", err)
+                    return
+                end
+                if #ips == 0 then
+                    ngx.log(ngx.WARN, "no gateway pods resolved from static fqdn list")
+                    return
+                end
+
+                local ok, encoded = pcall(router.cjson.encode, ips)
+                if not ok then
+                    ngx.log(ngx.ERR, "failed to encode ips: ", encoded)
+                    return
+                end
+
+                state:set("ips", encoded, ttl_seconds)
+
+                local meta_ok, meta = pcall(router.cjson.encode, {
+                    source = dns_source,
+                    nameservers = nameservers,
+                    cluster_domain = cluster_domain or "",
+                })
+                if meta_ok then
+                    state:set("dns_meta", meta, ttl_seconds)
+                end
+            end
+            {{- else }}
+            {{- fail (printf "Unsupported nginxRouter.discovery.mode: %s" .Values.nginxRouter.discovery.mode) }}
+            {{- end }}
 
             -- Defer first discovery into a timer context; UDP sockets (used by
             -- resty.dns.resolver) are not available in init_worker_by_lua*.
@@ -169,9 +240,18 @@ data:
                     local encoded = state:get("ips") or "[]"
                     local ips, _ = router.cjson.decode(encoded)
                     if not ips then ips = {} end
+
+                    local dns_meta = state:get("dns_meta") or "{}"
+                    local dns, _ = router.cjson.decode(dns_meta)
+                    if not dns then dns = {} end
+
                     ngx.say(router.cjson.encode({
                         source = "nginx-router",
+                        mode = "{{ .Values.nginxRouter.discovery.mode }}",
                         discovered_ips = ips,
+                        dns_source = dns.source or "unknown",
+                        nameservers = dns.nameservers or {},
+                        cluster_domain = dns.cluster_domain or "unknown",
                     }))
                 }
             }
@@ -183,10 +263,13 @@ data:
             }
         }
     }
+  dns_utils.lua: |
+{{ .Files.Get "tests/dns_utils.lua" | indent 4 }}
   router.lua: |
     -- Pure-Lua DNS discovery + ketama consistent-hash helper for nginx-router.
     -- Runs inside OpenResty; uses only built-in modules.
 
+    local dns_utils = require "dns_utils"
     local resolver = require "resty.dns.resolver"
     local cjson = require "cjson.safe"
     local ngx_crc32_long = ngx.crc32_long
@@ -194,6 +277,8 @@ data:
     local table_concat = table.concat
     local ipairs = ipairs
     local floor = math.floor
+    local tonumber = tonumber
+    local tostring = tostring
 
     local _M = {
         cjson = cjson,
@@ -204,10 +289,10 @@ data:
     local _ring_cache = nil
     local _ring_cache_key = nil
 
-    -- Resolve all A records for a headless Service and return sorted "ip:port" list.
-    function _M.resolve_ips(fqdn, port, nameserver)
+    -- Resolve all A records for a single FQDN and return sorted "ip:port" list.
+    local function resolve_fqdn(fqdn, port, nameservers)
         local r, err = resolver:new{
-            nameservers = { nameserver },
+            nameservers = nameservers,
             retrans = 3,
             timeout = 2000,
         }
@@ -228,6 +313,33 @@ data:
             -- Only A records carry a usable IP; skip CNAME/other record types.
             if ans.address and ans.type == r.TYPE_A then
                 ips[#ips + 1] = ans.address .. ":" .. tostring(port)
+            end
+        end
+        table_sort(ips)
+        return ips
+    end
+
+    -- Resolve all A records for a headless Service and return sorted "ip:port" list.
+    function _M.resolve_ips(fqdn, port, nameservers)
+        return resolve_fqdn(fqdn, port, nameservers)
+    end
+
+    -- Resolve a fixed list of StatefulSet Pod FQDNs, merge and deduplicate the
+    -- resulting IPs, and return a sorted "ip:port" list.
+    function _M.resolve_static_fqdns(fqdns, port, nameservers)
+        local seen = {}
+        local ips = {}
+        for _, fqdn in ipairs(fqdns) do
+            local resolved, err = resolve_fqdn(fqdn, port, nameservers)
+            if not resolved then
+                ngx.log(ngx.WARN, "failed to resolve ", fqdn, ": ", err)
+            else
+                for _, ip in ipairs(resolved) do
+                    if not seen[ip] then
+                        seen[ip] = true
+                        ips[#ips + 1] = ip
+                    end
+                end
             end
         end
         table_sort(ips)

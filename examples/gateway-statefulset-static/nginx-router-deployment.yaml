@@ -1,43 +1,33 @@
-{{- if .Values.nginxRouter.enabled }}
+# nginx-router Deployment.
+# 使用 OpenResty 镜像，挂载 nginx.conf 与 router.lua 两个 ConfigMap key。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-nginx-router
-  namespace: {{ .Release.Namespace }}
+  name: <RELEASE_NAME>-nginx-router
+  namespace: <NAMESPACE>
   labels:
-    app.kubernetes.io/name: {{ .Chart.Name }}-nginx-router
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/version: {{ .Chart.Version }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: gateway-nginx-router
+    app.kubernetes.io/instance: <RELEASE_NAME>
 spec:
-  replicas: {{ .Values.nginxRouter.replicaCount }}
+  replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ .Chart.Name }}-nginx-router
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: gateway-nginx-router
+      app.kubernetes.io/instance: <RELEASE_NAME>
   template:
     metadata:
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/nginx-configmap.yaml") . | sha256sum }}
-        {{- with .Values.nginxRouter.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
       labels:
-        app.kubernetes.io/name: {{ .Chart.Name }}-nginx-router
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/name: gateway-nginx-router
+        app.kubernetes.io/instance: <RELEASE_NAME>
     spec:
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
       containers:
         - name: nginx-router
-          image: "{{ .Values.nginxRouter.image.repository }}:{{ .Values.nginxRouter.image.tag }}"
-          imagePullPolicy: {{ .Values.nginxRouter.image.pullPolicy }}
+          image: "openresty/openresty:1.25.3.1-0-alpine"
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
@@ -55,9 +45,6 @@ spec:
               mountPath: /usr/local/openresty/site/lualib/dns_utils.lua
               subPath: dns_utils.lua
               readOnly: true
-            # Writable scratch dir for nginx pid + temp files; required because
-            # the stock openresty image's prefix is root-owned and we run as
-            # UID 1000 with all capabilities dropped.
             - name: tmp
               mountPath: /tmp
           livenessProbe:
@@ -77,7 +64,12 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           resources:
-            {{- toYaml .Values.nginxRouter.resources | nindent 12 }}
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -86,7 +78,6 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ .Release.Name }}-nginx-router-config
+            name: <RELEASE_NAME>-nginx-router-config
         - name: tmp
           emptyDir: {}
-{{- end }}

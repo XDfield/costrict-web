@@ -4,12 +4,23 @@ replicaCount: 1
 
 # Run Gateway as a DaemonSet instead of a Deployment.
 # When enabled, one Gateway Pod is scheduled per Node and replicaCount is ignored.
+# Mutually exclusive with statefulSet.enabled.
 daemonSet:
   enabled: false
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
+
+# Run Gateway as a StatefulSet instead of a Deployment/DaemonSet.
+# Provides stable Pod names (e.g. costrict-web-gateway-0) so GATEWAY_ID stays
+# the same across restarts. Useful when nginx-router uses static FQDN discovery.
+# Mutually exclusive with daemonSet.enabled.
+statefulSet:
+  enabled: false
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
 
 image:
   repository: ghcr.io/xdfield/costrict-web-gateway
@@ -60,7 +71,8 @@ config:
   gatewayId: ""
   # Deployment 模式下 Gateway ID 默认使用 Pod 名；设置前缀后变为 "{prefix}{podName}"。
   # DaemonSet 模式下 Gateway ID 默认使用 Node 名；设置前缀后变为 "{prefix}{nodeName}"。
-  # 两种模式下留空均保持自动生成行为。
+  # StatefulSet 模式下 Gateway ID 默认使用稳定的 Pod 名；设置前缀后变为 "{prefix}{podName}"。
+  # 三种模式下留空均保持自动生成行为。
   gatewayIdPrefix: ""
   endpoint: ""
   internalUrl: ""
@@ -107,7 +119,10 @@ readinessProbe:
 
 # nginx-router 中间层配置。
 # 启用后，由 OpenResty 负责从 /device/{deviceID}/... 提取 deviceID、
-# 一致性哈希(chash)路由以及通过 headless Service DNS 发现 Gateway Pod。
+# 一致性哈希(chash)路由以及发现 Gateway Pod。
+# 支持两种发现模式：
+#   dns    - 解析 Gateway headless Service DNS A 记录（默认，兼容旧行为）
+#   static - 解析固定的 StatefulSet Pod FQDN 列表
 # APISIX 退化为薄 WebSocket 透传层，不再需要 K8s 服务发现及对应 RBAC。
 nginxRouter:
   enabled: false
@@ -121,12 +136,26 @@ nginxRouter:
     port: 8080
   # Gateway Pod 发现相关
   discovery:
-    # 留空时使用 <fullname>-headless
+    # 发现模式：dns | static
+    mode: "dns"
+    # dns 模式下解析的 headless Service；留空时使用 <release>-headless.<namespace>.svc.cluster.local
     headlessServiceName: ""
+    # dns/static 模式下 Gateway 的端口
     gatewayPort: 8081
+    # 发现刷新间隔（毫秒）
     refreshIntervalMs: 5000
-  # kube-dns 地址；多数集群默认值即可工作
-  resolver: "kube-dns.kube-system.svc.cluster.local"
+    # 集群域名后缀（如 cluster.local / k8s.internal）。
+    # 留空时由 nginx-router 在启动时从 Pod 的 /etc/resolv.conf 自动探测。
+    clusterDomain: ""
+    # static 模式下需要解析的 StatefulSet Pod FQDN 列表
+    # 示例：
+    #   - "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local"
+    #   - "costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local"
+    staticFQDNs: []
+  # DNS 服务器地址；多个地址可用空格/逗号分隔。
+  # 留空时由 nginx-router 在启动时从 Pod 的 /etc/resolv.conf 自动探测。
+  # 仅在 hostNetwork、自定义 dnsConfig 等非常规场景需要显式指定。
+  resolver: ""
   resources:
     limits:
       cpu: 500m

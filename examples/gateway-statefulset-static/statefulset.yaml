@@ -1,0 +1,98 @@
+# Gateway StatefulSet.
+# Provides stable Pod names so GATEWAY_ID stays the same across restarts.
+# Replace all placeholders before applying.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: <RELEASE_NAME>
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: <RELEASE_NAME>
+spec:
+  serviceName: <RELEASE_NAME>-headless
+  replicas: 2
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: <RELEASE_NAME>
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/instance: <RELEASE_NAME>
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: gateway
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          image: "<GATEWAY_IMAGE>"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: <GATEWAY_PORT>
+              protocol: TCP
+          env:
+            - name: GATEWAY_PORT
+              value: "<GATEWAY_PORT>"
+            - name: SERVER_URL
+              value: "<SERVER_URL>"
+            # StatefulSet Pod 名稳定，例如 costrict-web-gateway-0。
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GATEWAY_ID
+              value: "<GATEWAY_ID_PREFIX>$(POD_NAME)"
+            # 设备建立 WebSocket 隧道用的公网地址，通常为 APISIX 入口。
+            - name: GATEWAY_ENDPOINT
+              value: "<GATEWAY_ENDPOINT>"
+            # Server 反向代理到设备时直接回连该 Pod，不经过 APISIX/nginx-router。
+            - name: GATEWAY_INTERNAL_URL
+              value: "http://$(POD_IP):<GATEWAY_PORT>"
+            - name: GATEWAY_REGION
+              value: "<GATEWAY_REGION>"
+            - name: GATEWAY_CAPACITY
+              value: "<GATEWAY_CAPACITY>"
+            # 与 Server 内部接口共享的密钥
+            - name: INTERNAL_SECRET
+              value: "<INTERNAL_SECRET>"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: <GATEWAY_PORT>
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: <GATEWAY_PORT>
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi

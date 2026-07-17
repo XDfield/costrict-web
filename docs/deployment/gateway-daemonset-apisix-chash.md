@@ -205,22 +205,22 @@ nginxRouter:
     headlessServiceName: ""      # 留空默认使用 <fullname>-headless
     gatewayPort: 8081
     refreshIntervalMs: 5000       # DNS 轮询间隔
-  resolver: "kube-dns.kube-system.svc.cluster.local"
+    clusterDomain: ""             # 留空时从 /etc/resolv.conf 自动探测
+  resolver: ""                    # 留空时从 /etc/resolv.conf 自动探测
 ```
 
-> 如果你的集群 DNS 不是 `kube-dns.kube-system.svc.cluster.local`（如 CoreDNS 在其它地址），把 `nginxRouter.resolver` 改成集群实际的 nameserver。
+> `nginxRouter.resolver` 与 `nginxRouter.discovery.clusterDomain` 默认留空，nginx-router 启动时会从 Pod 的 `/etc/resolv.conf` 自动探测 nameserver 和 cluster domain。仅在 hostNetwork、自定义 `dnsConfig` 等非常规场景需要显式指定。
 
 #### 2.2.3 nginx.conf 核心逻辑
 
 ConfigMap 中的 `nginx.conf` 主要包含：
 
-- `resolver` 指向 K8s DNS。
-- `init_worker_by_lua_block` 启动定时器，周期性解析 `costrict-web-gateway-headless.costrict.svc.cluster.local`。
+- `init_worker_by_lua_block` 启动定时器，自动探测 `/etc/resolv.conf` 中的 nameserver 与 cluster domain，并周期性解析 `costrict-web-gateway-headless.costrict.svc.cluster.local`。
 - `/device/{deviceID}/` 这个 location 用正则把 `deviceID` 捕获到变量，WebSocket 透传到 `gateway_backend`。
 - `upstream gateway_backend` 的 `balancer_by_lua_block` 从 shared dict 读取已排序的 Pod IP 列表，用 `deviceID` 做 ketama 一致性哈希选 peer。
-- `/router_status` 调试接口输出当前发现的 Pod 列表。
+- `/router_status` 调试接口输出当前发现的 Pod 列表与 DNS 探测元数据。
 
-`router.lua` 是随 ConfigMap 下发的纯 Lua 辅助模块，提供 DNS 解析与 ketama 哈希函数，不依赖任何第三方 `.so`。
+`router.lua` 与 `dns_utils.lua` 是随 ConfigMap 下发的纯 Lua 辅助模块，提供 DNS 解析、自动探测与 ketama 哈希函数，不依赖任何第三方 `.so`。`dns_utils.lua` 同时被 `deploy/charts/gateway/tests/router_dns_test.lua` 单元测试覆盖。
 
 ---
 
@@ -273,7 +273,7 @@ kubectl logs -n costrict -l app.kubernetes.io/name=gateway --tail=100 | grep tes
 ### 4.1 nginx-router 发现不到 Gateway 节点
 
 - 检查 Gateway headless Service 是否已创建：`kubectl get svc -n costrict costrict-web-gateway-headless`。
-- 检查 `nginxRouter.resolver` 是否配置为集群实际 DNS 地址。
+- 默认会自动从 `/etc/resolv.conf` 探测 DNS；如果探测失败（如 hostNetwork、自定义 `dnsConfig`），再显式设置 `nginxRouter.resolver` 与 `nginxRouter.discovery.clusterDomain`。
 - 进入 nginx-router Pod 执行 `nslookup costrict-web-gateway-headless.costrict.svc.cluster.local` 看能否解析到所有 Pod IP。
 - 检查 `nginxRouter.discovery.gatewayPort` 是否与 Gateway 实际监听端口一致。
 
