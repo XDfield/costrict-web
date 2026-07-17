@@ -35,7 +35,7 @@
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 2 | 13% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；跨 tenant 用户 ops / audit-log infra / email allowlist 等 C2 其他切片待启动） |
+| Phase C | 三级权限 + admin API | ~16 | 3 | 19% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD + C3.3 provider_mapping typed editing 待启动；跨 tenant 用户 ops / audit-log infra / email allowlist 等 C2 其他切片待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -960,7 +960,7 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 
 - [x] **C1**：权限模型表 + 中间件（platform_admin / tenant_admin / tenant_member）— 详见下方"C1 实现细节"
 - [x] **C2**：platform_admin tenant CRUD API（7 endpoints）— 详见下方"C2 实现细节"；跨 tenant 用户 ops / audit-log infra / email allowlist 等其他 C2 切片未做（用户明确选 Tenant CRUD 切片优先）
-- [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）
+- [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）— **C3.1 用户列表已落地（2 commits）**，C3.2 / C3.3 待启动；详见下方"C3.1 实现细节"
 - [ ] **C4**：越权防护 + 审计日志
 
 **测试覆盖重点**：每个 admin endpoint 必须覆盖"角色不符 → 403"路径；swagger 注解挂 `@Security` 双重（InternalToken + BearerAuth 角色注解）。
@@ -1069,6 +1069,55 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 - 跨 tenant 用户 ops / audit-log query / email allowlist — 其他 C2 切片，未做
 
 **测试**：cs-user tenant 23 + handler 16 + swagger pass；server RPC 14 + handler 14；gofmt / go vet clean；`make swagger` 重生成 clean。Phase A 4 个集成测试不受影响（reissue-token 路径未改）。
+
+
+
+### C3.1 实现细节：tenant_admin 用户列表（已落地 2026-07-17）
+
+**端点**（1 个公开 + 1 个 RPC 方法，**cs-user 零改动** — 复用已有 `/api/internal/users/search`）：
+
+| server 公开（RequireTenantAdmin("owner","admin")）| cs-user 内部（已存在）| 行为 |
+|---|---|---|
+| `GET /api/tenant/users?keyword=&limit=` | `GET /api/internal/users/search` | 列出本 tenant 活跃用户；keyword 子串过滤（username/display_name/email 前缀）；limit 上限 200 |
+
+**关键发现 — cs-user 零改动**：`SearchUsers` 服务（`cs-user/internal/user/service.go`）已经通过 `tenant.Scope(ctx)` 自动按 `tenant_id` 过滤；`ResolveTenant` 中间件读 `X-Tenant-Id` header 并填充 ctx。C3.1 的缺口**完全在 server 侧**：缺一个 JWT-gated 公开端点。本切片用 2 commits 闭合这个缺口。
+
+**Slug 注入链路**：
+```
+tenant_admin JWT
+  → AuthClaims.TenantSlug (Phase B/A7 claim)
+  → handler 用 tenant.WithSlug(ctx, slug) 写入
+  → rpc_client.ListTenantUsers 读 ctx via tenantSlugFromContext
+  → HTTP header X-Tenant-Id: <slug>
+  → cs-user ResolveTenant middleware
+  → tenant.Scope(ctx) pins query
+```
+
+Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tenant_id = ? OR slug = ?` 两者都接受）。
+
+**分层文件**：
+- `server/internal/user/rpc_client_tenant_user.go` — `ListTenantUsers(ctx, keyword, limit) []TenantUser` + `TenantUser` struct（6 fields：subject_id/username/display_name/email/is_active/tenant_id）+ 3 sentinel（ErrTenantUserUnavailable 等）
+- `server/internal/user/rpc_client_tenant_user_test.go` — 9 tests（含 X-Tenant-Id 转发断言、envelope + bare array 双兼容、NotConfigured / transport / 5xx / 4xx / decode 错误路径）
+- `server/internal/handlers/tenant_user.go` — `TenantUserAPI.ListTenantUsers` handler（验证 / claims 读取 / slug 注入 / RPC 调用 / error 映射）
+- `server/internal/handlers/tenant_user_test.go` — 12 tests（happy path / slug 注入 / TenantID fallback / 负 limit / 超 max / RPCUnavailable / TenantUserUnavailable / unknown error / nil svc / no claims / no tenant binding）
+- `server/cmd/api/main.go` — `buildTenantUserService(module)` helper + `tenantUsers` route group（首次 wiring `middleware.RequireTenantAdmin("owner", "admin")`）
+
+**关键决策**：
+
+1. **billing 角色不进 gate**：`RequireTenantAdmin("owner", "admin")` 故意不含 `billing` — billing 用户管订阅，不应看用户列表（设计 §4.2）。
+2. **复用已有 cs-user 端点**：不为 C3.1 新建 `/api/internal/tenant/users` — 已有的 `/api/internal/users/search` 完全满足语义（active-only / tenant-scoped / paginated）。新端点会让 audit trail 含义更清晰，但 DRY 更重要；未来若需 inactive-user 包含或 cursor 分页再分叉。
+3. **server 端 cap 200**：handler 提前拒 `limit > 200`，节省一次 round-trip — cs-user 也有同样 cap，server 重复是为了快速失败。
+4. **empty tenant binding → 403**：理论上 `RequireTenantAdmin` 已确保 TenantRoles 非空，但 handler 防御性 403 — 避免极端场景下空 slug 走到 cs-user 触发 503（含义不清）。
+5. **NoClaims → 401**：`AuthClaimsKey` 不在 ctx 表示 Auth 中间件没跑，是程序员错误（路由配置漏中间件），handler 显式 401 让错误暴露。
+6. **`ErrTenantUserUnavailable` 独立于 `ErrRPCUnavailable`**：cs-user 返 4xx 意味着 RPC client 自己 malformed 了 request（4xx 来源应是 handler，不是 upstream），故单独 sentinel；handler 都映射成 502，但 log 区分。
+
+**out-of-scope（显式）**：
+- inactive / suspended user 包含（设计 §4.2 提及）— 后续切片
+- cursor 分页 — 后续切片
+- role 过滤（如 "只看 admin"）— 后续切片
+- 用户详情 / 修改 / 删除接口 — 独立切片
+
+**测试**：cs-user 零改动，原 23+16+4 测试全绿不受影响；server RPC 9 + handler 12 全绿；gofmt / go vet clean。Pre-existing `TestGetItemStats_RatingSurvivesTextOnlyEdit` flake 与本切片无关（隔离跑 pass）。
 
 
 
