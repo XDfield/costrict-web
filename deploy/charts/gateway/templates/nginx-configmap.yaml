@@ -20,6 +20,10 @@ data:
     error_log /dev/stderr notice;
     pid /tmp/nginx.pid;
 
+    # Make the internal secret visible to Lua for server-registry mode.
+    # NOTE: the env directive is only valid in the main context (top level).
+    env INTERNAL_SECRET;
+
     events {
         worker_connections 1024;
     }
@@ -36,9 +40,6 @@ data:
         fastcgi_temp_path     /tmp/fastcgi_temp;
         uwsgi_temp_path       /tmp/uwsgi_temp;
         scgi_temp_path        /tmp/scgi_temp;
-
-        # Make the internal secret visible to Lua for server-registry mode.
-        env INTERNAL_SECRET;
 
         # Shared across workers: JSON-encoded discovered pod list and DNS metadata
         lua_shared_dict router_state 1m;
@@ -165,9 +166,17 @@ data:
             local registry_url = "{{ .Values.nginxRouter.discovery.serverUrl }}"
             local internal_secret = os.getenv("INTERNAL_SECRET") or ""
 
+            -- serverUrl may be a hostname; cosocket TCP connect needs an IP,
+            -- so resolve it using the same auto-detected nameservers as dns mode.
+            local resolver_override = "{{ .Values.nginxRouter.resolver }}"
+            local nameservers, _, dns_source = dns_utils.detect_dns(resolver_override, "")
+            ngx.log(ngx.INFO,
+                "nginx-router server-registry dns config: source=", dns_source,
+                " nameservers=[", table.concat(nameservers, ","), "]")
+
             local function discover_and_update(premature)
                 if premature then return end
-                local ips, err = router.resolve_from_registry(registry_url, internal_secret, refresh_ms)
+                local ips, err = router.resolve_from_registry(registry_url, internal_secret, refresh_ms, nameservers)
                 if not ips then
                     ngx.log(ngx.ERR, "server-registry discovery failed: ", err)
                     return
@@ -398,6 +407,37 @@ data:
         return table_concat(parts)
     end
 
+    -- Resolve a hostname to an IPv4 address if it is not already an IP.
+    -- Falls back to the original host on resolution failure so callers can
+    -- still attempt a direct connect (e.g. for IPs or unix-domain paths).
+    local function resolve_host(host, nameservers)
+        -- Very small IPv4 literal check; IPv6 not supported by this client.
+        if host:match("^%d+%.%d+%.%d+%.%d+$") then
+            return host
+        end
+        local r, err = resolver:new{
+            nameservers = nameservers,
+            retrans = 3,
+            timeout = 2000,
+        }
+        if not r then
+            return nil, "resolver init failed: " .. (err or "unknown")
+        end
+        local answers, err = r:query(host, { qtype = r.TYPE_A })
+        if not answers then
+            return nil, "dns query failed: " .. (err or "unknown")
+        end
+        if answers.errcode then
+            return nil, "dns query error code: " .. tostring(answers.errcode)
+        end
+        for _, ans in ipairs(answers) do
+            if ans.address and ans.type == r.TYPE_A then
+                return ans.address
+            end
+        end
+        return nil, "no A record found"
+    end
+
     function _M.http_get(url, headers, timeout_ms)
         -- Parse http://host:port/path ; IPv6 not supported by this minimal client.
         local host, port_str, path = url:match("^http://([^:/]+):?(%d*)/?(.*)$")
@@ -418,13 +458,27 @@ data:
             return nil, "connect failed: " .. (err or "unknown")
         end
 
+        -- Honor a caller-supplied Host header (used when we connect by IP
+        -- but still want the original hostname sent to the server).
+        local host_header = host
+        if headers then
+            for k, v in pairs(headers) do
+                if k:lower() == "host" then
+                    host_header = v
+                    break
+                end
+            end
+        end
+
         local lines = {
             "GET " .. request_path .. " HTTP/1.1",
-            "Host: " .. host,
+            "Host: " .. host_header,
             "Connection: close",
         }
         for k, v in pairs(headers or {}) do
-            table_insert(lines, k .. ": " .. v)
+            if k:lower() ~= "host" then
+                table_insert(lines, k .. ": " .. v)
+            end
         end
         table_insert(lines, "")
         table_insert(lines, "")
@@ -480,13 +534,27 @@ data:
 
     -- Pull the live gateway list from the Server registry and return a sorted
     -- "ip:port" list parsed from each gateway's internalURL.
-    function _M.resolve_from_registry(server_url, secret, timeout_ms)
+    -- nameservers is required when server_url uses a hostname instead of an IP.
+    function _M.resolve_from_registry(server_url, secret, timeout_ms, nameservers)
         local headers = {}
         if secret and secret ~= "" then
             headers["X-Internal-Secret"] = secret
         end
 
-        local body, status = _M.http_get(server_url, headers, timeout_ms)
+        -- server_url may be a hostname, but raw cosocket TCP connect needs an IP.
+        local original_host, port_str, path = server_url:match("^http://([^:/]+):?(%d*)/?(.*)$")
+        if not original_host then
+            return nil, "invalid registry url"
+        end
+        nameservers = nameservers or {}
+        local ip, err = resolve_host(original_host, nameservers)
+        if not ip then
+            return nil, "resolve failed: " .. (err or "unknown")
+        end
+        local resolved_url = "http://" .. ip .. ":" .. (port_str ~= "" and port_str or "80") .. "/" .. path
+        headers["Host"] = original_host
+
+        local body, status = _M.http_get(resolved_url, headers, timeout_ms)
         if not body then
             return nil, status
         end
