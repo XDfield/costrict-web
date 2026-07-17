@@ -211,7 +211,14 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		return nil, fmt.Errorf("no valid user identifier in JWT claims")
 	}
 
+	// B5 write scoping: capture the tenant scope once. Applied per-query
+	// rather than on the db handle itself — GORM's Statement propagation
+	// between Scopes() and Create() is murky, and we don't want the tenant
+	// WHERE clause bleeding into INSERTs (Create ignores WHERE in principle,
+	// but the Statement is shared, so applying scope to the handle adds risk
+	// for no benefit).
 	db := s.db.WithContext(ctx)
+	tenantScope := tenant.Scope(ctx)
 
 	// 2. Try to get existing user by external identities first.
 	var user models.User
@@ -227,8 +234,8 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			break
 		}
 		var identity models.UserAuthIdentity
-		if err := db.Where("external_key = ?", key).Take(&identity).Error; err == nil {
-			if err := db.Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
+		if err := db.Scopes(tenantScope).Where("external_key = ?", key).Take(&identity).Error; err == nil {
+			if err := db.Scopes(tenantScope).Where("subject_id = ?", identity.UserSubjectID).Take(&user).Error; err == nil {
 				found = true
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -240,7 +247,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			if key == "" || found {
 				break
 			}
-			err := db.Where("external_key = ?", key).Take(&user).Error
+			err := db.Scopes(tenantScope).Where("external_key = ?", key).Take(&user).Error
 			if err == nil {
 				found = true
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -249,7 +256,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		}
 	}
 	if claims.UniversalID != "" {
-		err := db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
+		err := db.Scopes(tenantScope).Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -257,7 +264,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		}
 	}
 	if !found && claims.ID != "" {
-		err := db.Where("casdoor_id = ?", claims.ID).Take(&user).Error
+		err := db.Scopes(tenantScope).Where("casdoor_id = ?", claims.ID).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -265,7 +272,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		}
 	}
 	if !found && claims.Sub != "" {
-		err := db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
+		err := db.Scopes(tenantScope).Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -273,7 +280,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		}
 	}
 	if !found && claims.Name != "" {
-		err := db.Where("username = ?", claims.Name).Take(&user).Error
+		err := db.Scopes(tenantScope).Where("username = ?", claims.Name).Take(&user).Error
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -296,7 +303,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		// higher-ranked one. Computed before any mutation.
 		bestExistingRank := 0
 		var existingIdentities []models.UserAuthIdentity
-		if err := db.Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
+		if err := db.Scopes(tenant.Scope(ctx)).Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
 			for _, id := range existingIdentities {
 				if r := providerRank(id.Provider); r > bestExistingRank {
 					bestExistingRank = r
@@ -406,7 +413,11 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	}
 
 	// 3. User doesn't exist, create new user.
+	// B5 write scoping: stamp the ctx tenant onto the new row explicitly so
+	// it doesn't fall through to the column default ('default') — that would
+	// mis-file a user logging in via tenant 'acme' into the default tenant.
 	user = models.User{
+		TenantID:           tenant.IDFromContext(ctx),
 		SubjectID:          subjectID,
 		Username:           claims.Name,
 		DisplayName:        stringPtr(claims.PreferredUsername),
@@ -428,9 +439,11 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	if err := db.Create(&user).Error; err != nil {
 		// Race: another caller created the same user concurrently. Try to
 		// resolve the winner via the same lookup chain so the caller still
-		// gets a usable row.
+		// gets a usable row. Must scope to ctx tenant — without this, a
+		// casdoor_id collision across tenants would let this race recovery
+		// return another tenant's user (cross-tenant leak under concurrency).
 		var existing models.User
-		query := db.Clauses(clause.Locking{Strength: "UPDATE"})
+		query := db.Clauses(clause.Locking{Strength: "UPDATE"}).Scopes(tenantScope)
 		if externalKey != "" {
 			query = query.Where("external_key = ?", externalKey)
 			if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
@@ -490,8 +503,13 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// B5 write scoping: every read / update / create in this tx is scoped
+		// to tenant.IDFromContext(ctx). Captured once for clarity and reused
+		// across all query chains — the scope is a pure func, so reapplying
+		// the same closure to multiple chains is safe.
+		scope := tenant.Scope(ctx)
 		var existing models.UserAuthIdentity
-		err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&existing).Error
+		err := tx.Unscoped().Scopes(scope).Where("external_key = ?", externalKey).Take(&existing).Error
 		if err == nil {
 			if existing.UserSubjectID != userSubjectID {
 				// Allow claiming if the identity was unbound (soft-deleted).
@@ -503,11 +521,11 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 				updates["deleted_at"] = nil
 				updates["explicitly_unbound"] = false
 				if len(updates) > 0 {
-					if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+					if err := tx.Model(&existing).Unscoped().Scopes(scope).Updates(updates).Error; err != nil {
 						return err
 					}
 				}
-				return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+				return refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)
 			}
 			// Same user — skip restoring explicitly-unbound identities
 			// unless ForceRebind is set. Server returns nil silently here;
@@ -524,18 +542,18 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 				updates["explicitly_unbound"] = false
 			}
 			if len(updates) > 0 {
-				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+				if err := tx.Model(&existing).Unscoped().Scopes(scope).Updates(updates).Error; err != nil {
 					return err
 				}
 			}
-			return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+			return refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 
 		if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
-			err := tx.Unscoped().Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
+			err := tx.Unscoped().Scopes(scope).Where("external_key = ? AND user_subject_id = ?", legacy, userSubjectID).Take(&existing).Error
 			if err == nil {
 				if existing.ExplicitlyUnbound && !opt.ForceRebind {
 					return ErrExplicitlyUnbound
@@ -548,10 +566,10 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 				if existing.ExplicitlyUnbound {
 					updates["explicitly_unbound"] = false
 				}
-				if err := tx.Model(&existing).Unscoped().Updates(updates).Error; err != nil {
+				if err := tx.Model(&existing).Unscoped().Scopes(scope).Updates(updates).Error; err != nil {
 					return err
 				}
-				return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+				return refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)
 			}
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
@@ -559,12 +577,15 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 		}
 
 		identity := buildUserAuthIdentity(userSubjectID, claims)
+		// Stamp ctx tenant onto the new identity row — without this the
+		// column default ('default') would mis-file an acme-tenant identity.
+		identity.TenantID = tenant.IDFromContext(ctx)
 		var currentPrimary models.UserAuthIdentity
-		primaryExists := tx.Where("user_subject_id = ? AND is_primary = ?", userSubjectID, true).Take(&currentPrimary).Error == nil
+		primaryExists := tx.Scopes(scope).Where("user_subject_id = ? AND is_primary = ?", userSubjectID, true).Take(&currentPrimary).Error == nil
 		if !primaryExists {
 			identity.IsPrimary = true
 		} else if providerRank(identity.Provider) > providerRank(currentPrimary.Provider) {
-			if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+			if err := tx.Model(&models.UserAuthIdentity{}).Scopes(scope).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
 				return err
 			}
 			identity.IsPrimary = true
@@ -573,7 +594,7 @@ func (s *Service) BindIdentityToUser(ctx context.Context, userSubjectID string, 
 		if err := tx.Create(&identity).Error; err != nil {
 			return err
 		}
-		return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+		return refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)
 	})
 }
 
@@ -590,8 +611,14 @@ func (s *Service) TransferIdentityToUser(ctx context.Context, targetUserSubjectI
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// B5 write scoping: scoped to ctx tenant — cross-tenant identity
+		// transfer is not supported (the lookup would have to reach into
+		// another tenant's identity row, which would be a security boundary
+		// violation). An identity_not_found here thus means either "no such
+		// external_key" or "exists in another tenant"; both surface the same.
+		scope := tenant.Scope(ctx)
 		var identity models.UserAuthIdentity
-		if err := tx.Unscoped().Where("external_key = ?", externalKey).Take(&identity).Error; err != nil {
+		if err := tx.Unscoped().Scopes(scope).Where("external_key = ?", externalKey).Take(&identity).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return fmt.Errorf("identity_not_found")
 			}
@@ -614,15 +641,15 @@ func (s *Service) TransferIdentityToUser(ctx context.Context, targetUserSubjectI
 		if identity.ExplicitlyUnbound {
 			updates["explicitly_unbound"] = false
 		}
-		if err := tx.Model(&identity).Unscoped().Updates(updates).Error; err != nil {
+		if err := tx.Model(&identity).Unscoped().Scopes(scope).Updates(updates).Error; err != nil {
 			return err
 		}
 
-		if err := refreshUserProfileFromIdentitiesTx(tx, targetUserSubjectID); err != nil {
+		if err := refreshUserProfileFromIdentitiesTx(ctx, tx, targetUserSubjectID); err != nil {
 			return err
 		}
 		if oldUserSubjectID != targetUserSubjectID {
-			if err := refreshUserProfileFromIdentitiesTx(tx, oldUserSubjectID); err != nil {
+			if err := refreshUserProfileFromIdentitiesTx(ctx, tx, oldUserSubjectID); err != nil {
 				return err
 			}
 		}
@@ -645,8 +672,14 @@ func (s *Service) UnbindIdentityByProvider(ctx context.Context, userSubjectID st
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// B5 write scoping: scoped to ctx tenant. The "last identity" guard,
+		// the soft-delete, and the primary-promotion all operate only on
+		// in-tenant identities — a cross-tenant caller must not be able to
+		// unbind another tenant's identities, and equally must not see
+		// out-of-tenant identities in its "remaining" promotion pool.
+		scope := tenant.Scope(ctx)
 		var matched []*models.UserAuthIdentity
-		if err := tx.Where("user_subject_id = ? AND provider = ?", userSubjectID, provider).Find(&matched).Error; err != nil {
+		if err := tx.Scopes(scope).Where("user_subject_id = ? AND provider = ?", userSubjectID, provider).Find(&matched).Error; err != nil {
 			return err
 		}
 		if len(matched) == 0 {
@@ -654,7 +687,7 @@ func (s *Service) UnbindIdentityByProvider(ctx context.Context, userSubjectID st
 		}
 
 		var count int64
-		if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Count(&count).Error; err != nil {
+		if err := tx.Model(&models.UserAuthIdentity{}).Scopes(scope).Where("user_subject_id = ?", userSubjectID).Count(&count).Error; err != nil {
 			return err
 		}
 		if count <= int64(len(matched)) {
@@ -669,6 +702,7 @@ func (s *Service) UnbindIdentityByProvider(ctx context.Context, userSubjectID st
 			// Soft delete + ExplicitlyUnbound prevents auto-rebinding on
 			// next login (which would silently undo the user's intent).
 			if err := tx.Model(&models.UserAuthIdentity{}).
+				Scopes(scope).
 				Where("id = ?", id.ID).
 				Updates(map[string]interface{}{
 					"explicitly_unbound": true,
@@ -680,20 +714,20 @@ func (s *Service) UnbindIdentityByProvider(ctx context.Context, userSubjectID st
 
 		if hadPrimary {
 			var remaining []*models.UserAuthIdentity
-			if err := tx.Where("user_subject_id = ?", userSubjectID).Find(&remaining).Error; err != nil {
+			if err := tx.Scopes(scope).Where("user_subject_id = ?", userSubjectID).Find(&remaining).Error; err != nil {
 				return err
 			}
 			best := selectBestPrimary(remaining)
 			if best != nil {
-				if err := tx.Model(&models.UserAuthIdentity{}).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
+				if err := tx.Model(&models.UserAuthIdentity{}).Scopes(scope).Where("user_subject_id = ?", userSubjectID).Update("is_primary", false).Error; err != nil {
 					return err
 				}
-				if err := tx.Model(&models.UserAuthIdentity{}).Where("id = ?", best.ID).Update("is_primary", true).Error; err != nil {
+				if err := tx.Model(&models.UserAuthIdentity{}).Scopes(scope).Where("id = ?", best.ID).Update("is_primary", true).Error; err != nil {
 					return err
 				}
 			}
 		}
 
-		return refreshUserProfileFromIdentitiesTx(tx, userSubjectID)
+		return refreshUserProfileFromIdentitiesTx(ctx, tx, userSubjectID)
 	})
 }
