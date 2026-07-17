@@ -29,6 +29,7 @@ func clearEnv(t *testing.T) {
 		"CS_USER_JWT_ISSUER",
 		"CS_USER_JWT_TTL",
 		"CS_USER_JWT_AUDIENCE",
+		"CS_USER_APEX_DOMAINS",
 	} {
 		prev, had := os.LookupEnv(key)
 		os.Unsetenv(key)
@@ -318,5 +319,48 @@ func TestLoad_JWTAudienceEmptyOmitted(t *testing.T) {
 	}
 	if len(cfg.JWT.DefaultAudience) != 0 {
 		t.Errorf("expected empty audience, got %v", cfg.JWT.DefaultAudience)
+	}
+}
+
+// --- Phase B3b.1: tenant apex-domain config ---
+
+// TestLoad_ApexDomainsDefault verifies that with no env var set, the apex
+// list is empty — disabling subdomain resolution (the local-dev default).
+func TestLoad_ApexDomainsDefault(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Tenant.ApexDomains) != 0 {
+		t.Errorf("Tenant.ApexDomains default = %v, want empty", cfg.Tenant.ApexDomains)
+	}
+}
+
+// TestLoad_ApexDomainsCSV verifies comma-separated parsing with whitespace
+// tolerance — mirrors the JWT audience CSV pattern.
+func TestLoad_ApexDomainsCSV(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+	t.Setenv("CS_USER_APEX_DOMAINS", "cs-user.example.com, cs-user.example.cn ,localhost:8080")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"cs-user.example.com", "cs-user.example.cn", "localhost:8080"}
+	if len(cfg.Tenant.ApexDomains) != len(want) {
+		t.Fatalf("apex len = %d, want %d (%v)", len(cfg.Tenant.ApexDomains), len(want), cfg.Tenant.ApexDomains)
+	}
+	for i, w := range want {
+		if cfg.Tenant.ApexDomains[i] != w {
+			t.Errorf("apex[%d] = %q, want %q", i, cfg.Tenant.ApexDomains[i], w)
+		}
 	}
 }

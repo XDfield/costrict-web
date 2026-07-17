@@ -38,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"go.uber.org/zap"
 )
@@ -122,6 +123,7 @@ func main() {
 		AuthIdentities:   userSvc,
 		EmploymentReader: userSvc,
 		Signer:           signer,
+		TenantResolver:   tenant.NewResolver(pool.Gorm),
 	})
 
 	srv := &http.Server{

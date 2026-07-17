@@ -14,6 +14,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/handlers"
 	"github.com/costrict/costrict-web/cs-user/internal/middleware"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -42,6 +43,10 @@ type Deps struct {
 	// /.well-known/jwks returns 503 and no path issues tokens. A7 (OAuth
 	// callback takeover) will require it.
 	Signer *auth.Signer
+	// TenantResolver is the §5 three-layer resolver (Phase B3b). When nil,
+	// ResolveTenant middleware is not mounted and handlers see no tenant in
+	// the request context (Phase A still works in implicit-default mode).
+	TenantResolver *tenant.Resolver
 }
 
 // NewRouter builds the gin engine with all cs-user routes.
@@ -61,6 +66,14 @@ func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	// Tenant resolver runs before any route group so handlers can pull the
+	// resolved tenant via middleware.TenantFromGin (B3b.1). When no resolver
+	// is wired, the middleware is a no-op and Phase A behavior is unchanged
+	// (implicit default tenant).
+	if deps.TenantResolver != nil {
+		r.Use(middleware.ResolveTenant(deps.TenantResolver, cfg.Tenant.ApexDomains))
+	}
 
 	r.GET("/healthz", healthz)
 	r.GET("/readyz", readyz(deps.ReadyChecker))

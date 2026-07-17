@@ -19,6 +19,7 @@ type Config struct {
 	Postgres PostgresConfig
 	Internal InternalConfig
 	JWT      JWTConfig
+	Tenant   TenantConfig
 }
 
 type HTTPConfig struct {
@@ -48,6 +49,23 @@ func (p PostgresConfig) DSN() string {
 type InternalConfig struct {
 	// Token is the shared secret. Required — cs-user refuses to start if empty.
 	Token string
+}
+
+// TenantConfig holds the B3b tenant-resolution inputs.
+//
+// ApexDomains is the list of bare domains the deployment serves, used by the
+// subdomain fallback (Try 1) to extract the slug from a request Host header.
+// Examples:
+//
+//   - prod: ["cs-user.example.com"]
+//   - dev:  ["localhost:8080"]
+//   - multi-region: ["cs-user.example.com","cs-user.example.cn"]
+//
+// Empty list (the default) disables subdomain resolution — the middleware
+// falls through to cookie / X-Tenant-Id / default-tenant. Useful for local
+// dev where the host is bare localhost without subdomain.
+type TenantConfig struct {
+	ApexDomains []string
 }
 
 // JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
@@ -114,6 +132,9 @@ func Load() (*Config, error) {
 			Token: os.Getenv("CS_USER_INTERNAL_TOKEN"),
 		},
 		JWT: jwtCfg,
+		Tenant: TenantConfig{
+			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
+		},
 	}
 
 	if err := requireNonEmpty("CS_USER_INTERNAL_TOKEN", cfg.Internal.Token); err != nil {
@@ -176,4 +197,21 @@ func requireNonEmpty(key, value string) error {
 		return fmt.Errorf("%s must be set (non-empty)", key)
 	}
 	return nil
+}
+
+// loadApexDomains parses the CS_USER_APEX_DOMAINS env var. Comma-separated,
+// whitespace-trimmed, empty entries dropped. Empty raw input → nil slice
+// (subdomain resolution disabled). Mirrors the JWT audience CSV pattern.
+func loadApexDomains(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, d := range strings.Split(raw, ",") {
+		if v := strings.TrimSpace(d); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
