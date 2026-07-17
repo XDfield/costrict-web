@@ -565,6 +565,15 @@ func main() {
 			tenantUsers.Use(middleware.RequireTenantAdmin("owner", "admin"))
 			tenantUsers.GET("", tenantUserAPI.ListTenantUsers)
 
+			// Phase C3.2: tenant_admin config CRUD (GET + PUT raw YAML blob).
+			tenantConfigAPI := &handlers.TenantConfigAPI{
+				Svc: buildTenantConfigService(userModule),
+			}
+			tenantConfig := authed.Group("/tenant/config")
+			tenantConfig.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantConfig.GET("", tenantConfigAPI.GetTenantConfig)
+			tenantConfig.PUT("", tenantConfigAPI.UpdateTenantConfig)
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -980,6 +989,19 @@ func buildPlatformTenantService(module *userpkg.Module) handlers.PlatformTenantS
 // per server instance (Module.TenantResolver) handles every cs-user RPC.
 // nil in local backend mode; handlers return 502.
 func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantConfigService wires the RPCClient for the tenant-config CRUD
+// surface (Phase C3.2). Same shape as buildTenantUserService — local
+// backend mode returns nil so handlers cleanly 502.
+func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigService {
 	if module == nil {
 		return nil
 	}
