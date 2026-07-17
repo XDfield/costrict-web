@@ -1097,9 +1097,9 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 
 **分层文件**：
 - `server/internal/user/rpc_client_tenant_user.go` — `ListTenantUsers(ctx, keyword, limit) []TenantUser` + `TenantUser` struct（6 fields：subject_id/username/display_name/email/is_active/tenant_id）+ 3 sentinel（ErrTenantUserUnavailable 等）
-- `server/internal/user/rpc_client_tenant_user_test.go` — 9 tests（含 X-Tenant-Id 转发断言、envelope + bare array 双兼容、NotConfigured / transport / 5xx / 4xx / decode 错误路径）
+- `server/internal/user/rpc_client_tenant_user_test.go` — 10 tests（含 X-Tenant-Id 转发断言、envelope + bare array 双兼容、NotConfigured / transport / 5xx / 4xx / decode 错误路径、JSON round-trip tag 校验）
 - `server/internal/handlers/tenant_user.go` — `TenantUserAPI.ListTenantUsers` handler（验证 / claims 读取 / slug 注入 / RPC 调用 / error 映射）
-- `server/internal/handlers/tenant_user_test.go` — 12 tests（happy path / slug 注入 / TenantID fallback / 负 limit / 超 max / RPCUnavailable / TenantUserUnavailable / unknown error / nil svc / no claims / no tenant binding）
+- `server/internal/handlers/tenant_user_test.go` — 11 tests（happy path / slug 注入 / TenantID fallback / 负 limit / 超 max / RPCUnavailable / TenantUserUnavailable / unknown error / nil svc / no claims / no tenant binding）
 - `server/cmd/api/main.go` — `buildTenantUserService(module)` helper + `tenantUsers` route group（首次 wiring `middleware.RequireTenantAdmin("owner", "admin")`）
 
 **关键决策**：
@@ -1117,7 +1117,7 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 - role 过滤（如 "只看 admin"）— 后续切片
 - 用户详情 / 修改 / 删除接口 — 独立切片
 
-**测试**：cs-user 零改动，原 23+16+4 测试全绿不受影响；server RPC 9 + handler 12 全绿；gofmt / go vet clean。Pre-existing `TestGetItemStats_RatingSurvivesTextOnlyEdit` flake 与本切片无关（隔离跑 pass）。
+**测试**：cs-user 零改动，原 23+16+4 测试全绿不受影响；server RPC 10 + handler 11 全绿；gofmt / go vet clean。Pre-existing `TestGetItemStats_RatingSurvivesTextOnlyEdit` flake 与本切片无关（隔离跑 pass）。
 
 
 
