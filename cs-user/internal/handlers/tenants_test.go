@@ -17,8 +17,8 @@ import (
 // stubTenantResolver is the in-memory TenantResolverService for handler tests.
 // Each field is optional — nil means "return zero value" so a test only
 // declares the path it cares about.
-type stubTenantResolver struct{
-	byEmail     func(ctx context.Context, email string) (*models.Tenant, error)
+type stubTenantResolver struct {
+	byEmail      func(ctx context.Context, email string) (*models.Tenant, error)
 	listByDomain func(ctx context.Context, email string) ([]*models.Tenant, error)
 }
 
