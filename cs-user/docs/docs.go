@@ -569,6 +569,123 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/tenant/config": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the caller's tenant_configs row. Missing row returns a synthetic default {\"config_yaml\":\"{}\"} — every tenant implicitly has an empty config. Tenant scoping enforced by the ResolveTenant middleware via X-Tenant-Id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-config"
+                ],
+                "summary": "Read tenant config (tenant admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Replaces the caller's tenant_configs.config_yaml blob. Validates the YAML parses (schema-agnostic — C3.2 accepts any well-formed YAML; C3.3 will layer typed provider_mapping checks on top). Empty / whitespace-only body normalizes to \"{}\". 64 KiB cap. X-Actor-Subject-Id header (forwarded by server from JWT) stamps updated_by.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-config"
+                ],
+                "summary": "Update tenant config (tenant admin)",
+                "parameters": [
+                    {
+                        "description": "Raw YAML blob",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/tenants/resolve-by-email": {
             "post": {
                 "security": [
@@ -1538,6 +1655,26 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig": {
+            "type": "object",
+            "properties": {
+                "config_yaml": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_models.User": {
             "type": "object",
             "properties": {
@@ -1862,6 +1999,17 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tenant_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantConfigRequest": {
+            "type": "object",
+            "required": [
+                "config_yaml"
+            ],
+            "properties": {
+                "config_yaml": {
                     "type": "string"
                 }
             }
