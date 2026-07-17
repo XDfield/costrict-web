@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 10 | 36% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B3b.2b-step2c picker UI redirect + B4-B6 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 11 | 39% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B3b.2b-step2c picker UI redirect + B5 tenantScope query helper + B6 RLS 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -465,7 +465,7 @@
 
 - [x] **B3**：tenant resolution — `tenant.Resolver` 三层 fallback primitives（slug / email-domain / email）+ email_domains typed reader。HTTP middleware / cookie / session / Casdoor redirect 拆到 **B3b**（下一子任务）。— 详见下方"B3 实现细节"
 - [ ] **B3**：tenant resolution（subdomain → email domain → 显式选择）
-- [ ] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
+- [x] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
 - [ ] **B5**：应用层所有 query 经 `tenantScope(ctx)` helper
 - [ ] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）
 - [x] **B7**：`(tenant_id, username)` 联合唯一索引，`email` 保持全局唯一 — 见 cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql（已完成 2026-07-17）
@@ -655,6 +655,16 @@
   - `user_auth_identities.external_key`（形如 `{provider}:{provider_user_id}`）全局唯一保留 — 跨 tenant SSO 去重锚点，是 B3b 后续跨 tenant 身份合并（identity transfer）链路的基石
 - **数据兼容**：当前所有用户 tenant_id='default'（B2 回填），现有 'alice/default' 在迁移后仍唯一不冲突。新建 tenant 后才有真正的多 tenant 用户重叠场景
 - **应用层无改动**：`GetOrCreateUser` / `SyncUser` 都是按 `(sub, universal_id)` 找用户，不依赖 username 唯一性；service 层不需要随本迁移改动
+
+### B4 实现细节（已完成 2026-07-17）
+
+- **cs-user 端无新改动**：`EnterpriseClaims.TenantID` + `IssuanceParams.TenantID` + reissue-token handler body 接受 `tenant_id` 早已存在（Phase A7 时已落地）。本任务纯 server 端 plumbing。
+- **server 端 ctx 助手**：`server/internal/tenant/context.go` 加 `WithTenantID` / `TenantIDFromContext`（与 `WithSlug` / `SlugFromContext` 平行）+ `DefaultTenantID = "default"` 常量。新增独立 `tenantIDKey struct{}` 避免与 slug key 冲突；测试 `TestWithSlugAndTenantID_DoNotClobber` 锁定。
+- **AuthClaims / CasdoorUserInfo 加 TenantID 字段**：与 TenantSlug 平行；`parseJWTToken` 直接从 MapClaims 读 `tenant_id`（`claims["tenant_id"].(string)` comma-ok，绕过 `NormalizeClaimsMap` — 后者只处理标准 Casdoor 字段）；`setAuthContext` 透传 `userInfo.TenantID → AuthClaims.TenantID`。
+- **NEW `TenantContext` middleware**（`server/internal/middleware/tenant_context.go`）：读 `AuthClaimsKey.AuthClaims.TenantID`，空则 fallback 到 `tenant.DefaultTenantID`；写入 `c.Request.Context()` via `tenant.WithTenantID`；同时 `c.Set("tenant_id", id)` 便于 handler 直接 `c.GetString("tenant_id")`。
+- **main.go 装配位置**：`r.Use(middleware.TenantContext())` 位于 `OptionalAuth`（populates AuthClaimsKey）之后、`TenantMatch` 之后 — 顺序相对 `TenantMatch` 无所谓（两者读 disjoint 字段：TenantID vs TenantSlug）。
+- **fallback 设计哲学**：所有下游（B5 `tenantScope(ctx)` query helper）都保证拿到非空 tenant_id；pre-cutover Casdoor token 或 unauthenticated 请求自动落 default — 与 B2 数据回填（所有行 tenant_id='default'）等价单租户行为一致。
+- **与 B3b.2c 的关系**：B3b.2c 检测 cross-tenant 访问（用 slug claim 做 string 比较，避免每请求 slug→tenant_id 查询）；B4 为合法请求注入 query scoping 用的 canonical ID。两条 claim 在 JWT 中并存（`tenant_slug` + `tenant_id`），分别服务不同用途。
 
 ### B3b.2a 实现细节
 

@@ -34,6 +34,13 @@ type AuthClaims struct {
 	Provider          string
 	ProviderUserID    string
 	Phone             string
+	// TenantID (Phase B4): the canonical tenants.tenant_id PK extracted
+	// from the JWT's `tenant_id` claim. cs-user-signed tokens (Phase A7)
+	// always carry this — defaults to "default" at reissue time when the
+	// request omits it. Empty for Casdoor-issued tokens (pre-cutover); the
+	// TenantContext middleware falls back to tenant.DefaultTenantID before
+	// storing in ctx so downstream query scoping never sees "".
+	TenantID string
 	// TenantSlug (Phase B): populated ONLY when the JWT carries the
 	// `tenant_slug` claim — i.e. cs-user-signed tokens (Phase A7).
 	// Empty for Casdoor-issued tokens (pre-cutover). The TenantMatch
@@ -305,6 +312,12 @@ type CasdoorUserInfo struct {
 	Provider          string `json:"provider"`
 	ProviderUserID    string `json:"provider_user_id"`
 	Phone             string `json:"phone"`
+	// TenantID (Phase B4): canonical tenants.tenant_id PK. Read directly
+	// from MapClaims ("tenant_id") — NormalizeClaimsMap only handles
+	// standard Casdoor fields. cs-user-signed tokens (Phase A7) always
+	// carry this (defaults to "default" at reissue). Empty for Casdoor
+	// tokens — the TenantContext middleware falls back to "default".
+	TenantID string `json:"tenant_id,omitempty"`
 	// TenantSlug (Phase B / A7): populated ONLY when the JWT carries the
 	// custom `tenant_slug` claim — i.e. tokens signed by cs-user's
 	// /api/internal/users/reissue-token (Phase A7). Empty for Casdoor-issued
@@ -364,6 +377,10 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	// tenant_slug is a custom claim issued only by cs-user (Phase A7) —
 	// NormalizeClaimsMap does not handle it. Read straight from the map.
 	tenantSlug, _ := claims["tenant_slug"].(string)
+	// tenant_id: same — cs-user's canonical PK claim. Empty for Casdoor
+	// tokens (pre-cutover); the TenantContext middleware falls back to
+	// tenant.DefaultTenantID before storing in ctx.
+	tenantID, _ := claims["tenant_id"].(string)
 
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
@@ -375,6 +392,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		Provider:          normalized.Provider,
 		ProviderUserID:    normalized.ProviderUserID,
 		Phone:             normalized.Phone,
+		TenantID:          tenantID,
 		TenantSlug:        tenantSlug,
 	}, nil
 }
@@ -452,6 +470,7 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 		Provider:          userInfo.Provider,
 		ProviderUserID:    userInfo.ProviderUserID,
 		Phone:             userInfo.Phone,
+		TenantID:          userInfo.TenantID,
 		TenantSlug:        userInfo.TenantSlug,
 	}
 	if subjectResolver != nil {

@@ -307,6 +307,14 @@ func main() {
 	// ResolveTenantSlug (populates ctx slug).
 	r.Use(middleware.TenantMatch())
 
+	// Phase B4: hydrate tenant_id from JWT into request ctx so B5's
+	// tenantScope(ctx) helper can scope queries without re-parsing the JWT.
+	// Falls back to tenant.DefaultTenantID when no token is supplied or the
+	// token predates cs-user self-sign (Casdoor-only). Runs after
+	// OptionalAuth (populates AuthClaims) — ordering vs TenantMatch is
+	// immaterial (disjoint fields).
+	r.Use(middleware.TenantContext())
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
