@@ -39,6 +39,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
+	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"go.uber.org/zap"
 )
@@ -126,6 +127,7 @@ func main() {
 		Signer:           signer,
 		TenantResolver:   tenant.NewResolver(pool.Gorm),
 		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
+		TenantConfig:     tenantconfig.New(pool.Gorm),
 	})
 
 	srv := &http.Server{

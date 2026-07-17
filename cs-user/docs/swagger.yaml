@@ -87,6 +87,19 @@ definitions:
       updated_at:
         type: string
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig:
+    properties:
+      config_yaml:
+        type: string
+      created_at:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_models.User:
     properties:
       auth_provider:
@@ -316,6 +329,13 @@ definitions:
         type: string
       tenant_id:
         type: string
+    type: object
+  internal_handlers.tenantConfigRequest:
+    properties:
+      config_yaml:
+        type: string
+    required:
+    - config_yaml
     type: object
   internal_handlers.transferIdentityRequest:
     properties:
@@ -704,6 +724,85 @@ paths:
       summary: Suspend tenant
       tags:
       - platform-tenants
+  /api/internal/tenant/config:
+    get:
+      description: Returns the caller's tenant_configs row. Missing row returns a
+        synthetic default {"config_yaml":"{}"} — every tenant implicitly has an empty
+        config. Tenant scoping enforced by the ResolveTenant middleware via X-Tenant-Id.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Read tenant config (tenant admin)
+      tags:
+      - tenant-config
+    put:
+      consumes:
+      - application/json
+      description: Replaces the caller's tenant_configs.config_yaml blob. Validates
+        the YAML parses (schema-agnostic — C3.2 accepts any well-formed YAML; C3.3
+        will layer typed provider_mapping checks on top). Empty / whitespace-only
+        body normalizes to "{}". 64 KiB cap. X-Actor-Subject-Id header (forwarded
+        by server from JWT) stamps updated_by.
+      parameters:
+      - description: Raw YAML blob
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.tenantConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "413":
+          description: Request Entity Too Large
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update tenant config (tenant admin)
+      tags:
+      - tenant-config
   /api/internal/tenants/resolve-by-email:
     post:
       consumes:
