@@ -211,6 +211,98 @@ func TestResolver_ResolveByEmail_Malformed(t *testing.T) {
 	}
 }
 
+// ListByEmailDomain is the picker-candidate generator (B3b.2b-step2). The
+// handler calls it when ResolveByEmail returns ErrAmbiguousTenant, then
+// surfaces the resulting list to the UI.
+
+func TestResolver_ListByEmailDomain_Ambiguous(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(newResolverDB(t))
+	matches, err := r.ListByEmailDomain(context.Background(), "alice@globex.com")
+	if err != nil {
+		t.Fatalf("ListByEmailDomain: %v", err)
+	}
+	// newResolverDB seeds globex + globex-cn both claiming globex.com — see
+	// the ambiguous-case fixture comment in newResolverDB.
+	if len(matches) != 2 {
+		t.Fatalf("match count: got %d, want 2 (globex + globex-cn)", len(matches))
+	}
+	slugs := map[string]bool{}
+	for _, tn := range matches {
+		slugs[tn.Slug] = true
+	}
+	if !slugs["globex"] || !slugs["globex-cn"] {
+		t.Errorf("missing expected slugs in %v", slugs)
+	}
+}
+
+func TestResolver_ListByEmailDomain_UniqueHit(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(newResolverDB(t))
+	matches, err := r.ListByEmailDomain(context.Background(), "alice@acme.com")
+	if err != nil {
+		t.Fatalf("ListByEmailDomain: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("match count: got %d, want 1", len(matches))
+	}
+	if matches[0].Slug != "acme" {
+		t.Errorf("slug: got %q, want acme", matches[0].Slug)
+	}
+}
+
+func TestResolver_ListByEmailDomain_Miss(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(newResolverDB(t))
+	matches, err := r.ListByEmailDomain(context.Background(), "alice@nowhere.com")
+	if err != nil {
+		t.Fatalf("ListByEmailDomain: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("match count: got %d, want 0", len(matches))
+	}
+}
+
+func TestResolver_ListByEmailDomain_MalformedEmail(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(newResolverDB(t))
+	for _, in := range []string{"", "no-at", "@acme.com", "alice@", "  "} {
+		matches, err := r.ListByEmailDomain(context.Background(), in)
+		if err != nil {
+			t.Errorf("input %q: unexpected error %v", in, err)
+		}
+		if len(matches) != 0 {
+			t.Errorf("input %q: got %d matches, want 0", in, len(matches))
+		}
+	}
+}
+
+func TestResolver_ListByEmailDomain_SuspendedExcluded(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(newResolverDB(t))
+	// inactive-co is suspended — even if its email_domains matched, the
+	// status='active' filter must drop it.
+	matches, err := r.ListByEmailDomain(context.Background(), "alice@inactive-co.com")
+	if err != nil {
+		t.Fatalf("ListByEmailDomain: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("match count: got %d, want 0 (suspended tenant excluded)", len(matches))
+	}
+}
+
+func TestResolver_ListByEmailDomain_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var r *Resolver
+	matches, err := r.ListByEmailDomain(context.Background(), "alice@acme.com")
+	if err != nil {
+		t.Fatalf("ListByEmailDomain on nil receiver: %v", err)
+	}
+	if matches != nil {
+		t.Fatalf("matches: got %v, want nil", matches)
+	}
+}
+
 // ------------------------------------------------------------------
 // ResolveFromHost
 // ------------------------------------------------------------------

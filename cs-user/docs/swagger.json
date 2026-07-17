@@ -92,6 +92,84 @@
                 }
             }
         },
+        "/api/internal/tenants/resolve-by-email": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Looks up the active tenant whose email_domains array contains the domain extracted from the supplied email. Returns slug on unique hit, candidates on ambiguity, not_found on miss. Always 200 — semantic state lives in the `status` field so the caller (server RPCWriter) can branch without parsing both status code and body.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenants"
+                ],
+                "summary": "Resolve tenant by email domain (Try 2)",
+                "parameters": [
+                    {
+                        "description": "Email to resolve",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.resolveByEmailRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "candidates": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_handlers.tenantCandidate"
+                                    }
+                                },
+                                "slug": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                },
+                                "tenant_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/apply-enterprise-mapping": {
             "post": {
                 "security": [
@@ -996,6 +1074,9 @@
                 "subject_id": {
                     "type": "string"
                 },
+                "tenant_id": {
+                    "type": "string"
+                },
                 "updated_at": {
                     "type": "string"
                 },
@@ -1053,6 +1134,9 @@
                     "type": "string"
                 },
                 "provider_user_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
                     "type": "string"
                 },
                 "updated_at": {
@@ -1149,6 +1233,31 @@
                     "type": "string"
                 },
                 "token": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.resolveByEmailRequest": {
+            "type": "object",
+            "required": [
+                "email"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantCandidate": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tenant_id": {
                     "type": "string"
                 }
             }

@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 6 | 21% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2/c OAuth callback 链路 + picker + cross-tenant 检测 + B4-B7 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 7 | 25% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b/c OAuth callback 链路 + picker + cross-tenant 检测 + B4-B7 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -606,10 +606,24 @@
 - [x] **测试**：所有 `*UserService` 直接调用方 + DualWriter/RPCWriter fake + handler test stub 全部同步加 ctx；`go test ./...` 通过
 - [x] **效果**：B3b.2a 留下的 write-path 注入 placeholder 现在真正激活 — 任何 RPCWriter 写调用（OAuth callback / bind / unbind / transfer）都会把 ctx 中的 slug 通过 `X-Tenant-Id` 转发给 cs-user；cs-user middleware 自动解析并写入对应的 `tenant_id`
 
-**B3b.2b-step2（待启动）** — OAuth callback Try 1/2/3 编排：
+**B3b.2b-step2（拆分为 step2a / step2b）** — OAuth callback Try 1/2/3 编排 + picker 端点
 
-- [ ] OAuth callback `handlers.AuthCallback`（server/internal/handlers/handlers.go:387）在 GetOrCreateUser 之前注入 tenant 解析：Try 1 subdomain → Try 2 email-domain → Try 3 picker redirect
-- [ ] picker endpoint `/api/tenant/suggest?email=...`（设计 §5.1 Try 2 多命中场景）— 需要 cs-user 暴露 RPC 端点（B3b.2b 子任务）
+**B3b.2b-step2a（已完成 2026-07-17）** — cs-user 侧 RPC 端点 `POST /api/internal/tenants/resolve-by-email`：
+
+- [x] `cs-user/internal/tenant/resolver.go`：新增 `ListByEmailDomain(ctx, email)` — 收集所有命中（picker candidate source）
+- [x] `cs-user/internal/handlers/tenants.go`：新 handler `TenantsAPI.ResolveByEmail` — 接收 `{email}`，三态响应：`{status: ok, slug, tenant_id}` / `{status: ambiguous, candidates: [...]}` / `{status: not_found}`。**故意全程 200** — 语义状态在 `status` 字段里，避免 server RPCWriter 同时检查 HTTP 码 + body
+- [x] `cs-user/internal/app/app.go`：`Deps.TenantResolver` 驱动新 endpoint；nil 时挂 `unavailableTenantResolver` stub 返回 503（保持 swagger 稳定）；`registerTenantRoutes` 挂 `/api/internal/tenants/resolve-by-email` 到 internal-token-protected 组
+- [x] 测试：`tenants_test.go`（7 cases：unique hit / ambiguous / not_found / 空候选 list / 400 malformed / 400 empty / 其他错误 fall-through）+ `resolver_test.go` 新增 6 个 `ListByEmailDomain` 用例
+- [x] swagger spec 同步生成（`make swagger`）
+
+**B3b.2b-step2b（待启动）** — server 侧集成：
+
+- [ ] server RPC client 新增 `ResolveTenantByEmail(ctx, email)` 方法
+- [ ] server OAuth callback `handlers.AuthCallback`（server/internal/handlers/handlers.go:387）：在 GetOrCreateUser 之前，若 `tenant.SlugFromContext(ctx) == ""` 且 user claims 有 email，调 `ResolveTenantByEmail`
+  - 唯一命中 → set `cs_tenant_slug` cookie + 把 slug 注入 ctx（让后续 GetOrCreateUser + ReissueToken 拿到正确 tenant）
+  - ambiguous → redirect 到 picker 页面（带 state token）
+  - not_found → fall through（默认 tenant 兜底）
+- [ ] picker endpoint `/api/tenant/suggest?email=...` — server 侧 wrapper 转发到 cs-user（前端 picker UI 调这个，不是直接打 internal endpoint）
 
 **B3b.2c（待启动）** — cross-tenant 访问检测：
 
