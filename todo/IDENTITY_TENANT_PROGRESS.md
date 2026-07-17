@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 9 | 32% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2b-step2c picker UI redirect + B3b.2c cross-tenant 检测 + B4-B6 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 10 | 36% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B3b.2b-step2c picker UI redirect + B4-B6 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -633,11 +633,16 @@
 - [ ] picker endpoint `/api/tenant/suggest?email=...` — server 侧 wrapper 转发到 cs-user（前端 picker UI 调这个，不是直接打 internal endpoint）
 - [ ] 前端 picker 页面 + 选择回调路由
 
-**B3b.2c（待启动 — 受 B4/A7 阻塞）** — cross-tenant 访问检测：
+**B3b.2c（已完成 2026-07-17）** — cross-tenant 访问检测（JWT `tenant_slug` claim 路径）：
 
-- [ ] JWT claims 加 `tenant_id` 字段（server/internal/middleware/auth.go AuthClaims + server/internal/user/service.go JWTClaims）
-- [ ] middleware 比对 JWT `tenant_id` vs cookie `cs_tenant_slug`，不匹配 → 401/403 + 提示切换（设计 §5.3 场景 C）
-- **阻塞依赖**：当前 `zgsmAdminToken` cookie 直接装 Casdoor 签的 JWT（Phase A），server 无 self-sign 能力（`ErrSelfSignUnavailable`，Phase A7 待启动）。所以 JWT claims 嵌 tenant_id 这条路径暂时不通。替代方案 — HMAC 签名的 `cs_auth_tenant` side-channel cookie（server 在登录时设置，后续 request 比对该 cookie 与 runtime-resolved slug）— 已在 B3b.2c 设计文档草拟，等 Phase A7 决策后再实施。
+- [x] cs-user `EnterpriseClaims` + `IssuanceParams` 加 `TenantSlug` 字段；`/api/internal/users/reissue-token` handler 接受 body 里的 `tenant_slug` 并原样写入签发的 JWT
+- [x] server `RPCWriter.ReissueToken` 从 ctx 取 slug 注入 body
+- [x] server `middleware/auth.go` `AuthClaims` + `CasdoorUserInfo` 加 `TenantSlug`；`parseJWTToken` 直接从 MapClaims 读 `tenant_slug`（绕过 `NormalizeClaimsMap`，因为它只处理标准 Casdoor 字段）；`setAuthContext` 透传
+- [x] NEW `server/internal/middleware/tenant_match.go` `TenantMatch` middleware：JWT slug vs runtime slug（来自 ResolveTenantSlug 的 ctx）不匹配 → 401 + clear cookie；任一为空 → 跳过（pre-cutover Casdoor token 或无 runtime 信号）
+- [x] `server/cmd/api/main.go` 全局注册 `TenantMatch`（位于 `OptionalAuth` 之后、`RequireAuth` 之前 — 全局层，所有路由生效）
+- [x] 测试：cs-user `TestReissueToken_TenantSlugForwarded` / `TestReissueToken_EmptyTenantSlugOmitted` + server `tenant_match_test.go` 6 用例（both empty / JWT-only / runtime-only / match / mismatch 401 / no-auth-claims）
+- **设计决定**：用 `tenant_slug` claim 而非 `tenant_id` 做比较 — 避免每次请求做 slug→tenant_id 查询（RPC 调用）。两个 claim 可以并存于 JWT（`tenant_id` 留给未来 RLS / 多租户查询）。`tenant_slug` 空表示 pre-cutover Casdoor token，middleware 自动跳过 — 灰度兼容。
+- **HMAC side-channel cookie 方案废弃**：A7 cs-user self-sign 基础设施已就绪，JWT-claim 路径更干净（无额外 cookie，无 HMAC 密钥管理）。
 
 ### B7 实现细节（已完成 2026-07-17）
 
