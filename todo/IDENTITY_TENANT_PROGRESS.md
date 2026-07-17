@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 + B6 RLS + B5 write 方法 scoping 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 + B5 write 方法 scoping 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -467,7 +467,7 @@
 - [ ] **B3**：tenant resolution（subdomain → email domain → 显式选择）
 - [x] **B4**：中间件从 JWT 提取 `tenant_id` 注入 request context
 - [x] **B5**：应用层 query 经 `tenant.Scope(ctx)` helper（cs-user 侧 primitive + 4 个 read 方法迁移；write 方法待 follow-up）— 详见下方"B5 实现细节"
-- [ ] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）
+- [~] **B6**：PostgreSQL RLS Policy 兜底（`CREATE POLICY tenant_isolation ON ...`）— **已降级为未来工作（2026-07-17）**，不进 Phase B 范围。设计草案见下方"B6 设计草案"，待触发条件满足后再启动
 - [x] **B7**：`(tenant_id, username)` 联合唯一索引，`email` 保持全局唯一 — 见 cs-user/migrations/20260717180000_users_username_per_tenant_unique.sql（已完成 2026-07-17）
 
 **每个任务的测试 + swagger 子项同 Phase 0/A 模板**：迁移配 testcontainers up/down；query 改动配 sqlmock 注入测试；新 admin endpoint 配完整 swagger 注解 + InternalToken security。
@@ -644,9 +644,22 @@
 - **设计决定**：用 `tenant_slug` claim 而非 `tenant_id` 做比较 — 避免每次请求做 slug→tenant_id 查询（RPC 调用）。两个 claim 可以并存于 JWT（`tenant_id` 留给未来 RLS / 多租户查询）。`tenant_slug` 空表示 pre-cutover Casdoor token，middleware 自动跳过 — 灰度兼容。
 - **HMAC side-channel cookie 方案废弃**：A7 cs-user self-sign 基础设施已就绪，JWT-claim 路径更干净（无额外 cookie，无 HMAC 密钥管理）。
 
-### B6 设计草案（待实施 — PostgreSQL RLS 兜底）
+### B6 设计草案（**已降级为未来工作 — 2026-07-17**）
 
-> 本节为 **设计草案**，不是已完成工作。Phase B 当前态势（B3b.2c + B4 + B5 三层覆盖）已堵住应用层跨 tenant 越权；B6 的目标是堵住**绕过 cs-user 直接查 DB** 这条剩余攻击面。设计依据来自 `docs/identity-tenant/MULTI_TENANCY_DESIGN.md` §10.2 + 附录 C，但需要按 B1 的 schema 偏离（TEXT 而非 UUID）做适配。
+> **状态变更（2026-07-17）**：经评审，B6 当前不在 Phase B 必做范围。业务侧确认"可做要求，不需要当前做代码上的防范"。设计草案保留在下方供未来取用，但**不进入 Phase B 工作流**。
+>
+> 降级理由：
+> 1. Phase B 应用层三层覆盖（B3b.2c JWT tenant_slug cross-tenant 检测 + B4 tenant_id → ctx + B5 `tenant.Scope(ctx)` read 路径）已经堵住业务路径上的跨 tenant 越权
+> 2. DB 直接绕过 cs-user 查询的场景在当前部署形态下不存在（cs-user 是唯一持有 users 表 DSN 的进程）
+> 3. RLS 的运维复杂度（三角色 / GORM Callback / 灰度 4 阶段 / testcontainers）和当前收益不匹配
+> 4. **platform_admin 跨 tenant 路径**（草案 §platform_admin）一并延后到 Phase C（admin API）一起做
+>
+> **未来再启动 B6 的触发条件**：
+> - 多服务/多进程共享 users 表 DSN（例如某些 read-only 副本直接连库做分析查询）
+> - 合规审计明确要求 DB 层强制隔离
+> - Phase B write scoping 出现真实跨 tenant 越权事件
+
+> 以下是原始设计草案内容，保留作为未来取用的参考。
 
 #### 目标 / 非目标
 
