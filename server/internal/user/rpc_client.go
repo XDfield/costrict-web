@@ -179,6 +179,12 @@ func (c *RPCClient) do(ctx context.Context, method, path string, body []byte, ou
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Phase B3b.2a: forward the tenant slug (if any) so cs-user's ResolveTenant
+	// middleware resolves against the same tenant. Empty slug = no signal —
+	// cs-user falls back to default tenant.
+	if slug := tenantSlugFromContext(ctx); slug != "" {
+		req.Header.Set("X-Tenant-Id", slug)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
