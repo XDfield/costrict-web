@@ -1,4 +1,4 @@
-{{- if not .Values.daemonSet.enabled }}
+{{- if and (not .Values.daemonSet.enabled) (not .Values.statefulSet.enabled) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

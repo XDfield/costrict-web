@@ -1,6 +1,6 @@
-{{- if and .Values.daemonSet.enabled (not .Values.statefulSet.enabled) }}
+{{- if .Values.statefulSet.enabled }}
 apiVersion: apps/v1
-kind: DaemonSet
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
@@ -10,8 +10,13 @@ metadata:
     app.kubernetes.io/version: {{ .Chart.Version }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
+  serviceName: {{ .Release.Name }}-headless
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: {{ .Values.statefulSet.podManagementPolicy }}
+  {{- with .Values.statefulSet.updateStrategy }}
   updateStrategy:
-    {{- toYaml .Values.daemonSet.updateStrategy | nindent 4 }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
@@ -49,18 +54,18 @@ spec:
               value: {{ .Values.config.port | quote }}
             - name: SERVER_URL
               value: {{ .Values.config.serverUrl | quote }}
-            # DaemonSet 模式下用 Node 名作为 Gateway ID，节点不变则 ID 不变。
-            # 可通过 config.gatewayIdPrefix 添加前缀，例如 "gw-" 会变成 "gw-ip-10-0-1-10"。
-            - name: NODE_NAME
+            # StatefulSet 模式下 Pod 名稳定（如 costrict-web-gateway-0），
+            # 重启后 Gateway ID 保持不变，便于注册中心与路由一致。
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: spec.nodeName
+                  fieldPath: metadata.name
             - name: POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
             - name: GATEWAY_ID
-              value: "{{ .Values.config.gatewayIdPrefix }}$(NODE_NAME)"
+              value: "{{ .Values.config.gatewayIdPrefix }}$(POD_NAME)"
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
             {{- if .Values.config.nacos.enabled }}
@@ -81,7 +86,7 @@ spec:
             - name: GATEWAY_NACOS_ACCESS_TOKEN
               value: {{ .Values.config.nacos.accessToken | quote }}
             {{- end }}
-            # Server 通过 Pod IP 直接回连该 Gateway
+            # Server 通过 Pod IP 直接回连该 Gateway，不经过 APISIX/nginx-router。
             - name: GATEWAY_INTERNAL_URL
               value: "http://$(POD_IP):{{ .Values.config.port }}"
             - name: GATEWAY_REGION
