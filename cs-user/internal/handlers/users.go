@@ -29,10 +29,11 @@ type UsersAPI struct {
 // directly into its tests via a concrete type — keeps the substitution
 // seam explicit.
 type UserService interface {
-	// Reads (Phase 1).
-	GetUserByID(subjectID string) (*models.User, error)
-	GetUsersByIDs(subjectIDs []string) (map[string]*models.User, error)
-	SearchUsers(keyword string, limit int) ([]*models.User, error)
+	// Reads (Phase 1) — B5: ctx carries the tenant signal used by
+	// tenant.Scope for auto-filtering.
+	GetUserByID(ctx context.Context, subjectID string) (*models.User, error)
+	GetUsersByIDs(ctx context.Context, subjectIDs []string) (map[string]*models.User, error)
+	SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error)
 	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
 	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error)
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
@@ -73,7 +74,7 @@ func (a *UsersAPI) GetUser(c *gin.Context) {
 		return
 	}
 
-	u, err := a.Svc.GetUserByID(subjectID)
+	u, err := a.Svc.GetUserByID(c.Request.Context(), subjectID)
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrEmptySubjectID):
@@ -108,7 +109,7 @@ func (a *UsersAPI) GetUsersByIDs(c *gin.Context) {
 		return
 	}
 
-	users, err := a.Svc.GetUsersByIDs(req.IDs)
+	users, err := a.Svc.GetUsersByIDs(c.Request.Context(), req.IDs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
@@ -145,7 +146,7 @@ func (a *UsersAPI) SearchUsers(c *gin.Context) {
 		limit = n
 	}
 
-	users, err := a.Svc.SearchUsers(keyword, limit)
+	users, err := a.Svc.SearchUsers(c.Request.Context(), keyword, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -64,7 +65,11 @@ func NewService(db *gorm.DB) *Service {
 // gorm.ErrRecordNotFound when no such row exists. The error is wrapped by
 // the caller-facing layer so handlers can map it to HTTP 404 without
 // importing gorm.
-func (s *Service) GetUserByID(subjectID string) (*models.User, error) {
+//
+// B5: applies tenant.Scope(ctx) so the lookup is auto-filtered by
+// tenant_id (Defaults to "default" when ctx carries no tenant — single-tenant
+// safe).
+func (s *Service) GetUserByID(ctx context.Context, subjectID string) (*models.User, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
 	}
@@ -73,7 +78,7 @@ func (s *Service) GetUserByID(subjectID string) (*models.User, error) {
 	}
 
 	var u models.User
-	if err := s.db.Where("subject_id = ?", subjectID).Take(&u).Error; err != nil {
+	if err := s.db.WithContext(ctx).Scopes(tenant.Scope(ctx)).Where("subject_id = ?", subjectID).Take(&u).Error; err != nil {
 		return nil, err
 	}
 	return &u, nil
@@ -83,7 +88,9 @@ func (s *Service) GetUserByID(subjectID string) (*models.User, error) {
 // rows are silently omitted (callers compare len(returned) vs len(input) to
 // detect partial misses). Empty input returns an empty map without touching
 // the DB — saves a round-trip on degenerate RPC calls.
-func (s *Service) GetUsersByIDs(subjectIDs []string) (map[string]*models.User, error) {
+//
+// B5: applies tenant.Scope(ctx).
+func (s *Service) GetUsersByIDs(ctx context.Context, subjectIDs []string) (map[string]*models.User, error) {
 	out := make(map[string]*models.User)
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
@@ -93,7 +100,7 @@ func (s *Service) GetUsersByIDs(subjectIDs []string) (map[string]*models.User, e
 	}
 
 	var users []*models.User
-	if err := s.db.Where("subject_id IN ?", subjectIDs).Find(&users).Error; err != nil {
+	if err := s.db.WithContext(ctx).Scopes(tenant.Scope(ctx)).Where("subject_id IN ?", subjectIDs).Find(&users).Error; err != nil {
 		return nil, err
 	}
 	for _, u := range users {
@@ -108,7 +115,9 @@ func (s *Service) GetUsersByIDs(subjectIDs []string) (map[string]*models.User, e
 // we match its behaviour to keep result sets comparable during cutover).
 //
 // limit ≤ 0 falls back to defaultSearchLimit.
-func (s *Service) SearchUsers(keyword string, limit int) ([]*models.User, error) {
+//
+// B5: applies tenant.Scope(ctx).
+func (s *Service) SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
 	}
@@ -116,7 +125,7 @@ func (s *Service) SearchUsers(keyword string, limit int) ([]*models.User, error)
 		limit = defaultSearchLimit
 	}
 
-	query := s.db.Where("is_active = ?", true)
+	query := s.db.WithContext(ctx).Scopes(tenant.Scope(ctx)).Where("is_active = ?", true)
 	if keyword != "" {
 		pattern := "%" + keyword + "%"
 		// Parens are load-bearing: without them SQL's AND binds tighter than
@@ -135,7 +144,9 @@ func (s *Service) SearchUsers(keyword string, limit int) ([]*models.User, error)
 // ListIdentities returns every auth identity bound to the user, ordered so
 // the primary identity surfaces first (callers building "linked accounts"
 // UI render it at the top).
-func (s *Service) ListIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error) {
+//
+// B5: applies tenant.Scope(ctx).
+func (s *Service) ListIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
 	}
@@ -144,7 +155,8 @@ func (s *Service) ListIdentities(userSubjectID string) ([]*models.UserAuthIdenti
 	}
 
 	var identities []*models.UserAuthIdentity
-	err := s.db.
+	err := s.db.WithContext(ctx).
+		Scopes(tenant.Scope(ctx)).
 		Where("user_subject_id = ?", userSubjectID).
 		Order("is_primary DESC, id ASC").
 		Find(&identities).Error
@@ -441,7 +453,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		return nil, fmt.Errorf("failed to bind identity for new user: %w", err)
 	}
 
-	if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
+	if refreshed, err := s.GetUserByID(ctx, user.SubjectID); err == nil {
 		return refreshed, nil
 	}
 	return &user, nil
