@@ -19,35 +19,36 @@ data:
     \ chart runs the\n# container as UID 1000 (nginx-deployment.yaml securityContext),\
     \ so all\n# writable paths must live under /tmp (an emptyDir mounted writable).\n\
     # Logs go to stderr/stdout so `kubectl logs` can capture them.\nerror_log /dev/stderr\
-    \ notice;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections 1024;\n}\n\n\
-    http {\n    include /usr/local/openresty/nginx/conf/mime.types;\n    default_type\
+    \ notice;\npid /tmp/nginx.pid;\n\n# Make the internal secret visible to Lua for\
+    \ server-registry mode.\n# NOTE: the env directive is only valid in the main context\
+    \ (top level).\nenv INTERNAL_SECRET;\n\nevents {\n    worker_connections 1024;\n\
+    }\n\nhttp {\n    include /usr/local/openresty/nginx/conf/mime.types;\n    default_type\
     \ application/octet-stream;\n\n    access_log /dev/stdout;\n\n    # Redirect every\
     \ runtime-temp path off the read-only prefix into /tmp.\n    client_body_temp_path\
     \ /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n    fastcgi_temp_path\
     \     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n    scgi_temp_path\
-    \        /tmp/scgi_temp;\n\n    # Make the internal secret visible to Lua for\
-    \ server-registry mode.\n    env INTERNAL_SECRET;\n\n    # Shared across workers:\
-    \ JSON-encoded discovered pod list and DNS metadata\n    lua_shared_dict router_state\
-    \ 1m;\n\n    lua_package_path \"/usr/local/openresty/site/lualib/?.lua;;\";\n\n\
-    \    init_worker_by_lua_block {\n        -- Only worker 0 performs discovery;\
-    \ the result is shared with all\n        -- workers via the router_state dict.\
-    \ This avoids N concurrent DNS\n        -- queries (one per worker) on every refresh.\n\
-    \        if ngx.worker.id() ~= 0 then\n            return\n        end\n\n   \
-    \     local router = require \"router\"\n        local dns_utils = require \"\
-    dns_utils\"\n        local state = ngx.shared.router_state\n\n        local discovery_mode\
-    \ = \"static\"\n        local gateway_port = 8081\n        local refresh_ms =\
-    \ 5000\n        -- Refresh at least once per second; never 0 (which would busy-loop).\n\
-    \        local refresh_interval = math.max(refresh_ms / 1000, 1)\n        -- Expire\
-    \ the cached pod list if discovery stops succeeding, so we\n        -- stop routing\
-    \ to a stale set rather than holding it forever.\n        local ttl_seconds =\
-    \ math.max(refresh_interval * 3, 30)\n        local resolver_override = \"\" \
-    \ -- set {{CLUSTER_DNS}} to override auto-detection\n        local domain_override\
-    \   = \"\"\n        -- For static FQDN mode we still need a nameserver to resolve\
-    \ each Pod FQDN.\n        -- Auto-detect from /etc/resolv.conf unless explicitly\
-    \ overridden.\n        local nameservers, cluster_domain, dns_source = dns_utils.detect_dns(resolver_override,\
-    \ domain_override)\n\n        ngx.log(ngx.INFO,\n            \"nginx-router static\
-    \ fqdn config: source=\", dns_source,\n            \" nameservers=[\", table.concat(nameservers,\
-    \ \",\"), \"]\")\n\n        local static_fqdns = {\n                -- TODO: replace\
+    \        /tmp/scgi_temp;\n\n    # Shared across workers: JSON-encoded discovered\
+    \ pod list and DNS metadata\n    lua_shared_dict router_state 1m;\n\n    lua_package_path\
+    \ \"/usr/local/openresty/site/lualib/?.lua;;\";\n\n    init_worker_by_lua_block\
+    \ {\n        -- Only worker 0 performs discovery; the result is shared with all\n\
+    \        -- workers via the router_state dict. This avoids N concurrent DNS\n\
+    \        -- queries (one per worker) on every refresh.\n        if ngx.worker.id()\
+    \ ~= 0 then\n            return\n        end\n\n        local router = require\
+    \ \"router\"\n        local dns_utils = require \"dns_utils\"\n        local state\
+    \ = ngx.shared.router_state\n\n        local discovery_mode = \"static\"\n   \
+    \     local gateway_port = 8081\n        local refresh_ms = 5000\n        -- Refresh\
+    \ at least once per second; never 0 (which would busy-loop).\n        local refresh_interval\
+    \ = math.max(refresh_ms / 1000, 1)\n        -- Expire the cached pod list if discovery\
+    \ stops succeeding, so we\n        -- stop routing to a stale set rather than\
+    \ holding it forever.\n        local ttl_seconds = math.max(refresh_interval *\
+    \ 3, 30)\n        local resolver_override = \"\"  -- set {{CLUSTER_DNS}} to override\
+    \ auto-detection\n        local domain_override   = \"\"\n        -- For static\
+    \ FQDN mode we still need a nameserver to resolve each Pod FQDN.\n        -- Auto-detect\
+    \ from /etc/resolv.conf unless explicitly overridden.\n        local nameservers,\
+    \ cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)\n\
+    \n        ngx.log(ngx.INFO,\n            \"nginx-router static fqdn config: source=\"\
+    , dns_source,\n            \" nameservers=[\", table.concat(nameservers, \",\"\
+    ), \"]\")\n\n        local static_fqdns = {\n                -- TODO: replace\
     \ with your actual StatefulSet Pod FQDNs\n                \"{{RELEASE_NAME}}-0.{{RELEASE_NAME}}-headless.{{NAMESPACE}}.svc.{{CLUSTER_DOMAIN}}\"\
     ,\n                \"{{RELEASE_NAME}}-1.{{RELEASE_NAME}}-headless.{{NAMESPACE}}.svc.{{CLUSTER_DOMAIN}}\"\
     ,\n            }\n\n        local function discover_and_update(premature)\n  \
