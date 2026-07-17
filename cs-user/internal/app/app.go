@@ -39,6 +39,10 @@ type Deps struct {
 	// needs. Typically the same *user.Service as Users; declared separately
 	// to keep the auth handler's dependency surface explicit + minimal.
 	EmploymentReader handlers.EmploymentReader
+	// PermissionReader is the Phase C1 read-side subset the reissue-token
+	// flow uses to populate platform_admin / tenant_roles JWT claims. When
+	// nil, the issued token omits the permission claims (灰度 rollout).
+	PermissionReader handlers.PermissionReader
 	// Signer is the JWT signing primitive (Phase A3). Optional — when nil,
 	// /.well-known/jwks returns 503 and no path issues tokens. A7 (OAuth
 	// callback takeover) will require it.
@@ -158,9 +162,10 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 		reader = unavailableAuthReader{}
 	}
 	authAPI := handlers.AuthAPI{
-		Svc:    reader,
-		Signer: deps.Signer,
-		JWT:    cfg.JWT,
+		Svc:         reader,
+		Signer:      deps.Signer,
+		JWT:         cfg.JWT,
+		Permissions: deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)
 }

@@ -11,7 +11,7 @@
 //
 //   - exactly one match → 200 {"status":"ok","slug":"acme","tenant_id":"t-..."}
 //   - zero matches      → 200 {"status":"not_found"} (NOT a 404 — Try 3
-//                          picker is a UI flow, the callback proceeds)
+//     picker is a UI flow, the callback proceeds)
 //   - two or more       → 200 {"status":"ambiguous","candidates":[{...}]}
 //
 // We deliberately return 200 across all three outcomes so the server's
