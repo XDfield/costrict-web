@@ -181,3 +181,150 @@ func (s *Service) Update(ctx context.Context, p UpdateParams) (*models.TenantCon
 	}
 	return &out, nil
 }
+
+// GetProviderMapping returns the typed provider_mapping subsection
+// (Phase C3.3). Reads the raw blob via Get (synthetic default on missing
+// row), then parses out provider_mapping. Returns an empty mapping
+// (Providers == {}) when the section is absent — every tenant implicitly
+// has an empty mapping.
+func (s *Service) GetProviderMapping(ctx context.Context, tenantID string) (*ProviderMapping, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+	tc, err := s.Get(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProviderMapping(tc.ConfigYAML)
+}
+
+// UpdateProviderMappingParams carries the typed PUT inputs.
+type UpdateProviderMappingParams struct {
+	TenantID  string
+	Mapping   *ProviderMapping
+	UpdatedBy *string
+}
+
+// UpdateProviderMapping validates the typed mapping, merges it into the
+// existing config_yaml blob (preserving sibling sections), and stores
+// via Update. PUT semantics: the provider_mapping subtree is fully
+// replaced; other top-level keys (employment_providers, features, etc.)
+// are preserved verbatim.
+func (s *Service) UpdateProviderMapping(ctx context.Context, p UpdateProviderMappingParams) (*ProviderMapping, error) {
+	if p.TenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+
+	// Validate + apply defaults in place.
+	if err := p.Mapping.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Render the (possibly defaulted) mapping to YAML.
+	section, err := SerializeProviderMapping(p.Mapping)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read current blob to preserve sibling sections. Get returns
+	// synthetic default {} on missing row, so first-write works too.
+	tc, err := s.Get(ctx, p.TenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	merged, err := mergeProviderMappingSection(tc.ConfigYAML, section)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := s.Update(ctx, UpdateParams{
+		TenantID:   p.TenantID,
+		ConfigYAML: merged,
+		UpdatedBy:  p.UpdatedBy,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Re-parse the merged result so callers see the canonical view
+	// (with defaults applied) rather than their input verbatim.
+	return ParseProviderMapping(merged)
+}
+
+// mergeProviderMappingSection splices the `provider_mapping:` subtree
+// from `section` into `blob`, preserving all sibling top-level keys.
+//
+// Implementation: parse blob into yaml.v3 Node tree, find or insert the
+// provider_mapping key, replace its value, re-serialize. Node-based
+// (rather than map[string]any) so we don't lose comments / ordering in
+// sibling sections that the tenant admin may have authored via C3.2's
+// raw endpoint.
+func mergeProviderMappingSection(blob, section string) (string, error) {
+	blob = strings.TrimSpace(blob)
+	section = strings.TrimSpace(section)
+
+	// Empty blob → section IS the new blob.
+	if blob == "" || blob == "{}" {
+		return section, nil
+	}
+
+	var docNode yaml.Node
+	if err := yaml.Unmarshal([]byte(blob), &docNode); err != nil {
+		return "", fmt.Errorf("%w: parse existing blob: %v", ErrInvalidYAML, err)
+	}
+
+	// yaml.Unmarshal into a Node produces a DocumentNode whose Content[0]
+	// is the actual root mapping. Unwrap so we operate on the mapping directly.
+	root := &docNode
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+
+	// Root must be a mapping; if not (e.g. scalar), fall back to section.
+	if root.Kind != yaml.MappingNode || len(root.Content) == 0 {
+		return section, nil
+	}
+
+	var sectionNode yaml.Node
+	if err := yaml.Unmarshal([]byte(section), &sectionNode); err != nil {
+		return "", fmt.Errorf("%w: parse provider_mapping section: %v", ErrInvalidYAML, err)
+	}
+	// sectionNode is a document wrapping a mapping with a single key
+	// `provider_mapping`; unwrap to the inner mapping.
+	secRoot := &sectionNode
+	if secRoot.Kind == yaml.DocumentNode && len(secRoot.Content) > 0 {
+		secRoot = secRoot.Content[0]
+	}
+	var pmValue *yaml.Node
+	if secRoot.Kind == yaml.MappingNode && len(secRoot.Content) >= 2 {
+		pmValue = secRoot.Content[1]
+	}
+
+	const key = "provider_mapping"
+	// Walk the root mapping's key/value pairs (Content[0]=key, [1]=value, ...).
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == key {
+			if pmValue != nil {
+				root.Content[i+1] = pmValue
+			}
+			out, err := yaml.Marshal(root)
+			if err != nil {
+				return "", fmt.Errorf("tenantconfig: re-marshal merged blob: %w", err)
+			}
+			return string(out), nil
+		}
+	}
+
+	// Key not present — append.
+	if pmValue != nil {
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: key, Tag: "!!str"},
+			pmValue,
+		)
+	}
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return "", fmt.Errorf("tenantconfig: marshal merged blob: %w", err)
+	}
+	return string(out), nil
+}
