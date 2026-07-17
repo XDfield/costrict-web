@@ -31,8 +31,8 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
-	"gorm.io/gorm"
 	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
 )
 
 // Sentinel errors. Handlers translate these to HTTP codes:
