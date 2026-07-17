@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 3 | 11% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b HTTP middleware / cookie / session wiring + B4-B7 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 4 | 14% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2 server 侧 RPC + OAuth callback 链路 + picker + B4-B7 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -570,14 +570,33 @@
 - **B3 不实现 orchestration**：没有 top-level `Resolve(ctx, host, email, apex)` 编排函数，因为 Try 3 explicit selection 是 UI flow（阻塞等待用户输入），编排属于 HTTP layer。B3b middleware 会按 subdomain → email domain 顺序串起来；Try 3 由前端处理。
 - **未在 server 端 wire 起来**：B3 是纯 service 层，server / cs-user cmd/api 还没调用 `Resolver`。第一个 caller 是 B3b middleware（注入到 OAuth callback 链路 + 后续业务 handler）。
 
-### B3b：tenant.Resolver HTTP wiring（待启动）
+### B3b：tenant.Resolver HTTP wiring
 
-- [ ] cs-user 加 middleware 从 `Host` / `X-Tenant-Id` / `cs_tenant_slug` cookie 提取 tenant，写入 request context
-- [ ] server 加同样 middleware，解析后注入下游 RPC header
-- [ ] apex domains 配置项：`CS_USER_APEX_DOMAINS` env (cs-user) / `USER_SERVICE_APEX_DOMAINS` env (server)
+**B3b.1（已完成 2026-07-17）** — cs-user 侧 middleware + config + context helpers：
+
+- [x] `cs-user/internal/tenant/context.go`：`WithTenant` / `FromContext` / `HasTenant`（unexported `ctxKey` 防碰撞；nil 容忍；nil 值表示"无信号"语义）
+- [x] `cs-user/internal/config/config.go`：加 `TenantConfig.ApexDomains []string` + `CS_USER_APEX_DOMAINS` CSV env loader（mirror JWT audience CSV pattern）
+- [x] `cs-user/internal/middleware/tenant.go`：`ResolveTenant(resolver, apexDomains) gin.HandlerFunc` 按 §5 三层 fallback（X-Tenant-Id header → `cs_tenant_slug` cookie → Host subdomain），全 miss fallback 到 default tenant；DB error 走 `c.Set("tenant_resolve_error", ...)` 让 handler 翻译成 503；`TenantFromGin(c)` 便捷取值
+- [x] `cs-user/internal/app/app.go`：`Deps.TenantResolver *tenant.Resolver` 字段（可选；nil 时 middleware 跳过 → Phase A 行为不变）；middleware 装到 `r.Use` 顶层（早于 `/api/internal` route group）
+- [x] `cs-user/cmd/api/main.go`：从 `pool.Gorm` 构造 `tenant.NewResolver` 注入 `app.Deps`
+- [x] **测试覆盖**：`internal/middleware/tenant_test.go`（cgo-gated sqlite + 8 测试：X-Tenant-Id header hit / cookie fallback / header 优先 / subdomain layer / 无信号 default fallback / bogus header falls through / nil resolver no-op / default-missing 优雅降级）；`internal/tenant/context_test.go`（5 测试：WithTenant+FromContext round-trip / empty ctx / nil ctx / WithTenant nil ctx defensive / nil 值 = "no signal"）；`internal/config/config_test.go` 加 2 测试（ApexDomainsDefault / ApexDomainsCSV 空白容忍）
+
+**B3b.2（待启动）** — server 侧 middleware + OAuth callback 链路：
+
+- [ ] server 加同样 middleware，解析后注入下游 RPC header（`X-Tenant-Id`）
+- [ ] apex domains 配置项：`USER_SERVICE_APEX_DOMAINS` env (server)
 - [ ] OAuth callback 链路：Try 1 subdomain → Try 2 email domain → Try 3 重定向 tenant picker 页
 - [ ] 跨 tenant 访问检测：JWT `tenant_id` vs cookie `cs_tenant_slug` 不匹配 → 提示切换（设计 §5.3 场景 C）
 - [ ] swagger 注解：B3b middleware 无 endpoint；新增 tenant picker endpoint `/api/tenant/suggest?email=...` 返回建议 tenant 列表（设计 §5.1 Try 2 多命中场景）
+
+### B3b.1 实现细节
+
+- **三层 fallback 顺序**：`X-Tenant-Id` header（server → cs-user RPC 可信载体，因 `/api/internal` 路由组已被 `RequireInternalToken` gate）→ `cs_tenant_slug` cookie（浏览器粘性选择）→ Host subdomain（仅当 `cfg.Tenant.ApexDomains` 非空，本地 dev 默认禁用）
+- **default fallback**：所有信号 miss 时 middleware 主动查 `slug="default"` 行；DB error（含 default 行被误删）走 `tenant_resolve_error` context key 让 handler 翻译成 503
+- **优雅降级**：nil resolver / DB error 时 middleware **不** abort chain；handler 用 `TenantFromGin` 取 `(*Tenant, error)`，nil+nil-err 视为"default 行不存在"返回 503
+- **ctxKey 防碰撞**：`tenant` 包用 unexported `ctxKey struct{}` 作 key，调用方无法构造相同 key；middleware 同时写 gin 内置 key（`c.Set("tenant", ...)`）和 `c.Request` 的 context（`tenant.WithTenant`），net/http handler 也能读到
+- **subdomain 仅当 apex 配置**：本地 dev `Host="localhost:8080"` 没有 subdomain 信号；生产 prod `Host="acme.cs-user.example.com"` → slug "acme"。`CS_USER_APEX_DOMAINS="cs-user.example.com"` 启用，留空禁用
+- **B3b.1 不在 OAuth 链路**：OAuth callback 拿不到 cookie（Casdoor 重定向是 GET，cookie 跨域受限）+ subdomain 也常常缺失；Try 1/2/3 编排放到 B3b.2 server 端实现，B3b.1 只覆盖 cs-user 入口的 raw HTTP 路径（`/api/internal/*` RPC + JWKS / healthz / swagger 等公开路径）
 
 ---
 
