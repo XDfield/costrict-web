@@ -59,6 +59,11 @@ type EnterpriseClaims struct {
 
 	// --- Tenant (Phase B populates; Phase A5 reserves) ---
 	TenantID string `json:"tenant_id,omitempty"`
+	// TenantSlug is the URL-friendly tenant key (Phase B). Server's auth
+	// middleware reads this claim to compare against the runtime-resolved
+	// slug (cookie / subdomain) for cross-tenant detection (B3b.2c). Empty
+	// for Casdoor-issued tokens (pre-cutover) — comparison must skip.
+	TenantSlug string `json:"tenant_slug,omitempty"`
 }
 
 // jwt.Claims interface — implementation wires standard fields into jwt/v5's
@@ -133,6 +138,11 @@ type IssuanceParams struct {
 	// TenantID is reserved for Phase B multi-tenancy. Phase A callers
 	// should pass "default" or leave empty.
 	TenantID string
+	// TenantSlug is the URL-friendly tenant key (Phase B). Server's
+	// TenantMatch middleware compares this against the runtime-resolved
+	// slug — empty means "leave the JWT claim unset" (e.g. Casdoor-token
+	// re-sign under pre-cutover conditions).
+	TenantSlug string
 }
 
 // ErrEmptySubject is returned by NewEnterpriseClaims when Subject is empty.
@@ -165,14 +175,15 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 	notBefore := now
 	expiry := now.Add(params.TTL)
 	c := &EnterpriseClaims{
-		Issuer:    params.Issuer,
-		Subject:   params.Subject,
-		IssuedAt:  &issuedAt,
-		NotBefore: &notBefore,
-		Expiry:    &expiry,
-		Audience:  params.Audience,
-		JTI:       params.JTI,
-		TenantID:  params.TenantID,
+		Issuer:     params.Issuer,
+		Subject:    params.Subject,
+		IssuedAt:   &issuedAt,
+		NotBefore:  &notBefore,
+		Expiry:     &expiry,
+		Audience:   params.Audience,
+		JTI:        params.JTI,
+		TenantID:   params.TenantID,
+		TenantSlug: params.TenantSlug,
 	}
 
 	if params.Identity != nil {
