@@ -32,6 +32,11 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          env:
+            # server-registry 模式下需要，与 Gateway 的 INTERNAL_SECRET 一致；
+            # static/dns 模式下可留空。
+            - name: INTERNAL_SECRET
+              value: "<INTERNAL_SECRET>"
           volumeMounts:
             - name: config
               mountPath: /usr/local/openresty/nginx/conf/nginx.conf
