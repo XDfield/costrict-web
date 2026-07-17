@@ -574,6 +574,17 @@ func main() {
 			tenantConfig.GET("", tenantConfigAPI.GetTenantConfig)
 			tenantConfig.PUT("", tenantConfigAPI.UpdateTenantConfig)
 
+			// Phase C3.3: tenant_admin typed provider_mapping editor
+			// (GET + PUT typed JSON, PUT = full replace of the
+			// provider_mapping subtree). Shares the RPCClient with C3.2.
+			providerMappingAPI := &handlers.TenantProviderMappingAPI{
+				Svc: buildProviderMappingService(userModule),
+			}
+			providerMapping := authed.Group("/tenant/provider-mapping")
+			providerMapping.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			providerMapping.GET("", providerMappingAPI.GetProviderMapping)
+			providerMapping.PUT("", providerMappingAPI.UpdateProviderMapping)
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -1002,6 +1013,19 @@ func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
 // surface (Phase C3.2). Same shape as buildTenantUserService — local
 // backend mode returns nil so handlers cleanly 502.
 func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildProviderMappingService wires the RPCClient for the typed
+// provider_mapping editor (Phase C3.3). Shares the same RPC client as
+// C3.2 — both surfaces are methods on *userpkg.RPCClient.
+func buildProviderMappingService(module *userpkg.Module) handlers.TenantProviderMappingService {
 	if module == nil {
 		return nil
 	}
