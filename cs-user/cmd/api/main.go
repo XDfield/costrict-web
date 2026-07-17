@@ -125,6 +125,7 @@ func main() {
 		PermissionReader: userSvc,
 		Signer:           signer,
 		TenantResolver:   tenant.NewResolver(pool.Gorm),
+		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
 	})
 
 	srv := &http.Server{
