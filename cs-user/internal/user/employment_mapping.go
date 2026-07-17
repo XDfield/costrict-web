@@ -178,6 +178,34 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 	return nil
 }
 
+// GetEmploymentIdentity loads the user's employment_identities snapshot.
+// Returns (nil, nil) when no row exists — the A7 reissue-token flow treats
+// this as "no enterprise context" rather than failing, so users without an
+// employment_identities row (provider not enabled, never synced) still get a
+// valid token, just without enterprise claims. Soft-deleted rows are
+// excluded by gorm's DeletedAt handling.
+//
+// Empty userSubjectID is a caller-programming error (400-mappable).
+func (s *Service) GetEmploymentIdentity(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	if userSubjectID == "" {
+		return nil, ErrEmptySubjectID
+	}
+	var row models.EmploymentIdentity
+	err := s.db.WithContext(ctx).
+		Where("user_subject_id = ?", userSubjectID).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query employment_identity: %w", err)
+	}
+	return &row, nil
+}
+
 // containsString reports whether v contains s. Enabled-provider lists are
 // tiny (1-5 entries typically) so a linear scan beats a map allocation.
 func containsString(v []string, s string) bool {

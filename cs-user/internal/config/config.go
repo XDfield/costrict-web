@@ -9,6 +9,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 )
 
 // Config holds all cs-user runtime configuration.
@@ -16,6 +18,7 @@ type Config struct {
 	HTTP     HTTPConfig
 	Postgres PostgresConfig
 	Internal InternalConfig
+	JWT      JWTConfig
 }
 
 type HTTPConfig struct {
@@ -47,9 +50,53 @@ type InternalConfig struct {
 	Token string
 }
 
+// JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
+//
+// SigningKeyPath is OPTIONAL at startup (Phase A3): when empty, the JWKS
+// endpoint returns 503 (signing not configured) and SignJWT is never called
+// by any wired path. A7 reissue-token endpoint returns 503 if the signer is
+// missing.
+//
+// Issuer / TTL / DefaultAudience drive the A7 reissue-token flow. All three
+// have safe defaults so a fresh deployment doesn't need extra config to
+// issue tokens; operators override when integrating with relying parties
+// that enforce specific iss / aud values.
+type JWTConfig struct {
+	// SigningKeyPath is the on-disk PEM file path. PKCS#1 ("RSA PRIVATE KEY")
+	// or PKCS#8 ("PRIVATE KEY"). Mounted via k8s secret / docker secret.
+	SigningKeyPath string
+
+	// Issuer is the iss claim on cs-user-issued tokens. Defaults to
+	// "cs-user" — operators set this to cs-user's public base URL when
+	// relying parties need to verify iss against a known origin.
+	Issuer string
+
+	// TTL is the time from issuance to expiry. Defaults to 1h. Parsed from
+	// the env var as a Go duration string ("1h", "30m", "3600s").
+	TTL time.Duration
+
+	// DefaultAudience is the aud claim applied when the caller doesn't
+	// override. Empty slice means "no aud claim" — relying parties that
+	// require aud will reject such tokens, so populate this in production.
+	DefaultAudience []string
+}
+
+// Defaults applied when the corresponding env var is unset. Kept as package
+// vars (not const) so tests in other packages can override via Load+env
+// rather than reaching into config internals.
+const (
+	defaultJWTIssuer = "cs-user"
+	defaultJWTTTL    = 1 * time.Hour
+)
+
 // Load reads configuration from environment variables (prefixed CS_USER_).
 // Returns an error if any required field is missing or empty.
 func Load() (*Config, error) {
+	jwtCfg, err := loadJWTConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		HTTP: HTTPConfig{
 			Port: envDefault("CS_USER_HTTP_PORT", "8081"),
@@ -66,6 +113,7 @@ func Load() (*Config, error) {
 		Internal: InternalConfig{
 			Token: os.Getenv("CS_USER_INTERNAL_TOKEN"),
 		},
+		JWT: jwtCfg,
 	}
 
 	if err := requireNonEmpty("CS_USER_INTERNAL_TOKEN", cfg.Internal.Token); err != nil {
@@ -76,6 +124,39 @@ func Load() (*Config, error) {
 	}
 	if err := requireNonEmpty("CS_USER_POSTGRES_PASSWORD", cfg.Postgres.Password); err != nil {
 		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// loadJWTConfig reads the JWT-related env vars. Split out so Load stays
+// readable and so the parsing path (esp. the TTL duration + audience CSV)
+// can be unit-tested without spinning the full Config.
+func loadJWTConfig() (JWTConfig, error) {
+	cfg := JWTConfig{
+		SigningKeyPath: os.Getenv("CS_USER_JWT_SIGNING_KEY_PATH"),
+		Issuer:         envDefault("CS_USER_JWT_ISSUER", defaultJWTIssuer),
+	}
+
+	ttlRaw := envDefault("CS_USER_JWT_TTL", defaultJWTTTL.String())
+	ttl, err := time.ParseDuration(ttlRaw)
+	if err != nil {
+		return JWTConfig{}, fmt.Errorf("CS_USER_JWT_TTL %q: %w", ttlRaw, err)
+	}
+	if ttl <= 0 {
+		return JWTConfig{}, fmt.Errorf("CS_USER_JWT_TTL must be positive, got %s", ttl)
+	}
+	cfg.TTL = ttl
+
+	if audRaw := strings.TrimSpace(os.Getenv("CS_USER_JWT_AUDIENCE")); audRaw != "" {
+		// Comma-separated per OIDC/RFC 7519 §4.1.3 conventions — short
+		// strings, single-digit entry count typical. Whitespace around each
+		// entry is trimmed so "a, b" → ["a","b"].
+		for _, aud := range strings.Split(audRaw, ",") {
+			if v := strings.TrimSpace(aud); v != "" {
+				cfg.DefaultAudience = append(cfg.DefaultAudience, v)
+			}
+		}
 	}
 
 	return cfg, nil

@@ -212,8 +212,34 @@ func main() {
 		casdoorEndpoint = cfg.Casdoor.Endpoint
 	}
 
-	// Initialize JWKS provider for JWT signature verification
-	jwksProvider := middleware.NewJWKSProvider(casdoorEndpoint)
+	// Initialize JWKS provider for JWT signature verification.
+	//
+	// Phase A8 灰度 mode controls which JWKS sources feed the verifier:
+	//   - off:    Casdoor only (pre-A8 behavior)
+	//   - dual:   cs-user + Casdoor (crossover window — old sessions with
+	//             Casdoor tokens keep working alongside new cs-user JWTs)
+	//   - single: cs-user only (end-state — Casdoor signing fully retired)
+	//
+	// dual/single require USER_SERVICE_URL set; boot fails fast otherwise so
+	// an operator can't accidentally flip 灰度 with no cs-user endpoint
+	// reachable.
+	var jwksProvider *middleware.JWKSProvider
+	switch cfg.JWTSignMode {
+	case config.JWTSignModeOff:
+		jwksProvider = middleware.NewJWKSProvider(casdoorEndpoint)
+	case config.JWTSignModeDual:
+		if cfg.UserService.BaseURL == "" {
+			logger.Fatal("[A8] JWT_SIGN_MODE=dual requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
+		}
+		jwksProvider = middleware.NewMultiJWKSProvider([]string{cfg.UserService.BaseURL, casdoorEndpoint})
+	case config.JWTSignModeSingle:
+		if cfg.UserService.BaseURL == "" {
+			logger.Fatal("[A8] JWT_SIGN_MODE=single requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
+		}
+		jwksProvider = middleware.NewJWKSProvider(cfg.UserService.BaseURL)
+	default:
+		logger.Fatal("[A8] internal error: unhandled JWTSignMode %q (expected off|dual|single)", cfg.JWTSignMode)
+	}
 	jwksProvider.Preload()
 	middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
 		return userModule.Service.ResolveSubjectID(&userpkg.JWTClaims{

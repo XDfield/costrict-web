@@ -31,6 +31,12 @@ var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fa
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 var bindStateSecret string
+// jwtSignMode gates the Phase A8 OAuth-callback takeover. Anything other than
+// config.JWTSignModeOff makes the callback ask cs-user to reissue a
+// self-signed JWT carrying enterprise claims (Phase A5). Set from
+// cfg.JWTSignMode via InitCookieConfig. Default off — Casdoor JWT remains
+// authoritative.
+var jwtSignMode string
 
 var exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
 	return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
@@ -81,6 +87,11 @@ func InitCookieConfig(cfg *config.Config) {
 	if strings.TrimSpace(bindStateSecret) == "" {
 		bindStateSecret = cfg.Casdoor.Secret
 	}
+
+	// Phase A8: surface JWT self-sign mode to the OAuth callback without
+	// plumbing cfg through every handler call. Default OFF — Casdoor JWT
+	// stays authoritative until 灰度 activates dual / single.
+	jwtSignMode = cfg.JWTSignMode
 
 	// Build the allowed origins whitelist from FRONTEND_URLS.
 	allowedOrigins = make(map[string]bool)
@@ -418,6 +429,12 @@ func AuthCallback(c *gin.Context) {
 		return
 	}
 
+	// cookieToken holds the value that ends up in the zgsmAdminToken cookie.
+	// Default is the Casdoor access token; Phase A8 overwrites it with a
+	// cs-user-signed JWT when jwtSignMode != off and ReissueToken succeeds.
+	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
+	// (Phase A8) is intentionally non-blocking.
+	cookieToken := tokenResp.AccessToken
 	if UserModule != nil {
 		if userInfo, userErr := getUserInfoFunc(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
 			claims := &userpkg.JWTClaims{
@@ -433,8 +450,35 @@ func AuthCallback(c *gin.Context) {
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
 				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
 			}
-			if _, err := UserModule.Writer.GetOrCreateUser(claims); err != nil {
+			if created, err := UserModule.Writer.GetOrCreateUser(claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
+			} else if created != nil {
+				// Phase A4b: refresh the user's employment_identities snapshot
+				// via cs-user. Best-effort — employment mapping is a bonus
+				// feature and must never block login. Skipped when
+				// claims.Provider is empty (no provider to map) or when
+				// GetOrCreateUser returned no user (nil-safety). The local
+				// UserService stub is a no-op; RPCWriter + DualWriter forward
+				// the actual write to cs-user.
+				if claims.Provider != "" {
+					if err := UserModule.Writer.ApplyEnterpriseMapping(created.SubjectID, claims.Provider); err != nil {
+						fmt.Printf("[WARN] ApplyEnterpriseMapping failed during auth callback: %v\n", err)
+					}
+				}
+				// Phase A8: when mode is dual or single, ask cs-user to mint
+				// a fresh JWT carrying enterprise claims. Best-effort: on any
+				// failure (transport, ErrSelfSignUnavailable from local-mode
+				// misconfig, cs-user 4xx/5xx) we fall back to the Casdoor
+				// token rather than failing login. The difference between
+				// dual and single lives in the verifier (JWKS chain), not
+				// here — the cookie value is the cs-user JWT either way.
+				if jwtSignMode != config.JWTSignModeOff {
+					if newToken, _, err := UserModule.Writer.ReissueToken(created.SubjectID, claims, nil); err != nil {
+						fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
+					} else {
+						cookieToken = newToken
+					}
+				}
 			}
 		} else if userErr != nil {
 			fmt.Printf("[WARN] GetUserInfo failed during auth callback: %v\n", userErr)
@@ -442,7 +486,7 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
-	c.SetCookie("zgsmAdminToken", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
+	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
 
 	// Determine where to send the user after login.
 	// Validate the redirect target against the allowed origins whitelist.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/casdoor"
+	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -873,5 +874,189 @@ func TestGetMyRepositories_NoMemberships(t *testing.T) {
 	repos, _ := body["repositories"].([]interface{})
 	if len(repos) != 0 {
 		t.Fatalf("expected 0 repos, got %d", len(repos))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase A8: JWTSignMode gating at the OAuth callback
+// ---------------------------------------------------------------------------
+
+// callbackStubWriter wraps the local *UserService for every UserWriter
+// method EXCEPT ReissueToken — which is the only one the A8 callback test
+// cares about. The embedded *UserService promotes GetOrCreateUser /
+// ApplyEnterpriseMapping / BindIdentityToUser / etc., so the stub satisfies
+// the full interface without re-implementing them. Counting ReissueToken
+// calls is the only observable signal that jwtSignMode triggered the
+// self-sign branch.
+type callbackStubWriter struct {
+	*userpkg.UserService
+	reissueCalls  int
+	reissueResult string
+	reissueErr    error
+}
+
+func (c *callbackStubWriter) ReissueToken(_ string, _ *userpkg.JWTClaims, _ []string) (string, time.Time, error) {
+	c.reissueCalls++
+	if c.reissueErr != nil {
+		return "", time.Time{}, c.reissueErr
+	}
+	return c.reissueResult, time.Now().Add(time.Hour), nil
+}
+
+// TestAuthCallback_JWTSignModeGating covers the A8 mode-aware behavior at the
+// OAuth callback: jwtSignMode=off must NOT call ReissueToken (Casdoor token
+// ends up in the cookie); dual and single MUST call ReissueToken (cs-user JWT
+// ends up in the cookie). The dual vs single difference lives in the verifier
+// JWKS chain, not the callback — so both modes share the same expectation
+// here.
+func TestAuthCallback_JWTSignModeGating(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       string
+		wantCalls  int
+		wantCookie string // empty = assert cookie == Casdoor access token
+	}{
+		{"off skips ReissueToken", config.JWTSignModeOff, 0, ""},
+		{"dual triggers ReissueToken", config.JWTSignModeDual, 1, "mock-cs-user-jwt"},
+		{"single triggers ReissueToken", config.JWTSignModeSingle, 1, "mock-cs-user-jwt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setupTestDB(t)()
+			defer InitUserModule(nil)
+			InitUserModule(userpkg.New(database.DB))
+
+			// Save & restore global mutation
+			prevMode := jwtSignMode
+			prevExchange := exchangeCodeForTokenFunc
+			prevGetUser := getUserInfoFunc
+			defer func() {
+				jwtSignMode = prevMode
+				exchangeCodeForTokenFunc = prevExchange
+				getUserInfoFunc = prevGetUser
+			}()
+
+			jwtSignMode = tc.mode
+
+			stub := &callbackStubWriter{
+				UserService:   UserModule.Service,
+				reissueResult: "mock-cs-user-jwt",
+			}
+			UserModule.Writer = stub
+
+			casdoorToken := signHandlersTestJWT(t, jwt.MapClaims{
+				"id":           "cb-id",
+				"sub":          "cb-sub",
+				"universal_id": "cb-uuid",
+				"name":         "cb_user",
+				"provider":     "idtrust",
+			})
+			exchangeCodeForTokenFunc = func(_, _ string) (*casdoor.CasdoorTokenResponse, error) {
+				return &casdoor.CasdoorTokenResponse{AccessToken: casdoorToken}, nil
+			}
+			getUserInfoFunc = func(_ string) (*casdoor.CasdoorUserInfoResponse, error) {
+				return &casdoor.CasdoorUserInfoResponse{User: &casdoor.CasdoorUser{Id: "cb-id", Sub: "cb-sub", UniversalID: "cb-uuid", Name: "cb_user"}}, nil
+			}
+
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
+			newAuthRouter("").ServeHTTP(w, req)
+
+			if w.Code != http.StatusFound {
+				t.Fatalf("expected 302 redirect, got %d: %s", w.Code, w.Body.String())
+			}
+			if stub.reissueCalls != tc.wantCalls {
+				t.Errorf("ReissueToken calls = %d, want %d (mode=%s)", stub.reissueCalls, tc.wantCalls, tc.mode)
+			}
+
+			// Cookie assertion: in off mode the Casdoor token wins; in
+			// dual/single the cs-user JWT wins (unless ReissueToken errored,
+			// which we don't trigger here).
+			cookies := w.Result().Cookies()
+			var zgsm *http.Cookie
+			for _, c := range cookies {
+				if c.Name == "zgsmAdminToken" {
+					zgsm = c
+					break
+				}
+			}
+			if zgsm == nil {
+				t.Fatalf("zgsmAdminToken cookie not set; cookies=%+v", cookies)
+			}
+			wantToken := tc.wantCookie
+			if wantToken == "" {
+				wantToken = casdoorToken
+			}
+			if zgsm.Value != wantToken {
+				t.Errorf("cookie value = %q, want %q (mode=%s)", zgsm.Value, wantToken, tc.mode)
+			}
+		})
+	}
+}
+
+// TestAuthCallback_JWTSignModeFallbackOnReissueError verifies the dual-sign
+// non-blocking contract: if ReissueToken fails (e.g. cs-user briefly
+// unreachable, or local-mode misconfig returning ErrSelfSignUnavailable),
+// the callback MUST fall back to the Casdoor token so login still succeeds.
+// This is what makes dual-sign safe to flip on in production.
+func TestAuthCallback_JWTSignModeFallbackOnReissueError(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	prevMode := jwtSignMode
+	prevExchange := exchangeCodeForTokenFunc
+	prevGetUser := getUserInfoFunc
+	defer func() {
+		jwtSignMode = prevMode
+		exchangeCodeForTokenFunc = prevExchange
+		getUserInfoFunc = prevGetUser
+	}()
+
+	jwtSignMode = config.JWTSignModeDual
+
+	stub := &callbackStubWriter{
+		UserService:   UserModule.Service,
+		reissueResult: "",
+		reissueErr:    userpkg.ErrSelfSignUnavailable,
+	}
+	UserModule.Writer = stub
+
+	casdoorToken := signHandlersTestJWT(t, jwt.MapClaims{
+		"id":           "fb-id",
+		"sub":          "fb-sub",
+		"universal_id": "fb-uuid",
+		"name":         "fb_user",
+		"provider":     "idtrust",
+	})
+	exchangeCodeForTokenFunc = func(_, _ string) (*casdoor.CasdoorTokenResponse, error) {
+		return &casdoor.CasdoorTokenResponse{AccessToken: casdoorToken}, nil
+	}
+	getUserInfoFunc = func(_ string) (*casdoor.CasdoorUserInfoResponse, error) {
+		return &casdoor.CasdoorUserInfoResponse{User: &casdoor.CasdoorUser{Id: "fb-id", Sub: "fb-sub", UniversalID: "fb-uuid", Name: "fb_user"}}, nil
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
+	newAuthRouter("").ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect (login must still succeed), got %d: %s", w.Code, w.Body.String())
+	}
+	if stub.reissueCalls != 1 {
+		t.Errorf("ReissueToken should be attempted once in dual mode, got %d", stub.reissueCalls)
+	}
+	var zgsm *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "zgsmAdminToken" {
+			zgsm = c
+			break
+		}
+	}
+	if zgsm == nil {
+		t.Fatalf("zgsmAdminToken cookie not set")
+	}
+	if zgsm.Value != casdoorToken {
+		t.Errorf("cookie should fall back to Casdoor token on ReissueToken error; got %q, want %q", zgsm.Value, casdoorToken)
 	}
 }

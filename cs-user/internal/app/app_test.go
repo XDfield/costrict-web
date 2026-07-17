@@ -137,3 +137,56 @@ func TestSwaggerUI_RouteRegistered(t *testing.T) {
 		t.Errorf("/swagger/index.html status = %d, want 200", w.Code)
 	}
 }
+
+// TestJWKS_RouteRegisteredAs503WhenSignerMissing confirms /.well-known/jwks is
+// publicly routable (no X-Internal-Token required) and returns 503 when no
+// signer is wired. Phase A3 boot posture: endpoint exists, but signing is
+// disabled until the operator sets CS_USER_JWT_SIGNING_KEY_PATH.
+func TestJWKS_RouteRegisteredAs503WhenSignerMissing(t *testing.T) {
+	r := NewRouter(newCfg("tok"), Deps{})
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("/.well-known/jwks (nil signer) status = %d, want 503", w.Code)
+	}
+	// Spot-check: the route must NOT be under /api/internal (no auth gate).
+	// The 503 already proves this — RequireInternalToken middleware would
+	// have returned 401 if the route were gated. Belt-and-braces: confirm
+	// the body contains the not-configured error string.
+	if !strings.Contains(w.Body.String(), "JWKS not configured") {
+		t.Errorf("body = %s, want error mentioning JWKS not configured", w.Body.String())
+	}
+}
+
+// TestReissueToken_RouteRegistered503WhenMissingDeps confirms the A7
+// reissue-token route exists under /api/internal and returns 503 when
+// either the EmploymentReader or Signer is missing. The route must be
+// reachable (no 404) so the swagger spec stays stable across deployments;
+// both the auth middleware (401 without X-Internal-Token) and the
+// config-missing 503 path must work.
+func TestReissueToken_RouteRegistered503WhenMissingDeps(t *testing.T) {
+	r := NewRouter(newCfg("tok"), Deps{})
+
+	// Missing X-Internal-Token → 401 (auth gate is wired).
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/users/reissue-token", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("missing-token status = %d, want 401", w.Code)
+	}
+
+	// Correct token + no signer wired → 503 (signer nil-guard fires before
+	// the service stub, which keeps the contract clean: missing-config vs.
+	// missing-service).
+	req = httptest.NewRequest(http.MethodPost, "/api/internal/users/reissue-token", nil)
+	req.Header.Set("X-Internal-Token", "tok")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("nil-signer status = %d, want 503, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "JWT signing not configured") {
+		t.Errorf("body = %s, want 'JWT signing not configured'", w.Body.String())
+	}
+}

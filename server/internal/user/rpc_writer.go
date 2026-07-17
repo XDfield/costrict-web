@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -221,6 +222,101 @@ func (w *RPCWriter) UnbindIdentityByProvider(userSubjectID, provider string) err
 		return nil
 	}
 	return w.mapWriteError(status, respBody, "unbind-identity")
+}
+
+// ApplyEnterpriseMapping calls POST
+// /api/internal/users/apply-enterprise-mapping. cs-user returns 200 with
+// `{"applied": true|false}` — both are success from the writer's perspective
+// (false means the provider isn't in the tenant's employment_providers.enabled
+// list, which is the configured-off state, not an error). 4xx/5xx surfaces
+// through mapWriteError like the other write methods.
+//
+// The caller (server's OAuth callback) treats every error as best-effort:
+// employment mapping is a bonus feature and must never block login. RPCWriter
+// still returns the error so non-callback callers (future admin endpoints) can
+// decide their own policy.
+func (w *RPCWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error {
+	if !w.Configured() {
+		return ErrNotConfigured
+	}
+	body := struct {
+		TenantID      string `json:"tenant_id,omitempty"`
+		UserSubjectID string `json:"user_subject_id"`
+		Provider      string `json:"provider"`
+	}{UserSubjectID: userSubjectID, Provider: provider}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("user rpc writer: marshal apply-enterprise-mapping request: %w", err)
+	}
+	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/apply-enterprise-mapping", bodyBytes)
+	if transportErr != nil {
+		return transportErr
+	}
+	if status >= 200 && status < 300 {
+		return nil
+	}
+	return w.mapWriteError(status, respBody, "apply-enterprise-mapping")
+}
+
+// ReissueToken calls POST /api/internal/users/reissue-token (Phase A7). The
+// server's OAuth callback invokes this when JWT_SELF_SIGN_ENABLED=true to
+// swap the Casdoor-validated claims for a cs-user-signed JWT carrying
+// enterprise claims (Phase A5). cs-user loads employment_identities (A4),
+// builds claims, signs with its RSA key (A3), and returns {token, expires_at}.
+//
+// Wire format: Identity claims marshal as PascalCase (server's JWTClaims has
+// no json tags); cs-user's reissueTokenRequest.Identity is *models.JWTClaims
+// with snake_case tags, but encoding/json's case-insensitive field fallback
+// (https://pkg.go.dev/encoding/json#Unmarshal) makes the cross-shape work.
+// The same mechanism is what makes GetOrCreateUser's body interchangeable.
+//
+// audience is forwarded so the server can target specific relying parties
+// (csc CLI vs. costrict-web frontend). nil falls back to cs-user's
+// configured default audience (CS_USER_JWT_AUDIENCE).
+//
+// Best-effort at the caller — the OAuth callback treats errors as "stick
+// with the Casdoor token" rather than failing login. This is the foundation
+// of Phase A8's 灰度 dual-sign window: when ReissueToken fails, the cookie
+// gets the Casdoor token; when it succeeds, the cookie gets the cs-user
+// token; A8 will introduce an explicit dual-issuance mode that sets both.
+func (w *RPCWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+	if !w.Configured() {
+		return "", time.Time{}, ErrNotConfigured
+	}
+	if userSubjectID == "" {
+		return "", time.Time{}, errors.New("user rpc writer: reissue-token: empty user_subject_id")
+	}
+	body := struct {
+		UserSubjectID string     `json:"user_subject_id"`
+		Identity      *JWTClaims `json:"identity,omitempty"`
+		Audience      []string   `json:"audience,omitempty"`
+	}{
+		UserSubjectID: userSubjectID,
+		Identity:      claims,
+		Audience:      audience,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("user rpc writer: marshal reissue-token request: %w", err)
+	}
+	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/reissue-token", bodyBytes)
+	if transportErr != nil {
+		return "", time.Time{}, transportErr
+	}
+	if status >= 200 && status < 300 {
+		var resp struct {
+			Token     string    `json:"token"`
+			ExpiresAt time.Time `json:"expires_at"`
+		}
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return "", time.Time{}, fmt.Errorf("user rpc writer: decode reissue-token response: %w", err)
+		}
+		if resp.Token == "" {
+			return "", time.Time{}, fmt.Errorf("user rpc writer: reissue-token returned empty token")
+		}
+		return resp.Token, resp.ExpiresAt, nil
+	}
+	return "", time.Time{}, w.mapWriteError(status, respBody, "reissue-token")
 }
 
 // doCapture issues an authenticated request and returns (status, body,

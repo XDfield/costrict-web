@@ -15,6 +15,37 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/.well-known/jwks": {
+            "get": {
+                "description": "Exposes cs-user's RSA public signing key(s) so relying parties (server) can verify cs-user-issued JWTs. Public — RFC 7517 permits; public keys aren't secrets. Returns 503 when signing is not configured (CS_USER_JWT_SIGNING_KEY_PATH unset).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "jwks"
+                ],
+                "summary": "JWKS endpoint",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWKS"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/ping": {
             "get": {
                 "security": [
@@ -44,6 +75,72 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/apply-enterprise-mapping": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Loads tenant_configs.employment_providers for the tenant and upserts the user's employment_identities row when the login provider is enabled. Returns 200 with ` + "`" + `{\"applied\": false}` + "`" + ` when the provider is not enabled (treated as a no-op success — login must not break on tenant config); returns 200 with ` + "`" + `{\"applied\": true}` + "`" + ` when a row was written or refreshed. Malformed tenant YAML surfaces as 500 (operator-visible); missing tenant_configs row is the same as disabled (200, applied=false).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Refresh employment_identities snapshot (login hook)",
+                "parameters": [
+                    {
+                        "description": "User + provider + optional tenant_id",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.applyEnterpriseMappingRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "applied": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -185,6 +282,78 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/reissue-token": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Strategy (b) re-sign: server validates the Casdoor JWT, then calls this endpoint with the parsed claims + user_subject_id. cs-user loads the user's employment_identities snapshot (Phase A4), builds enterprise claims (Phase A5), signs via the configured RSA key (Phase A3), and returns the new token. cs-user does NOT re-validate the Casdoor JWT — the X-Internal-Token middleware authenticates the caller as the server, and the server has already validated the original. Returns 503 when no signing key is configured.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Reissue a cs-user-signed JWT (OAuth callback takeover)",
+                "parameters": [
+                    {
+                        "description": "Parsed Casdoor claims + user_subject_id + optional tenant_id / audience override",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.reissueTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.reissueTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -690,6 +859,46 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "github_com_costrict_costrict-web_cs-user_internal_auth.JWK": {
+            "type": "object",
+            "properties": {
+                "alg": {
+                    "description": "algorithm: \"RS256\"",
+                    "type": "string"
+                },
+                "e": {
+                    "description": "RSA exponent, base64url-no-pad",
+                    "type": "string"
+                },
+                "kid": {
+                    "description": "key id: RFC 7638 thumbprint",
+                    "type": "string"
+                },
+                "kty": {
+                    "description": "key type: \"RSA\"",
+                    "type": "string"
+                },
+                "n": {
+                    "description": "RSA modulus, base64url-no-pad",
+                    "type": "string"
+                },
+                "use": {
+                    "description": "public key use: \"sig\"",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_auth.JWKS": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWK"
+                    }
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions": {
             "type": "object",
             "properties": {
@@ -860,6 +1069,24 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.applyEnterpriseMappingRequest": {
+            "type": "object",
+            "required": [
+                "provider",
+                "user_subject_id"
+            ],
+            "properties": {
+                "provider": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "user_subject_id": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.bindIdentityRequest": {
             "type": "object",
             "required": [
@@ -887,6 +1114,48 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "internal_handlers.reissueTokenRequest": {
+            "type": "object",
+            "required": [
+                "user_subject_id"
+            ],
+            "properties": {
+                "audience": {
+                    "description": "Audience overrides the configured default. Empty slice falls back\nto JWTConfig.DefaultAudience; populated slice replaces it.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "identity": {
+                    "description": "Identity carries the parsed Casdoor JWT claims. Optional — when nil,\nonly standard JWT claims + enterprise claims (if any) are emitted.\nTypical Phase A7 callers always pass Identity; the nil path exists\nfor refresh-token flows (Phase B) where identity may be cached.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims"
+                        }
+                    ]
+                },
+                "tenant_id": {
+                    "description": "TenantID is reserved for Phase B. Phase A callers pass \"default\" or\nleave empty; the service falls back to \"default\".",
+                    "type": "string"
+                },
+                "user_subject_id": {
+                    "description": "UserSubjectID is the cs-user user's stable subject_id. Required.",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.reissueTokenResponse": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
                 }
             }
         },

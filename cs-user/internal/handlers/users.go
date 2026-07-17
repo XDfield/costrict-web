@@ -38,6 +38,11 @@ type UserService interface {
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
 	TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error
 	UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error
+	// Phase A4b: enterprise mapping refresh — server's OAuth callback fires
+	// this after GetOrCreateUser. cs-user is authoritative for
+	// employment_identities (server has no such table); ApplyEnterpriseMapping
+	// is the single write path.
+	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.
@@ -362,4 +367,65 @@ func isBindArgError(err error) bool {
 	return msg == "user_subject_id is required" ||
 		msg == "nil JWT claims" ||
 		msg == "external key is required"
+}
+
+// --- Phase A4b: Enterprise mapping ---
+
+// applyEnterpriseMappingRequest is the body for POST
+// /api/internal/users/apply-enterprise-mapping. TenantID is optional (the
+// service falls back to "default" when empty); UserSubjectID + Provider are
+// required.
+type applyEnterpriseMappingRequest struct {
+	TenantID      string `json:"tenant_id,omitempty"`
+	UserSubjectID string `json:"user_subject_id" binding:"required"`
+	Provider      string `json:"provider" binding:"required"`
+}
+
+// ApplyEnterpriseMapping godoc
+//
+//	@Summary		Refresh employment_identities snapshot (login hook)
+//	@Description	Loads tenant_configs.employment_providers for the tenant and upserts the user's employment_identities row when the login provider is enabled. Returns 200 with `{"applied": false}` when the provider is not enabled (treated as a no-op success — login must not break on tenant config); returns 200 with `{"applied": true}` when a row was written or refreshed. Malformed tenant YAML surfaces as 500 (operator-visible); missing tenant_configs row is the same as disabled (200, applied=false).
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			body	body		applyEnterpriseMappingRequest	true	"User + provider + optional tenant_id"
+//	@Success		200		{object}	object{applied=bool}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Router			/api/internal/users/apply-enterprise-mapping [post]
+func (a *UsersAPI) ApplyEnterpriseMapping(c *gin.Context) {
+	var req applyEnterpriseMappingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	err := a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
+		TenantID:      req.TenantID,
+		UserSubjectID: req.UserSubjectID,
+		Provider:      req.Provider,
+	})
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"applied": true})
+	case errors.Is(err, user.ErrEnterpriseMappingDisabled):
+		// Disabled is success — the OAuth callback treats it as "skipped"
+		// rather than a login failure. applied=false lets the caller
+		// distinguish (e.g. for metrics) without inspecting error strings.
+		c.JSON(http.StatusOK, gin.H{"applied": false})
+	case isEnterpriseMappingArgError(err):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+	}
+}
+
+// isEnterpriseMappingArgError returns true for the validation errors
+// ApplyEnterpriseMapping emits before touching the DB. These are caller bugs
+// (400), not server faults (500).
+func isEnterpriseMappingArgError(err error) bool {
+	msg := err.Error()
+	return msg == "ApplyEnterpriseMapping: empty UserSubjectID" ||
+		msg == "ApplyEnterpriseMapping: empty Provider"
 }

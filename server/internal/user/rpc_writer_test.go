@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -366,12 +367,15 @@ func TestRPCWriter_NotConfiguredReturnsErrNotConfigured(t *testing.T) {
 // exercise DualWriter's primary/secondary fan-out semantics without spinning
 // up an httptest server.
 type recordingWriter struct {
-	getOrCreate  int
-	sync         int
-	bind         int
-	transfer     int
-	unbind       int
-	primaryError error // forces a non-nil return from all methods when set
+	getOrCreate           int
+	sync                  int
+	bind                  int
+	transfer              int
+	unbind                int
+	applyEnterpriseMapping int
+	reissueToken          int
+	reissueTokenFn        func(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
+	primaryError          error // forces a non-nil return from all methods when set
 }
 
 func (r *recordingWriter) GetOrCreateUser(_ *JWTClaims) (*models.User, error) {
@@ -399,6 +403,20 @@ func (r *recordingWriter) TransferIdentityToUser(_, _, _ string) error {
 func (r *recordingWriter) UnbindIdentityByProvider(_, _ string) error {
 	r.unbind++
 	return r.primaryError
+}
+func (r *recordingWriter) ApplyEnterpriseMapping(_, _ string) error {
+	r.applyEnterpriseMapping++
+	return r.primaryError
+}
+func (r *recordingWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+	r.reissueToken++
+	if r.reissueTokenFn != nil {
+		return r.reissueTokenFn(userSubjectID, claims, audience)
+	}
+	if r.primaryError != nil {
+		return "", time.Time{}, r.primaryError
+	}
+	return "token-from-recording", time.Now().Add(time.Hour), nil
 }
 
 func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
@@ -487,5 +505,455 @@ func TestParseErrorBody(t *testing.T) {
 				t.Fatalf("msg: got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// --- Phase A4b: ApplyEnterpriseMapping ---
+
+func TestRPCWriter_ApplyEnterpriseMapping_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/users/apply-enterprise-mapping" || r.Method != http.MethodPost {
+			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"applied": true}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	if err := w.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+	if cap.AuthHeader != "test-internal-token" {
+		t.Errorf("X-Internal-Token: got %q", cap.AuthHeader)
+	}
+	// Body shape — empty tenant_id is omitted.
+	var got struct {
+		TenantID      string `json:"tenant_id"`
+		UserSubjectID string `json:"user_subject_id"`
+		Provider      string `json:"provider"`
+	}
+	if err := json.Unmarshal(cap.Body, &got); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if got.UserSubjectID != "usr_alice" || got.Provider != "idtrust" {
+		t.Errorf("decoded body mismatch: %+v", got)
+	}
+	if got.TenantID != "" {
+		t.Errorf("TenantID should be omitted when empty, got %q", got.TenantID)
+	}
+}
+
+// TestRPCWriter_ApplyEnterpriseMapping_DisabledIsSuccess verifies the 200
+// response with `{"applied": false}` is treated as success. cs-user returns
+// this when the provider isn't in the tenant's enabled list — login callers
+// treat the whole call as best-effort.
+func TestRPCWriter_ApplyEnterpriseMapping_DisabledIsSuccess(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"applied": false}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	if err := w.ApplyEnterpriseMapping("usr_alice", "github"); err != nil {
+		t.Fatalf("disabled response must be nil error, got %v", err)
+	}
+}
+
+// TestRPCWriter_ApplyEnterpriseMapping_5xxMapsToErrRPCUnavailable verifies
+// 5xx responses from cs-user map to ErrRPCUnavailable so the OAuth callback
+// can log + continue without surfacing a low-level transport error.
+func TestRPCWriter_ApplyEnterpriseMapping_5xxMapsToErrRPCUnavailable(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`cs-user internal error`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	err := w.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	if !errors.Is(err, ErrRPCUnavailable) {
+		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
+	}
+}
+
+// TestRPCWriter_ApplyEnterpriseMapping_4xxSurfacesServerMessage verifies 4xx
+// responses surface the JSON error body verbatim — matches the existing
+// write-method contract.
+func TestRPCWriter_ApplyEnterpriseMapping_4xxSurfacesServerMessage(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid tenant config"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	err := w.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid tenant config") {
+		t.Fatalf("error should surface server message, got: %v", err)
+	}
+}
+
+// TestRPCWriter_ApplyEnterpriseMapping_NotConfigured verifies the unconfigured
+// writer returns ErrNotConfigured without making an HTTP call.
+func TestRPCWriter_ApplyEnterpriseMapping_NotConfigured(t *testing.T) {
+	t.Parallel()
+	w := NewRPCWriter(config.UserServiceConfig{Backend: config.UserServiceBackendRPC})
+	if w.Configured() {
+		t.Fatal("writer should be unconfigured with empty URL+token")
+	}
+	if err := w.ApplyEnterpriseMapping("usr_alice", "idtrust"); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("expected ErrNotConfigured, got %v", err)
+	}
+}
+
+// --- DualWriter.ApplyEnterpriseMapping ---
+
+// TestDualWriter_ApplyEnterpriseMapping_FansOut verifies both Primary and
+// Secondary receive the call. Primary (local UserService stub) is a no-op;
+// Secondary (RPCWriter) forwards to cs-user.
+func TestDualWriter_ApplyEnterpriseMapping_FansOut(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{}
+	secondary := &recordingWriter{}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+	if primary.applyEnterpriseMapping != 1 {
+		t.Fatalf("primary call count: got %d, want 1", primary.applyEnterpriseMapping)
+	}
+	if secondary.applyEnterpriseMapping != 1 {
+		t.Fatalf("secondary call count: got %d, want 1", secondary.applyEnterpriseMapping)
+	}
+}
+
+// TestDualWriter_ApplyEnterpriseMapping_SecondaryErrorDoesNotFail verifies
+// that a Secondary failure is logged but never returned — employment mapping
+// is best-effort and must never block login.
+func TestDualWriter_ApplyEnterpriseMapping_SecondaryErrorDoesNotFail(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{}
+	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+		t.Fatalf("secondary failure must not bubble up, got %v", err)
+	}
+	if secondary.applyEnterpriseMapping != 1 {
+		t.Fatalf("secondary should still have been invoked, got %d", secondary.applyEnterpriseMapping)
+	}
+}
+
+// TestDualWriter_ApplyEnterpriseMapping_PrimaryErrorFails verifies a Primary
+// error surfaces — DualWriter delegates to Primary's contract first. The
+// local stub never errors in practice, but the contract must hold for
+// symmetry with the other write methods.
+func TestDualWriter_ApplyEnterpriseMapping_PrimaryErrorFails(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{primaryError: fmt.Errorf("local primary exploded")}
+	secondary := &recordingWriter{}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust")
+	if err == nil || !strings.Contains(err.Error(), "local primary exploded") {
+		t.Fatalf("expected primary error to surface, got %v", err)
+	}
+	if secondary.applyEnterpriseMapping != 0 {
+		t.Fatalf("secondary must not be called when primary failed, got %d", secondary.applyEnterpriseMapping)
+	}
+}
+
+// TestDualWriter_ApplyEnterpriseMapping_NilSecondarySkipsFanOut verifies the
+// nil-Secondary path is safe (no method call on nil receiver).
+func TestDualWriter_ApplyEnterpriseMapping_NilSecondarySkipsFanOut(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{}
+	dw := &DualWriter{Primary: primary, Secondary: nil}
+
+	if err := dw.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+		t.Fatalf("ApplyEnterpriseMapping with nil Secondary: %v", err)
+	}
+	if primary.applyEnterpriseMapping != 1 {
+		t.Fatalf("primary call count: got %d, want 1", primary.applyEnterpriseMapping)
+	}
+}
+
+// --- RPCWriter.ReissueToken (Phase A7b) ---
+
+// TestRPCWriter_ReissueToken_HappyPath verifies the wire format + response
+// decode. The handler's Identity field is a *JWTClaims — server-side
+// JWTClaims has no JSON tags so the wire is PascalCase; cs-user decodes via
+// encoding/json's case-insensitive fallback (same mechanism as GetOrCreateUser).
+func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/internal/users/reissue-token" || r.Method != http.MethodPost {
+			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"signed-jwt-xyz","expires_at":"2026-07-17T13:00:00Z"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	token, exp, err := w.ReissueToken("usr_alice", &JWTClaims{
+		UniversalID: "uuid-alice",
+		Name:        "Alice",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+	if token != "signed-jwt-xyz" {
+		t.Errorf("token: got %q, want signed-jwt-xyz", token)
+	}
+	wantExp := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
+	if !exp.Equal(wantExp) {
+		t.Errorf("expires_at: got %v, want %v", exp, wantExp)
+	}
+
+	// Verify the request body shape: user_subject_id forwarded; identity
+	// carries the OIDC fields (PascalCase on wire, decoded by cs-user via
+	// case-insensitive fallback).
+	var body struct {
+		UserSubjectID string `json:"user_subject_id"`
+		Identity      struct {
+			UniversalID string `json:"UniversalID"`
+			Name        string `json:"Name"`
+		} `json:"identity"`
+	}
+	if err := json.Unmarshal(cap.Body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body.UserSubjectID != "usr_alice" {
+		t.Errorf("user_subject_id: got %q", body.UserSubjectID)
+	}
+	if body.Identity.UniversalID != "uuid-alice" {
+		t.Errorf("Identity.UniversalID: got %q", body.Identity.UniversalID)
+	}
+	if body.Identity.Name != "Alice" {
+		t.Errorf("Identity.Name: got %q", body.Identity.Name)
+	}
+}
+
+// TestRPCWriter_ReissueToken_AudienceForwarded verifies the audience override
+// reaches the wire. nil audience = no audience key on wire (omitempty).
+func TestRPCWriter_ReissueToken_AudienceForwarded(t *testing.T) {
+	t.Parallel()
+	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"t","expires_at":"2026-07-17T13:00:00Z"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	if _, _, err := w.ReissueToken("usr_alice", nil, []string{"csc-cli", "ops-portal"}); err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+
+	var body struct {
+		Audience []string `json:"audience"`
+	}
+	_ = json.Unmarshal(cap.Body, &body)
+	if len(body.Audience) != 2 || body.Audience[0] != "csc-cli" || body.Audience[1] != "ops-portal" {
+		t.Errorf("audience: got %v, want [csc-cli ops-portal]", body.Audience)
+	}
+}
+
+// TestRPCWriter_ReissueToken_NilAudienceOmitted verifies nil audience emits
+// no `audience` key on wire (omitempty) so cs-user falls back to its default.
+func TestRPCWriter_ReissueToken_NilAudienceOmitted(t *testing.T) {
+	t.Parallel()
+	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"t","expires_at":"2026-07-17T13:00:00Z"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	if _, _, err := w.ReissueToken("usr_alice", nil, nil); err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+
+	if strings.Contains(string(cap.Body), "audience") {
+		t.Errorf("audience key leaked onto wire: %s", string(cap.Body))
+	}
+}
+
+// TestRPCWriter_ReissueToken_EmptySubjectIDRejected verifies the local
+// guard — caller bug, surface before making the HTTP call.
+func TestRPCWriter_ReissueToken_EmptySubjectIDRejected(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("server should not be called when subject_id is empty")
+	})
+	defer srv.Close()
+	w := newTestRPCWriter(t, srv.URL)
+
+	_, _, err := w.ReissueToken("", &JWTClaims{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty user_subject_id") {
+		t.Fatalf("expected empty-subject error, got %v", err)
+	}
+}
+
+// TestRPCWriter_ReissueToken_NotConfigured verifies the unconfigured writer
+// returns ErrNotConfigured without making an HTTP call.
+func TestRPCWriter_ReissueToken_NotConfigured(t *testing.T) {
+	t.Parallel()
+	w := NewRPCWriter(config.UserServiceConfig{Backend: config.UserServiceBackendRPC})
+	if w.Configured() {
+		t.Fatal("writer should be unconfigured with empty URL+token")
+	}
+	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("expected ErrNotConfigured, got %v", err)
+	}
+}
+
+// TestRPCWriter_ReissueToken_5xxMapsToErrRPCUnavailable verifies 5xx
+// responses surface as ErrRPCUnavailable (same mapping as other write methods).
+func TestRPCWriter_ReissueToken_5xxMapsToErrRPCUnavailable(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if !errors.Is(err, ErrRPCUnavailable) {
+		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
+	}
+}
+
+// TestRPCWriter_ReissueToken_4xxSurfacesServerMessage verifies 4xx
+// responses surface the cs-user error message verbatim (same as other methods).
+func TestRPCWriter_ReissueToken_4xxSurfacesServerMessage(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"user_subject_id is required"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if err == nil || err.Error() != "user_subject_id is required" {
+		t.Fatalf("expected server message, got %v", err)
+	}
+}
+
+// TestRPCWriter_ReissueToken_EmptyTokenInResponseErrors verifies the
+// defensive decode guard: a 200 with empty token is a server-side bug
+// and must surface as an error rather than silently returning "".
+func TestRPCWriter_ReissueToken_EmptyTokenInResponseErrors(t *testing.T) {
+	t.Parallel()
+	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"token":"","expires_at":"2026-07-17T13:00:00Z"}`))
+	})
+	w := newTestRPCWriter(t, srv.URL)
+
+	_, _, err := w.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty token") {
+		t.Fatalf("expected empty-token error, got %v", err)
+	}
+}
+
+// --- DualWriter.ReissueToken (Phase A7b) ---
+
+// TestDualWriter_ReissueToken_BypassesPrimary verifies Secondary is the
+// authoritative path — Primary is never called. Unlike ApplyEnterpriseMapping,
+// the local UserService has no RSA signing key and cannot fulfill this; the
+// DualWriter intentionally routes around Primary.
+func TestDualWriter_ReissueToken_BypassesPrimary(t *testing.T) {
+	t.Parallel()
+	// Primary stubs ReissueToken via primaryError to prove it would fail
+	// if invoked — but the DualWriter must skip Primary entirely.
+	primary := &recordingWriter{primaryError: fmt.Errorf("primary should not be called")}
+	secondary := &recordingWriter{}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	token, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if err != nil {
+		t.Fatalf("ReissueToken: %v", err)
+	}
+	if token != "token-from-recording" {
+		t.Errorf("token: got %q, want token-from-recording", token)
+	}
+	if primary.reissueToken != 0 {
+		t.Fatalf("primary must not be called, got %d calls", primary.reissueToken)
+	}
+	if secondary.reissueToken != 1 {
+		t.Fatalf("secondary call count: got %d, want 1", secondary.reissueToken)
+	}
+}
+
+// TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable
+// verifies the nil-Secondary guard. Without Secondary there is no path to
+// cs-user; surfacing ErrSelfSignUnavailable lets the OAuth callback detect
+// the misconfiguration (JWT_SELF_SIGN_ENABLED=true but no RPC backend).
+func TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{}
+	dw := &DualWriter{Primary: primary, Secondary: nil}
+
+	_, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if !errors.Is(err, ErrSelfSignUnavailable) {
+		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
+	}
+	if primary.reissueToken != 0 {
+		t.Fatalf("primary must not be called, got %d calls", primary.reissueToken)
+	}
+}
+
+// TestDualWriter_ReissueToken_SecondaryErrorPropagates verifies Secondary
+// errors are returned to the caller (NOT swallowed like ApplyEnterpriseMapping).
+// This is intentional — the OAuth callback needs to know ReissueToken failed
+// so it can fall back to the Casdoor token.
+func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{}
+	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	_, _, err := dw.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "cs-user unreachable") {
+		t.Fatalf("expected secondary error to propagate, got %v", err)
+	}
+}
+
+// --- UserService.ReissueToken local stub (Phase A7b) ---
+
+// TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable
+// verifies the local backend can never satisfy this call. Server has no RSA
+// signing key — only RPCWriter (via cs-user) can mint tokens.
+func TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable(t *testing.T) {
+	t.Parallel()
+	var s *UserService // method receiver is nil-safe — no db needed
+	token, _, err := s.ReissueToken("usr_alice", &JWTClaims{}, nil)
+	if !errors.Is(err, ErrSelfSignUnavailable) {
+		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
+	}
+	if token != "" {
+		t.Errorf("token: got %q, want empty", token)
+	}
+}
+
+// --- UserService.ApplyEnterpriseMapping (local stub) ---
+
+// TestUserService_ApplyEnterpriseMapping_LocalStubIsNoOp verifies the local
+// stub returns nil unconditionally. Server has no employment_identities
+// table; the call must not error in local mode.
+func TestUserService_ApplyEnterpriseMapping_LocalStubIsNoOp(t *testing.T) {
+	t.Parallel()
+	svc := &UserService{}
+
+	if err := svc.ApplyEnterpriseMapping("usr_alice", "idtrust"); err != nil {
+		t.Fatalf("local stub should be no-op nil, got %v", err)
+	}
+	// Empty args must also be safe — the OAuth callback may fire this hook
+	// before validation runs on the cs-user side.
+	if err := svc.ApplyEnterpriseMapping("", ""); err != nil {
+		t.Fatalf("local stub with empty args should still be no-op nil, got %v", err)
 	}
 }

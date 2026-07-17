@@ -57,7 +57,7 @@ func signTestJWT(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapCl
 // newTestJWKSProvider creates a JWKSProvider with pre-cached keys (no HTTP needed).
 func newTestJWKSProvider(keys map[string]*rsa.PublicKey) *JWKSProvider {
 	return &JWKSProvider{
-		jwksURL:    "http://localhost:0/.well-known/jwks", // won't be called
+		sources:    []string{"http://localhost:0/.well-known/jwks"}, // won't be called
 		keys:       keys,
 		minRefresh: 5 * time.Minute,
 		lastFetch:  time.Now(), // mark as recently fetched so refresh is skipped
@@ -420,7 +420,7 @@ func TestJWKSProvider_GetKeyFetchesFromRemoteOnCacheMiss(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey), // empty cache
 		minRefresh: 0,                               // no rate limiting for test
 		httpClient: server.Client(),
@@ -466,7 +466,7 @@ func TestJWKSProvider_RateLimitingPreventsExcessiveFetches(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 1 * time.Hour, // very long interval
 		httpClient: server.Client(),
@@ -551,7 +551,7 @@ func TestJWKSProvider_EmptyKidUsesDefaultKey(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),
@@ -575,7 +575,7 @@ func TestJWKSProvider_RemoteServerError(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),
@@ -1000,7 +1000,7 @@ func TestJWKSProvider_NoValidRSAKeysInResponse(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),

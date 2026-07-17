@@ -162,8 +162,12 @@ func TestApplyEnterpriseMapping_EnabledProvider_ExistingUser(t *testing.T) {
 	if !got.LastSyncedAt.After(staleSyncedAt) {
 		t.Errorf("LastSyncedAt should advance: got %v, stale was %v", got.LastSyncedAt, staleSyncedAt)
 	}
-	if !got.LastSyncedAt.After(before) {
-		t.Errorf("LastSyncedAt %v should be after apply start %v", got.LastSyncedAt, before)
+	// `!Before` (>=) rather than `After` (>) because sqlite serializes the
+	// timestamptz to a string and parses it back, dropping the monotonic
+	// clock. On Windows (15ms granularity) the wall clock can land on the
+	// same nanosecond, making strict `After(before)` flaky.
+	if got.LastSyncedAt.Before(before) {
+		t.Errorf("LastSyncedAt %v should be >= apply start %v", got.LastSyncedAt, before)
 	}
 }
 
@@ -331,5 +335,118 @@ func TestApplyEnterpriseMapping_PerProviderConfigIgnored(t *testing.T) {
 	}
 	if got.Provider != "idtrust" {
 		t.Errorf("Provider: got %q, want idtrust", got.Provider)
+	}
+}
+
+// --- A7: GetEmploymentIdentity reader ---
+
+// TestGetEmploymentIdentity_HappyPath verifies a known row is returned with
+// all enterprise fields intact. The reissue-token flow (A7) consumes this
+// output and forwards it into auth.NewEnterpriseClaims.
+func TestGetEmploymentIdentity_HappyPath(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	empNum := "E-1001"
+	jobTitle := "Staff Engineer"
+	row := &models.EmploymentIdentity{
+		UserSubjectID:  "usr_alice",
+		Provider:       "idtrust",
+		EmployeeNumber: &empNum,
+		JobTitle:       &jobTitle,
+		SyncStatus:     "fresh",
+		LastSyncedAt:   time.Now(),
+		NextSyncDueAt:  time.Now().Add(employmentSyncInterval),
+	}
+	if err := svc.db.Create(row).Error; err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+
+	got, err := svc.GetEmploymentIdentity(t.Context(), "usr_alice")
+	if err != nil {
+		t.Fatalf("GetEmploymentIdentity: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil row, want non-nil")
+	}
+	if got.UserSubjectID != "usr_alice" {
+		t.Errorf("UserSubjectID: got %q", got.UserSubjectID)
+	}
+	if got.EmployeeNumber == nil || *got.EmployeeNumber != empNum {
+		t.Errorf("EmployeeNumber: got %v, want %q", got.EmployeeNumber, empNum)
+	}
+	if got.JobTitle == nil || *got.JobTitle != jobTitle {
+		t.Errorf("JobTitle: got %v, want %q", got.JobTitle, jobTitle)
+	}
+}
+
+// TestGetEmploymentIdentity_MissingRowReturnsNilNotFound pins the
+// graceful-degradation contract: a user without an employment_identities
+// row (provider not enabled, never synced) yields (nil, nil) — the A7
+// reissue flow treats this as "no enterprise context" rather than failing.
+func TestGetEmploymentIdentity_MissingRowReturnsNilNotFound(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	got, err := svc.GetEmploymentIdentity(t.Context(), "usr_ghost")
+	if err != nil {
+		t.Fatalf("expected nil error for missing row, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil row for missing user, got %+v", got)
+	}
+}
+
+// TestGetEmploymentIdentity_SoftDeletedExcluded verifies gorm's DeletedAt
+// handling hides soft-deleted rows. The unique index in the migration allows
+// re-create after soft-delete, so this test guards against accidentally
+// surfacing tombstoned rows to the JWT issuance path.
+func TestGetEmploymentIdentity_SoftDeletedExcluded(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	row := &models.EmploymentIdentity{
+		UserSubjectID: "usr_alice",
+		Provider:      "idtrust",
+		SyncStatus:    "fresh",
+	}
+	if err := svc.db.Create(row).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := svc.db.Delete(row).Error; err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+
+	got, err := svc.GetEmploymentIdentity(t.Context(), "usr_alice")
+	if err != nil {
+		t.Fatalf("soft-deleted query: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for soft-deleted row, got %+v", got)
+	}
+}
+
+// TestGetEmploymentIdentity_EmptySubjectErrors verifies the input guard —
+// empty userSubjectID is a programming error and surfaces as
+// ErrEmptySubjectID (not a generic 500).
+func TestGetEmploymentIdentity_EmptySubjectErrors(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	_, err := svc.GetEmploymentIdentity(t.Context(), "")
+	if !errors.Is(err, ErrEmptySubjectID) {
+		t.Errorf("got err=%v, want ErrEmptySubjectID", err)
+	}
+}
+
+// TestGetEmploymentIdentity_NilDBGuard verifies the defensive nil-receiver
+// path. The reissue-token handler may construct a request before this
+// service is wired; panicking would 500 the whole request, but returning
+// an error lets the caller map it cleanly.
+func TestGetEmploymentIdentity_NilDBGuard(t *testing.T) {
+	var svc *Service // nil receiver
+	_, err := svc.GetEmploymentIdentity(t.Context(), "usr_alice")
+	if err == nil {
+		t.Fatal("expected error from nil-receiver Service, got nil")
 	}
 }
