@@ -35,7 +35,7 @@
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 4 | 25% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing 待启动；跨 tenant 用户 ops / audit-log infra / email allowlist 等 C2 其他切片待启动） |
+| Phase C | 三级权限 + admin API | ~16 | 5 | 31% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；跨 tenant 用户 ops / audit-log infra / email allowlist 等 C2 其他切片待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -960,7 +960,7 @@ B6 RLS 兜底后，B5 write 方法 scoping follow-up 的紧迫度下降：
 
 - [x] **C1**：权限模型表 + 中间件（platform_admin / tenant_admin / tenant_member）— 详见下方"C1 实现细节"
 - [x] **C2**：platform_admin tenant CRUD API（7 endpoints）— 详见下方"C2 实现细节"；跨 tenant 用户 ops / audit-log infra / email allowlist 等其他 C2 切片未做（用户明确选 Tenant CRUD 切片优先）
-- [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）— **C3.1 用户列表（2 commits）+ C3.2 tenant config CRUD（4 commits）已落地**，C3.3 待启动；详见下方"C3.1 实现细节" 与 "C3.2 实现细节"
+- [ ] **C3**：tenant_admin API（本 tenant 用户列表、IdP 配置、provider_mapping yaml 编辑）— **C3.1 用户列表（2 commits）+ C3.2 tenant config CRUD（5 commits）+ C3.3 provider_mapping typed editing（5 commits）已落地**；详见下方"C3.1 / C3.2 / C3.3 实现细节"
 - [ ] **C4**：越权防护 + 审计日志
 
 **测试覆盖重点**：每个 admin endpoint 必须覆盖"角色不符 → 403"路径；swagger 注解挂 `@Security` 双重（InternalToken + BearerAuth 角色注解）。
@@ -1170,6 +1170,50 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 - 读取历史版本（versioning）— 后续切片
 
 **测试**：cs-user tenantconfig 12 service tests + 9 handler tests；server 12 RPC tests + 12 handler tests = 45 tests；gofmt / go vet clean；cs-user 既有测试无 regression（go test ./... 全绿）。
+
+
+
+### C3.3 实现细节：provider_mapping typed editing（已落地 2026-07-17，5 commits）
+
+**端点（cs-user 内部 + server 公开双层，与 C3.2 同形状）**
+
+| cs-user (InternalToken) | server (BearerAuth + RequireTenantAdmin) | 行为 |
+|---|---|---|
+| `GET /api/internal/tenant/provider-mapping` | `GET /api/tenant/provider-mapping` | 读 typed provider_mapping 子树；缺段返回 `{"providers":{}}` |
+| `PUT /api/internal/tenant/provider-mapping` | `PUT /api/tenant/provider-mapping` | PUT 语义全量替换 provider_mapping 子树；sibling 顶层 keys（employment_providers / features 等）逐字保留 |
+
+**slug + actor 注入链**：与 C3.2 完全一致（JWT → AuthClaims → tenant.WithSlug(ctx) → rpc_client → X-Tenant-Id；JWT sub → X-Actor-Subject-Id）。
+
+**文件影响（5 个新文件 + 3 个修改）**
+
+- `cs-user/internal/tenantconfig/provider_mapping.go` (NEW) — `ProviderMapping` / `Provider` / `EnterpriseSync` typed structs（指针字段 `*bool Enabled` / `*int Rank` 保留 "absent" vs "explicit zero" 区分）；3 sentinel：ErrProviderNameInvalid / ErrIntervalInvalid / ErrRankNegative；`Validate()` 应用默认 Enabled→true 并校验 name pattern `^[a-z0-9_]{1,64}$` + rank 非负 + interval 是 Go duration 且 ≤ 30 天；`ParseProviderMapping` / `SerializeProviderMapping`。
+- `cs-user/internal/tenantconfig/provider_mapping_test.go` (NEW) — 21 tests（parse 4 + validate 9 + service 8）。
+- `cs-user/internal/tenantconfig/service.go` (MODIFIED) — `GetProviderMapping` + `UpdateProviderMapping` + `mergeProviderMappingSection`（yaml.v3 Node-based，保留 sibling sections 注释/顺序）。
+- `cs-user/internal/handlers/tenant_provider_mapping.go` + `_test.go` (NEW) — `TenantProviderMappingAPI`，14 handler tests。
+- `cs-user/internal/app/app.go` (MODIFIED) — `registerTenantProviderMappingRoutes` + `unavailableTenantProviderMappingService` 503 fallback。
+- `cs-user/docs/` (REGENERATED) — 2 个新路径。
+- `server/internal/user/rpc_client_tenant_provider_mapping.go` + `_test.go` (NEW) — 2 RPC 方法 + 3 server-side sentinel（ADR D1 type decoupling）；17 RPC tests（含 adversarial：400 非 matching body 不能被误判为 typed sentinel）。
+- `server/internal/handlers/tenant_provider_mapping.go` + `_test.go` (NEW) — `TenantProviderMappingAPI`；15 handler tests。
+- `server/cmd/api/main.go` (MODIFIED) — `buildProviderMappingService` helper + 新 route group `/tenant/provider-mapping`。
+
+**关键设计决策**
+
+1. **PUT = full replace of provider_mapping subtree only**：兄弟 sections（employment_providers / features 等）逐字保留。Test `TestService_UpdateProviderMapping_ReplacesSubtreeOnly` 锁定契约：PUT 只含 ldap 时，原 blob 里的 wxwork 被丢弃。
+2. **yaml.v3 Node-based merge 而非 `map[string]any` round-trip**：保留 tenant_admin 经 C3.2 raw endpoint 写入的注释 / 顺序 / 锚点。`yaml.Unmarshal` 顶层是 DocumentNode，必须 unwrap 到内层 mapping node 才能正确遍历 key/value pairs（首发 bug：sibling 被丢；test 抓到 → 修）。
+3. **Provider name pattern `^[a-z0-9_]{1,64}$`**：underscore（不是 hyphen）匹配现有 provider id（wxwork / azure_ad / dingtalk / feishu）。不耦合到固定 provider registry — design §9.3 明确 providers 是 dynamic per tenant Casdoor 配置。
+4. **`*bool` Enabled 默认 true 但保留 explicit false**：Validate() 在 nil 时 in-place 改成 `&true`，让序列化的 YAML 是 canonical（omitted enabled 不留歧义）；explicit false 透传。
+5. **Interval cap = 30 days**：拒绝 "1ns" DoS payload 和 "9999h" 拼写错误。空 interval 合法（表示 "use default / no sync"）。
+6. **Server-side body-text matcher 多 sentinel 分流**：cs-user 400 body 含 "invalid provider name" / "invalid enterprise_sync.interval" / "rank must be non-negative" / "invalid YAML" 之一时分别 route 到对应 sentinel；其他 400 reason → ErrTenantConfigUnavailable（fail-closed，不猜测）。
+7. **同 RPC client 共享 C3.2 transport**：`*userpkg.RPCClient` 同时承载 raw-blob + typed 两套方法；server 端 buildProviderMappingService 与 buildTenantConfigService 返回同一实例，避免双 client 双 pool。
+
+**out of scope（明确）**
+
+- provider registry 强校验（只允许已知 provider id 列表）— 当前 pattern 校验已足够，dynamic per tenant Casdoor 配置
+- field_map value 语法校验（system attribute 是否存在等）— C3.3 仅 type-shape 校验
+- PATCH semantics（增量修改单 provider）— 当前 PUT 全量替换；后续切片
+- multi-YAML-doc merge precedence（同 key 多次出现）— yaml.v3 已 last-wins，未额外处理
+
+**测试**：cs-user tenantconfig 包 21 个新 tests（provider_mapping_test.go）+ 14 handler tests；server 17 RPC tests + 15 handler tests = 67 tests；gofmt / go vet clean；cs-user + server 既有测试无 regression。Pre-existing `TestLogBehavior_FeedbackDedupSupersedes` / `TestGetItemStats_RatingSurvivesTextOnlyEdit` marketplace_test.go flake（fixture-mutation，与本切片无关）随包测试数增长再现，隔离跑 pass。
 
 
 
