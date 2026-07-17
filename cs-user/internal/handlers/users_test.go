@@ -21,13 +21,14 @@ func init() { gin.SetMode(gin.TestMode) }
 // method field is optional; a nil field panics so a forgotten write test
 // fails loudly instead of silently returning zero values.
 type stubUserService struct {
-	getByID      func(string) (*models.User, error)
-	getByIDs     func([]string) (map[string]*models.User, error)
-	searchUsers  func(string, int) ([]*models.User, error)
-	getOrCreate  func(context.Context, *models.JWTClaims) (*models.User, error)
-	bindIdentity func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
-	transfer     func(context.Context, string, string, string) error
-	unbind       func(context.Context, string, string) error
+	getByID                func(string) (*models.User, error)
+	getByIDs               func([]string) (map[string]*models.User, error)
+	searchUsers            func(string, int) ([]*models.User, error)
+	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, error)
+	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
+	transfer               func(context.Context, string, string, string) error
+	unbind                 func(context.Context, string, string) error
+	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 }
 
 func (s stubUserService) GetUserByID(id string) (*models.User, error) {
@@ -72,6 +73,12 @@ func (s stubUserService) UnbindIdentityByProvider(ctx context.Context, sub, prov
 	}
 	return s.unbind(ctx, sub, provider)
 }
+func (s stubUserService) ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error {
+	if s.applyEnterpriseMapping == nil {
+		panic("stubUserService.applyEnterpriseMapping not wired")
+	}
+	return s.applyEnterpriseMapping(ctx, params)
+}
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	gin.SetMode(gin.TestMode)
@@ -87,6 +94,8 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.POST("/api/internal/users/transfer-identity", api.TransferIdentity)
 	r.POST("/api/internal/users/:subject_id/bind-identity", api.BindIdentity)
 	r.DELETE("/api/internal/users/:subject_id/identities/:provider", api.UnbindIdentity)
+	// Phase A4b route.
+	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
 	return api, r
 }
 
@@ -580,5 +589,142 @@ func TestUnbindIdentity_ServiceError(t *testing.T) {
 	w := doJSON(t, r, http.MethodDelete, "/api/internal/users/subj-x/identities/github", nil)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// --- Phase A4b: ApplyEnterpriseMapping handler ---
+
+// TestApplyEnterpriseMapping_AppliedTrue verifies the happy path: service
+// returns nil → handler responds 200 with `{"applied": true}`.
+func TestApplyEnterpriseMapping_AppliedTrue(t *testing.T) {
+	var capturedParams user.EmploymentMappingParams
+	_, r := newUsersAPI(stubUserService{
+		applyEnterpriseMapping: func(_ context.Context, p user.EmploymentMappingParams) error {
+			capturedParams = p
+			return nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", map[string]string{
+		"user_subject_id": "usr_alice",
+		"provider":        "idtrust",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Applied bool `json:"applied"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Applied {
+		t.Errorf("applied: got false, want true")
+	}
+	if capturedParams.UserSubjectID != "usr_alice" {
+		t.Errorf("UserSubjectID: got %q, want usr_alice", capturedParams.UserSubjectID)
+	}
+	if capturedParams.Provider != "idtrust" {
+		t.Errorf("Provider: got %q, want idtrust", capturedParams.Provider)
+	}
+}
+
+// TestApplyEnterpriseMapping_DisabledMaps200AppliedFalse verifies the disabled
+// sentinel is surfaced as 200 + `{"applied": false}`. Login callers must be
+// able to distinguish "skipped" from "applied" without sniffing error strings.
+func TestApplyEnterpriseMapping_DisabledMaps200AppliedFalse(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		applyEnterpriseMapping: func(_ context.Context, _ user.EmploymentMappingParams) error {
+			return user.ErrEnterpriseMappingDisabled
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", map[string]string{
+		"user_subject_id": "usr_alice",
+		"provider":        "github",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (disabled is success)", w.Code)
+	}
+	var resp struct {
+		Applied bool `json:"applied"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Applied {
+		t.Errorf("applied: got true, want false for disabled provider")
+	}
+}
+
+// TestApplyEnterpriseMapping_MalformedYAMLMaps500 verifies that a real service
+// failure (e.g. malformed tenant_configs YAML) surfaces as 500, not silently
+// swallowed as 200/applied=false.
+func TestApplyEnterpriseMapping_MalformedYAMLMaps500(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		applyEnterpriseMapping: func(_ context.Context, _ user.EmploymentMappingParams) error {
+			return errors.New("load employment_providers config: parse config_yaml: yaml: line 1: did not find expected ',' or ']'")
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", map[string]string{
+		"user_subject_id": "usr_alice",
+		"provider":        "idtrust",
+	})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 for malformed YAML", w.Code)
+	}
+}
+
+// TestApplyEnterpriseMapping_ValidationMaps400 verifies missing required
+// fields surface as 400 (gin's binding:"required" tag catches this before
+// the service is called).
+func TestApplyEnterpriseMapping_ValidationMaps400(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]string
+	}{
+		{"missing user_subject_id", map[string]string{"provider": "idtrust"}},
+		{"missing provider", map[string]string{"user_subject_id": "usr_alice"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, r := newUsersAPI(stubUserService{
+				applyEnterpriseMapping: func(_ context.Context, _ user.EmploymentMappingParams) error {
+					t.Fatal("service should not be called on validation failure")
+					return nil
+				},
+			})
+			w := doJSON(t, r, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", tc.body)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestApplyEnterpriseMapping_OptionalTenantID verifies the tenant_id field is
+// forwarded to the service when supplied. Empty tenant_id is the service's
+// responsibility to default (TestApplyEnterpriseMapping_AppliedTrue covers
+// the empty case).
+func TestApplyEnterpriseMapping_OptionalTenantID(t *testing.T) {
+	var capturedTenantID string
+	_, r := newUsersAPI(stubUserService{
+		applyEnterpriseMapping: func(_ context.Context, p user.EmploymentMappingParams) error {
+			capturedTenantID = p.TenantID
+			return nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", map[string]string{
+		"tenant_id":       "acme",
+		"user_subject_id": "usr_alice",
+		"provider":        "idtrust",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if capturedTenantID != "acme" {
+		t.Errorf("TenantID: got %q, want acme", capturedTenantID)
 	}
 }

@@ -40,7 +40,39 @@ type Config struct {
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
 	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
+	// JWTSignMode controls the A8 灰度 (gradual rollout) state for JWT
+	// self-signing. Three states (off → dual → single) per ROADMAP §9.4:
+	//
+	//   - JWTSignModeOff:    Casdoor JWT authoritative; OAuth callback
+	//                        does NOT call ReissueToken. Default. Matches
+	//                        pre-A8 behavior exactly.
+	//   - JWTSignModeDual:   cs-user-signed JWT becomes the cookie value
+	//                        (OAuth callback calls ReissueToken), but
+	//                        the verifier still accepts BOTH cs-user and
+	//                        Casdoor JWKS. Use during the 30-day
+	//                        crossover window so existing sessions with
+	//                        Casdoor tokens keep working.
+	//   - JWTSignModeSingle: cs-user JWT only. Casdoor JWKS dropped from
+	//                        the verifier chain. End-state after the 30-day
+	//                        灰度 closes.
+	//
+	// When mode != off, requires USER_SERVICE_BACKEND=rpc (RPCWriter) so
+	// the OAuth callback can reach cs-user's reissue-token endpoint, AND
+	// USER_SERVICE_URL must be set so the JWKS provider can fetch
+	// cs-user's /.well-known/jwks.
+	//
+	// Migration: JWT_SELF_SIGN_ENABLED=true (A7b vocabulary) maps to
+	// "dual"; false/unset maps to "off". JWT_SIGN_MODE wins when both
+	// are set.
+	JWTSignMode string
 }
+
+// JWTSignMode values for Config.JWTSignMode.
+const (
+	JWTSignModeOff    = "off"
+	JWTSignModeDual   = "dual"
+	JWTSignModeSingle = "single"
+)
 
 // UserServiceConfig selects and configures the read backend for user data.
 // Phase 0/P0-7: default is local (read from server's own DB). Setting
@@ -267,7 +299,36 @@ func Load() *Config {
 					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
+		// Phase A8: three-state JWT self-sign mode. Loader prefers
+		// JWT_SIGN_MODE (off|dual|single) and falls back to the A7b
+		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
+		// OFF — Casdoor JWT stays authoritative until operator flips.
+		JWTSignMode: loadJWTSignMode(),
 	}
+}
+
+// loadJWTSignMode resolves the JWT self-sign mode from environment.
+//
+// Resolution order:
+//  1. JWT_SIGN_MODE (preferred, A8 vocabulary): must be off|dual|single,
+//     case-insensitive. Invalid values are fatal — silent fallback would
+//     mask a typo as "off" and accidentally disable 灰度 mid-cutover.
+//  2. JWT_SELF_SIGN_ENABLED (A7b vocabulary, retained for migration):
+//     strconv.ParseBool true → dual, anything else → off.
+//  3. Default: off.
+func loadJWTSignMode() string {
+	if raw := strings.ToLower(strings.TrimSpace(getEnv("JWT_SIGN_MODE", ""))); raw != "" {
+		switch raw {
+		case JWTSignModeOff, JWTSignModeDual, JWTSignModeSingle:
+			return raw
+		default:
+			log.Fatalf("invalid JWT_SIGN_MODE %q: must be one of off|dual|single", raw)
+		}
+	}
+	if getEnvBool("JWT_SELF_SIGN_ENABLED", false) {
+		return JWTSignModeDual
+	}
+	return JWTSignModeOff
 }
 
 func getEnv(key, defaultValue string) string {
