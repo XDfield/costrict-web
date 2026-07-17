@@ -184,6 +184,12 @@ func (c *RPCClient) doPlatformTenantRequest(ctx context.Context, method, path st
 // (both 409). The matching is intentionally tolerant: `strings.Contains`
 // against a stable substring rather than full equality, so cs-user can
 // reword the surrounding text without breaking the client.
+//
+// cs-user's sentinels emit underscore-joined identifiers (`email_domain`,
+// `display_name`) because the err.Error() strings are derived from the
+// field names they describe — so the matcher also uses underscores. A
+// space-formatted variant would silently fall through to the generic
+// 4xx error → handler returns HTTP 500 instead of the intended 4xx.
 func mapPlatformTenantHTTPError(status int, body []byte) error {
 	msg := ""
 	var raw struct {
@@ -200,7 +206,7 @@ func mapPlatformTenantHTTPError(status int, body []byte) error {
 		switch {
 		case strings.Contains(msg, "slug already taken"):
 			return ErrSlugTaken
-		case strings.Contains(msg, "email domain"):
+		case strings.Contains(msg, "email_domain"):
 			return ErrEmailDomainConflict
 		case strings.Contains(msg, "state transition"):
 			return ErrInvalidStateTransition
@@ -212,9 +218,9 @@ func mapPlatformTenantHTTPError(status int, body []byte) error {
 			return ErrInvalidSlug
 		case strings.Contains(msg, "edition"):
 			return ErrInvalidEdition
-		case strings.Contains(msg, "display name"):
+		case strings.Contains(msg, "display_name"):
 			return ErrInvalidDisplayName
-		case strings.Contains(msg, "email domain"):
+		case strings.Contains(msg, "email_domain"):
 			return ErrInvalidEmailDomains
 		}
 		return fmt.Errorf("platform tenant: 400 bad request: %s", truncate(string(body), 200))

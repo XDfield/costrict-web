@@ -134,7 +134,10 @@ func TestRPCPlatform_CreateTenant_SlugTaken(t *testing.T) {
 }
 
 func TestRPCPlatform_CreateTenant_EmailDomainConflict(t *testing.T) {
-	srv, _, _, _ := platformTenantStubServer(t, http.StatusConflict, map[string]string{"error": "tenant: email domain conflict"})
+	// Stub uses the EXACT string cs-user's ErrEmailDomainConflict emits
+	// (underscore-joined — derived from the email_domains column name).
+	// A space-formatted stub would mask a matcher bug.
+	srv, _, _, _ := platformTenantStubServer(t, http.StatusConflict, map[string]string{"error": "tenant: email_domain overlaps an existing tenant"})
 	defer srv.Close()
 
 	c := newConfiguredRPCClient(t, srv.URL)
@@ -143,6 +146,35 @@ func TestRPCPlatform_CreateTenant_EmailDomainConflict(t *testing.T) {
 	})
 	if !errors.Is(err, ErrEmailDomainConflict) {
 		t.Errorf("want ErrEmailDomainConflict, got %v", err)
+	}
+}
+
+func TestRPCPlatform_CreateTenant_InvalidDisplayName(t *testing.T) {
+	// Same pattern: stub uses cs-user's real ErrInvalidDisplayName text
+	// (underscore-joined display_name, not space).
+	srv, _, _, _ := platformTenantStubServer(t, http.StatusBadRequest, map[string]string{"error": "tenant: display_name is required"})
+	defer srv.Close()
+
+	c := newConfiguredRPCClient(t, srv.URL)
+	_, err := c.CreateTenant(context.Background(), PlatformTenantCreateParams{
+		Slug: "acme", DisplayName: "   ",
+	})
+	if !errors.Is(err, ErrInvalidDisplayName) {
+		t.Errorf("want ErrInvalidDisplayName, got %v", err)
+	}
+}
+
+func TestRPCPlatform_CreateTenant_InvalidEmailDomains(t *testing.T) {
+	// Stub uses cs-user's real ErrInvalidEmailDomains text.
+	srv, _, _, _ := platformTenantStubServer(t, http.StatusBadRequest, map[string]string{"error": "tenant: invalid email_domains"})
+	defer srv.Close()
+
+	c := newConfiguredRPCClient(t, srv.URL)
+	_, err := c.CreateTenant(context.Background(), PlatformTenantCreateParams{
+		Slug: "acme", DisplayName: "Acme", EmailDomains: []string{"not-a-domain"},
+	})
+	if !errors.Is(err, ErrInvalidEmailDomains) {
+		t.Errorf("want ErrInvalidEmailDomains, got %v", err)
 	}
 }
 
