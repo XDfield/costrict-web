@@ -58,6 +58,35 @@ definitions:
       universal_id:
         type: string
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.Tenant:
+    properties:
+      created_at:
+        type: string
+      deleted_at:
+        type: string
+      deletion_requested_at:
+        type: string
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        type: string
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+      slug:
+        type: string
+      status:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_models.User:
     properties:
       auth_provider:
@@ -144,6 +173,19 @@ definitions:
       user_subject_id:
         type: string
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      tenants:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        type: array
+      total:
+        type: integer
+    type: object
   internal_handlers.applyEnterpriseMappingRequest:
     properties:
       provider:
@@ -176,6 +218,45 @@ definitions:
     required:
     - ids
     type: object
+  internal_handlers.platformCreateTenantRequest:
+    properties:
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        items:
+          type: string
+        type: array
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+      slug:
+        type: string
+    required:
+    - display_name
+    - slug
+    type: object
+  internal_handlers.platformUpdateTenantRequest:
+    properties:
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        items:
+          type: string
+        type: array
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+    type: object
   internal_handlers.reissueTokenRequest:
     properties:
       audience:
@@ -197,6 +278,15 @@ definitions:
         description: |-
           TenantID is reserved for Phase B. Phase A callers pass "default" or
           leave empty; the service falls back to "default".
+        type: string
+      tenant_slug:
+        description: |-
+          TenantSlug is the URL-friendly tenant key (Phase B). Forwarded by
+          server's RPCWriter from the request ctx (set by Try 1 subdomain or
+          Try 2 email-domain resolution in the OAuth callback). cs-user embeds
+          this verbatim in the signed JWT so server's TenantMatch middleware
+          can compare against the runtime-resolved slug without a per-request
+          slug→tenant_id lookup. Empty for Phase A callers.
         type: string
       user_subject_id:
         description: UserSubjectID is the cs-user user's stable subject_id. Required.
@@ -307,6 +397,313 @@ paths:
       summary: Internal handshake
       tags:
       - internal
+  /api/internal/platform/tenants:
+    get:
+      description: Returns a paginated list of tenants (newest first). Optional status
+        filter narrows to one of active / suspended / deleted. Limit defaults to 100
+        (capped at 500); offset defaults to 0.
+      parameters:
+      - description: Page size (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      - description: 'Filter by status: active | suspended | deleted'
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List tenants (paginated)
+      tags:
+      - platform-tenants
+    post:
+      consumes:
+      - application/json
+      description: Creates a new tenant. Validates slug format + uniqueness, edition
+        enum, and email_domains non-overlap with existing tenants. status defaults
+        to active; tenant_id is server-minted UUID.
+      parameters:
+      - description: Tenant to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.platformCreateTenantRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Create tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}:
+    get:
+      description: Returns a single tenant. The :id path param accepts either tenant_id
+        OR slug — whichever matches.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get tenant by id or slug
+      tags:
+      - platform-tenants
+    patch:
+      consumes:
+      - application/json
+      description: Updates mutable fields (display_name / edition / email_domains
+        / features / limits / settings). Absent fields are left untouched (true PATCH
+        semantics). slug + tenant_id are immutable and silently ignored if supplied;
+        status changes only via /suspend / /restore / /delete.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.platformUpdateTenantRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Partially update tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/delete:
+    post:
+      description: Transitions status from active|suspended → deleted and stamps deletion_requested_at
+        = now. The actual row purge is performed by a 30-day grace cron (out of scope
+        — separate PR with runbook).
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Request tenant deletion (30-day grace)
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/restore:
+    post:
+      description: Transitions tenant status from suspended → active.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Restore suspended tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/suspend:
+    post:
+      description: Transitions tenant status from active → suspended. Blocks logins
+        at the resolver layer (status check).
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Suspend tenant
+      tags:
+      - platform-tenants
   /api/internal/tenants/resolve-by-email:
     post:
       consumes:

@@ -92,6 +92,477 @@
                 }
             }
         },
+        "/api/internal/platform/tenants": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns a paginated list of tenants (newest first). Optional status filter narrows to one of active / suspended / deleted. Limit defaults to 100 (capped at 500); offset defaults to 0.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "List tenants (paginated)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: active | suspended | deleted",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Creates a new tenant. Validates slug format + uniqueness, edition enum, and email_domains non-overlap with existing tenants. status defaults to active; tenant_id is server-minted UUID.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Create tenant",
+                "parameters": [
+                    {
+                        "description": "Tenant to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.platformCreateTenantRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/platform/tenants/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns a single tenant. The :id path param accepts either tenant_id OR slug — whichever matches.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Get tenant by id or slug",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Updates mutable fields (display_name / edition / email_domains / features / limits / settings). Absent fields are left untouched (true PATCH semantics). slug + tenant_id are immutable and silently ignored if supplied; status changes only via /suspend / /restore / /delete.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Partially update tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.platformUpdateTenantRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/platform/tenants/{id}/delete": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Transitions status from active|suspended → deleted and stamps deletion_requested_at = now. The actual row purge is performed by a 30-day grace cron (out of scope — separate PR with runbook).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Request tenant deletion (30-day grace)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/platform/tenants/{id}/restore": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Transitions tenant status from suspended → active.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Restore suspended tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/platform/tenants/{id}/suspend": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Transitions tenant status from active → suspended. Blocks logins at the resolver layer (status check).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Suspend tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/tenants/resolve-by-email": {
             "post": {
                 "security": [
@@ -1017,6 +1488,50 @@
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_models.Tenant": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deletion_requested_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "string"
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_models.User": {
             "type": "object",
             "properties": {
@@ -1147,6 +1662,26 @@
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "tenants": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_handlers.applyEnterpriseMappingRequest": {
             "type": "object",
             "required": [
@@ -1195,6 +1730,65 @@
                 }
             }
         },
+        "internal_handlers.platformCreateTenantRequest": {
+            "type": "object",
+            "required": [
+                "display_name",
+                "slug"
+            ],
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.platformUpdateTenantRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.reissueTokenRequest": {
             "type": "object",
             "required": [
@@ -1218,6 +1812,10 @@
                 },
                 "tenant_id": {
                     "description": "TenantID is reserved for Phase B. Phase A callers pass \"default\" or\nleave empty; the service falls back to \"default\".",
+                    "type": "string"
+                },
+                "tenant_slug": {
+                    "description": "TenantSlug is the URL-friendly tenant key (Phase B). Forwarded by\nserver's RPCWriter from the request ctx (set by Try 1 subdomain or\nTry 2 email-domain resolution in the OAuth callback). cs-user embeds\nthis verbatim in the signed JWT so server's TenantMatch middleware\ncan compare against the runtime-resolved slug without a per-request\nslug→tenant_id lookup. Empty for Phase A callers.",
                     "type": "string"
                 },
                 "user_subject_id": {
