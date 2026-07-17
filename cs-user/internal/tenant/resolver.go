@@ -146,6 +146,40 @@ func (r *Resolver) ResolveByEmail(ctx context.Context, email string) (*models.Te
 	return r.ResolveByEmailDomain(ctx, domain)
 }
 
+// ListByEmailDomain returns every active tenant whose email_domains array
+// contains the domain extracted from the supplied email. Used by the
+// /api/internal/tenants/resolve-by-email handler (B3b.2b-step2) to populate
+// the picker candidates when ResolveByEmail returns ErrAmbiguousTenant.
+//
+// Empty / malformed email → empty list, nil error. The handler treats
+// "empty list" the same as ErrTenantNotFound (Try 2 miss → fall through).
+func (r *Resolver) ListByEmailDomain(ctx context.Context, email string) ([]*models.Tenant, error) {
+	domain := domainFromEmail(email)
+	if domain == "" {
+		return nil, nil
+	}
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	var all []models.Tenant
+	if err := r.db.WithContext(ctx).
+		Where("status = ?", "active").
+		Find(&all).Error; err != nil {
+		return nil, fmt.Errorf("tenant: query for list-by-email-domain: %w", err)
+	}
+	var matches []*models.Tenant
+	for i := range all {
+		for _, d := range ParseEmailDomains(&all[i]) {
+			if d == domain {
+				tn := all[i]
+				matches = append(matches, &tn)
+				break
+			}
+		}
+	}
+	return matches, nil
+}
+
 // ResolveFromHost extracts the first subdomain segment of host (relative to
 // one of apexDomains) and calls ResolveBySlug. host may be in "host:port"
 // form (port stripped). apexDomains is the list of bare domains the
