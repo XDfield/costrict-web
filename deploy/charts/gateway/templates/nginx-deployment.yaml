@@ -42,6 +42,11 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          {{- if eq .Values.nginxRouter.discovery.mode "server-registry" }}
+          env:
+            - name: INTERNAL_SECRET
+              value: {{ .Values.nginxRouter.internalSecret | quote }}
+          {{- end }}
           volumeMounts:
             - name: config
               mountPath: /usr/local/openresty/nginx/conf/nginx.conf
