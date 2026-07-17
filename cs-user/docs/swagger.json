@@ -680,6 +680,112 @@
                 }
             }
         },
+        "/api/internal/tenant/provider-mapping": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the typed provider_mapping subsection of the caller's tenant_configs.config_yaml. Missing subsection returns {\"providers\":{}} — every tenant implicitly has an empty mapping. Sibling YAML keys are not echoed here; use /api/internal/tenant/config for the raw blob.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-provider-mapping"
+                ],
+                "summary": "Read provider_mapping (tenant admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "PUT (full replace) of the provider_mapping subsection. Sibling YAML sections (employment_providers, features, etc.) are preserved verbatim via yaml.v3 Node-based merge. Provider names must match ^[a-z0-9_]{1,64}$; rank non-negative; enterprise_sync.interval a positive Go duration capped at 30 days. Enabled defaults to true when omitted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-provider-mapping"
+                ],
+                "summary": "Update provider_mapping (tenant admin)",
+                "parameters": [
+                    {
+                        "description": "Typed provider_mapping",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/tenants/resolve-by-email": {
             "post": {
                 "security": [
@@ -1816,6 +1922,45 @@
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync": {
+            "type": "object",
+            "properties": {
+                "interval": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "enterprise_sync": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync"
+                },
+                "field_map": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "rank": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping": {
+            "type": "object",
+            "properties": {
+                "providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider"
+                    }
                 }
             }
         },
