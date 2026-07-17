@@ -169,14 +169,33 @@ data:
             -- serverUrl may be a hostname; cosocket TCP connect needs an IP,
             -- so resolve it using the same auto-detected nameservers as dns mode.
             local resolver_override = "{{ .Values.nginxRouter.resolver }}"
-            local nameservers, _, dns_source = dns_utils.detect_dns(resolver_override, "")
+            local domain_override   = "{{ .Values.nginxRouter.discovery.clusterDomain }}"
+            local nameservers, cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)
+
+            -- resty.dns.resolver is a raw DNS client: unlike the OS resolver
+            -- (getaddrinfo) it does NOT apply /etc/resolv.conf search domains,
+            -- so a short name like "costrict-web-api" comes back NXDOMAIN.
+            -- Build the same search suffixes ourselves so short names work:
+            --   <ns>.svc.<domain>, svc.<domain>, <domain>
+            local search_domains = {}
+            local pod_ns = router.read_pod_namespace()
+            if cluster_domain and cluster_domain ~= "" then
+                if pod_ns and pod_ns ~= "" then
+                    search_domains[#search_domains + 1] = pod_ns .. ".svc." .. cluster_domain
+                end
+                search_domains[#search_domains + 1] = "svc." .. cluster_domain
+                search_domains[#search_domains + 1] = cluster_domain
+            end
+
             ngx.log(ngx.INFO,
                 "nginx-router server-registry dns config: source=", dns_source,
-                " nameservers=[", table.concat(nameservers, ","), "]")
+                " nameservers=[", table.concat(nameservers, ","), "]",
+                " namespace=", pod_ns or "unknown",
+                " search=[", table.concat(search_domains, ","), "]")
 
             local function discover_and_update(premature)
                 if premature then return end
-                local ips, err = router.resolve_from_registry(registry_url, internal_secret, refresh_ms, nameservers)
+                local ips, err = router.resolve_from_registry(registry_url, internal_secret, refresh_ms, nameservers, search_domains)
                 if not ips then
                     ngx.log(ngx.ERR, "server-registry discovery failed: ", err)
                     return
@@ -407,14 +426,23 @@ data:
         return table_concat(parts)
     end
 
-    -- Resolve a hostname to an IPv4 address if it is not already an IP.
-    -- Falls back to the original host on resolution failure so callers can
-    -- still attempt a direct connect (e.g. for IPs or unix-domain paths).
-    local function resolve_host(host, nameservers)
-        -- Very small IPv4 literal check; IPv6 not supported by this client.
-        if host:match("^%d+%.%d+%.%d+%.%d+$") then
-            return host
+    -- Read the namespace this pod runs in from the serviceaccount mount.
+    -- Returns nil when the file is absent (e.g. running outside Kubernetes).
+    function _M.read_pod_namespace()
+        local f = io.open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", "r")
+        if not f then
+            return nil
         end
+        local ns = f:read("*l")
+        f:close()
+        if ns and ns ~= "" then
+            return ns
+        end
+        return nil
+    end
+
+    -- Single A-record query for an exact name. Returns ip or nil, err.
+    local function query_a(name, nameservers)
         local r, err = resolver:new{
             nameservers = nameservers,
             retrans = 3,
@@ -423,7 +451,7 @@ data:
         if not r then
             return nil, "resolver init failed: " .. (err or "unknown")
         end
-        local answers, err = r:query(host, { qtype = r.TYPE_A })
+        local answers, err = r:query(name, { qtype = r.TYPE_A })
         if not answers then
             return nil, "dns query failed: " .. (err or "unknown")
         end
@@ -436,6 +464,28 @@ data:
             end
         end
         return nil, "no A record found"
+    end
+
+    -- Resolve a hostname to an IPv4 address. IPs are returned as-is.
+    -- When the literal name does not resolve, search-domain suffixes are
+    -- tried in order (mirrors what the OS resolver does with the
+    -- /etc/resolv.conf "search" option, which resty.dns.resolver ignores).
+    local function resolve_host(host, nameservers, search_domains)
+        -- Very small IPv4 literal check; IPv6 not supported by this client.
+        if host:match("^%d+%.%d+%.%d+%.%d+$") then
+            return host
+        end
+        local ip, err = query_a(host, nameservers)
+        if ip then
+            return ip
+        end
+        for _, suffix in ipairs(search_domains or {}) do
+            ip = query_a(host .. "." .. suffix, nameservers)
+            if ip then
+                return ip
+            end
+        end
+        return nil, err or "no A record found"
     end
 
     function _M.http_get(url, headers, timeout_ms)
@@ -534,8 +584,9 @@ data:
 
     -- Pull the live gateway list from the Server registry and return a sorted
     -- "ip:port" list parsed from each gateway's internalURL.
-    -- nameservers is required when server_url uses a hostname instead of an IP.
-    function _M.resolve_from_registry(server_url, secret, timeout_ms, nameservers)
+    -- nameservers is required when server_url uses a hostname instead of an IP;
+    -- search_domains lets short names (e.g. "costrict-web-api") resolve.
+    function _M.resolve_from_registry(server_url, secret, timeout_ms, nameservers, search_domains)
         local headers = {}
         if secret and secret ~= "" then
             headers["X-Internal-Secret"] = secret
@@ -547,7 +598,7 @@ data:
             return nil, "invalid registry url"
         end
         nameservers = nameservers or {}
-        local ip, err = resolve_host(original_host, nameservers)
+        local ip, err = resolve_host(original_host, nameservers, search_domains)
         if not ip then
             return nil, "resolve failed: " .. (err or "unknown")
         end
