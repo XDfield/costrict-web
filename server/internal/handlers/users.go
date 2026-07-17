@@ -291,13 +291,13 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	if UserModule != nil && UserModule.Service != nil {
-		go backfillUsers(context.Background(), users)
+		go backfillUsers(users)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": results})
 }
 
-func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
+func backfillUsers(users []casdoor.CasdoorUser) {
 	if UserModule == nil || UserModule.Service == nil {
 		return
 	}
@@ -319,6 +319,11 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 		// NOT fire the post-login hook: backfill runs when someone *searches* for a
 		// user, not when that user logs in, so it must not trigger login-only side
 		// effects such as bootstrap platform-admin granting.
+		//
+		// Background ctx is intentional: this runs as a fire-and-forget goroutine
+		// (`go backfillUsers(users)`) and must outlive the HTTP request that
+		// spawned it — a request-scoped ctx would cancel the backfill mid-flight
+		// when the response is sent.
 		if user, err := UserModule.Service.FindUserByClaims(claims); err == nil && user != nil {
 			// User exists, sync if needed
 			_, _ = UserModule.Writer.SyncUser(context.Background(), claims)
