@@ -290,10 +290,18 @@ func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, clai
 		UserSubjectID string     `json:"user_subject_id"`
 		Identity      *JWTClaims `json:"identity,omitempty"`
 		Audience      []string   `json:"audience,omitempty"`
+		// TenantSlug (Phase B): forwarded from ctx so cs-user embeds the
+		// runtime-resolved tenant slug into the re-issued JWT. Server's
+		// TenantMatch middleware then compares this claim against future
+		// requests' resolved slug (cookie/subdomain) for cross-tenant
+		// detection (B3b.2c). Empty slug → empty claim → middleware skips
+		// comparison (graceful pre-cutover behavior).
+		TenantSlug string `json:"tenant_slug,omitempty"`
 	}{
 		UserSubjectID: userSubjectID,
 		Identity:      claims,
 		Audience:      audience,
+		TenantSlug:    tenantSlugFromContext(ctx),
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

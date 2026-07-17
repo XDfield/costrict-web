@@ -34,6 +34,13 @@ type AuthClaims struct {
 	Provider          string
 	ProviderUserID    string
 	Phone             string
+	// TenantSlug (Phase B): populated ONLY when the JWT carries the
+	// `tenant_slug` claim — i.e. cs-user-signed tokens (Phase A7).
+	// Empty for Casdoor-issued tokens (pre-cutover). The TenantMatch
+	// middleware compares this against the runtime-resolved slug for
+	// cross-tenant detection (B3b.2c). Empty claim → middleware skips
+	// comparison (graceful pre-cutover behavior).
+	TenantSlug string
 }
 
 var subjectResolver SubjectResolver
@@ -298,6 +305,12 @@ type CasdoorUserInfo struct {
 	Provider          string `json:"provider"`
 	ProviderUserID    string `json:"provider_user_id"`
 	Phone             string `json:"phone"`
+	// TenantSlug (Phase B / A7): populated ONLY when the JWT carries the
+	// custom `tenant_slug` claim — i.e. tokens signed by cs-user's
+	// /api/internal/users/reissue-token (Phase A7). Empty for Casdoor-issued
+	// tokens (pre-cutover). Read directly from the MapClaims map because
+	// authidentity.NormalizeClaimsMap only handles standard Casdoor fields.
+	TenantSlug string `json:"tenant_slug,omitempty"`
 }
 
 type casdoorUserinfoResponse struct {
@@ -348,6 +361,10 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		return nil, fmt.Errorf("no id, sub or universal_id in token")
 	}
 
+	// tenant_slug is a custom claim issued only by cs-user (Phase A7) —
+	// NormalizeClaimsMap does not handle it. Read straight from the map.
+	tenantSlug, _ := claims["tenant_slug"].(string)
+
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
 		Sub:               sub,
@@ -358,6 +375,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		Provider:          normalized.Provider,
 		ProviderUserID:    normalized.ProviderUserID,
 		Phone:             normalized.Phone,
+		TenantSlug:        tenantSlug,
 	}, nil
 }
 
@@ -434,6 +452,7 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 		Provider:          userInfo.Provider,
 		ProviderUserID:    userInfo.ProviderUserID,
 		Phone:             userInfo.Phone,
+		TenantSlug:        userInfo.TenantSlug,
 	}
 	if subjectResolver != nil {
 		resolvedID, resolvedName, err := subjectResolver(authClaims)

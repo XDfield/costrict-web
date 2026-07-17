@@ -341,6 +341,71 @@ func TestReissueToken_TenantIDForwarded(t *testing.T) {
 	}
 }
 
+// TestReissueToken_TenantSlugForwarded verifies the request-level tenant_slug
+// is embedded verbatim into the signed JWT (Phase B / A7 unblock). Server's
+// TenantMatch middleware reads this claim to compare against the runtime-
+// resolved slug for cross-tenant detection (B3b.2c). Empty request slug →
+// empty claim (graceful pre-cutover behavior).
+func TestReissueToken_TenantSlugForwarded(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		TenantSlug:    "acme",
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	parsed, _ := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if got.TenantSlug != "acme" {
+		t.Errorf("TenantSlug: got %q, want acme", got.TenantSlug)
+	}
+}
+
+// TestReissueToken_EmptyTenantSlugOmitted verifies the omitempty behavior —
+// when the request omits tenant_slug, the claim is absent (not an empty
+// string) in the issued JWT. This is what enables server's TenantMatch
+// middleware to distinguish "cs-user-signed but no slug signal" from "Casdoor
+// token, never had the claim" — both surface as empty string post-decode.
+func TestReissueToken_EmptyTenantSlugOmitted(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	body := reissueTokenRequest{UserSubjectID: "usr_alice"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Token string `json:"token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	parsed, _ := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if got.TenantSlug != "" {
+		t.Errorf("TenantSlug: got %q, want empty (omitted)", got.TenantSlug)
+	}
+}
+
 // TestReissueToken_NilIdentityStillWorks verifies the optional Identity
 // path. Refresh-token flows (Phase B) may pass nil; the issued token then
 // carries only standard JWT claims + enterprise (if any).

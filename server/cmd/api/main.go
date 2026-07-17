@@ -298,6 +298,15 @@ func main() {
 
 	r.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
 
+	// Phase B3b.2c: cross-tenant mismatch detection. Compares the
+	// tenant_slug claim embedded in cs-user-signed JWTs (Phase A7) against
+	// the runtime-resolved slug (ResolveTenantSlug above). When both
+	// populated and divergent → 401 + cookie clear. No-op for Casdoor-issued
+	// tokens (no tenant_slug claim) or any request missing either signal.
+	// Must run after OptionalAuth (populates AuthClaims) and after
+	// ResolveTenantSlug (populates ctx slug).
+	r.Use(middleware.TenantMatch())
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})

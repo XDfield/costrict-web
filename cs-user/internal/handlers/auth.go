@@ -69,6 +69,14 @@ type reissueTokenRequest struct {
 	// leave empty; the service falls back to "default".
 	TenantID string `json:"tenant_id,omitempty"`
 
+	// TenantSlug is the URL-friendly tenant key (Phase B). Forwarded by
+	// server's RPCWriter from the request ctx (set by Try 1 subdomain or
+	// Try 2 email-domain resolution in the OAuth callback). cs-user embeds
+	// this verbatim in the signed JWT so server's TenantMatch middleware
+	// can compare against the runtime-resolved slug without a per-request
+	// slug→tenant_id lookup. Empty for Phase A callers.
+	TenantSlug string `json:"tenant_slug,omitempty"`
+
 	// Audience overrides the configured default. Empty slice falls back
 	// to JWTConfig.DefaultAudience; populated slice replaces it.
 	Audience []string `json:"audience,omitempty"`
@@ -123,6 +131,13 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		tenantID = "default"
 	}
 
+	// TenantSlug (Phase B): pass through verbatim. Server's auth middleware
+	// reads this from the signed JWT to compare against runtime-resolved slug
+	// (cookie/subdomain) for cross-tenant detection (B3b.2c). Empty for
+	// pre-cutover / Phase A callers — server's TenantMatch middleware skips
+	// comparison when the JWT has no tenant_slug claim.
+	tenantSlug := req.TenantSlug
+
 	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), req.UserSubjectID)
 	if err != nil {
 		switch {
@@ -145,6 +160,7 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		Identity:   req.Identity,
 		Employment: employment,
 		TenantID:   tenantID,
+		TenantSlug: tenantSlug,
 	}, now)
 	if err != nil {
 		// NewEnterpriseClaims only fails on empty Subject (caught above by
