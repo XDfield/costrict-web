@@ -23,11 +23,11 @@ func TestGetOrCreateUserDisplayNameProtectedByBestIdentityRank(t *testing.T) {
 		Email:             "idtrust@example.com",
 		Picture:           "https://example.com/idtrust.png",
 	}
-	user, err := svc.GetOrCreateUser(idtrustClaims)
+	user, err := svc.GetOrCreateUser(context.Background(), idtrustClaims)
 	if err != nil {
 		t.Fatalf("create idtrust user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, idtrustClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, idtrustClaims); err != nil {
 		t.Fatalf("bind idtrust identity: %v", err)
 	}
 
@@ -47,12 +47,12 @@ func TestGetOrCreateUserDisplayNameProtectedByBestIdentityRank(t *testing.T) {
 		Provider:          "phone",
 		Phone:             "15500000001",
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, phoneClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, phoneClaims); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
 	// Step 3: User logs in again via phone — DisplayName should NOT be overwritten
-	phoneLoginUser, err := svc.GetOrCreateUser(phoneClaims)
+	phoneLoginUser, err := svc.GetOrCreateUser(context.Background(), phoneClaims)
 	if err != nil {
 		t.Fatalf("phone login: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestGetOrCreateUserDisplayNameProtectedByBestIdentityRank(t *testing.T) {
 		Provider:          "idtrust",
 		ProviderUserID:    "idtrust-001",
 	}
-	idtrustLoginUser, err := svc.GetOrCreateUser(idtrustUpdatedClaims)
+	idtrustLoginUser, err := svc.GetOrCreateUser(context.Background(), idtrustUpdatedClaims)
 	if err != nil {
 		t.Fatalf("idtrust login: %v", err)
 	}
@@ -96,11 +96,11 @@ func TestGetOrCreateUserCalibratesDirtyDisplayNameFromBestIdentity(t *testing.T)
 		Provider:          "idtrust",
 		ProviderUserID:    "idtrust-001",
 	}
-	user, err := svc.GetOrCreateUser(idtrustClaims)
+	user, err := svc.GetOrCreateUser(context.Background(), idtrustClaims)
 	if err != nil {
 		t.Fatalf("create idtrust user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, idtrustClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, idtrustClaims); err != nil {
 		t.Fatalf("bind idtrust identity: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestGetOrCreateUserCalibratesDirtyDisplayNameFromBestIdentity(t *testing.T)
 		Provider:          "phone",
 		Phone:             "15500000001",
 	}
-	calibrated, err := svc.GetOrCreateUser(phoneClaims)
+	calibrated, err := svc.GetOrCreateUser(context.Background(), phoneClaims)
 	if err != nil {
 		t.Fatalf("phone login with calibration: %v", err)
 	}
@@ -143,11 +143,11 @@ func TestGetOrCreateUserCalibratesDirtyEmailAndAvatarFromBestIdentity(t *testing
 		Email:             "correct@example.com",
 		Picture:           "https://avatars.example.com/correct.png",
 	}
-	user, err := svc.GetOrCreateUser(githubClaims)
+	user, err := svc.GetOrCreateUser(context.Background(), githubClaims)
 	if err != nil {
 		t.Fatalf("create github user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, githubClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, githubClaims); err != nil {
 		t.Fatalf("bind github identity: %v", err)
 	}
 
@@ -161,7 +161,7 @@ func TestGetOrCreateUserCalibratesDirtyEmailAndAvatarFromBestIdentity(t *testing
 		Provider:          "phone",
 		Phone:             "15500000001",
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, phoneClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, phoneClaims); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestGetOrCreateUserCalibratesDirtyEmailAndAvatarFromBestIdentity(t *testing
 	})
 
 	// Phone login should trigger calibration
-	calibrated, err := svc.GetOrCreateUser(phoneClaims)
+	calibrated, err := svc.GetOrCreateUser(context.Background(), phoneClaims)
 	if err != nil {
 		t.Fatalf("phone login with calibration: %v", err)
 	}
@@ -200,11 +200,11 @@ func TestGetOrCreateUserPhoneLoginDoesNotOverwriteIDTrustDisplayName(t *testing.
 		Provider:          "idtrust",
 		ProviderUserID:    "idtrust-001",
 	}
-	user, err := svc.GetOrCreateUser(idtrustClaims)
+	user, err := svc.GetOrCreateUser(context.Background(), idtrustClaims)
 	if err != nil {
 		t.Fatalf("create idtrust user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(user.SubjectID, idtrustClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), user.SubjectID, idtrustClaims); err != nil {
 		t.Fatalf("bind idtrust identity: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestGetOrCreateUserPhoneLoginDoesNotOverwriteIDTrustDisplayName(t *testing.
 		Provider:          "phone",
 		Phone:             "15500000001",
 	}
-	phoneUser, err := svc.GetOrCreateUser(phoneClaims)
+	phoneUser, err := svc.GetOrCreateUser(context.Background(), phoneClaims)
 	if err != nil {
 		t.Fatalf("phone login: %v", err)
 	}

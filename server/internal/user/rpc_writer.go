@@ -91,7 +91,7 @@ func (w *RPCWriter) Configured() bool {
 // JWTClaims as the body. cs-user's response is the upserted user; the
 // post-login hook fires in the caller (UserService or DualWriter), never
 // here — RPCWriter is purely a transport.
-func (w *RPCWriter) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
+func (w *RPCWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
 	if claims == nil {
 		return nil, errors.New("nil JWT claims")
 	}
@@ -102,7 +102,7 @@ func (w *RPCWriter) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("user rpc writer: marshal get-or-create request: %w", err)
 	}
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/get-or-create", body)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/get-or-create", body)
 	if transportErr != nil {
 		return nil, transportErr
 	}
@@ -122,8 +122,8 @@ func (w *RPCWriter) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
 // through Module.Writer, which selects RPCWriter in readonly mode without
 // firing the hook — so this method is literally GetOrCreateUser minus the
 // caller-side hook trigger.
-func (w *RPCWriter) SyncUser(claims *JWTClaims) (*models.User, error) {
-	return w.GetOrCreateUser(claims)
+func (w *RPCWriter) SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+	return w.GetOrCreateUser(ctx, claims)
 }
 
 // BindIdentityToUser calls POST /api/internal/users/:subject_id/bind-identity
@@ -133,7 +133,7 @@ func (w *RPCWriter) SyncUser(claims *JWTClaims) (*models.User, error) {
 //   - identity already bound → error with the server-side "identity_already_bound" token
 //
 // Other non-2xx responses flow through mapWriteError.
-func (w *RPCWriter) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+func (w *RPCWriter) BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
 	if !w.Configured() {
 		return ErrNotConfigured
 	}
@@ -154,7 +154,7 @@ func (w *RPCWriter) BindIdentityToUser(userSubjectID string, claims *JWTClaims, 
 		return fmt.Errorf("user rpc writer: marshal bind request: %w", err)
 	}
 	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/bind-identity"
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, path, bodyBytes)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, path, bodyBytes)
 	if transportErr != nil {
 		return transportErr
 	}
@@ -182,7 +182,7 @@ func (w *RPCWriter) BindIdentityToUser(userSubjectID string, claims *JWTClaims, 
 // the transfer request envelope. sourceUserSubjectID is forwarded for
 // forwards-compatibility; cs-user currently identifies the identity purely by
 // external_key.
-func (w *RPCWriter) TransferIdentityToUser(targetUserSubjectID, externalKey, sourceUserSubjectID string) error {
+func (w *RPCWriter) TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error {
 	if !w.Configured() {
 		return ErrNotConfigured
 	}
@@ -195,7 +195,7 @@ func (w *RPCWriter) TransferIdentityToUser(targetUserSubjectID, externalKey, sou
 	if err != nil {
 		return fmt.Errorf("user rpc writer: marshal transfer request: %w", err)
 	}
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/transfer-identity", bodyBytes)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/transfer-identity", bodyBytes)
 	if transportErr != nil {
 		return transportErr
 	}
@@ -209,12 +209,12 @@ func (w *RPCWriter) TransferIdentityToUser(targetUserSubjectID, externalKey, sou
 // /api/internal/users/:subject_id/identities/:provider. No body. cs-user's 4xx
 // error messages ("cannot unbind last identity", "identity not found") already
 // match what handlers.go:766 expects, so mapWriteError surfaces them verbatim.
-func (w *RPCWriter) UnbindIdentityByProvider(userSubjectID, provider string) error {
+func (w *RPCWriter) UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error {
 	if !w.Configured() {
 		return ErrNotConfigured
 	}
 	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/identities/" + url.PathEscape(provider)
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodDelete, path, nil)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodDelete, path, nil)
 	if transportErr != nil {
 		return transportErr
 	}
@@ -235,7 +235,7 @@ func (w *RPCWriter) UnbindIdentityByProvider(userSubjectID, provider string) err
 // employment mapping is a bonus feature and must never block login. RPCWriter
 // still returns the error so non-callback callers (future admin endpoints) can
 // decide their own policy.
-func (w *RPCWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error {
+func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, provider string) error {
 	if !w.Configured() {
 		return ErrNotConfigured
 	}
@@ -248,7 +248,7 @@ func (w *RPCWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error
 	if err != nil {
 		return fmt.Errorf("user rpc writer: marshal apply-enterprise-mapping request: %w", err)
 	}
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/apply-enterprise-mapping", bodyBytes)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/apply-enterprise-mapping", bodyBytes)
 	if transportErr != nil {
 		return transportErr
 	}
@@ -279,7 +279,7 @@ func (w *RPCWriter) ApplyEnterpriseMapping(userSubjectID, provider string) error
 // of Phase A8's 灰度 dual-sign window: when ReissueToken fails, the cookie
 // gets the Casdoor token; when it succeeds, the cookie gets the cs-user
 // token; A8 will introduce an explicit dual-issuance mode that sets both.
-func (w *RPCWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
 	if !w.Configured() {
 		return "", time.Time{}, ErrNotConfigured
 	}
@@ -299,7 +299,7 @@ func (w *RPCWriter) ReissueToken(userSubjectID string, claims *JWTClaims, audien
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("user rpc writer: marshal reissue-token request: %w", err)
 	}
-	status, respBody, transportErr := w.doCapture(context.Background(), http.MethodPost, "/api/internal/users/reissue-token", bodyBytes)
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/reissue-token", bodyBytes)
 	if transportErr != nil {
 		return "", time.Time{}, transportErr
 	}
@@ -346,13 +346,12 @@ func (w *RPCWriter) doCapture(ctx context.Context, method, path string, body []b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Phase B3b.2b TODO: forward tenant slug here once RPCWriter methods
-	// accept ctx — today every public writer method hardcodes
-	// context.Background() so no slug ever reaches this site. The OAuth
-	// callback rework in B3b.2b will thread ctx from handlers.RWMutex
-	// through UserWriter interface → DualWriter → RPCWriter, at which
-	// point the same `if slug := tenantSlugFromContext(ctx); slug != ""`
-	// injection lands here.
+	// Phase B3b.2b: forward the tenant slug so cs-user resolves the same
+	// tenant on writes (bind/unbind/transfer/get-or-create). Empty slug =
+	// "no signal" → cs-user falls back to default tenant.
+	if slug := tenantSlugFromContext(ctx); slug != "" {
+		req.Header.Set("X-Tenant-Id", slug)
+	}
 
 	resp, err := w.client.httpClient.Do(req)
 	if err != nil {

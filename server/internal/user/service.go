@@ -243,7 +243,7 @@ func (s *UserService) ListUserIdentities(ctx context.Context, userSubjectID stri
 	return identities, err
 }
 
-func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+func (s *UserService) BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
 	if s.writeMode == WriteModeReadonly {
 		return ErrWriteBlocked
 	}
@@ -369,7 +369,7 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 // TransferIdentityToUser transfers an identity (identified by externalKey) from its current
 // owner to targetUserSubjectID. This is used for account merging when a user explicitly
 // confirms that they want to claim an identity already bound to another account.
-func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externalKey string, _ string) error {
+func (s *UserService) TransferIdentityToUser(ctx context.Context, targetUserSubjectID string, externalKey string, _ string) error {
 	if s.writeMode == WriteModeReadonly {
 		return ErrWriteBlocked
 	}
@@ -426,7 +426,7 @@ func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externa
 	})
 }
 
-func (s *UserService) UnbindIdentityByProvider(userSubjectID string, provider string) error {
+func (s *UserService) UnbindIdentityByProvider(ctx context.Context, userSubjectID string, provider string) error {
 	if s.writeMode == WriteModeReadonly {
 		return ErrWriteBlocked
 	}
@@ -554,7 +554,7 @@ func (s *UserService) SearchUsers(ctx context.Context, keyword string, limit int
 // For read-only reconciliation (e.g. user-search backfill, where the caller is
 // not the user being synced) use SyncUser instead, which performs the same upsert
 // without firing the hook.
-func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
+func (s *UserService) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
 	if s.writeMode == WriteModeReadonly {
 		return nil, ErrWriteBlocked
 	}
@@ -858,7 +858,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
 		// Bind identity for newly created user
-		if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+		if err := s.BindIdentityToUser(context.Background(), user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
 			// Log but don't fail user creation if identity binding fails
 			fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
 		}

@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 验收 待跑） |
-| Phase B | tenant 维度落地（数据隔离） | ~28 | 5 | 18% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b/c OAuth callback 链路 + picker + cross-tenant 检测 + B4-B7 待启动） |
+| Phase B | tenant 维度落地（数据隔离） | ~28 | 6 | 21% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2/c OAuth callback 链路 + picker + cross-tenant 检测 + B4-B7 待启动） |
 | Phase C | 三级权限 + admin API | ~16 | 0 | 0% | ⏳ 待启动 |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
 
@@ -592,7 +592,21 @@
 - [x] `server/cmd/api/main.go`：`r.Use(middleware.ResolveTenantSlug(cfg.UserService.ApexDomains))` 装在 CORS/Logger/Recovery/ErrorLogger 之后、OptionalAuth 之前（公开路由也能解析 slug）
 - [x] **测试覆盖**：`internal/tenant/context_test.go`（5 测试）、`internal/middleware/tenant_test.go`（9 测试：header-wins / cookie-fallback / header-precedence / subdomain / subdomain-with-port / nested-subdomain-returns-label-below-apex / no-signal-none / host-is-apex-none / whitespace-header-ignored）；full server `go test ./...` 通过；user 包既有 RPC 测试未受影响
 
-**B3b.2b（待启动）** — OAuth callback 链路：
+**B3b.2b（拆分为 step1/step2）** — ctx 穿透 + OAuth callback 链路：
+
+**B3b.2b-step1（已完成 2026-07-17）** — ctx 穿透 refactor（解锁 write-path tenant slug 转发）：
+
+- [x] `server/internal/user/writer.go`：`UserWriter` interface 7 个方法签名全部加 `ctx context.Context` 首参；`DualWriter` 同步并 propagate ctx 给 Primary/Secondary
+- [x] `server/internal/user/rpc_writer.go`：`RPCWriter` 7 个方法接受 ctx；`doCapture()` 内部 6 处 `context.Background()` 替换为传入的 ctx；write-path 的 `X-Tenant-Id` header 注入（先前 B3b.2a placeholder）现在真正生效
+- [x] `server/internal/user/service.go`：`*UserService` 4 个 write 方法（GetOrCreateUser / BindIdentityToUser / TransferIdentityToUser / UnbindIdentityByProvider）接受 ctx（local DB 写入不需要 tenant 转发，ctx 仅做接口对齐；内部递归调用用 `context.Background()`）
+- [x] `server/internal/user/bootstrap.go`：`SyncUser` 接受 ctx（local stub 忽略）
+- [x] `server/internal/user/enterprise_mapping.go`：`ApplyEnterpriseMapping` + `ReissueToken` 接受 ctx（local stub 返回 `ErrSelfSignUnavailable`）
+- [x] `server/internal/handlers/handlers.go`：8 个 caller site 改为传 `c.Request.Context()`（OAuth callback + bind/unbind/transfer endpoint）
+- [x] `server/internal/handlers/users.go:324`：`backfillUsers` 是 fire-and-forget 后台 goroutine（无 gin.Context），用 `context.Background()` — tenant 转发对 backfill 无意义
+- [x] **测试**：所有 `*UserService` 直接调用方 + DualWriter/RPCWriter fake + handler test stub 全部同步加 ctx；`go test ./...` 通过
+- [x] **效果**：B3b.2a 留下的 write-path 注入 placeholder 现在真正激活 — 任何 RPCWriter 写调用（OAuth callback / bind / unbind / transfer）都会把 ctx 中的 slug 通过 `X-Tenant-Id` 转发给 cs-user；cs-user middleware 自动解析并写入对应的 `tenant_id`
+
+**B3b.2b-step2（待启动）** — OAuth callback Try 1/2/3 编排：
 
 - [ ] OAuth callback `handlers.AuthCallback`（server/internal/handlers/handlers.go:387）在 GetOrCreateUser 之前注入 tenant 解析：Try 1 subdomain → Try 2 email-domain → Try 3 picker redirect
 - [ ] picker endpoint `/api/tenant/suggest?email=...`（设计 §5.1 Try 2 多命中场景）— 需要 cs-user 暴露 RPC 端点（B3b.2b 子任务）
@@ -610,7 +624,7 @@
 - **subdomain 提取与 cs-user 一致**：`slugFromHost` 用 `strings.LastIndex(sub, ".")` 取 label immediately below apex（`foo.acme.example.com` → `acme`），与 cs-user `resolver.go` 行为对齐 — 两端必须 agree，否则同一 host 解析出不同 slug。
 - **middleware 装在 OptionalAuth 之前**：让 JWKS / health / swagger 等公开路由也能从 cookie/subdomain 提取 slug 转发；不过这些路径不调 cs-user RPC，slug 实际只对后续 RPC 调用有用。
 - **RPC 转发位置**：`rpc_client.do()` 在设 `X-Internal-Token` 之后立即检查 ctx 中的 slug，非空时设 `X-Tenant-Id`。`tenant_ctx.go` 提供共享 helper，nil-ctx 防御。
-- **已知限制 — write-path 未覆盖（B3b.2b 修）**：`rpc_writer.go doCapture()` 虽然也加了同样的注入逻辑，但所有 6 个 `RPCWriter` 公开方法（GetOrCreateUser / SyncUser / BindIdentityToUser / TransferIdentityToUser / UnbindIdentityByProvider / ApplyEnterpriseMapping / ReissueToken）当前硬编码 `context.Background()`，所以 slug 永远到不了注入点。修复需要把 `ctx context.Context` 加到 `UserWriter` interface 的所有方法签名上（DualWriter + RPCWriter + UserService 同步）+ 改 6 个 handler call sites。该 refactor 自然落在 B3b.2b（OAuth callback 链路）里 — B3b.2b 本来就要改 `handlers.go:452-476` 的 callback flow，顺手把 ctx 穿透下来。当前 B3b.2a 只覆盖 read-path（GetUserByID / GetUsersByIDs / SearchUsers / ListUserIdentities），write-path 暂时仍 fallback 到 default tenant。`rpc_writer.go doCapture()` 里的注入代码保留作为 B3b.2b 的 placeholder（注释说明），避免后续漏改。
+- **已知限制 — write-path 未覆盖（B3b.2b-step1 已修复）**：B3b.2a 当时由于 `rpc_writer.go` 所有 6 个 `RPCWriter` 方法硬编码 `context.Background()`，slug 永远到不了注入点。该 refactor 已在 B3b.2b-step1 完成 — `UserWriter` interface 全部加 ctx，write-path 注入现在生效。详见 B3b.2b-step1 实现细节。
 
 ### B3b.1 实现细节
 
