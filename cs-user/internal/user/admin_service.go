@@ -20,6 +20,8 @@ import (
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
+
+	"gorm.io/gorm"
 )
 
 // Account status values stored in users.status. Mirrors @server's
@@ -43,6 +45,10 @@ var (
 	ErrInvalidUserStatus = errors.New("user: invalid user status")
 	// ErrAdminUserNotFound is returned when the target subject_id has no row.
 	ErrAdminUserNotFound = errors.New("user: admin target not found")
+	// ErrCannotChangeOwnStatus prevents an admin from locking themselves out.
+	// operator_id is supplied by the handler (typically from gin ctx) and
+	// compared against subject_id.
+	ErrCannotChangeOwnStatus = errors.New("user: cannot change own status")
 )
 
 // IsValidUserStatus reports whether status is one of the allowed account states.
@@ -62,6 +68,79 @@ type ListUsersParams struct {
 	Status       string // exact users.status (active|disabled|banned)
 	Page         int    // 1-based
 	PageSize     int    // clamped to [1, MaxAdminUserPageSize], default DefaultAdminUserPageSize
+}
+
+// SetUserStatusResult captures the before/after for audit logging.
+type SetUserStatusResult struct {
+	SubjectID  string
+	FromStatus string // current users.status before the change
+	ToStatus   string // newly applied status
+}
+
+// SetUserStatus applies an admin status transition in a transaction,
+// returning the before/after for audit. operatorID is used for the
+// self-lock check (admin cannot change own status — prevents accidental
+// lockout). from_status is read inside the tx so the audit reflects the
+// actual transition, not a TOCTOU-suspect read.
+//
+// Status transition rules (intentionally permissive — the gating happens
+// at the auth middleware layer via the status check):
+//   - active ↔ disabled (operator toggles)
+//   - active/disabled → banned (escalation)
+//   - banned → active (manual unbanning by another admin; the operator
+//     cannot do this for themselves because of the self-lock rule)
+//
+// We do NOT enforce a finite state machine here: status is a single
+// column with a small allowlist (IsValidUserStatus), and the auth
+// middleware on @server treats disabled/banned as login-denied. Future
+// audit dashboards will need from_status + to_status to spot patterns.
+func (s *Service) SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*SetUserStatusResult, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	if !IsValidUserStatus(status) {
+		return nil, ErrInvalidUserStatus
+	}
+	if operatorID != "" && operatorID == subjectID {
+		return nil, ErrCannotChangeOwnStatus
+	}
+
+	var fromStatus string
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Read current status inside the tx — gives a stable from_status
+		// for audit even under concurrent transitions.
+		var u models.User
+		if err := tx.Scopes(tenant.Scope(ctx)).
+			Where("subject_id = ?", subjectID).
+			Select("status").
+			First(&u).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrAdminUserNotFound
+			}
+			return err
+		}
+		fromStatus = u.Status
+
+		result := tx.Scopes(tenant.Scope(ctx)).
+			Model(&models.User{}).
+			Where("subject_id = ?", subjectID).
+			Update("status", status)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrAdminUserNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &SetUserStatusResult{
+		SubjectID:  subjectID,
+		FromStatus: fromStatus,
+		ToStatus:   status,
+	}, nil
 }
 
 // ListUsers returns a page of users (newest first) for the admin console

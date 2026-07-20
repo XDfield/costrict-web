@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,10 @@ import (
 // substitute without spinning a real Service).
 type UsersAPI struct {
 	Svc UserService
+	// Audit (Phase C4.1) is optional — nil skips the post-success audit
+	// log write. Used by admin endpoints to record status transitions
+	// in user_center_audit_log.
+	Audit *auditlog.Service
 }
 
 // UserService is the subset of *user.Service the users handlers need.
@@ -52,6 +57,9 @@ type UserService interface {
 	// @server's /api/admin/users/* surface, migrated to cs-user as the
 	// single source of truth for user identity + status.
 	ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error)
+	// SetUserStatus applies an admin status transition. operatorID is
+	// used for the self-lock check (cannot change own status).
+	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*user.SetUserStatusResult, error)
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.

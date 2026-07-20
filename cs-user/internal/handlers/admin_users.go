@@ -26,6 +26,9 @@ import (
 // production implementation is *user.Service via admin_service.go.
 type AdminUsersService interface {
 	ListUsers(ctx context.Context, p userpkg.ListUsersParams) ([]*models.User, int64, error)
+	// SetUserStatus applies an admin status transition. operatorID is used
+	// for the self-lock check (admin cannot lock themselves out).
+	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*userpkg.SetUserStatusResult, error)
 }
 
 // Ensure *UsersAPI can also serve admin endpoints by composing the admin
@@ -135,5 +138,76 @@ func (a *UsersAPI) ListUsers(c *gin.Context) {
 		Total: total,
 		Page:  page,
 		Size:  pageSize,
+	})
+}
+
+// setUserStatusRequest is the body for POST
+// /api/internal/users/:subject_id/status. operator_id is the admin's
+// subject_id (forwarded by server's RPC client) — used for the self-lock
+// check (cannot change own status) and audit attribution.
+type setUserStatusRequest struct {
+	Status     string `json:"status" binding:"required"`
+	OperatorID string `json:"operator_id"`
+}
+
+// SetUserStatus godoc
+//
+//	@Summary		Set a user's account status (admin)
+//	@Description	Transitions the user's status to active | disabled | banned. Refuses to change the operator's own status (self-lock guard). Records a user_center_audit_log row keyed action=user.status_changed with from_status / to_status on success. Used by @server's POST /api/admin/users/:id/status (admin-user-migration slice).
+//	@Tags			users,admin
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string					true	"Target user subject_id"
+//	@Param			body		body		setUserStatusRequest	true	"New status + operator_id"
+//	@Success		200			{object}	object{from_status=string,to_status=string}
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/status [post]
+func (a *UsersAPI) SetUserStatus(c *gin.Context) {
+	subjectID := c.Param("subject_id")
+	if subjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	var req setUserStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	if !userpkg.IsValidUserStatus(req.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be one of active|disabled|banned"})
+		return
+	}
+
+	res, err := a.Svc.SetUserStatus(c.Request.Context(), subjectID, req.Status, req.OperatorID)
+	if err != nil {
+		switch {
+		case errors.Is(err, userpkg.ErrInvalidUserStatus):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, userpkg.ErrCannotChangeOwnStatus):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case errors.Is(err, userpkg.ErrAdminUserNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+
+	// Audit — best-effort; nil-safe when Audit is unset (test / 503 fallback).
+	// from_status / to_status are recorded so future audit dashboards can
+	// spot escalation patterns (e.g. active → banned waves).
+	recordAudit(a.Audit, c, models.ActionUserStatusChanged, models.TargetTypeUser,
+		"user:"+res.SubjectID, map[string]any{
+			"from_status": res.FromStatus,
+			"to_status":   res.ToStatus,
+		})
+
+	c.JSON(http.StatusOK, gin.H{
+		"from_status": res.FromStatus,
+		"to_status":   res.ToStatus,
 	})
 }

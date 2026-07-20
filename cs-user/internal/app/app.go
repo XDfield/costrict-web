@@ -142,7 +142,7 @@ func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
 // Phase 1: read endpoints (GET).
 // Phase 2: write endpoints (POST/DELETE) — see handlers/users.go.
 func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
-	usersAPI := handlers.UsersAPI{Svc: deps.Users}
+	usersAPI := handlers.UsersAPI{Svc: deps.Users, Audit: deps.AuditLog}
 	if deps.Users == nil {
 		usersAPI.Svc = unavailableUserService{}
 	}
@@ -162,6 +162,9 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// tree accepts distinct method+suffix combinations without conflict.
 	users.POST("/:subject_id/bind-identity", usersAPI.BindIdentity)
 	users.DELETE("/:subject_id/identities/:provider", usersAPI.UnbindIdentity)
+	// Admin status transition — admin-user-migration slice. Returns before/
+	// after status for audit; 409 on self-lock, 404 on unknown subject_id.
+	users.POST("/:subject_id/status", usersAPI.SetUserStatus)
 
 	// Phase E3a.1: Gitea binding status (read-only). Returns 404 when the
 	// user has no binding (provisioning not yet run). The route lives under
@@ -328,6 +331,12 @@ func (unavailableUserService) GetGiteaBinding(_ context.Context, _ string) (*mod
 // the production path — 503 via errServiceUnavailable.
 func (unavailableUserService) ListUsers(_ context.Context, _ user.ListUsersParams) ([]*models.User, int64, error) {
 	return nil, 0, errServiceUnavailable
+}
+
+// SetUserStatus mirrors the production error shape (503 service unavailable)
+// when the user service isn't wired.
+func (unavailableUserService) SetUserStatus(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+	return nil, errServiceUnavailable
 }
 
 type unavailableAuthIdentityService struct{}
