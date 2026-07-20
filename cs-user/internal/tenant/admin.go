@@ -25,10 +25,11 @@
 //
 // Illegal transitions return ErrInvalidStateTransition so handlers map to 409.
 //
-// Audit / webhook: this PR (C2) deliberately leaves user_center_audit_log
-// writes (§16.2, C4) and tenant.* webhook fanout (E4) as TODOs — structured
-// logger carries the actor + action fields now so C4 can hook without an API
-// change.
+// Audit / webhook: this PR (C2) deliberately leaves tenant.* webhook fanout
+// (E4) as a TODO — structured logger carries the actor + action fields now
+// so E4 can hook without an API change. Audit-log writes were added in C4.1
+// (see handlers.PlatformTenantsAPI.Audit — handler-layer orchestration, no
+// signature change to Admin methods).
 
 package tenant
 
@@ -76,10 +77,10 @@ const (
 // on_premise. App-layer validation only (no CHECK constraint, same reason as
 // Status).
 const (
-	EditionFree        = "free"
-	EditionTeam        = "team"
-	EditionEnterprise  = "enterprise"
-	EditionOnPremise   = "on_premise"
+	EditionFree       = "free"
+	EditionTeam       = "team"
+	EditionEnterprise = "enterprise"
+	EditionOnPremise  = "on_premise"
 )
 
 // slugPattern is the [a-z0-9-]{3,32} URL-safe slug rule from design §4.1 /
@@ -174,7 +175,8 @@ func (a *Admin) CreateTenant(ctx context.Context, p CreateParams) (*models.Tenan
 		return nil, fmt.Errorf("tenant: create: %w", err)
 	}
 
-	// TODO(audit-log): C4 — write actor + action to user_center_audit_log.
+	// Audit (C4.1) is wired at the handler layer (handlers.PlatformTenantsAPI)
+	// so this service stays signature-stable.
 	// TODO(webhook): E4 — emit tenant.created event.
 	return &tn, nil
 }
@@ -350,7 +352,7 @@ func (a *Admin) SuspendTenant(ctx context.Context, idOrSlug string) (*models.Ten
 		Update("status", StatusSuspended).Error; err != nil {
 		return nil, fmt.Errorf("tenant: suspend: %w", err)
 	}
-	// TODO(audit-log): C4 — record actor + suspension timestamp.
+	// Audit (C4.1) wired at handler layer.
 	// TODO(webhook): E4 — emit tenant.suspended.
 	return a.findByIDOrSlug(ctx, tn.TenantID)
 }
@@ -376,7 +378,7 @@ func (a *Admin) RestoreTenant(ctx context.Context, idOrSlug string) (*models.Ten
 		Update("status", StatusActive).Error; err != nil {
 		return nil, fmt.Errorf("tenant: restore: %w", err)
 	}
-	// TODO(audit-log): C4.
+	// Audit (C4.1) wired at handler layer.
 	// TODO(webhook): E4 — emit tenant.restored.
 	return a.findByIDOrSlug(ctx, tn.TenantID)
 }
@@ -403,12 +405,12 @@ func (a *Admin) RequestDeletion(ctx context.Context, idOrSlug string) (*models.T
 		Model(&models.Tenant{}).
 		Where("tenant_id = ?", tn.TenantID).
 		Updates(map[string]any{
-			"status":                 StatusDeleted,
-			"deletion_requested_at":  now,
+			"status":                StatusDeleted,
+			"deletion_requested_at": now,
 		}).Error; err != nil {
 		return nil, fmt.Errorf("tenant: request deletion: %w", err)
 	}
-	// TODO(audit-log): C4 — record deletion request (regulator-visible action).
+	// Audit (C4.1) wired at handler layer.
 	// TODO(webhook): E4 — emit tenant.deletion_requested.
 	return a.findByIDOrSlug(ctx, tn.TenantID)
 }
