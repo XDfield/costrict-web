@@ -36,7 +36,7 @@
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
 | Phase C | 三级权限 + admin API | ~16 | 6 | 38% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 / C4.3 audit-log list endpoints 待启动） |
-| Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 0 | 0% | ⏳ 按需 |
+| Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 1 | 5% | 🟡 进行中（E3a.1 Gitea user 自动开户切片已落地：`user_gitea_binding` 表 + `giteasync.GiteaClient` HTTP 客户端（establishes cs-user 首个 outbound HTTP client 模式）+ `giteasync.Service` 状态机（pending → synced | error，409 → lookup 恢复，timeout 保持 pending 待 reconciliation cron）+ `user.Service.GetOrCreateUser` 新用户 hook（best-effort，Gitea 宕机永不 fail signup）+ `GET /api/internal/users/:subject_id/gitea-binding` 读 endpoint + `user.gitea_provisioned` audit vocab + `CS_USER_GITEA_BASE_URL` / `CS_USER_GITEA_ADMIN_TOKEN` config gate；33 测试全绿；E3a.2 cascades + reconciliation cron / E3a.3 fork JWT middleware / E3b team_user 同步 / E4 webhook 待启动） |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
 
@@ -1223,7 +1223,7 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 
 - [ ] **E1**：provider_mapping yaml 标准化（per-tenant）
 - [ ] **E2**：tenant 级 IdP 接入（global vs tenant-specific）
-- [ ] **E3a**：Gitea JWT 中间件 fork + user 自动开户 + `user_gitea_binding` 维护（归属 cs-user）
+- [ ] **E3a**：Gitea JWT 中间件 fork + user 自动开户 + `user_gitea_binding` 维护（归属 cs-user） — **E3a.1 user 自动开户切片（5 commits）已落地 2026-07-20**：见下方"E3a.1 实现细节"；E3a.2 rename/disable/delete cascades + reconciliation cron / E3a.3 fork JWT middleware 待启动
 - [ ] **E3b**：Gitea `team_user` 同步（GitServerAdapter）（归属 server `internal/gitsync/`）
 - [ ] **E4**：webhook 用户变更广播系统
 
@@ -1329,6 +1329,55 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 
 - 应用层：在 server 容器环境变量中禁用 audit header forwarding（C4.2 未来工作可加 flag）；cs-user 端 `Deps.AuditLog = nil` 让 `recordAudit` nil-safe skip 全部审计写入，handler 不需改动。
 - 数据层：`DROP TABLE user_center_audit_log` 即可（无 FK 依赖，无下游消费者）。
+
+---
+
+### E3a.1 实现细节：Gitea user 自动开户（已落地 2026-07-20，5 commits）
+
+**5 commits**：`<A>` (user_gitea_binding 表 + 模型 + 4 测试) / `<B>` (`giteasync.GiteaClient` HTTP 客户端 + 8 httptest 测试) / `<C>` (`giteasync.Service` 状态机 + audit hook + 12 测试) / `<D>` (`user.Service.GetOrCreateUser` hook + `GetGiteaBinding` 读方法 + `UsersAPI.GetGiteaBinding` handler + `GiteaConfig` + `cmd/api/main.go` wiring + 12 测试) / `<本 commit>` (E 进度文档 + Phase E 计数器 0→1, 0%→5%)
+
+**架构**：3 层清晰分离 — `giteasync.Client`（HTTP transport + sentinel errors）/ `giteasync.Service`（state machine + best-effort writer + audit hook）/ `user.Service` hook（仅在 GetOrCreateUser new-user 分支触发，错误吞掉）。`user.GiteaProvisioner` interface 在 user 包声明（避免 `giteasync → models → user` import cycle）。复用 C4.1 `auditlog.Service` + 新增 `ActionUserGiteaProvisioned` / `TargetTypeUserGiteaBinding` vocab 常量。
+
+**7 项关键设计决策**：
+
+1. **同步 best-effort，永不 fail signup** — Provision 在 OAuth callback 进程内调用（5s ctx timeout）；任何失败（网络 / 5xx / 4xx）仅 WARN 日志 + 写 audit；users row 已 commit，binding 留 pending/error 等 E3a.2 reconciliation cron 修复。理由：signup 是冷路径，几百 ms 延迟 < Casdoor OAuth 自身延迟；Gitea 不可用不应阻塞用户登录拿 JWT。
+
+2. **状态机简化为 pending → synced | error**（无 dead_letter）— E3a.1 不实现重试队列；timeout 保持 pending（cron 周期性扫 pending → 重试）；其他失败 → error（last_error populated，ops 手动或 cron 修复）。匹配 USER_CENTER_DESIGN §11.2 简化版。
+
+3. **409 → LookupUserByName 恢复路径** — Gitea 已有同 username 时 POST /admin/users 返 409；Service 切到 GET /users/{name} 拿 UID，binding 标 synced（幂等结果）。这一支覆盖 cs-user 重启 / DB 漂移 / 旧用户走新代码等场景。
+
+4. **cs-user 首个 outbound HTTP client** — 此前 cs-user 全部是入站（gin handlers）；giteasync.GiteaClient establishes the pattern（stdlib net/http + JSON in/out + sentinel errors + httptest 测试）。后续 IdP 客户端（LDAP / OIDC source）可复用此模式。
+
+5. **`SetGiteaSync` setter 而非构造参数** — `user.NewService(db)` 签名稳定（30+ test call site 不动）；setter 在 main.go 显式调用一次。Phase A4b 已用过此模式（cmd/api/main.go 已多次）。
+
+6. **config gate 是 nil-safe 全链路** — `CS_USER_GITEA_BASE_URL` / `CS_USER_GITEA_ADMIN_TOKEN` 任一为空 → `GiteaConfig.Enabled() = false` → main.go 不构造 client → `SetGiteaSync` 不调用 → `Service.giteaSync = nil` → hook 跳过 `if s.giteaSync != nil`。local dev + 单元测试不需要真实 Gitea。
+
+7. **`user_gitea_binding` 表无 FK 到 users** — 与 `user_center_audit_log` 同决策：binding 行必须撑过 users hard-delete，否则 reconciliation cron 无法检测孤儿 Gitea 账号（§11.3）。PK 是 `(user_subject_id, tenant_id)`（B5 multi-tenancy + cs-user TEXT-subject_id 约定）；`gitea_username` 全局唯一索引（匹配 Gitea 自身约束）。
+
+**33 测试覆盖**：
+
+- `models/user_gitea_binding_test.go` — 5 tests（TableName / nullable defaults / synced round-trip / status vocab / int64Ptr helper）
+- `giteasync/client_test.go` — 9 tests（happy / 409 / 401 / network / ctx-timeout / lookup-happy / lookup-404 / missing-params / NewClient-empty-config）
+- `giteasync/service_test.go` — 12 tests（happy / 409-recovery / client-error / already-synced-noop / nil-audit / nil-client / timeout-keeps-pending / audit-row-on-synced / best-effort-timeout-isolation / buildUsername-sanitizer-4-cases）
+- `user/service_gitea_test.go` — 7 tests（hook-fires-on-new / hook-no-fire-on-existing / failure-doesnt-abort-signup / nil-provisioner-skipped / GetGiteaBinding happy / not-found / empty-subject）
+- `handlers/users_gitea_binding_test.go` — 5 tests（happy / 404 / empty-subject 400 / ErrEmptySubjectID 400 / 500-no-leak）
+
+**已知 deferred（不在 E3a.1 范围）**：
+
+- **E3a.2 username rename cascade** — `user.updated` → `PATCH /admin/users/{old}` + UPDATE binding.gitea_username；当前 username 改名不会同步到 Gitea。
+- **E3a.2 disable / soft-delete / hard-delete cascades** — users 表状态变化不传播到 Gitea。
+- **E3a.2 reconciliation cron** — pending/error binding 漂移修复 + 孤儿 Gitea 账号检测。
+- **E3a.3 fork JWT middleware 集成** — 当前 binding row 可查询但不强制；用户 sync_status='pending' 仍能访问 Gitea 直到 fork 中间件落地 503 gate（需协调 Gitea fork release，独立 PR）。
+- **E4 webhook 触发** — 当前同步 in-process 调用；E4 webhook subscription system 落地后切换为 async fire-and-forget。
+- **E3b `team_user` 同步** — ADR-3 v3：cs-user 只做 user-level provisioning；team-level sync 归 @server GitServerAdapter。
+- **payload diff / before-after snapshot** — 当前 payload 仅记 post-state（status / gitea_uid / error）。
+- **密码策略** — 随机 32-byte hex password 一次性使用（Gitea JWT middleware 是 auth path，不是密码）；未来 IdP-backed provisioning (LDAP/OIDC source) 需要更严格策略。
+
+**回滚步骤**：
+
+- 应用层：清空 `CS_USER_GITEA_BASE_URL` 或 `CS_USER_GITEA_ADMIN_TOKEN` 环境变量并重启 cs-user 进程；`GiteaConfig.Enabled() = false` → main.go 不构造 client → hook 全链路 nil-skip。无需改代码。
+- 数据层：`DROP TABLE user_gitea_binding`（无 FK 依赖；下游消费者只有本特性的 handler + service）。
+- Gitea 侧：手动 `DELETE FROM gitea_user WHERE username LIKE 'u-%'`（仅清理 cs-user 自动开户的账号；命名前缀 `u-` 保证可识别）。
 
 ---
 
