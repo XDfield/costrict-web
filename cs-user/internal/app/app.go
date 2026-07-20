@@ -154,6 +154,9 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// Admin user-management (admin-user-migration slice). Static literal
 	// paths win over the :subject_id wildcard in gin's radix tree.
 	users.GET("/list", usersAPI.ListUsers)
+	// Organization roll-up — admin filter dropdown. Static literal path
+	// wins over the :subject_id wildcard in gin's radix tree.
+	users.GET("/organizations", usersAPI.ListOrganizations)
 
 	// Phase 2 write endpoints.
 	users.POST("/get-or-create", usersAPI.GetOrCreate)
@@ -336,6 +339,12 @@ func (unavailableUserService) ListUsers(_ context.Context, _ user.ListUsersParam
 // SetUserStatus mirrors the production error shape (503 service unavailable)
 // when the user service isn't wired.
 func (unavailableUserService) SetUserStatus(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+	return nil, errServiceUnavailable
+}
+
+// ListOrganizations mirrors the production error shape (503 service
+// unavailable) when the user service isn't wired.
+func (unavailableUserService) ListOrganizations(_ context.Context) ([]user.OrganizationCount, error) {
 	return nil, errServiceUnavailable
 }
 
