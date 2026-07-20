@@ -2,8 +2,8 @@
 //
 // Two endpoints sit on top of auditlog.Service.List (step 1 of this slice):
 //
-//   GET /api/internal/platform/audit-logs  — platform-admin, cross-tenant
-//   GET /api/internal/tenants/audit-logs   — tenant-scoped via X-Tenant-Id
+//	GET /api/internal/platform/audit-logs  — platform-admin, cross-tenant
+//	GET /api/internal/tenants/audit-logs   — tenant-scoped via X-Tenant-Id
 //
 // Both honor the same query-string filters (action / actor_subject_id /
 // target_type / target_id / from / to / limit / offset) and differ only in
