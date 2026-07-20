@@ -590,6 +590,13 @@ func main() {
 			tenantUsers := authed.Group("/tenant/users")
 			tenantUsers.Use(middleware.RequireTenantAdmin("owner", "admin"))
 			tenantUsers.GET("", tenantUserAPI.ListTenantUsers)
+			// Phase C3.4 — tenant_admin user status management. Mirrors
+			// the platform_admin endpoint (PUT /admin/users/:id/status)
+			// but scoped to the caller's own tenant via the forwarded
+			// X-Tenant-Id header. cs-user enforces row-level scope via
+			// tenant.Scope(ctx) — a tenant_admin from tenant X targeting
+			// a user in tenant Y surfaces as 404 (row invisible).
+			tenantUsers.PUT("/:id/status", tenantUserAPI.SetTenantUserStatus)
 
 			// Phase C3.2: tenant_admin config CRUD (GET + PUT raw YAML blob).
 			tenantConfigAPI := &handlers.TenantConfigAPI{
