@@ -44,6 +44,10 @@ type UserService interface {
 	// employment_identities (server has no such table); ApplyEnterpriseMapping
 	// is the single write path.
 	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
+	// Phase E3a.1: read the Gitea binding row for a user (or
+	// gorm.ErrRecordNotFound). Powers GET /users/:subject_id/gitea-binding
+	// for ops visibility + the future fork JWT middleware (E3a.3).
+	GetGiteaBinding(ctx context.Context, subjectID string) (*models.UserGiteaBinding, error)
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.

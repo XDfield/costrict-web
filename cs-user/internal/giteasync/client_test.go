@@ -57,10 +57,10 @@ func TestProvisionGiteaUser_HappyPath(t *testing.T) {
 
 	c := NewClient(srv.URL, "secret-pat")
 	u, err := c.ProvisionGiteaUser(context.Background(), GiteaUserParams{
-		Username:  "u-alice",
-		Email:     "alice@example.com",
-		Password:  "throwaway-pw-12345",
-		SourceID:  0,
+		Username: "u-alice",
+		Email:    "alice@example.com",
+		Password: "throwaway-pw-12345",
+		SourceID: 0,
 	})
 	if err != nil {
 		t.Fatalf("ProvisionGiteaUser: %v", err)

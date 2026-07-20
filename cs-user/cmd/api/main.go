@@ -37,6 +37,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
+	"github.com/costrict/costrict-web/cs-user/internal/giteasync"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
@@ -77,6 +78,22 @@ func main() {
 	// read methods; write methods (bind/unbind/transfer) land in Phase A
 	// once JWT-claims plumbing is available.
 	userSvc := user.NewService(pool.Gorm)
+
+	// Phase E3a.1: wire Gitea auto-provisioning when both env vars are
+	// set. Empty config → feature stays disabled (giteaSync nil), so the
+	// GetOrCreateUser hook skips without touching the network. The user
+	// service carries the provisioner through the OAuth callback path
+	// (server-side AuthCallback → RPCWriter.GetOrCreateUser → here).
+	auditSvc := auditlog.NewService(pool.Gorm, nil)
+	if cfg.Gitea.Enabled() {
+		giteaClient := giteasync.NewClient(cfg.Gitea.BaseURL, cfg.Gitea.AdminToken)
+		giteaSvc := giteasync.NewService(pool.Gorm, giteaClient, auditSvc, nil)
+		userSvc.SetGiteaSync(giteaSvc)
+		logger.Info("Gitea auto-provisioning enabled",
+			zap.String("base_url", cfg.Gitea.BaseURL))
+	} else {
+		logger.Warn("Gitea auto-provisioning disabled — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
+	}
 
 	// Dev-mode auto-migrate: when CS_USER_AUTO_MIGRATE is truthy ("1"/"true"),
 	// apply pending migrations inline at boot so local dev doesn't need a
@@ -129,7 +146,7 @@ func main() {
 		TenantResolver:   tenant.NewResolver(pool.Gorm),
 		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
 		TenantConfig:     tenantconfig.New(pool.Gorm),
-		AuditLog:         auditlog.NewService(pool.Gorm, nil),
+		AuditLog:         auditSvc,
 	})
 
 	srv := &http.Server{
