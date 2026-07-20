@@ -142,6 +142,105 @@ func (s *Service) Record(ctx context.Context, p RecordParams) error {
 	return nil
 }
 
+// ListParams filters the audit-log query (Phase C4.3). Every field is
+// optional — empty string / zero time means "no filter on this dimension".
+// Limit defaults to 100 when non-positive and caps at 500; negative Offset
+// is normalized to 0. Results are newest-first by created_at DESC.
+//
+// TenantID is honored verbatim when set. The Phase C4.3 tenant-scoped
+// handler forces TenantID from request ctx (resolved from X-Tenant-Id
+// header by middleware.ResolveTenant), so callers cannot spoof a foreign
+// tenant — but the service itself stays scope-agnostic and trusts whatever
+// TenantID the caller supplies. Cross-tenant enforcement is the handler's
+// job, not the service's.
+type ListParams struct {
+	TenantID       string
+	ActorSubjectID string
+	Action         string
+	TargetType     string
+	TargetID       string
+	From           time.Time // created_at >= ; zero value = no lower bound
+	To             time.Time // created_at <= ; zero value = no upper bound
+	Limit          int
+	Offset         int
+}
+
+// ListResult is the paginated audit-log response. Total is the pre-pagination
+// count under the same filter set; Limit/Offset echo the effective pagination
+// (after defaults/caps applied) so callers can render total page count.
+type ListResult struct {
+	Logs   []*models.AuditLog `json:"logs"`
+	Total  int64              `json:"total"`
+	Limit  int                `json:"limit"`
+	Offset int                `json:"offset"`
+}
+
+// List returns one paginated slice of audit rows matching the given filters.
+// Newest first. Empty result set is not an error — Total=0, Logs=[].
+//
+// The query is built from non-zero filters via chained .Where() clauses on a
+// shared *gorm.DB so the count and the select apply identical predicates
+// (drift would let the count claim rows the select doesn't return, or vice
+// versa).
+func (s *Service) List(ctx context.Context, p ListParams) (*ListResult, error) {
+	if s == nil || s.db == nil {
+		s.logf("auditlog.List: nil service/db")
+		return nil, ErrNilDB
+	}
+	if p.Limit <= 0 {
+		p.Limit = 100
+	} else if p.Limit > 500 {
+		p.Limit = 500
+	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+
+	q := s.db.WithContext(ctx).Model(&models.AuditLog{})
+	if p.TenantID != "" {
+		q = q.Where("tenant_id = ?", p.TenantID)
+	}
+	if p.ActorSubjectID != "" {
+		q = q.Where("actor_subject_id = ?", p.ActorSubjectID)
+	}
+	if p.Action != "" {
+		q = q.Where("action = ?", p.Action)
+	}
+	if p.TargetType != "" {
+		q = q.Where("target_type = ?", p.TargetType)
+	}
+	if p.TargetID != "" {
+		q = q.Where("target_id = ?", p.TargetID)
+	}
+	if !p.From.IsZero() {
+		q = q.Where("created_at >= ?", p.From)
+	}
+	if !p.To.IsZero() {
+		q = q.Where("created_at <= ?", p.To)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("auditlog: list count: %w", err)
+	}
+
+	var rows []*models.AuditLog
+	if err := q.
+		Order("created_at DESC, id DESC").
+		Limit(p.Limit).
+		Offset(p.Offset).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("auditlog: list select: %w", err)
+	}
+
+	return &ListResult{
+		Logs:   rows,
+		Total:  total,
+		Limit:  p.Limit,
+		Offset: p.Offset,
+	}, nil
+}
+
 // marshalPayload serializes the params map to JSONB-ready bytes. A nil map
 // or marshal error returns nil (NULL column) — the audit row still lands;
 // payload is best-effort.
