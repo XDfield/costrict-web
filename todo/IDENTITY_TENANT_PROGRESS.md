@@ -35,7 +35,7 @@
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 6 | 38% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 / C4.3 audit-log list endpoints 待启动） |
+| Phase C | 三级权限 + admin API | ~16 | 7 | 44% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；**admin-user-migration 切片（option A 完整迁移，9 commits）已落地 2026-07-20**：@server `/api/admin/users/*` 身份 + status 走 cs-user RPC，cs-user 成为身份 + status 单一真相源，Casdoor 仅作登录源认证；详见下方"admin-user-migration 实现细节"；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 / C4.3 audit-log list endpoints 待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 3 | 15% | 🟡 进行中（E3a.1 Gitea user 自动开户切片已落地：`user_gitea_binding` 表 + `giteasync.GiteaClient` HTTP 客户端（establishes cs-user 首个 outbound HTTP client 模式）+ `giteasync.Service` 状态机（pending → synced | error，409 → lookup 恢复，timeout 保持 pending 待 reconciliation cron）+ `user.Service.GetOrCreateUser` 新用户 hook（best-effort，Gitea 宕机永不 fail signup）+ `GET /api/internal/users/:subject_id/gitea-binding` 读 endpoint + `user.gitea_provisioned` audit vocab；**E3a.1 被 E3b.1.1 重构：per-tenant Gitea 解析替换全局 `CS_USER_GITEA_BASE_URL`/`CS_USER_GITEA_ADMIN_TOKEN`**（见下方 E3b.1.1）；E3b.1 @server GitServerAdapter MVP 框架已落地；**E3b.1.1 per-tenant Gitea fix 已落地**（cs-user `git_servers` 表 + 两端 `ResolveAdapterForTenant` per-tenant 解析；见下方 E3b.1.1 实现细节）；E3a.2 cascades + reconciliation cron / E3a.3 fork JWT middleware / E3b.2 real provider swap + cron + delta sync / E4 webhook 待启动） |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -1467,6 +1467,59 @@ progress 文档（1 commit）：
 
 - cs-user: 4 (model) + 5 (resolver) + 5 (bootstrap) + 13 (giteasync service) + 7 (handler) = **34**
 - @server: 12 (rpc client) + 10 (resolver) + 15 (gitsync service) + 8 (handler team_sync) = **45** （含 4 个 per-tenant 回归测试）
+
+---
+
+### admin-user-migration 实现细节：@server admin/users 切片迁移到 cs-user（已落地 2026-07-20，9 commits）
+
+**迁移目标**：把 @server `/api/admin/users/*`（platform-admin 成员管理面）的身份 + status 真相迁到 cs-user。**方案 A 完整迁移**（用户明确选项）：cs-user 持有 user identity + status 唯一真相；Casdoor 仅作登录源认证；@server 保留本地 activity counts（`capability_items` / `item_distributions` / `item_distribution_receipts`）和 system roles（`user_system_roles`），因为这些表在 `costrict_db` 不在 `cs_user`，跨 DB join 按 ADR D1 拆分。
+
+**9 commits**：
+
+cs-user 侧（5 commits，新建 `/api/internal/users/*` admin 内部端点面）：
+- `<1>` (`models.ActionUserStatusChanged` + `TargetTypeUser` audit vocab；为 SetUserStatus 的 `user_center_audit_log` 行做准备)
+- `<2>` (`GET /api/internal/users/list` + `adminUserListItem` DTO + 分页 / keyword / organization / status 过滤；@server 列表 → RPC；4 测试 happy + 400 + 500 + empty)
+- `<3>` (`POST /api/internal/users/:subject_id/status` + `setUserStatusRequest` body（含 `operator_id` 用于 self-lock check + audit 归属）+ transactional from_status 读取 + self-lock sentinel + audit row 写入；5 测试含 200/400/404/409/invalid body)
+- `<4>` (`GET /api/internal/users/organizations` + per-tenant 组织 roll-up；3 测试含 empty → `[]` 序列化)
+- `<5>` (`GET /api/internal/users/:subject_id/profile` + `adminUserProfileDTO`（privacy-scoped，omit `external_key` / `casdoor_*` / `provider_user_id`）；4 测试含 happy + 不漏 infra IDs + 404 + 500)
+
+@server 侧（3 commits，新建 RPC client + 重写 adminuser handlers + 清理 dead code）：
+- `<6>` (`user.RPCClient` 新增 4 个 admin-user 方法：`ListUsers` / `SetUserStatus` / `ListOrganizations` / `GetUserProfile`；`adminUserDo` 共享 helper（X-Internal-Token + X-Tenant-Id forwarding + actor-meta headers + timeout）；`mapAdminUserHTTPError` 把 HTTP code 映射为本地 sentinel；6 个本地 DTO 类型与 cs-user 一一对应；sentinels 前缀 `ErrAdminUserRPC*` 避免与现有 `admin_service.go` sentinels 碰撞；13 测试 happy + each HTTP code branch + NotConfigured + transport fault)
+- `<7>` (`adminuser.Module` 重写：`AdminUserRPC` interface（prod impl = `*userpkg.RPCClient`，compile-time assertion `var _ AdminUserRPC = (*userpkg.RPCClient)(nil)`）；handlers 走 RPC 拿身份 + status，`m.users.RolesForUsers` + `m.users.GetUserProfile` 留本地（cross-DB split per ADR D1）；nil RPC 或 `!Configured()` → 503；typed-nil interface trap 被 `RPCClient.Configured()` 的 nil-receiver check 兜底；15 测试 stubRPC 注入，覆盖每个 handler happy + each sentinel + 503 + 401 + 边缘 case)
+- `<8>` (cleanup：删 `admin_service.go` 的 `ListUsers` / `SetUserStatus` / `ListOrganizations` / `IsValidUserStatus` / `ListUsersParams` / `OrganizationCount` / 3 个 sentinel errors（`ErrInvalidUserStatus` / `ErrCannotChangeOwnStatus` / `ErrAdminUserNotFound`）+ 删 adminuser.SetUserStatusHandler 里的 `audit.Record(...)` 双写（cs-user 的 `user_center_audit_log` 行已是真相源，per ADR D1 single-source-of-truth）+ 清理 admin_service_test.go 中对应死测试)
+
+progress 文档（1 commit）：
+- `<本 commit>`（Phase C 计数器 6→7, 38%→44%；新增本节）
+
+**关键设计决策**：
+
+1. **方案 A 完整迁移** — 用户明确选 option A（身份 + status 全迁），cs-user 作单一真相源；Casdoor 仅作登录源认证。区别于方案 B（仅迁 status，留 @server 身份）：避免双 DB 同步语义复杂度。
+2. **Cross-DB 拆分**（ADR D1）— @server 保留 activity counts + system roles 本地查询；`costrict_db` 与 `cs_user` 是物理分离 DB，跨 DB join 不可行；GetUserProfileHandler 是 split-then-merge 的范本：RPC 拿 identity → 本地 DB 拿 activity counts → 本地 DB 拿 roles → 合并到 `adminUserResponse`。
+3. **Sentinel 解耦**（ADR D1）— cs-user 侧 sentinels（`ErrInvalidUserStatus` / `ErrCannotChangeOwnStatus` / `ErrAdminUserNotFound`）与 @server 侧 sentinels（`ErrAdminUserRPCInvalidStatus` / `ErrAdminUserRPCNotFound` / `ErrAdminUserRPCCannotChangeOwn`）分别声明；前缀 `ErrAdminUserRPC*` 避免碰撞；@server 不 import cs-user 的 error vars，HTTP code/body 文本匹配保持契约稳定。
+4. **HTTP code 兼容**（self-lock 400 而非 409）— cs-user 的 SetUserStatus 返回 409 表示 self-lock；@server handler 保留 legacy 400（避免破坏前端 expectations），代码注释说明 deviation。REST anti-pattern 但前端兼容性优先。
+5. **AdminUserRPC interface for testability** — `adminuser.Module.rpc` 字段类型是 interface 而非 `*userpkg.RPCClient` 具体类型；prod impl 满足 interface（compile-time assertion 防漂移）；test 用 `stubRPC` 注入 canned response / error，不起 HTTP server。
+6. **Nil-safe feature gating** — RPC backend 未配置（`USER_SERVICE_BACKEND != rpc`）时 `*RPCClient.Configured()` 返回 false；adminuser handlers 检测 `m.rpc == nil || !m.rpc.Configured()` 返回 503。typed-nil interface trap 被 `Configured()` 的 nil-receiver check 兜底（`c != nil && c.baseURL != "" && ...`）。
+7. **Privacy-scoped DTO**（`adminUserProfileDTO`）— cs-user 故意不返回 `external_key` / `casdoor_*` / `provider_user_id` 等 infra-only identifiers；admin UI 消费 human-facing 字段。@server 的 `adminUserResponse.UniversalID` 字段保留（shape compat）但永远空字符串——前端 selection/echo-back 如果依赖 universalId 需要后续 slice 通过非 admin endpoint 单独暴露。
+8. **Audit single-source-of-truth**（Commit 8）— 早期是 transitional double-write（cs-user 写 `user_center_audit_log` + @server 写本地 `audit_log`）；Commit 8 删 @server 端 `audit.Record`，cs-user 的 audit row 成为唯一权威记录。
+9. **Response 字段从 RPC 派生** — `SetUserStatusHandler` 现在返回 `{success, from_status, to_status}`（取自 RPC response），不再是 `{success: true}` 单字段；前端可以基于 `from_status → to_status` 转换做更细的 UI 反馈。
+
+**已知 deferred（不在 admin-user-migration 范围）**：
+
+- **UniversalID 重新暴露** — 当前 `adminUserResponse.UniversalID` 永远空；如果前端 enterprise/grant selection 依赖此字段，需要后续 slice 通过非 admin endpoint（e.g. `/api/admin/users/:id/external-ids`）单独暴露，避免 admin surface 漏出 infra-only IDs。
+- **Tenancy 维度切换** — 当前 `X-Tenant-Id` forwarding 透传 ctx.tenant slug；如果 platform-admin 想跨 tenant 列用户，需要单独 endpoint（不在 C2 admin/user 切片）。
+- **`@server admin_service.go` 全删** — 当前保留 `GetUserStatus`（middleware 用）+ `GetUserProfile`（activity counts）+ `RolesForUsers`（roles lookup）；如果未来 activity counts 也迁 cs-user（需要 ETL），可以彻底删 admin_service.go。
+- **Per-tenant admin endpoints**（C3.x 系列）— 当前 `/api/admin/users/*` 是 platform-admin only；tenant_admin 视角的成员管理（C3.1 已有 `GET /api/tenant/users`）后续可以扩展为完整 CRUD（status switch / profile / organizations）。
+
+**回滚步骤**：
+
+- cs-user：删 `/api/internal/users/list` / `/:subject_id/status` / `/organizations` / `/:subject_id/profile` 4 个 handler + `user/admin_service.go` 的 `SetUserStatus` / `ListOrganizations` 方法（cs-user 侧）。`ActionUserStatusChanged` / `TargetTypeUser` audit vocab 保留无害。
+- @server：revert commit `<8>`（恢复 dead code + 本地 audit）→ revert commit `<7>`（adminuser handlers 回到本地 DB 查询）→ revert commit `<6>`（删 RPC client 文件）。`adminuser.Module` 签名回退到 `New(users *UserService)`。
+- DB：无 schema 变更（本切片纯应用层）。
+
+**测试覆盖（合计 50 测试）**：
+
+- cs-user: 2 (audit vocab model tests 已存在) + 4 (list) + 5 (set-status) + 3 (organizations) + 4 (profile) = **18 handler-level 测试**（admin_service 方法本身的 model-level 测试在 cs-user `user/admin_service_test.go` 内，未在本切片变更）
+- @server: 13 (RPC client) + 15 (adminuser handlers rewrite) = **28**
 
 ---
 
