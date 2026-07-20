@@ -237,3 +237,77 @@ func (a *UsersAPI) ListOrganizations(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }
+
+// adminUserProfileDTO is the privacy-scoped projection of models.User
+// returned by the admin profile endpoint. Deliberately omits infra-only
+// identifiers (external_key, casdoor_*, provider_user_id) — those are used
+// for login lookup, not for human admin consumption. @server merges this
+// with its locally-computed activity counts (capability_items,
+// item_distributions) before returning the full profile to the admin UI.
+type adminUserProfileDTO struct {
+	SubjectID    string  `json:"subject_id"`
+	Username     string  `json:"username"`
+	DisplayName  *string `json:"display_name,omitempty"`
+	Email        *string `json:"email,omitempty"`
+	Phone        *string `json:"phone,omitempty"`
+	AvatarURL    *string `json:"avatar_url,omitempty"`
+	AuthProvider *string `json:"auth_provider,omitempty"`
+	Organization *string `json:"organization,omitempty"`
+	Status       string  `json:"status"`
+	IsActive     bool    `json:"is_active"`
+	LastLoginAt  *string `json:"last_login_at,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+}
+
+// GetUserProfile godoc
+//
+//	@Summary		Get a user's identity profile (admin)
+//	@Description	Returns the identity + status slice of a user's profile (subject_id, username, contact info, status, login metadata). Privacy-scoped: infra-only identifiers (external_key, casdoor_*, provider_user_id) are NOT returned. @server supplements this with locally-computed activity counts (createdItemCount, distributedCount, receivedCount) before returning the full profile to the admin UI. Used by @server's GET /api/admin/users/:id/profile (admin-user-migration slice).
+//	@Tags			users,admin
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string	true	"User subject_id"
+//	@Success		200			{object}	adminUserProfileDTO
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/profile [get]
+func (a *UsersAPI) GetUserProfile(c *gin.Context) {
+	subjectID := c.Param("subject_id")
+	if subjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+
+	u, err := a.Svc.GetUserByID(c.Request.Context(), subjectID)
+	if err != nil {
+		switch {
+		case errors.Is(err, userpkg.ErrEmptySubjectID):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+
+	dto := adminUserProfileDTO{
+		SubjectID:    u.SubjectID,
+		Username:     u.Username,
+		DisplayName:  u.DisplayName,
+		Email:        u.Email,
+		Phone:        u.Phone,
+		AvatarURL:    u.AvatarURL,
+		AuthProvider: u.AuthProvider,
+		Organization: u.Organization,
+		Status:       u.Status,
+		IsActive:     u.IsActive,
+		CreatedAt:    u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if u.LastLoginAt != nil {
+		s := u.LastLoginAt.Format("2006-01-02T15:04:05Z")
+		dto.LastLoginAt = &s
+	}
+	c.JSON(http.StatusOK, dto)
+}

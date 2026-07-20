@@ -132,6 +132,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.GET("/api/internal/users/list", api.ListUsers)
 	r.GET("/api/internal/users/organizations", api.ListOrganizations)
 	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
+	r.GET("/api/internal/users/:subject_id/profile", api.GetUserProfile)
 	return api, r
 }
 
@@ -1112,6 +1113,129 @@ func TestListOrganizations_ServiceErrorReturns500(t *testing.T) {
 		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "db down") {
+		t.Errorf("internal error must not leak: %s", w.Body.String())
+	}
+}
+
+// --- GetUserProfile (admin-user-migration slice) ---
+
+func TestGetUserProfile_HappyPath(t *testing.T) {
+	disp := "Alice"
+	email := "alice@example.com"
+	org := "Eng"
+	avatar := "https://cdn/x.png"
+	lastLogin := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc := stubUserService{
+		getByID: func(_ context.Context, _ string) (*models.User, error) {
+			return &models.User{
+				SubjectID:    "subj-1",
+				Username:     "alice",
+				DisplayName:  &disp,
+				Email:        &email,
+				AvatarURL:    &avatar,
+				Organization: &org,
+				Status:       user.UserStatusActive,
+				IsActive:     true,
+				LastLoginAt:  &lastLogin,
+				CreatedAt:    created,
+			}, nil
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/subj-1/profile", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`"subject_id":"subj-1"`,
+		`"username":"alice"`,
+		`"display_name":"Alice"`,
+		`"email":"alice@example.com"`,
+		`"organization":"Eng"`,
+		`"status":"active"`,
+		`"is_active":true`,
+		`"last_login_at":"2026-07-01T12:00:00Z"`,
+		`"created_at":"2026-01-01T00:00:00Z"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
+	extKey := "ext-secret"
+	casdoorID := "cas-abc"
+	provUserID := "prov-xyz"
+	svc := stubUserService{
+		getByID: func(_ context.Context, _ string) (*models.User, error) {
+			return &models.User{
+				SubjectID:      "subj-1",
+				Username:       "alice",
+				ExternalKey:    &extKey,
+				CasdoorID:      &casdoorID,
+				ProviderUserID: &provUserID,
+				Status:         user.UserStatusActive,
+				IsActive:       true,
+				CreatedAt:      time.Now(),
+			}, nil
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/subj-1/profile", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, banned := range []string{"external_key", "casdoor_id", "provider_user_id", "casdoor_sub", "casdoor_universal_id"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("profile must not leak %s: %s", banned, body)
+		}
+	}
+	if strings.Contains(body, "ext-secret") || strings.Contains(body, "cas-abc") || strings.Contains(body, "prov-xyz") {
+		t.Errorf("infra identifiers leaked: %s", body)
+	}
+}
+
+func TestGetUserProfile_NotFoundReturns404(t *testing.T) {
+	svc := stubUserService{
+		getByID: func(_ context.Context, _ string) (*models.User, error) {
+			return nil, gorm.ErrRecordNotFound
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/ghost/profile", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetUserProfile_InternalErrorReturns500(t *testing.T) {
+	svc := stubUserService{
+		getByID: func(_ context.Context, _ string) (*models.User, error) {
+			return nil, errors.New("conn lost")
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/subj-1/profile", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "conn lost") {
 		t.Errorf("internal error must not leak: %s", w.Body.String())
 	}
 }
