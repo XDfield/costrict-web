@@ -33,6 +33,7 @@ type stubUserService struct {
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 	getGiteaBinding        func(context.Context, string) (*models.UserGiteaBinding, error)
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
+	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
 }
 
 func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -95,6 +96,12 @@ func (s stubUserService) ListUsers(ctx context.Context, p user.ListUsersParams) 
 	}
 	return s.listUsers(ctx, p)
 }
+func (s stubUserService) SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*user.SetUserStatusResult, error) {
+	if s.setUserStatus == nil {
+		panic("stubUserService.setUserStatus not wired")
+	}
+	return s.setUserStatus(ctx, subjectID, status, operatorID)
+}
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	gin.SetMode(gin.TestMode)
@@ -116,6 +123,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.GET("/api/internal/users/:subject_id/gitea-binding", api.GetGiteaBinding)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
+	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
 	return api, r
 }
 
@@ -927,5 +935,113 @@ func TestListUsers_ServiceErrorReturns500(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "db down") {
 		t.Errorf("internal error must not leak: %s", w.Body.String())
+	}
+}
+
+// --- SetUserStatus (admin-user-migration slice) ---
+
+func TestSetUserStatus_HappyPath(t *testing.T) {
+	var gotSubject, gotStatus, gotOperator string
+	svc := stubUserService{
+		setUserStatus: func(_ context.Context, subjectID, status, operatorID string) (*user.SetUserStatusResult, error) {
+			gotSubject, gotStatus, gotOperator = subjectID, status, operatorID
+			return &user.SetUserStatusResult{SubjectID: subjectID, FromStatus: user.UserStatusActive, ToStatus: status}, nil
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	body := map[string]any{"status": "banned", "operator_id": "admin-007"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/subj-1/status", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotSubject != "subj-1" || gotStatus != "banned" || gotOperator != "admin-007" {
+		t.Errorf("service got (%q,%q,%q), want (subj-1,banned,admin-007)", gotSubject, gotStatus, gotOperator)
+	}
+	if !strings.Contains(w.Body.String(), `"from_status":"active"`) || !strings.Contains(w.Body.String(), `"to_status":"banned"`) {
+		t.Errorf("response missing from/to status: %s", w.Body.String())
+	}
+}
+
+func TestSetUserStatus_InvalidStatusReturns400(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{}) // service would panic if called
+
+	body := map[string]any{"status": "quarantined", "operator_id": "admin-007"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/subj-1/status", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSetUserStatus_MissingStatusReturns400(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/subj-1/status", map[string]any{"operator_id": "admin-007"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSetUserStatus_SelfLockReturns409(t *testing.T) {
+	svc := stubUserService{
+		setUserStatus: func(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+			return nil, user.ErrCannotChangeOwnStatus
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	body := map[string]any{"status": "disabled", "operator_id": "self-id"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/self-id/status", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 self-lock, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cannot change own status") {
+		t.Errorf("expected self-lock message, got: %s", w.Body.String())
+	}
+}
+
+func TestSetUserStatus_NotFoundReturns404(t *testing.T) {
+	svc := stubUserService{
+		setUserStatus: func(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+			return nil, user.ErrAdminUserNotFound
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	body := map[string]any{"status": "disabled"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/ghost/status", body)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 unknown subject, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSetUserStatus_InternalErrorReturns500(t *testing.T) {
+	svc := stubUserService{
+		setUserStatus: func(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+			return nil, errors.New("tx aborted")
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	body := map[string]any{"status": "banned"}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/subj-1/status", body)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 internal, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "tx aborted") {
+		t.Errorf("internal error must not leak: %s", w.Body.String())
+	}
+}
+
+func TestSetUserStatus_InvalidBodyReturns400(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{})
+
+	// Malformed JSON.
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/users/subj-1/status", strings.NewReader("{not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 malformed body, got %d: %s", w.Code, w.Body.String())
 	}
 }
