@@ -160,16 +160,17 @@ func main() {
 	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
 	// actual DB reachability via Ping.
 	r := app.NewRouter(cfg, app.Deps{
-		ReadyChecker:     pool,
-		Users:            userSvc,
-		AuthIdentities:   userSvc,
-		EmploymentReader: userSvc,
-		PermissionReader: userSvc,
-		Signer:           signer,
-		TenantResolver:   tenant.NewResolver(pool.Gorm),
-		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
-		TenantConfig:     tenantconfig.New(pool.Gorm),
-		AuditLog:         auditSvc,
+		ReadyChecker:      pool,
+		Users:             userSvc,
+		AuthIdentities:    userSvc,
+		EmploymentReader:  userSvc,
+		PermissionReader:  userSvc,
+		Signer:            signer,
+		TenantResolver:    tenant.NewResolver(pool.Gorm),
+		TenantAdmin:       tenant.NewAdmin(pool.Gorm),
+		TenantConfig:      tenantconfig.New(pool.Gorm),
+		AuditLog:          auditSvc,
+		GitServerResolver: gitserver.NewDBResolver(pool.Gorm),
 	})
 
 	srv := &http.Server{
