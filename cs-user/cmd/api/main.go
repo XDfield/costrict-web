@@ -38,6 +38,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/giteasync"
+	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
@@ -116,6 +117,28 @@ func main() {
 		}
 		cancel()
 		logger.Info("auto-migrate applied")
+	}
+
+	// Phase E3b.1.1: bootstrap the git_servers template row from env vars.
+	// When CS_USER_GITEA_BASE_URL + CS_USER_GITEA_ADMIN_TOKEN are set and no
+	// template row exists yet, materialize one + bind any unbound tenants.
+	// Idempotent — safe on every boot. ErrNoTemplateInput means the operator
+	// hasn't configured Gitea yet; that's a soft skip (feature disabled),
+	// not a fatal condition.
+	if cfg.Gitea.Enabled() {
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		templateID, err := gitserver.BootstrapTemplate(bootCtx, pool.Gorm, gitserver.TemplateInput{
+			Endpoint:    cfg.Gitea.BaseURL,
+			AdminToken:  cfg.Gitea.AdminToken,
+			DisplayName: "Gitea (env bootstrap)",
+		})
+		bootCancel()
+		if err != nil {
+			logger.Fatal("bootstrap git_servers template", zap.Error(err))
+		}
+		logger.Info("git_servers template ready", zap.String("server_id", templateID))
+	} else {
+		logger.Warn("git_servers template bootstrap skipped — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
 	}
 
 	// Load the JWT signer when configured (Phase A3). When the env var is
