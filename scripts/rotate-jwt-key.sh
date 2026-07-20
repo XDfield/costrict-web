@@ -7,16 +7,17 @@
 # What this script does:
 #   1. Generates a fresh RSA-2048 keypair (PKCS#8 private + SPKI public).
 #   2. Round-trip signs + verifies a self-test payload with openssl.
-#   3. Prints the public key's SHA-256 fingerprint for cross-checking against
-#      the JWKS endpoint post-rotation (the canonical RFC 7638 kid is computed
-#      by cs-user itself; operators discover it via `curl /.well-known/jwks`).
+#   3. Prints the public key's SHA-256 DER fingerprint for cross-checking
+#      against the JWKS endpoint post-rotation.
 #
 # What this script DOES NOT do:
 #   - Touch k8s / docker secrets. That step is intentionally manual so the
 #     operator stays in the loop.
 #   - Restart cs-user. Manual `kubectl rollout restart`.
 #   - Compute the RFC 7638 kid. cs-user owns that derivation (see
-#     cs-user/internal/auth/signer.go :: kidFor) and exposes it via JWKS.
+#     cs-user/internal/auth/signer.go :: kidFor) and exposes it via JWKS —
+#     operators discover the new kid by curling /.well-known/jwks after the
+#     restart, not by reproducing the algorithm locally.
 #
 # Usage:
 #   bash scripts/rotate-jwt-key.sh <output-dir>
@@ -62,9 +63,10 @@ printf '%s' "$PAYLOAD" | openssl dgst -sha256 -sign "$PRIV" > "$SIG_FILE"
 printf '%s' "$PAYLOAD" | openssl dgst -sha256 -verify "$PUB" -signature "$SIG_FILE"
 rm -f "$SIG_FILE"
 
-echo "==> public key SHA-256 fingerprint (for sanity check against JWKS)"
-FP="$(openssl pkey -pubin -in "$PUB" -outform DER 2>/dev/null | openssl dgst -sha256 -binary | xxd -p -c 64 || true)"
-[[ -n "$FP" ]] && echo "sha256=$FP"
+echo "==> public key SHA-256 fingerprint (DER, for sanity cross-check)"
+# OpenSSL prints the digest hex inline — no xxd / od dependency.
+openssl pkey -pubin -in "$PUB" -outform DER 2>/dev/null \
+  | openssl dgst -sha256
 
 echo
 echo "Next steps (manual — see docs/operations/jwt-key-rotation.md):"
