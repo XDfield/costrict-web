@@ -33,6 +33,11 @@ const (
 	// ActionProviderMappingUpdate — tenant_admin / platform_admin updates
 	// the typed provider_mapping subtree. Target: provider_mapping:<tenant_id>.
 	ActionProviderMappingUpdate = "provider_mapping.update"
+	// ActionUserGiteaProvisioned — cs-user auto-provisions a Gitea account
+	// for a freshly registered user (Phase E3a.1). Target:
+	// user_gitea_binding:<user_subject_id>. Payload records sync_status +
+	// gitea_uid (or last_error on failure).
+	ActionUserGiteaProvisioned = "user.gitea_provisioned"
 )
 
 // Target type constants — pair with target_id to identify the audit row's
@@ -42,6 +47,8 @@ const (
 	TargetTypeTenant          = "tenant"
 	TargetTypeTenantConfig    = "tenant_config"
 	TargetTypeProviderMapping = "provider_mapping"
+	// TargetTypeUserGiteaBinding — Phase E3a.1 user_gitea_binding row.
+	TargetTypeUserGiteaBinding = "user_gitea_binding"
 )
 
 // AuditLog records one admin write operation (Phase C4.1).
