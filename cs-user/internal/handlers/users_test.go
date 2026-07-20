@@ -34,6 +34,7 @@ type stubUserService struct {
 	getGiteaBinding        func(context.Context, string) (*models.UserGiteaBinding, error)
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
+	listOrganizations      func(context.Context) ([]user.OrganizationCount, error)
 }
 
 func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -102,6 +103,12 @@ func (s stubUserService) SetUserStatus(ctx context.Context, subjectID, status, o
 	}
 	return s.setUserStatus(ctx, subjectID, status, operatorID)
 }
+func (s stubUserService) ListOrganizations(ctx context.Context) ([]user.OrganizationCount, error) {
+	if s.listOrganizations == nil {
+		panic("stubUserService.listOrganizations not wired")
+	}
+	return s.listOrganizations(ctx)
+}
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	gin.SetMode(gin.TestMode)
@@ -123,6 +130,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.GET("/api/internal/users/:subject_id/gitea-binding", api.GetGiteaBinding)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
+	r.GET("/api/internal/users/organizations", api.ListOrganizations)
 	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
 	return api, r
 }
@@ -1043,5 +1051,67 @@ func TestSetUserStatus_InvalidBodyReturns400(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 malformed body, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- ListOrganizations (admin-user-migration slice) ---
+
+func TestListOrganizations_HappyPath(t *testing.T) {
+	svc := stubUserService{
+		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
+			return []user.OrganizationCount{
+				{Organization: "Eng", MemberCount: 42},
+				{Organization: "Ops", MemberCount: 7},
+			}, nil
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"organization":"Eng"`) || !strings.Contains(w.Body.String(), `"memberCount":42`) {
+		t.Errorf("response missing org/count fields: %s", w.Body.String())
+	}
+}
+
+func TestListOrganizations_EmptySerializesAsArray(t *testing.T) {
+	svc := stubUserService{
+		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
+			return nil, nil
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"organizations":[]`) {
+		t.Errorf("nil slice should serialize as [] not null: %s", w.Body.String())
+	}
+}
+
+func TestListOrganizations_ServiceErrorReturns500(t *testing.T) {
+	svc := stubUserService{
+		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
+			return nil, errors.New("db down")
+		},
+	}
+	_, r := newUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "db down") {
+		t.Errorf("internal error must not leak: %s", w.Body.String())
 	}
 }
