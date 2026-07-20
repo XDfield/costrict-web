@@ -108,16 +108,16 @@ tokens can finish expiring on the @server verification side, then delete.
 ### 5. Verify the JWKS endpoint serves the new `kid`
 
 ```bash
-# Compute the new kid (RFC 7638 SHA-256 thumbprint of the JWK).
-NEW_KID=$(bash scripts/rotate-jwt-key.sh --kid-only jwt-signing.pub.pem)
-
-# Poll the JWKS endpoint until the new kid appears.
-curl -s https://cs-user.internal/.well-known/jwks \
-  | jq -r '.keys[].kid' | grep -F "$NEW_KID"
+# Discover the new kid from the JWKS endpoint. cs-user computes the RFC 7638
+# thumbprint server-side (cs-user/internal/auth/signer.go :: kidFor) and
+# publishes it; there is no need to reproduce the algorithm locally.
+curl -s https://cs-user.internal/.well-known/jwks | jq -r '.keys[].kid'
 ```
 
-The @server JWKSProvider caches for ~5 min, so the new `kid` shows up
-automatically; no @server redeploy is needed.
+The kid is the SHA-256 thumbprint of the new public key — `grep` for it on
+subsequent rotations to confirm cs-user picked up the new key. The @server
+JWKSProvider caches for ~5 min, so the new `kid` shows up automatically; no
+@server redeploy is needed.
 
 ### 6. Verify end-to-end token flow
 

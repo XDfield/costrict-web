@@ -467,7 +467,7 @@
   - `TestParseJWTToken_EnterpriseClaimsRoundTrip` — Phase A/B/C 全 claim 词表往返（tenant_id / tenant_slug / platform_admin / platform_scope / tenant_roles / provider_user_id 全部正确 surface，sub 在 universal_id 存在时正确 fallback）
   - `TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak` — legacy Casdoor token（无 cs-user 自定义 claim）仍正常解析
   - `TestParseJWTToken_TenantRolesNonStringRejected` — 非字符串 entry 跳过，防御性解码
-- [x] **JWT-2**：`cs-user/internal/auth/claims_test.go` 加 `TestEnterpriseClaims_JSONTagVocabularyLock` — reflection 锁 `EnterpriseClaims` 全部 JSON tag 词表（26 个 tag 跨 Standard JWT / OIDC identity / Enterprise context / Tenant / Permission 五组）。任意 tag rename / remove / add 都被检测，触发 claim drift 时 reader 与 writer 双向失败前先在测试侧爆。这是 `把 JWT 缺的都尽可能完善掉` 的核心防御层 — cs-user 任何修改 claims 的 PR 都会先在此测试失败。
+- [x] **JWT-2**：`cs-user/internal/auth/claims_test.go` 加 `TestEnterpriseClaims_JSONTagVocabularyLock` — reflection 锁 `EnterpriseClaims` 全部 JSON tag 词表（28 个 tag 跨 Standard JWT 7 / OIDC identity 9 / Enterprise context 7 / Tenant 2 / Permission 3 五组）。任意 tag rename / remove / add 都被检测，触发 claim drift 时 reader 与 writer 双向失败前先在测试侧爆。这是 `把 JWT 缺的都尽可能完善掉` 的核心防御层 — cs-user 任何修改 claims 的 PR 都会先在此测试失败。
 - [x] **JWT-3**：`docs/operations/jwt-key-rotation.md` 运维 runbook + `scripts/rotate-jwt-key.sh` 自动化助手脚本：
   - Runbook 覆盖：生成新密钥 → 上传 k8s Secret → roll cs-user → JWKS 端点验证 kid → 端到端 token 流测试 → 归档清理；含 rollback 步骤、validation checklist、failure-mode 表
   - 关键设计属性：**轮换是单服务**（cs-user only）— @server 通过既有 `JWKSProvider` 缓存自动 pick up 新 kid，不需要 redeploy
