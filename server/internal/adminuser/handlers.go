@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -286,15 +285,9 @@ func (m *Module) SetUserStatusHandler() gin.HandlerFunc {
 		// immediately rather than after the status-cache TTL elapses.
 		appmiddleware.InvalidateStatusCache(subjectID)
 
-		// TODO(Commit 8): drop this local audit row — cs-user now writes the
-		// authoritative user_center_audit_log row keyed action=user.status_changed.
-		// Kept temporarily to bridge the gap until operators confirm the cs-user
-		// audit surface is wired into admin dashboards.
-		audit.Record(operatorID, audit.ActionUserStatusChange, audit.TargetUser, subjectID, gin.H{
-			"status":      req.Status,
-			"from_status": res.FromStatus,
-			"to_status":   res.ToStatus,
-		})
+		// Audit: cs-user writes the authoritative user_center_audit_log row
+		// keyed action=user.status_changed (see cs-user SetUserStatus handler).
+		// No local audit.Record call — single source of truth per ADR D1.
 
 		c.JSON(http.StatusOK, gin.H{
 			"success":     true,

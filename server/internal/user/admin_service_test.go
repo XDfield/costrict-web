@@ -26,135 +26,8 @@ func seedUser(t *testing.T, db *gorm.DB, subjectID, username, org, status string
 }
 
 // ---------------------------------------------------------------------------
-// ListUsers: pagination, search, status filter
+// GetUserStatus: middleware-facing, fail-open on blank/missing
 // ---------------------------------------------------------------------------
-
-func TestListUsers_PaginationAndTotal(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-
-	for i, name := range []string{"alice", "bob", "carol", "dave", "erin"} {
-		seedUser(t, db, "usr_"+name, name, "org_a", UserStatusActive)
-		_ = i
-	}
-
-	users, total, err := svc.ListUsers(ListUsersParams{Page: 1, PageSize: 2})
-	if err != nil {
-		t.Fatalf("ListUsers: %v", err)
-	}
-	if total != 5 {
-		t.Fatalf("total = %d, want 5", total)
-	}
-	if len(users) != 2 {
-		t.Fatalf("page size = %d, want 2", len(users))
-	}
-
-	page3, _, err := svc.ListUsers(ListUsersParams{Page: 3, PageSize: 2})
-	if err != nil {
-		t.Fatalf("ListUsers page 3: %v", err)
-	}
-	if len(page3) != 1 {
-		t.Fatalf("last page size = %d, want 1", len(page3))
-	}
-}
-
-func TestListUsers_SearchKeyword(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-
-	seedUser(t, db, "usr_alice", "alice", "org_a", UserStatusActive)
-	seedUser(t, db, "usr_bob", "bob", "org_a", UserStatusActive)
-
-	users, total, err := svc.ListUsers(ListUsersParams{Keyword: "ali"})
-	if err != nil {
-		t.Fatalf("ListUsers: %v", err)
-	}
-	if total != 1 || len(users) != 1 || users[0].Username != "alice" {
-		t.Fatalf("keyword filter wrong: total=%d users=%v", total, users)
-	}
-}
-
-func TestListUsers_StatusFilterIncludesBanned(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-
-	seedUser(t, db, "usr_active", "active_user", "org_a", UserStatusActive)
-	seedUser(t, db, "usr_banned", "banned_user", "org_a", UserStatusBanned)
-
-	// Admin list (no status filter) must surface banned users too (unlike SearchUsers).
-	all, total, err := svc.ListUsers(ListUsersParams{})
-	if err != nil {
-		t.Fatalf("ListUsers: %v", err)
-	}
-	if total != 2 || len(all) != 2 {
-		t.Fatalf("unfiltered list should include banned: total=%d len=%d", total, len(all))
-	}
-
-	banned, total, err := svc.ListUsers(ListUsersParams{Status: UserStatusBanned})
-	if err != nil {
-		t.Fatalf("ListUsers banned: %v", err)
-	}
-	if total != 1 || len(banned) != 1 || banned[0].Username != "banned_user" {
-		t.Fatalf("status filter wrong: total=%d users=%v", total, banned)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// SetUserStatus: success, invalid value, self-lock rejection, not found
-// ---------------------------------------------------------------------------
-
-func TestSetUserStatus_Success(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-	seedUser(t, db, "usr_target", "target", "org_a", UserStatusActive)
-
-	if err := svc.SetUserStatus("usr_target", UserStatusBanned, "usr_admin"); err != nil {
-		t.Fatalf("SetUserStatus: %v", err)
-	}
-
-	got, err := svc.GetUserStatus("usr_target")
-	if err != nil {
-		t.Fatalf("GetUserStatus: %v", err)
-	}
-	if got != UserStatusBanned {
-		t.Fatalf("status = %q, want banned", got)
-	}
-}
-
-func TestSetUserStatus_InvalidValue(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-	seedUser(t, db, "usr_target", "target", "org_a", UserStatusActive)
-
-	if err := svc.SetUserStatus("usr_target", "nonsense", "usr_admin"); err != ErrInvalidUserStatus {
-		t.Fatalf("expected ErrInvalidUserStatus, got %v", err)
-	}
-}
-
-func TestSetUserStatus_RejectsSelfLock(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-	seedUser(t, db, "usr_admin", "admin", "org_a", UserStatusActive)
-
-	if err := svc.SetUserStatus("usr_admin", UserStatusBanned, "usr_admin"); err != ErrCannotChangeOwnStatus {
-		t.Fatalf("expected ErrCannotChangeOwnStatus, got %v", err)
-	}
-
-	// status must remain unchanged after a rejected self-lock.
-	got, _ := svc.GetUserStatus("usr_admin")
-	if got != UserStatusActive {
-		t.Fatalf("self-lock should not change status, got %q", got)
-	}
-}
-
-func TestSetUserStatus_NotFound(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-
-	if err := svc.SetUserStatus("usr_ghost", UserStatusDisabled, "usr_admin"); err != ErrAdminUserNotFound {
-		t.Fatalf("expected ErrAdminUserNotFound, got %v", err)
-	}
-}
 
 func TestGetUserStatus_DefaultsActiveForBlank(t *testing.T) {
 	db := setupUserTestDB(t)
@@ -175,37 +48,10 @@ func TestGetUserStatus_DefaultsActiveForBlank(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListOrganizations: GROUP BY + count, skips empty org
-// ---------------------------------------------------------------------------
-
-func TestListOrganizations_RollUp(t *testing.T) {
-	db := setupUserTestDB(t)
-	svc := NewUserService(db)
-
-	seedUser(t, db, "usr_1", "u1", "org_big", UserStatusActive)
-	seedUser(t, db, "usr_2", "u2", "org_big", UserStatusActive)
-	seedUser(t, db, "usr_3", "u3", "org_big", UserStatusActive)
-	seedUser(t, db, "usr_4", "u4", "org_small", UserStatusActive)
-	seedUser(t, db, "usr_5", "u5", "", UserStatusActive) // empty org — skipped
-
-	orgs, err := svc.ListOrganizations()
-	if err != nil {
-		t.Fatalf("ListOrganizations: %v", err)
-	}
-	if len(orgs) != 2 {
-		t.Fatalf("org count = %d, want 2 (empty org skipped)", len(orgs))
-	}
-	// busiest first
-	if orgs[0].Organization != "org_big" || orgs[0].MemberCount != 3 {
-		t.Fatalf("first org wrong: %+v", orgs[0])
-	}
-	if orgs[1].Organization != "org_small" || orgs[1].MemberCount != 1 {
-		t.Fatalf("second org wrong: %+v", orgs[1])
-	}
-}
-
-// ---------------------------------------------------------------------------
 // GetUserProfile + RolesForUsers: aggregation across tables
+// (identity + status themselves are proxied to cs-user via RPC; these local
+// helpers compute only the activity counts + system roles that live in
+// costrict_db.)
 // ---------------------------------------------------------------------------
 
 // setupProfileTables hand-creates the activity tables (their postgres uuid
