@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
+	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -36,7 +37,7 @@ func newServiceDB(t *testing.T) *gorm.DB {
 
 // stubProvisioner is a configurable GiteaUserProvisioner for tests. Each
 // field controls one branch: if non-nil, that branch fires; otherwise the
-// real call is made (which we don't want in tests).
+// happy-path stub is used.
 type stubProvisioner struct {
 	provisionErr  error
 	provisionUser *GiteaUser
@@ -71,6 +72,42 @@ func (s *stubProvisioner) LookupUserByName(ctx context.Context, username string)
 	return &GiteaUser{ID: 88, Username: username}, nil
 }
 
+// stubResolver is the per-tenant gitserver.Resolver used by the service
+// tests. Returns a fixed Config for any tenant by default; if resolveErr
+// is set, returns that instead. tenantCalls tracks Resolve invocations
+// and lastTenantID captures the most recent tenant_id passed in.
+type stubResolver struct {
+	cfg         *gitserver.Config
+	resolveErr  error
+	tenantCalls int
+	lastTenant  string
+}
+
+func (r *stubResolver) Resolve(ctx context.Context, tenantID string) (*gitserver.Config, error) {
+	r.tenantCalls++
+	r.lastTenant = tenantID
+	if r.resolveErr != nil {
+		return nil, r.resolveErr
+	}
+	if r.cfg != nil {
+		return r.cfg, nil
+	}
+	return &gitserver.Config{
+		ServerID:   "gs-test",
+		Kind:       models.GitServerKindGitea,
+		Endpoint:   "https://gitea.test.local",
+		AdminToken: "tok-test",
+	}, nil
+}
+
+// newSvcWithStub wires a Service with a stub resolver + stub client factory.
+// Returns the Service + both stubs so individual tests can configure them.
+func newSvcWithStub(db *gorm.DB, resolver *stubResolver, client *stubProvisioner) *Service {
+	svc := NewService(db, resolver, nil, nil)
+	svc.clientFactory = func(endpoint, adminToken string) GiteaUserProvisioner { return client }
+	return svc
+}
+
 // stringAddr is the local equivalent of helper seen in audit_log_test.go.
 func stringAddr(s string) *string { return &s }
 
@@ -93,8 +130,9 @@ func newTestUser(subjectID, username, tenantID, email string) *models.User {
 func TestProvision_HappyPath(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-alice"}}
-	svc := NewService(db, stub, nil, nil)
+	client := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-alice"}}
+	resolver := &stubResolver{}
+	svc := newSvcWithStub(db, resolver, client)
 
 	err := svc.Provision(context.Background(), newTestUser("usr_1", "alice", "default", "alice@example.com"))
 	if err != nil {
@@ -114,27 +152,26 @@ func TestProvision_HappyPath(t *testing.T) {
 		t.Errorf("last_synced_at: got nil, want non-nil")
 	}
 	if binding.LastError != nil {
-		t.Errorf("last_error: got %v, want nil", *binding.LastError)
+		t.Errorf("last_error: got %v, want nil", binding.LastError)
 	}
 	if binding.GiteaUsername != "u-alice" {
 		t.Errorf("gitea_username: got %q, want u-alice", binding.GiteaUsername)
 	}
-	if stub.provisionCalls != 1 {
-		t.Errorf("provisionCalls: got %d, want 1", stub.provisionCalls)
+	if client.provisionCalls != 1 {
+		t.Errorf("provisionCalls: got %d, want 1", client.provisionCalls)
 	}
 }
 
 // TestProvision_409RecoversViaLookup verifies the 409 → LookupUserByName →
-// synced recovery path. Binding ends synced with UID from the lookup, not
-// from POST (which never returned 201).
+// synced recovery path.
 func TestProvision_409RecoversViaLookup(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{
+	client := &stubProvisioner{
 		provisionErr: ErrGiteaUserExists,
 		lookupUser:   &GiteaUser{ID: 77, Username: "u-bob"},
 	}
-	svc := NewService(db, stub, nil, nil)
+	svc := newSvcWithStub(db, &stubResolver{}, client)
 
 	err := svc.Provision(context.Background(), newTestUser("usr_2", "bob", "default", "bob@example.com"))
 	if err != nil {
@@ -150,8 +187,8 @@ func TestProvision_409RecoversViaLookup(t *testing.T) {
 	if binding.GiteaUID == nil || *binding.GiteaUID != 77 {
 		t.Errorf("gitea_uid: got %v, want 77 (from lookup)", binding.GiteaUID)
 	}
-	if stub.provisionCalls != 1 || stub.lookupCalls != 1 {
-		t.Errorf("calls: provision=%d lookup=%d, want 1/1", stub.provisionCalls, stub.lookupCalls)
+	if client.provisionCalls != 1 || client.lookupCalls != 1 {
+		t.Errorf("calls: provision=%d lookup=%d, want 1/1", client.provisionCalls, client.lookupCalls)
 	}
 }
 
@@ -160,8 +197,8 @@ func TestProvision_409RecoversViaLookup(t *testing.T) {
 func TestProvision_ClientErrorMarksError(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{provisionErr: ErrGiteaUnauthorized}
-	svc := NewService(db, stub, nil, nil)
+	client := &stubProvisioner{provisionErr: ErrGiteaUnauthorized}
+	svc := newSvcWithStub(db, &stubResolver{}, client)
 
 	err := svc.Provision(context.Background(), newTestUser("usr_3", "carol", "default", "carol@example.com"))
 	if err == nil {
@@ -181,39 +218,45 @@ func TestProvision_ClientErrorMarksError(t *testing.T) {
 
 // TestProvision_AlreadySyncedIsNoop verifies idempotency — a second
 // Provision call for a user whose binding is already synced does NOT
-// call the Gitea client.
+// resolve the git server (no Provision call).
 func TestProvision_AlreadySyncedIsNoop(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-dave"}}
-	svc := NewService(db, stub, nil, nil)
+	client := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-dave"}}
+	resolver := &stubResolver{}
+	svc := newSvcWithStub(db, resolver, client)
 
 	ctx := context.Background()
 	user := newTestUser("usr_4", "dave", "default", "dave@example.com")
 	if err := svc.Provision(ctx, user); err != nil {
 		t.Fatalf("first Provision: %v", err)
 	}
-	if stub.provisionCalls != 1 {
-		t.Fatalf("after first call: provisionCalls=%d, want 1", stub.provisionCalls)
+	if resolver.tenantCalls != 1 || client.provisionCalls != 1 {
+		t.Fatalf("after first call: resolver=%d provision=%d, want 1/1",
+			resolver.tenantCalls, client.provisionCalls)
 	}
 
-	// Second call — should be no-op.
+	// Second call — should be no-op (short-circuits before resolver).
 	if err := svc.Provision(ctx, user); err != nil {
 		t.Fatalf("second Provision: %v", err)
 	}
-	if stub.provisionCalls != 1 {
-		t.Errorf("after second call: provisionCalls=%d, want still 1 (no-op)", stub.provisionCalls)
+	if resolver.tenantCalls != 1 {
+		t.Errorf("after second call: resolver.tenantCalls=%d, want still 1 (no-op)",
+			resolver.tenantCalls)
+	}
+	if client.provisionCalls != 1 {
+		t.Errorf("after second call: provisionCalls=%d, want still 1 (no-op)",
+			client.provisionCalls)
 	}
 }
 
 // TestProvision_NilAuditDoesNotPanic verifies the best-effort audit
-// contract holds when no audit service is wired (test stub / config-off
-// path). Mirrors the auditlog nil-safe contract from C4.1.
+// contract holds when no audit service is wired.
 func TestProvision_NilAuditDoesNotPanic(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{provisionUser: &GiteaUser{ID: 5, Username: "u-eve"}}
-	svc := NewService(db, stub, nil, nil)
+	client := &stubProvisioner{provisionUser: &GiteaUser{ID: 5, Username: "u-eve"}}
+	svc := newSvcWithStub(db, &stubResolver{}, client)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -226,12 +269,9 @@ func TestProvision_NilAuditDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestProvision_NilClientReturnsError verifies the config-off path: when
-// no Gitea client is wired, Provision fails fast without touching the DB.
-// (The hook in user.Service checks for nil Service before calling, but
-// this guard catches the case where Service is constructed with nil
-// client — defensive depth.)
-func TestProvision_NilClientReturnsError(t *testing.T) {
+// TestProvision_NilResolverReturnsError verifies the config-off path: when
+// no resolver is wired, Provision fails fast without touching the DB.
+func TestProvision_NilResolverReturnsError(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
 	svc := NewService(db, nil, nil, nil)
@@ -240,11 +280,9 @@ func TestProvision_NilClientReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Provision: got nil err, want non-nil")
 	}
-	if !strings.Contains(err.Error(), "nil client") {
-		t.Errorf("err: got %v, want containing 'nil client'", err)
+	if !strings.Contains(err.Error(), "nil resolver") {
+		t.Errorf("err: got %v, want containing 'nil resolver'", err)
 	}
-	// Should NOT have inserted a binding row — Provision returns before
-	// upsertPendingBinding.
 	var count int64
 	db.Model(&models.UserGiteaBinding{}).Count(&count)
 	if count != 0 {
@@ -254,13 +292,12 @@ func TestProvision_NilClientReturnsError(t *testing.T) {
 
 // TestProvision_TimeoutKeepsBindingPending verifies the timeout path
 // does NOT mark the binding 'error' — it stays 'pending' so the
-// reconciliation cron picks it up. This is the only branch where
-// SyncStatus differs from 'synced' / 'error' after a Provision call.
+// reconciliation cron picks it up.
 func TestProvision_TimeoutKeepsBindingPending(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &stubProvisioner{provisionErr: ErrGiteaTimeout}
-	svc := NewService(db, stub, nil, nil)
+	client := &stubProvisioner{provisionErr: ErrGiteaTimeout}
+	svc := newSvcWithStub(db, &stubResolver{}, client)
 
 	err := svc.Provision(context.Background(),
 		newTestUser("usr_7", "gina", "default", "gina@example.com"))
@@ -278,14 +315,14 @@ func TestProvision_TimeoutKeepsBindingPending(t *testing.T) {
 }
 
 // TestProvision_AuditRowWrittenOnSynced verifies the C4.1 audit hook
-// fires for the happy path. One user.gitea_provisioned row should exist
-// with the synced status in payload.
+// fires for the happy path.
 func TestProvision_AuditRowWrittenOnSynced(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
 	audit := auditlog.NewService(db, nil)
-	stub := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-henry"}}
-	svc := NewService(db, stub, audit, nil)
+	client := &stubProvisioner{provisionUser: &GiteaUser{ID: 42, Username: "u-henry"}}
+	svc := NewService(db, &stubResolver{}, audit, nil)
+	svc.clientFactory = func(endpoint, adminToken string) GiteaUserProvisioner { return client }
 
 	if err := svc.Provision(context.Background(),
 		newTestUser("usr_8", "henry", "tenant-acme", "henry@example.com")); err != nil {
@@ -315,16 +352,13 @@ func TestProvision_AuditRowWrittenOnSynced(t *testing.T) {
 }
 
 // TestProvision_BestEffortTimeoutSurfacesButCallerCanIgnore verifies
-// that the 5s provisionTimeout caps the roundtrip — when ctx has no
-// deadline of its own, the Service still returns within ~5s even if
-// the underlying client never responds. The stub simulates this by
-// sleeping past provisionTimeout inside ProvisionGiteaUser; we
-// approximate the assertion by checking the wall-clock duration.
+// that the 5s provisionTimeout caps the roundtrip.
 func TestProvision_BestEffortTimeoutSurfacesButCallerCanIgnore(t *testing.T) {
 	t.Parallel()
 	db := newServiceDB(t)
-	stub := &slowProvisioner{delay: 7 * time.Second}
-	svc := NewService(db, stub, nil, nil)
+	client := &slowProvisioner{delay: 7 * time.Second}
+	svc := NewService(db, &stubResolver{}, nil, nil)
+	svc.clientFactory = func(endpoint, adminToken string) GiteaUserProvisioner { return client }
 
 	start := time.Now()
 	err := svc.Provision(context.Background(),
@@ -334,8 +368,6 @@ func TestProvision_BestEffortTimeoutSurfacesButCallerCanIgnore(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Provision: got nil err, want timeout")
 	}
-	// provisionTimeout is 5s. Allow generous slack for CI variance; the
-	// key invariant is "much less than the stub's 7s delay".
 	if elapsed > 6*time.Second {
 		t.Errorf("elapsed: got %v, want <=6s (stubbed 7s should be cut off)", elapsed)
 	}
@@ -356,6 +388,64 @@ func (s *slowProvisioner) ProvisionGiteaUser(ctx context.Context, p GiteaUserPar
 
 func (s *slowProvisioner) LookupUserByName(ctx context.Context, username string) (*GiteaUser, error) {
 	return nil, errors.New("slowProvisioner: lookup not implemented")
+}
+
+// TestProvision_PerTenantResolverCalled verifies the per-tenant fix
+// (E3b.1.1): Provisioning a user in tenant "t-acme" calls Resolve with
+// "t-acme", not the legacy global default. This is the regression test
+// for the bug the refactor fixes.
+func TestProvision_PerTenantResolverCalled(t *testing.T) {
+	t.Parallel()
+	db := newServiceDB(t)
+	client := &stubProvisioner{provisionUser: &GiteaUser{ID: 1, Username: "u-zoe"}}
+	resolver := &stubResolver{}
+	svc := newSvcWithStub(db, resolver, client)
+
+	if err := svc.Provision(context.Background(),
+		newTestUser("usr_z", "zoe", "t-acme", "zoe@acme.example")); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if resolver.tenantCalls != 1 {
+		t.Fatalf("resolver.tenantCalls: got %d, want 1", resolver.tenantCalls)
+	}
+	if resolver.lastTenant != "t-acme" {
+		t.Errorf("resolver.lastTenant: got %q, want t-acme (per-tenant resolution)",
+			resolver.lastTenant)
+	}
+}
+
+// TestProvision_ResolverErrorSurfaces verifies that a failed Resolve (e.g.
+// gitserver.ErrTenantMissingGitServer during the migration window)
+// surfaces as an error without leaving the binding in a terminal state.
+// The binding row remains 'pending' for the reconciliation cron.
+func TestProvision_ResolverErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	db := newServiceDB(t)
+	client := &stubProvisioner{}
+	resolver := &stubResolver{resolveErr: gitserver.ErrTenantMissingGitServer}
+	svc := newSvcWithStub(db, resolver, client)
+
+	err := svc.Provision(context.Background(),
+		newTestUser("usr_x", "xander", "t-orphan", "x@orphan.example"))
+	if err == nil {
+		t.Fatalf("Provision: got nil err, want resolver error")
+	}
+	if !errors.Is(err, gitserver.ErrTenantMissingGitServer) {
+		t.Errorf("err: got %v, want wrapping ErrTenantMissingGitServer", err)
+	}
+	if client.provisionCalls != 0 {
+		t.Errorf("client.provisionCalls: got %d, want 0 (no client call on resolver miss)",
+			client.provisionCalls)
+	}
+	// Binding row stays pending — never transitioned to error/synced.
+	var binding models.UserGiteaBinding
+	if err := db.First(&binding, "user_subject_id = ?", "usr_x").Error; err != nil {
+		t.Fatalf("First: %v", err)
+	}
+	if binding.SyncStatus != models.GiteaSyncStatusPending {
+		t.Errorf("sync_status: got %q, want pending (resolver miss keeps binding pending)",
+			binding.SyncStatus)
+	}
 }
 
 // TestBuildGiteaUsername_Sanitizes verifies the sanitizer handles

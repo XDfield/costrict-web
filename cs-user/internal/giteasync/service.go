@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
+	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"gorm.io/gorm"
 )
@@ -48,19 +49,46 @@ type Logger interface {
 }
 
 // Service is the production giteasync. Construct via NewService.
+//
+// Per Phase E3b.1.1, the service no longer holds a fixed *GiteaClient —
+// instead it resolves the tenant's git_server endpoint on each Provision
+// call via the injected gitserver.Resolver, and constructs a transient
+// Client. This fixes the E3a.1 bug where every tenant's users were
+// provisioned against the same global Gitea endpoint.
 type Service struct {
-	db     *gorm.DB
-	client GiteaUserProvisioner
-	audit  *auditlog.Service
-	logger Logger
+	db       *gorm.DB
+	resolver gitserver.Resolver
+	audit    *auditlog.Service
+	logger   Logger
+
+	// clientFactory builds a GiteaUserProvisioner from a resolved endpoint
+	// + token. Defaults to NewClient; tests override it to inject a stub
+	// without spinning up a real HTTP server.
+	clientFactory func(endpoint, adminToken string) GiteaUserProvisioner
 }
 
-// NewService binds a Service to its dependencies. client may be nil — the
-// boot wiring calls this only when NewClient returned non-nil, but tests
-// exercise the nil path to assert Provision degrades gracefully. logger
-// may be nil; a default *log.Logger is allocated lazily.
-func NewService(db *gorm.DB, client GiteaUserProvisioner, audit *auditlog.Service, logger Logger) *Service {
-	return &Service{db: db, client: client, audit: audit, logger: logger}
+// NewService binds a Service to its dependencies.
+//
+// resolver is the per-tenant Git server resolver (production: a
+// *gitserver.DBResolver). It MUST be non-nil; the service cannot fall back
+// to a global default anymore (that was the bug this refactor fixes).
+//
+// audit may be nil — best-effort audit trail. logger may be nil; a default
+// *log.Logger is allocated lazily.
+func NewService(db *gorm.DB, resolver gitserver.Resolver, audit *auditlog.Service, logger Logger) *Service {
+	return &Service{
+		db:            db,
+		resolver:      resolver,
+		audit:         audit,
+		logger:        logger,
+		clientFactory: defaultClientFactory,
+	}
+}
+
+// defaultClientFactory is the production factory — a plain wrapper around
+// NewClient so the field is overridable in tests.
+func defaultClientFactory(endpoint, adminToken string) GiteaUserProvisioner {
+	return NewClient(endpoint, adminToken)
 }
 
 func (s *Service) logf(format string, args ...any) {
@@ -89,8 +117,8 @@ func (s *Service) Provision(ctx context.Context, user *models.User) error {
 	if s.db == nil {
 		return errors.New("giteasync: nil db")
 	}
-	if s.client == nil {
-		return errors.New("giteasync: nil client")
+	if s.resolver == nil {
+		return errors.New("giteasync: nil resolver")
 	}
 	if user == nil || user.SubjectID == "" {
 		return errors.New("giteasync: user.SubjectID is required")
@@ -120,7 +148,19 @@ func (s *Service) Provision(ctx context.Context, user *models.User) error {
 	provCtx, cancel := context.WithTimeout(ctx, provisionTimeout)
 	defer cancel()
 
-	giteaUser, provErr := s.client.ProvisionGiteaUser(provCtx, GiteaUserParams{
+	// Resolve the per-tenant Git server endpoint + admin token, then build
+	// a transient GiteaClient scoped to that server. Constructing a client
+	// is cheap (just a struct + *http.Client), and provisioning is a cold
+	// signup path — caching here would be premature (YAGNI).
+	serverCfg, err := s.resolver.Resolve(provCtx, tenantID)
+	if err != nil {
+		s.logf("giteasync.Provision: resolve git server failed subject=%q tenant=%q err=%v",
+			user.SubjectID, tenantID, err)
+		return fmt.Errorf("giteasync: resolve git server for tenant %q: %w", tenantID, err)
+	}
+	client := s.clientFactory(serverCfg.Endpoint, serverCfg.AdminToken)
+
+	giteaUser, provErr := client.ProvisionGiteaUser(provCtx, GiteaUserParams{
 		Username:           binding.GiteaUsername,
 		Email:              userEmail(user),
 		Password:           randomProvisioningPassword(),
@@ -141,7 +181,7 @@ func (s *Service) Provision(ctx context.Context, user *models.User) error {
 	// 409 recovery: Gitea already has this user. Look it up to recover
 	// the UID and mark the binding synced — idempotent outcome.
 	if errors.Is(provErr, ErrGiteaUserExists) {
-		existing, lookupErr := s.client.LookupUserByName(provCtx, binding.GiteaUsername)
+		existing, lookupErr := client.LookupUserByName(provCtx, binding.GiteaUsername)
 		if lookupErr == nil && existing != nil {
 			if err := s.markSynced(ctx, binding, existing.ID); err != nil {
 				s.logf("giteasync.Provision: markSynced (post-409) failed subject=%q err=%v", user.SubjectID, err)
