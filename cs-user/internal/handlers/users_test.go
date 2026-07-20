@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
@@ -30,6 +32,7 @@ type stubUserService struct {
 	unbind                 func(context.Context, string, string) error
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 	getGiteaBinding        func(context.Context, string) (*models.UserGiteaBinding, error)
+	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 }
 
 func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -86,6 +89,12 @@ func (s stubUserService) GetGiteaBinding(ctx context.Context, subjectID string) 
 	}
 	return s.getGiteaBinding(ctx, subjectID)
 }
+func (s stubUserService) ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
+	if s.listUsers == nil {
+		panic("stubUserService.listUsers not wired")
+	}
+	return s.listUsers(ctx, p)
+}
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	gin.SetMode(gin.TestMode)
@@ -105,6 +114,8 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
 	// Phase E3a.1 route.
 	r.GET("/api/internal/users/:subject_id/gitea-binding", api.GetGiteaBinding)
+	// Admin user-management route (admin-user-migration slice).
+	r.GET("/api/internal/users/list", api.ListUsers)
 	return api, r
 }
 
@@ -735,5 +746,186 @@ func TestApplyEnterpriseMapping_OptionalTenantID(t *testing.T) {
 	}
 	if capturedTenantID != "acme" {
 		t.Errorf("TenantID: got %q, want acme", capturedTenantID)
+	}
+}
+
+// --- ListUsers (admin-user-migration slice) ---
+
+// newListUsersAPI wires the UsersAPI with a stub service for the
+// ListUsers-only test surface.
+func newListUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api := &UsersAPI{Svc: svc}
+	r.GET("/api/internal/users/list", api.ListUsers)
+	return api, r
+}
+
+func TestListUsers_HappyPathReturnsPaginatedResult(t *testing.T) {
+	org := "eng"
+	email := "alice@example.com"
+	display := "Alice"
+	avatar := "https://example.com/a.png"
+	now := time.Now().UTC()
+	users := []*models.User{
+		{SubjectID: "usr_alice", Username: "alice", DisplayName: &display, Email: &email, AvatarURL: &avatar, Organization: &org, Status: "active", IsActive: true, CreatedAt: now},
+	}
+	var capturedParams user.ListUsersParams
+	svc := stubUserService{
+		listUsers: func(_ context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
+			capturedParams = p
+			return users, 1, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?keyword=ali&organization=eng&status=active&page=2&page_size=10", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if capturedParams.Keyword != "ali" || capturedParams.Organization != "eng" || capturedParams.Status != "active" {
+		t.Errorf("filter passthrough mismatch: %+v", capturedParams)
+	}
+	if capturedParams.Page != 2 || capturedParams.PageSize != 10 {
+		t.Errorf("pagination mismatch: %+v", capturedParams)
+	}
+
+	var body adminUserListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Total != 1 || len(body.Users) != 1 {
+		t.Fatalf("unexpected shape: %+v", body)
+	}
+	got := body.Users[0]
+	if got.SubjectID != "usr_alice" || got.Username != "alice" || got.Status != "active" || !got.IsActive {
+		t.Errorf("user payload mismatch: %+v", got)
+	}
+	if got.Email == nil || *got.Email != email {
+		t.Errorf("email mismatch: %+v", got)
+	}
+	if got.CreatedAt == "" {
+		t.Errorf("createdAt should be non-empty ISO string")
+	}
+}
+
+func TestListUsers_DefaultsPageAndSizeWhenOmitted(t *testing.T) {
+	var captured user.ListUsersParams
+	svc := stubUserService{
+		listUsers: func(_ context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
+			captured = p
+			return nil, 0, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if captured.Page != 1 {
+		t.Errorf("default page should be 1, got %d", captured.Page)
+	}
+	// Default page_size is left to the service layer (0 → service applies
+	// DefaultAdminUserPageSize=20). Handler passes through whatever was
+	// parsed; service clamps.
+	if captured.PageSize != 0 {
+		t.Errorf("handler should pass 0 when omitted, got %d", captured.PageSize)
+	}
+}
+
+func TestListUsers_RejectsInvalidStatus(t *testing.T) {
+	svc := stubUserService{
+		listUsers: func(context.Context, user.ListUsersParams) ([]*models.User, int64, error) {
+			t.Errorf("service must not be called for invalid status")
+			return nil, 0, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?status=quarantined", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListUsers_RejectsNonPositivePage(t *testing.T) {
+	svc := stubUserService{
+		listUsers: func(context.Context, user.ListUsersParams) ([]*models.User, int64, error) {
+			t.Errorf("service must not be called for invalid page")
+			return nil, 0, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?page=0", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for page=0, got %d", w.Code)
+	}
+}
+
+func TestListUsers_RejectsNonPositivePageSize(t *testing.T) {
+	svc := stubUserService{
+		listUsers: func(context.Context, user.ListUsersParams) ([]*models.User, int64, error) {
+			t.Errorf("service must not be called for invalid page_size")
+			return nil, 0, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?page_size=0", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for page_size=0, got %d", w.Code)
+	}
+}
+
+func TestListUsers_EmptyResultReturnsEmptyArrayNotNil(t *testing.T) {
+	svc := stubUserService{
+		listUsers: func(context.Context, user.ListUsersParams) ([]*models.User, int64, error) {
+			return nil, 0, nil
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"users":[]`) {
+		t.Errorf("empty result should serialize as [] not null: %s", w.Body.String())
+	}
+}
+
+func TestListUsers_ServiceErrorReturns500(t *testing.T) {
+	svc := stubUserService{
+		listUsers: func(context.Context, user.ListUsersParams) ([]*models.User, int64, error) {
+			return nil, 0, errors.New("db down")
+		},
+	}
+	_, r := newListUsersAPI(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for service error, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "db down") {
+		t.Errorf("internal error must not leak: %s", w.Body.String())
 	}
 }
