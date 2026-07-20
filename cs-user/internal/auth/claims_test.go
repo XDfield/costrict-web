@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -412,5 +413,91 @@ func TestEnterpriseClaims_PermissionFieldsSignAndVerify(t *testing.T) {
 	}
 	if !got.PlatformAdmin || got.PlatformScope != "full" {
 		t.Errorf("PlatformAdmin/Scope after parse: %v / %q", got.PlatformAdmin, got.PlatformScope)
+	}
+}
+
+// ===========================================================================
+// Phase A contract lock — reflection-based JSON tag vocabulary test.
+//
+// Per-key tests above prove individual fields serialize correctly, but a
+// silent rename or new field wouldn't be caught. This test enumerates the
+// COMPLETE expected JSON tag set on EnterpriseClaims via reflection and
+// fails on any addition/removal/rename. Update the want set deliberately
+// when adding Phase D/E fields, and bump the corresponding server-side
+// consumer test (TestParseJWTToken_EnterpriseClaimsRoundTrip).
+// ===========================================================================
+
+// TestEnterpriseClaims_JSONTagVocabularyLock is the canonical registry of
+// every JWT claim cs-user emits. Drift here breaks server's JWT consumer
+// (server/internal/middleware/auth_test.go
+// TestParseJWTToken_EnterpriseClaimsRoundTrip) — keep the two in sync.
+func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
+	want := map[string]string{
+		// Standard JWT (RFC 7519)
+		"iss": "Issuer", "sub": "Subject", "iat": "IssuedAt",
+		"nbf": "NotBefore", "exp": "Expiry", "aud": "Audience", "jti": "JTI",
+
+		// OIDC identity (mirrors models.JWTClaims)
+		"universal_id":       "UniversalID",
+		"name":               "Name",
+		"preferred_username": "PreferredUsername",
+		"email":              "Email",
+		"picture":            "Picture",
+		"owner":              "Owner",
+		"provider":           "Provider",
+		"provider_user_id":   "ProviderUserID",
+		"phone":              "Phone",
+
+		// Enterprise context (Phase A5 — employment_identities)
+		"employee_number": "EmployeeNumber",
+		"job_title":       "JobTitle",
+		"job_level":       "JobLevel",
+		"employment_type": "EmploymentType",
+		"cost_center":     "CostCenter",
+		"org_path":        "OrgPath",
+		"work_location":   "WorkLocation",
+
+		// Tenant (Phase A reserves / Phase B populates)
+		"tenant_id":   "TenantID",
+		"tenant_slug": "TenantSlug",
+
+		// Permission (Phase C1)
+		"tenant_roles":   "TenantRoles",
+		"platform_admin": "PlatformAdmin",
+		"platform_scope": "PlatformScope",
+	}
+
+	got := map[string]string{}
+	tp := reflect.TypeOf(EnterpriseClaims{})
+	for i := 0; i < tp.NumField(); i++ {
+		f := tp.Field(i)
+		tag := f.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		// json tag is "key,omitempty" — strip options.
+		key := tag
+		if idx := strings.IndexByte(key, ','); idx >= 0 {
+			key = key[:idx]
+		}
+		got[key] = f.Name
+	}
+
+	// Detect additions / renames in cs-user not present in want.
+	for k, fname := range got {
+		wantFname, ok := want[k]
+		if !ok {
+			t.Errorf("EnterpriseClaims has unexpected JSON tag %q (field %s) — add to want set deliberately if new, and update server's TestParseJWTToken_EnterpriseClaimsRoundTrip", k, fname)
+			continue
+		}
+		if wantFname != fname {
+			t.Errorf("JSON tag %q maps to field %s, want %s", k, fname, wantFname)
+		}
+	}
+	// Detect removals — claim key expected but no longer on the struct.
+	for k, fname := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("EnterpriseClaims is MISSING JSON tag %q (expected on field %s) — removing a claim breaks downstream consumers; update want set + server consumer test if removal is intentional", k, fname)
+		}
 	}
 }
