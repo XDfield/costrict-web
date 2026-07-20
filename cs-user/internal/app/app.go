@@ -153,6 +153,11 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	users.POST("/:subject_id/bind-identity", usersAPI.BindIdentity)
 	users.DELETE("/:subject_id/identities/:provider", usersAPI.UnbindIdentity)
 
+	// Phase E3a.1: Gitea binding status (read-only). Returns 404 when the
+	// user has no binding (provisioning not yet run). The route lives under
+	// /users/:subject_id/ to mirror the auth-identities pattern.
+	users.GET("/:subject_id/gitea-binding", usersAPI.GetGiteaBinding)
+
 	// Phase A4b: enterprise-mapping refresh hook fired by the server's OAuth
 	// callback after GetOrCreateUser. Lives outside the :subject_id path
 	// subtree so it doesn't collide with the routes above.
@@ -304,6 +309,9 @@ func (unavailableUserService) UnbindIdentityByProvider(_ context.Context, _, _ s
 }
 func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.EmploymentMappingParams) error {
 	return errServiceUnavailable
+}
+func (unavailableUserService) GetGiteaBinding(_ context.Context, _ string) (*models.UserGiteaBinding, error) {
+	return nil, errServiceUnavailable
 }
 
 type unavailableAuthIdentityService struct{}
