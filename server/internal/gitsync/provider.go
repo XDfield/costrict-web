@@ -12,7 +12,7 @@ import (
 // for traceability in logs / audit (future); GiteaEmail is informational
 // only.
 type TeamMember struct {
-	SubjectID    string `json:"subject_id"`
+	SubjectID     string `json:"subject_id"`
 	GiteaUsername string `json:"gitea_username"`
 	GiteaEmail    string `json:"gitea_email,omitempty"`
 }
