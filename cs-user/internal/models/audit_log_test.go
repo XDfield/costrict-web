@@ -119,10 +119,10 @@ func TestAuditLog_PayloadJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAuditLog_ActionVocabConstants verifies the 6 action constants and 3
-// target_type constants compile + have stable string values. This is a
-// regression guard against accidental vocabulary renames — downstream
-// consumers (list endpoint, dashboards) key off these strings.
+// TestAuditLog_ActionVocabConstants verifies the action and target_type
+// constants compile + have stable string values. This is a regression guard
+// against accidental vocabulary renames — downstream consumers (list endpoint,
+// dashboards) key off these strings.
 func TestAuditLog_ActionVocabConstants(t *testing.T) {
 	t.Parallel()
 	actions := []string{
@@ -132,7 +132,10 @@ func TestAuditLog_ActionVocabConstants(t *testing.T) {
 		ActionTenantDeletionRequested,
 		ActionTenantConfigUpdate,
 		ActionProviderMappingUpdate,
+		ActionUserGiteaProvisioned,
+		ActionUserStatusChanged,
 	}
+	seen := make(map[string]bool, len(actions))
 	for i, a := range actions {
 		if !strings.Contains(a, ".") {
 			t.Errorf("action %d (%q) must contain a dot separator", i, a)
@@ -140,15 +143,27 @@ func TestAuditLog_ActionVocabConstants(t *testing.T) {
 		if a == "" {
 			t.Errorf("action %d must not be empty", i)
 		}
+		if seen[a] {
+			t.Errorf("action %q is duplicated in the test list (collision risk)", a)
+		}
+		seen[a] = true
+	}
+	if ActionUserStatusChanged != "user.status_changed" {
+		t.Errorf("ActionUserStatusChanged must be %q, got %q", "user.status_changed", ActionUserStatusChanged)
 	}
 	targets := []string{
 		TargetTypeTenant,
 		TargetTypeTenantConfig,
 		TargetTypeProviderMapping,
+		TargetTypeUserGiteaBinding,
+		TargetTypeUser,
 	}
 	for i, tt := range targets {
 		if tt == "" {
 			t.Errorf("target_type %d must not be empty", i)
 		}
+	}
+	if TargetTypeUser != "user" {
+		t.Errorf("TargetTypeUser must be %q, got %q", "user", TargetTypeUser)
 	}
 }
