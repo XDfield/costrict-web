@@ -151,6 +151,9 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	users.GET("/:subject_id", usersAPI.GetUser)
 	users.POST("/by-ids", usersAPI.GetUsersByIDs)
 	users.GET("/search", usersAPI.SearchUsers)
+	// Admin user-management (admin-user-migration slice). Static literal
+	// paths win over the :subject_id wildcard in gin's radix tree.
+	users.GET("/list", usersAPI.ListUsers)
 
 	// Phase 2 write endpoints.
 	users.POST("/get-or-create", usersAPI.GetOrCreate)
@@ -319,6 +322,12 @@ func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.E
 }
 func (unavailableUserService) GetGiteaBinding(_ context.Context, _ string) (*models.UserGiteaBinding, error) {
 	return nil, errServiceUnavailable
+}
+
+// ListUsers surfaces the admin user-management error in the same shape as
+// the production path — 503 via errServiceUnavailable.
+func (unavailableUserService) ListUsers(_ context.Context, _ user.ListUsersParams) ([]*models.User, int64, error) {
+	return nil, 0, errServiceUnavailable
 }
 
 type unavailableAuthIdentityService struct{}

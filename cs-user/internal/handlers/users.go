@@ -48,6 +48,10 @@ type UserService interface {
 	// gorm.ErrRecordNotFound). Powers GET /users/:subject_id/gitea-binding
 	// for ops visibility + the future fork JWT middleware (E3a.3).
 	GetGiteaBinding(ctx context.Context, subjectID string) (*models.UserGiteaBinding, error)
+	// Admin user-management (admin-user-migration slice). Powers
+	// @server's /api/admin/users/* surface, migrated to cs-user as the
+	// single source of truth for user identity + status.
+	ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error)
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.
