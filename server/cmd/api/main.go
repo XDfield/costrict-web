@@ -127,17 +127,26 @@ func main() {
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
 
-	// Phase E3b.1: @server-side Gitea team sync (manual admin trigger).
-	// Constructed only when both GITEA_BASE_URL and GITEA_ADMIN_TOKEN are
-	// set; nil service → /api/admin/teams/:team_id/sync returns 503.
+	// Phase E3b.1.1: @server-side Gitea team sync (manual admin trigger),
+	// per-tenant resolved. Constructed only when cs-user RPC is configured
+	// (USER_SERVICE_BACKEND=rpc); nil service → /api/admin/tenants/:tenant_id/
+	// teams/:team_id/sync returns 503. Git server endpoint + admin_token are
+	// resolved per-tenant via cs-user, replacing the legacy global
+	// GITEA_BASE_URL / GITEA_ADMIN_TOKEN / TEAM_SYNC_MAPPINGS env vars.
+	//
 	// Stub provider is the MVP data source; future slice swaps in a real
 	// provider (cs-user team RPC after org-team-service integration per
 	// ADR-10, or E4 webhook payload adapter) behind the same interface.
-	if cfg.Gitea.BaseURL != "" && cfg.Gitea.AdminToken != "" {
-		giteaClient := gitsync.NewClient(cfg.Gitea.BaseURL, cfg.Gitea.AdminToken)
-		teamProvider := gitsync.NewStubProvider() // TODO(E3b.2): replace with real provider
-		teamResolver := gitsync.NewConfigTeamResolver(cfg.TeamSync.Mappings)
-		teamSyncSvc := gitsync.NewService(teamProvider, giteaClient, teamResolver, logger.L())
+	// teamResolver is a placeholder until a DB-backed team metadata table
+	// lands — empty map means sync currently returns 404 for any team_id.
+	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient.Configured() {
+		teamProvider := gitsync.NewStubProvider()          // TODO(E3b.2): replace with real provider
+		teamResolver := gitsync.NewConfigTeamResolver(nil) // TODO: DB-backed team metadata
+		gitResolver := gitsync.NewRPCResolver(
+			&tenantGitServerAdapter{rpc: rpcClient},
+			gitsync.CacheTTL,
+		)
+		teamSyncSvc := gitsync.NewService(teamProvider, gitResolver, teamResolver, logger.L())
 		handlers.InitTeamSyncService(teamSyncSvc)
 	}
 
@@ -661,10 +670,11 @@ func main() {
 			admin.GET("/distributions", distHandler.ListAllDistributions)
 			admin.GET("/distributions/:id/receipts", distHandler.ListDistributionReceipts)
 
-			// Phase E3b.1: manual team-sync trigger (platform admin only).
-			// POST /api/admin/teams/:team_id/sync runs a full reconcile
-			// against Gitea; returns 503 if feature is unconfigured.
-			admin.POST("/teams/:team_id/sync", handlers.SyncTeam)
+			// Phase E3b.1.1: manual team-sync trigger (platform admin only).
+			// POST /api/admin/tenants/:tenant_id/teams/:team_id/sync runs a
+			// full reconcile against the tenant's Gitea; returns 503 if
+			// feature is unconfigured.
+			admin.POST("/tenants/:tenant_id/teams/:team_id/sync", handlers.SyncTeam)
 
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.
