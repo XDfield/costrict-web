@@ -370,6 +370,7 @@ func main() {
 		{
 			auth.GET("/callback", handlers.AuthCallback)
 			auth.GET("/login", handlers.Login)
+			auth.GET("/resolve", middleware.RequireAuth(casdoorEndpoint, jwksProvider), handlers.ResolveAuthUser)
 			auth.POST("/logout", handlers.Logout)
 			auth.GET("/bind/callback", handlers.AuthCallback)
 		}

@@ -725,6 +725,92 @@ func Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
 
+// ResolveAuthUser godoc
+// @Summary      Resolve auth user for gateway
+// @Description  Resolves the current user from auth cookie/JWT and returns user_id + email + primary_identity. Used by gateway auth_request for Gitea reverse proxy authentication.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{user_id=string,email=string,primary_identity=string}
+// @Header       200  {string} X-CS-User "User subject ID for gateway"
+// @Header       200  {string} X-CS-Email "User email for gateway"
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/resolve [get]
+func ResolveAuthUser(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		// Clear invalid cookie to prevent repeated failed requests
+		middleware.ClearAuthCookie(c)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	if UserModule != nil {
+		var (
+			user *models.User
+			err  error
+		)
+		if UserModule.CachedService != nil {
+			user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
+		} else if UserModule.Service != nil {
+			user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
+		}
+		if err == nil && user != nil {
+			// Build primary_identity string (provider format)
+			primaryIdentity := ""
+			if user.AuthProvider != nil && *user.AuthProvider != "" {
+				primaryIdentity = *user.AuthProvider
+				if user.ExternalKey != nil && *user.ExternalKey != "" {
+					primaryIdentity += "|" + *user.ExternalKey
+				}
+			} else {
+				primaryIdentity = "unknown"
+			}
+
+			// Set headers for gateway auth_request (nginx reads these via $upstream_http_x_cs_user)
+			c.Header("X-CS-User", user.SubjectID)
+			email := ""
+			if user.Email != nil {
+				email = *user.Email
+			}
+			c.Header("X-CS-Email", email)
+
+			c.JSON(http.StatusOK, gin.H{
+				"user_id":          user.SubjectID,
+				"email":            email,
+				"primary_identity": primaryIdentity,
+			})
+			return
+		}
+	}
+
+	// Fallback to claims if user lookup fails
+	authClaims, exists := c.Get(middleware.AuthClaimsKey)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	claims, ok := authClaims.(middleware.AuthClaims)
+	if !ok || claims.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid auth claims"})
+		return
+	}
+
+	primaryIdentity := claims.Provider
+	if claims.Sub != "" {
+		primaryIdentity += "|" + claims.Sub
+	}
+
+	c.Header("X-CS-User", claims.Sub)
+	c.Header("X-CS-Email", claims.Email)
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":          claims.Sub,
+		"email":            claims.Email,
+		"primary_identity": primaryIdentity,
+	})
+}
+
 // GetCurrentUser godoc
 // @Summary      Get current user
 // @Description  Get information of the authenticated user
