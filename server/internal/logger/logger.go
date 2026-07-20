@@ -217,6 +217,18 @@ func Sync() {
 
 // ---------- public helpers (printf-style) ----------
 
+// L returns the package-level *zap.Logger initialized by Init. Callers
+// that need structured logging (e.g. gitsync.Service) should use this
+// rather than re-creating their own logger. Returns a no-op logger if
+// Init has not been called yet (defensive — production wiring always
+// runs Init at startup).
+func L() *zap.Logger {
+	if zapLogger == nil {
+		return zap.NewNop()
+	}
+	return zapLogger
+}
+
 // Info logs an informational message to app.log.
 func Info(format string, args ...any) {
 	getSugar().Infof(format, args...)
