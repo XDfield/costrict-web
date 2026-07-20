@@ -34,6 +34,7 @@ import (
 
 	_ "github.com/costrict/costrict-web/cs-user/docs"
 	"github.com/costrict/costrict-web/cs-user/internal/app"
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
@@ -128,6 +129,7 @@ func main() {
 		TenantResolver:   tenant.NewResolver(pool.Gorm),
 		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
 		TenantConfig:     tenantconfig.New(pool.Gorm),
+		AuditLog:         auditlog.NewService(pool.Gorm, nil),
 	})
 
 	srv := &http.Server{

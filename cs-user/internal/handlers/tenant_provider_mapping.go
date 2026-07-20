@@ -32,6 +32,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
+	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
 	"github.com/gin-gonic/gin"
 )
@@ -40,8 +42,14 @@ import (
 // Svc is an interface so handler tests substitute a fake; production
 // wires *tenantconfig.Service (which satisfies both TenantConfigService
 // and TenantProviderMappingService).
+//
+// Audit (Phase C4.1) is optional — nil skips the post-success audit-log
+// write. When set, UpdateProviderMapping writes a provider_mapping.update
+// row to user_center_audit_log. Payload captures provider count + names
+// (post-state; diff deferred per C4.1 known limitations).
 type TenantProviderMappingAPI struct {
-	Svc TenantProviderMappingService
+	Svc   TenantProviderMappingService
+	Audit *auditlog.Service
 }
 
 // TenantProviderMappingService is the typed read+write surface the
@@ -127,7 +135,26 @@ func (a *TenantProviderMappingAPI) UpdateProviderMapping(c *gin.Context) {
 		respondProviderMappingErr(c, err)
 		return
 	}
+	recordAudit(a.Audit, c, models.ActionProviderMappingUpdate, models.TargetTypeProviderMapping,
+		"provider_mapping:"+tenantID, providerMappingAuditPayload(out))
 	c.JSON(http.StatusOK, out)
+}
+
+// providerMappingAuditPayload summarizes the post-state of a provider_mapping
+// for the audit row. Captures count + provider names so the audit log is
+// useful without re-fetching the YAML. Full diff generation deferred.
+func providerMappingAuditPayload(m *tenantconfig.ProviderMapping) map[string]any {
+	if m == nil {
+		return nil
+	}
+	names := make([]string, 0, len(m.Providers))
+	for name := range m.Providers {
+		names = append(names, name)
+	}
+	return map[string]any{
+		"provider_count": len(m.Providers),
+		"provider_names": names,
+	}
 }
 
 // respondProviderMappingErr maps provider_mapping service errors to HTTP.

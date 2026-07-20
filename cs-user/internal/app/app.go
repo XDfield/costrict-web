@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/handlers"
@@ -63,6 +64,13 @@ type Deps struct {
 	// Drives /api/internal/tenant/config (GET + PUT). When nil, those
 	// endpoints return 503 so the swagger spec stays consistent.
 	TenantConfig *tenantconfig.Service
+	// AuditLog is the Phase C4.1 best-effort writer. When nil, the
+	// platform-tenant / tenant-config / provider-mapping handlers skip the
+	// post-success audit-log write (recordAudit is nil-safe). Tests that
+	// need to assert on audit rows inject a real *auditlog.Service bound to
+	// the same sqlite/gorm DB; production wires one bound to the Postgres
+	// pool.
+	AuditLog *auditlog.Service
 }
 
 // NewRouter builds the gin engine with all cs-user routes.
@@ -205,7 +213,7 @@ func registerPlatformTenantRoutes(rg *gin.RouterGroup, deps Deps) {
 	if deps.TenantAdmin == nil {
 		svc = unavailablePlatformTenantService{}
 	}
-	api := handlers.PlatformTenantsAPI{Svc: svc}
+	api := handlers.PlatformTenantsAPI{Svc: svc, Audit: deps.AuditLog}
 	g := rg.Group("/platform/tenants")
 	g.GET("", api.ListTenants)
 	g.POST("", api.CreateTenant)
@@ -335,7 +343,7 @@ func registerTenantConfigRoutes(rg *gin.RouterGroup, deps Deps) {
 	if deps.TenantConfig == nil {
 		svc = unavailableTenantConfigService{}
 	}
-	api := handlers.TenantConfigAPI{Svc: svc}
+	api := handlers.TenantConfigAPI{Svc: svc, Audit: deps.AuditLog}
 	g := rg.Group("/tenant/config")
 	g.GET("", api.GetTenantConfig)
 	g.PUT("", api.UpdateTenantConfig)
@@ -366,7 +374,7 @@ func registerTenantProviderMappingRoutes(rg *gin.RouterGroup, deps Deps) {
 	} else {
 		svc = deps.TenantConfig
 	}
-	api := handlers.TenantProviderMappingAPI{Svc: svc}
+	api := handlers.TenantProviderMappingAPI{Svc: svc, Audit: deps.AuditLog}
 	g := rg.Group("/tenant/provider-mapping")
 	g.GET("", api.GetProviderMapping)
 	g.PUT("", api.UpdateProviderMapping)
