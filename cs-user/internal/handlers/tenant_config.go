@@ -36,6 +36,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/middleware"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
@@ -45,8 +46,15 @@ import (
 // TenantConfigAPI wraps a tenantconfig.Service. The dependency is an
 // interface so unit tests can substitute a fake; production wires
 // *tenantconfig.Service.
+//
+// Audit (Phase C4.1) is optional — nil skips the post-success audit-log
+// write (test path / 503 fallback). When set, UpdateTenantConfig writes a
+// tenant_config.update row to user_center_audit_log after the service
+// commits. Payload captures the new YAML blob (post-state only — diff
+// generation deferred per C4.1 known limitations).
 type TenantConfigAPI struct {
-	Svc TenantConfigService
+	Svc   TenantConfigService
+	Audit *auditlog.Service
 }
 
 // TenantConfigService is the read+write surface the handlers need.
@@ -144,6 +152,10 @@ func (a *TenantConfigAPI) UpdateTenantConfig(c *gin.Context) {
 		respondTenantConfigErr(c, err)
 		return
 	}
+	recordAudit(a.Audit, c, models.ActionTenantConfigUpdate, models.TargetTypeTenantConfig,
+		"tenant_config:"+tenantID, map[string]any{
+			"bytes": len(req.ConfigYAML),
+		})
 	c.JSON(http.StatusOK, tc)
 }
 
