@@ -80,18 +80,18 @@ func main() {
 	// once JWT-claims plumbing is available.
 	userSvc := user.NewService(pool.Gorm)
 
-	// Phase E3a.1: wire Gitea auto-provisioning when both env vars are
-	// set. Empty config → feature stays disabled (giteaSync nil), so the
-	// GetOrCreateUser hook skips without touching the network. The user
-	// service carries the provisioner through the OAuth callback path
-	// (server-side AuthCallback → RPCWriter.GetOrCreateUser → here).
+	// Phase E3a.1: wire Gitea auto-provisioning. Per Phase E3b.1.1, the
+	// service resolves the tenant's git_server endpoint on each call via
+	// the per-tenant DBResolver (replacing the broken global env-var
+	// singleton that all tenants were funnelled through). The template
+	// row must already exist (bootstrap ran above) before we construct
+	// the service.
 	auditSvc := auditlog.NewService(pool.Gorm, nil)
 	if cfg.Gitea.Enabled() {
-		giteaClient := giteasync.NewClient(cfg.Gitea.BaseURL, cfg.Gitea.AdminToken)
-		giteaSvc := giteasync.NewService(pool.Gorm, giteaClient, auditSvc, nil)
+		giteaResolver := gitserver.NewDBResolver(pool.Gorm)
+		giteaSvc := giteasync.NewService(pool.Gorm, giteaResolver, auditSvc, nil)
 		userSvc.SetGiteaSync(giteaSvc)
-		logger.Info("Gitea auto-provisioning enabled",
-			zap.String("base_url", cfg.Gitea.BaseURL))
+		logger.Info("Gitea auto-provisioning enabled (per-tenant resolver)")
 	} else {
 		logger.Warn("Gitea auto-provisioning disabled — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
 	}
