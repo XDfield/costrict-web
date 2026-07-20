@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/tenant"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 )
@@ -44,6 +46,24 @@ type PlatformTenantService interface {
 // *RPCClient (or a wrapper).
 type PlatformTenantAPI struct {
 	Svc PlatformTenantService
+}
+
+// platformActorCtx returns the request ctx augmented with actor meta
+// (Phase C4.1) derived from AuthClaims. The RPC client forwards the meta
+// as X-Actor-Tenant-Role / X-Actor-Platform-Scope headers so cs-user's
+// audit-log writer captures them. No-op (returns ctx unchanged) when
+// AuthClaims is absent — the route is behind RequirePlatformAdmin so this
+// is defensive only.
+func platformActorCtx(c *gin.Context) context.Context {
+	v, ok := c.Get(middleware.AuthClaimsKey)
+	if !ok {
+		return c.Request.Context()
+	}
+	ac, ok := v.(middleware.AuthClaims)
+	if !ok {
+		return c.Request.Context()
+	}
+	return tenant.WithActorMeta(c.Request.Context(), actorMetaFromClaims(ac))
 }
 
 // --- request body shapes (server-side; mirror RPC client params) ---
@@ -154,7 +174,7 @@ func (a *PlatformTenantAPI) PlatformCreateTenant(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug and display_name are required"})
 		return
 	}
-	tn, err := a.Svc.CreateTenant(c.Request.Context(), userpkg.PlatformTenantCreateParams{
+	tn, err := a.Svc.CreateTenant(platformActorCtx(c), userpkg.PlatformTenantCreateParams{
 		Slug:         req.Slug,
 		DisplayName:  req.DisplayName,
 		Edition:      req.Edition,
@@ -233,7 +253,7 @@ func (a *PlatformTenantAPI) PlatformSuspendTenant(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	tn, err := a.Svc.SuspendTenant(c.Request.Context(), id)
+	tn, err := a.Svc.SuspendTenant(platformActorCtx(c), id)
 	if err != nil {
 		respondPlatformTenantRPCErr(c, err)
 		return
@@ -261,7 +281,7 @@ func (a *PlatformTenantAPI) PlatformRestoreTenant(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	tn, err := a.Svc.RestoreTenant(c.Request.Context(), id)
+	tn, err := a.Svc.RestoreTenant(platformActorCtx(c), id)
 	if err != nil {
 		respondPlatformTenantRPCErr(c, err)
 		return
@@ -289,7 +309,7 @@ func (a *PlatformTenantAPI) PlatformDeleteTenant(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	tn, err := a.Svc.DeleteTenant(c.Request.Context(), id)
+	tn, err := a.Svc.DeleteTenant(platformActorCtx(c), id)
 	if err != nil {
 		respondPlatformTenantRPCErr(c, err)
 		return

@@ -144,6 +144,9 @@ func (c *RPCClient) doPlatformTenantRequest(ctx context.Context, method, path st
 	if slug := tenantSlugFromContext(ctx); slug != "" {
 		req.Header.Set("X-Tenant-Id", slug)
 	}
+	// Forward actor role + platform scope (Phase C4.1) so cs-user's audit-log
+	// writer captures them in user_center_audit_log rows.
+	applyActorMetaHeaders(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

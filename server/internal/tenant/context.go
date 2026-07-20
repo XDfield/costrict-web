@@ -27,6 +27,22 @@ type ctxKey struct{}
 
 type tenantIDKey struct{}
 
+// actorMetaKey carries ActorMeta (Phase C4.1) on the server side. RPC clients
+// pull it via ActorMetaFromContext and forward role / platform_scope to
+// cs-user as X-Actor-Tenant-Role / X-Actor-Platform-Scope headers, where
+// cs-user's audit-log writer captures them for compliance rows.
+type actorMetaKey struct{}
+
+// ActorMeta bundles the JWT-derived actor role + platform scope for forwarding
+// to cs-user's audit layer. Either field may be empty (NULL column semantics
+// on the cs-user side). The TenantRoles slice typically contains one entry
+// for the active role; callers that have multiple pick the first (sufficient
+// for compliance — full role-list audit deferred per C4.1 known limitations).
+type ActorMeta struct {
+	Role  string
+	Scope string
+}
+
 // WithSlug returns a new ctx carrying the tenant slug. Empty slug is allowed
 // and represents "no signal" (the middleware uses it when no layer matched).
 func WithSlug(ctx context.Context, slug string) context.Context {
@@ -80,3 +96,25 @@ func TenantIDFromContext(ctx context.Context) string {
 // cs-user's A6/B1 migration. Phase A and any unscoped (no JWT / no resolver
 // signal) Phase B request resolves to this.
 const DefaultTenantID = "default"
+
+// WithActorMeta returns a new ctx carrying the actor role / platform scope.
+// Empty fields are preserved (cs-user writes NULL columns) so callers don't
+// need to branch on "platform-level vs tenant-level" when constructing the
+// meta — both shapes pass through unchanged.
+func WithActorMeta(ctx context.Context, m ActorMeta) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, actorMetaKey{}, m)
+}
+
+// ActorMetaFromContext returns the meta stored by WithActorMeta. Zero-value
+// ActorMeta (Role="" / Scope="") when absent — callers treat that as "no
+// signal" and skip the headers.
+func ActorMetaFromContext(ctx context.Context) ActorMeta {
+	if ctx == nil {
+		return ActorMeta{}
+	}
+	v, _ := ctx.Value(actorMetaKey{}).(ActorMeta)
+	return v
+}

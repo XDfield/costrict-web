@@ -135,9 +135,10 @@ func (a *TenantConfigAPI) UpdateTenantConfig(c *gin.Context) {
 }
 
 // prepareTenantConfigCtx validates auth claims, derives the tenant slug,
-// and returns a ctx with the slug injected so the RPC client forwards
-// X-Tenant-Id. Returns (ctx, true) on success; on failure writes the
-// response + returns (nil, false).
+// and returns a ctx with the slug + actor meta (Phase C4.1) injected so the
+// RPC client forwards X-Tenant-Id + X-Actor-Tenant-Role / X-Actor-Platform-
+// Scope. Returns (ctx, true) on success; on failure writes the response +
+// returns (nil, false).
 func prepareTenantConfigCtx(c *gin.Context) (context.Context, bool) {
 	ac, ok := readTenantConfigClaims(c)
 	if !ok {
@@ -154,7 +155,21 @@ func prepareTenantConfigCtx(c *gin.Context) (context.Context, bool) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "tenant binding required"})
 		return nil, false
 	}
-	return tenant.WithSlug(c.Request.Context(), slug), true
+	ctx := tenant.WithSlug(c.Request.Context(), slug)
+	ctx = tenant.WithActorMeta(ctx, actorMetaFromClaims(ac))
+	return ctx, true
+}
+
+// actorMetaFromClaims extracts the audit-log actor meta from JWT claims. The
+// first TenantRoles entry wins (sufficient for compliance; full role-list
+// audit deferred per C4.1 known limitations). PlatformScope passes through
+// unchanged.
+func actorMetaFromClaims(ac middleware.AuthClaims) tenant.ActorMeta {
+	m := tenant.ActorMeta{Scope: ac.PlatformScope}
+	if len(ac.TenantRoles) > 0 {
+		m.Role = ac.TenantRoles[0]
+	}
+	return m
 }
 
 // readTenantConfigClaims pulls the middleware.AuthClaims value from the

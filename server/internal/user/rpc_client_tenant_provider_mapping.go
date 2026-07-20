@@ -148,6 +148,7 @@ func (c *RPCClient) doProviderMapping(ctx context.Context, method string, body [
 	if actorSubjectID != "" {
 		req.Header.Set(ActorSubjectIDHeader, actorSubjectID)
 	}
+	applyActorMetaHeaders(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
