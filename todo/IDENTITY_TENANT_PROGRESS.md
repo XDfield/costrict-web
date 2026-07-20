@@ -36,7 +36,7 @@
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
 | Phase C | 三级权限 + admin API | ~16 | 6 | 38% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 / C4.3 audit-log list endpoints 待启动） |
-| Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 2 | 10% | 🟡 进行中（E3a.1 Gitea user 自动开户切片已落地：`user_gitea_binding` 表 + `giteasync.GiteaClient` HTTP 客户端（establishes cs-user 首个 outbound HTTP client 模式）+ `giteasync.Service` 状态机（pending → synced | error，409 → lookup 恢复，timeout 保持 pending 待 reconciliation cron）+ `user.Service.GetOrCreateUser` 新用户 hook（best-effort，Gitea 宕机永不 fail signup）+ `GET /api/internal/users/:subject_id/gitea-binding` 读 endpoint + `user.gitea_provisioned` audit vocab + `CS_USER_GITEA_BASE_URL` / `CS_USER_GITEA_ADMIN_TOKEN` config gate；33 测试全绿；**E3b.1 @server GitServerAdapter MVP 框架已落地**：`server/internal/gitsync/` 新包（GiteaClient for team ops + TeamDataProvider interface + StubProvider + TeamSyncService full-reconcile loop + ConfigTeamResolver）+ `POST /api/admin/teams/:team_id/sync` admin endpoint（manual trigger，RequirePlatformAdmin gated）+ GiteaConfig/TeamSyncConfig env gate（`GITEA_BASE_URL` / `GITEA_ADMIN_TOKEN` / `TEAM_SYNC_MAPPINGS`）+ logger.L() accessor；34 测试全绿；E3a.2 cascades + reconciliation cron / E3a.3 fork JWT middleware / E3b.2 real provider swap + cron + delta sync / E4 webhook 待启动） |
+| Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 3 | 15% | 🟡 进行中（E3a.1 Gitea user 自动开户切片已落地：`user_gitea_binding` 表 + `giteasync.GiteaClient` HTTP 客户端（establishes cs-user 首个 outbound HTTP client 模式）+ `giteasync.Service` 状态机（pending → synced | error，409 → lookup 恢复，timeout 保持 pending 待 reconciliation cron）+ `user.Service.GetOrCreateUser` 新用户 hook（best-effort，Gitea 宕机永不 fail signup）+ `GET /api/internal/users/:subject_id/gitea-binding` 读 endpoint + `user.gitea_provisioned` audit vocab；**E3a.1 被 E3b.1.1 重构：per-tenant Gitea 解析替换全局 `CS_USER_GITEA_BASE_URL`/`CS_USER_GITEA_ADMIN_TOKEN`**（见下方 E3b.1.1）；E3b.1 @server GitServerAdapter MVP 框架已落地；**E3b.1.1 per-tenant Gitea fix 已落地**（cs-user `git_servers` 表 + 两端 `ResolveAdapterForTenant` per-tenant 解析；见下方 E3b.1.1 实现细节）；E3a.2 cascades + reconciliation cron / E3a.3 fork JWT middleware / E3b.2 real provider swap + cron + delta sync / E4 webhook 待启动） |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
 
@@ -1224,7 +1224,7 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 - [ ] **E1**：provider_mapping yaml 标准化（per-tenant）
 - [ ] **E2**：tenant 级 IdP 接入（global vs tenant-specific）
 - [ ] **E3a**：Gitea JWT 中间件 fork + user 自动开户 + `user_gitea_binding` 维护（归属 cs-user） — **E3a.1 user 自动开户切片（5 commits）已落地 2026-07-20**：见下方"E3a.1 实现细节"；E3a.2 rename/disable/delete cascades + reconciliation cron / E3a.3 fork JWT middleware 待启动
-- [ ] **E3b**：Gitea `team_user` 同步（GitServerAdapter）（归属 server `internal/gitsync/`） — **E3b.1 MVP 框架切片（4 commits）已落地 2026-07-20**：见下方"E3b.1 实现细节"；E3b.2 real provider swap + cron + delta sync 待启动
+- [ ] **E3b**：Gitea `team_user` 同步（GitServerAdapter）（归属 server `internal/gitsync/`） — **E3b.1 MVP 框架切片（4 commits）已落地 2026-07-20**（已被 E3b.1.1 per-tenant 重构覆盖：handler path / service 签名 / config 均变更）；**E3b.1.1 per-tenant Gitea fix（10 commits）已落地 2026-07-20**：见下方"E3b.1.1 实现细节"；E3b.2 real provider swap + cron + delta sync 待启动
 - [ ] **E4**：webhook 用户变更广播系统
 
 ---
@@ -1411,6 +1411,62 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 - 应用层：清空 `GITEA_BASE_URL` 或 `GITEA_ADMIN_TOKEN` 环境变量并重启 server；`gitsync.NewClient` 返回 nil → `NewService` 返回 nil → `InitTeamSyncService(nil)` → handler 返回 503。无需改代码。
 - 路由层：注释 `cmd/api/main.go` 中 `admin.POST("/teams/:team_id/sync", handlers.SyncTeam)` 一行即可完全移除 endpoint。
 - Gitea 侧：手动校对 Gitea team 成员（stub provider 数据可控，无脏数据风险）。
+
+---
+
+### E3b.1.1 实现细节：per-tenant Gitea fix（已落地 2026-07-20，10 commits）
+
+**Bug 背景**：E3a.1（cs-user `giteasync`）与 E3b.1（@server `gitsync`）双双假设全局唯一 Gitea — cs-user 用 `CS_USER_GITEA_BASE_URL` / `CS_USER_GITEA_ADMIN_TOKEN`，@server 用 `GITEA_BASE_URL` / `GITEA_ADMIN_TOKEN`。违反 `MULTI_TENANCY_DESIGN.md §20`：**每个 tenant 必须绑定一个 `git_servers` row**（`tenants.git_server_id` FK），adapter 解析走 `ResolveAdapterForTenant(tenantID)`，不允许全局 singleton。结果：所有 tenant 的 user 开户 / team sync 都打到同一 Gitea 实例。
+
+**修复策略（option A 完整修复）**：cs-user 落地 `git_servers` 表 + template-row bootstrap（env → DB 桥接）+ `/api/internal/tenants/:tenant_id/git-server` RPC + 两端 Resolver 重构为 per-tenant。
+
+**10 commits**：
+
+cs-user 侧（5 commits）：
+- `<1>` (`migrations/20260721160000_create_git_servers.sql` + `models.GitServer` + `models.Tenant.GitServerID` + 4 model 测试)
+- `<2>` (`gitserver.DBResolver` + `gitserver.Config` + 5 sentinel errors + 5 resolver 测试 cgo sqlite)
+- `<3>` (`gitserver.BootstrapTemplate` 从 env 创建 / backfill 现有 tenant / 幂等 + 5 测试)
+- `<4>` (`giteasync.Service` 重构：`client` 字段 → `resolver` + `clientFactory` seam；`Provision(ctx, user)` 走 `resolver.Resolve(ctx, tenantID)` → transient client；13 service 测试 rewrite，含 `TestProvision_PerTenantResolverCalled` 回归测试)
+- `<5>` (`GET /api/internal/tenants/:tenant_id/git-server` handler + 7 测试 + `app.Deps.GitServerResolver` wiring + `cmd/api/main.go` 注册 route + 启动期 bootstrap)
+
+@server 侧（4 commits）：
+- `<6>` (`user.RPCClient.GetTenantGitServer` + 5 sentinel errors + path-based tenant_id（不在 header，因为 platform-admin 可能 sync 任意 tenant）+ 12 测试)
+- `<7>` (`gitsync.RPCResolver` + 5min TTL cache + errors 不缓存（transient 失败立即重试）+ `GitServerConfig`/`GitServerClient` interface（避开 gitsync → user import cycle）+ 10 测试含 race-tested concurrent)
+- `<8>` (`gitsync.Service` 重构：`client` 字段 → `gitResolver` + `clientFactory func(GitServerConfig)`；`SyncTeam` 签名 `(ctx, teamID)` → `(ctx, tenantID, teamID)`；nil resolver → nil Service（feature-disabled signal）；15 service 测试 rewrite，含 `TestSyncTeam_PerTenantResolverCalled` 回归测试)
+- `<9>` (handler path 改为 `/tenants/:tenant_id/teams/:team_id/sync` + `TeamSyncService.SyncTeam(ctx, tenantID, teamID)` + `cmd/api/main.go` 注入 `RPCResolver`（包 `tenantGitServerAdapter` 做 `user.TenantGitServerConfig` ↔ `gitsync.GitServerConfig` 类型翻译）+ 移除 `GiteaConfig`/`TeamSyncConfig`/`loadTeamSyncMappings`；team_sync 测试更新到新路径 + 新增 `TestSyncTeam_EmptyTenantIDReturns400`)
+
+progress 文档（1 commit）：
+- `<本 commit>`（Phase E 计数器 2→3, 10%→15%；新增本节）
+
+**关键设计决策**：
+
+1. **Template-row bootstrap（env → DB 桥接）** — 启动期若 `CS_USER_GITEA_BASE_URL` + `CS_USER_GITEA_ADMIN_TOKEN` 已设且 DB 无 `is_template=true` row，从 env 创建 template row + backfill 所有现有 tenant 的 `git_server_id`。保留 operator 现有 env-var-driven deploy 习惯，同时把真相搬到 DB。幂等：已存在 template 直接返回其 server_id。
+2. **tenants.git_server_id nullable 迁移窗** — migration 不强制 NOT NULL（避免破坏现有 row）；bootstrap transaction 内立即 backfill。后续单独 migration 加 NOT NULL + UNIQUE。风险：迁移窗内新建 tenant 可能 NULL；bootstrap transaction 缓解。
+3. **Sentinel 错误 vocab** — cs-user 侧 `ErrTenantNotFound` / `ErrTenantMissingGitServer` / `ErrGitServerNotFound` / `ErrGitServerDisabled` / `ErrConfigMalformed`；@server 侧 `ErrGitServerTenantNotFound` / `ErrGitServerNoBinding` / `ErrGitServerRowMissing` / `ErrGitServerConfigMalformed` / `ErrGitServerDisabled`（前缀 `ErrGitServer*` 避免与 platform-tenant 的 `ErrTenantNotFound` 碰撞；ADR D1 类型解耦）。
+4. **Cache 设计** — `RPCResolver` 5min TTL，errors 不缓存（transient RPC 失败下次重试，避免 5min 卡死）。mutex-guarded `map[tenant]*cacheEntry`。single-flight YAGNI（admin-triggered sync 是 bursty 不是 hot path）。
+5. **类型解耦（ADR D1）** — `gitsync.GitServerConfig` 与 `user.TenantGitServerConfig` 字段一一对应但分别声明，避免 `gitsync → user` import cycle；`cmd/api/main.go` 的 `tenantGitServerAdapter` 做类型翻译。同样 cs-user 侧 `gitsync.GitServerConfig` 与 cs-user `gitserver.Config` 分别声明。
+6. **Client factory seam** — `gitsync.Service.clientFactory func(GitServerConfig) GiteaTeamMemberAPI` 字段；production 用 `defaultClientFactory`（包 `NewClient`），测试注入 stub 不需要起 HTTP server。cs-user 侧 `giteasync.Service.clientFactory func(endpoint, adminToken string) GiteaUserProvisioner` 同模式。
+7. **Path-based tenant_id（不在 X-Tenant-Id header）** — platform-admin 可能 sync 任意 tenant，不一定是请求 own 的 tenant；cs-user RPC `GET /api/internal/tenants/:tenant_id/git-server` 把 tenant_id 放 path。
+8. **@server teamResolver 占位** — `NewConfigTeamResolver(nil)` 当前返回 false → `ErrTeamNotFound`。`TEAM_SYNC_MAPPINGS` env 已移除，未来 DB-backed team metadata 表替换（与 cs-user `teams` 表 ADR-10 集成时同步落地）。当前无 caller，acceptable。
+
+**已知 deferred（不在 E3b.1.1 范围）**：
+
+- **Vault integration** — `git_servers.config.admin_token` 当前 plaintext JSONB；TODO 标记。缓解：DB-level access controls + 字段永不 log。
+- **NOT NULL enforcement** — `tenants.git_server_id` 当前 nullable；backfill 完成后单独 migration 加 NOT NULL + UNIQUE。
+- **Cache invalidation API** — 当前仅 TTL；operator rotate admin_token 后最长 5min staleness。acceptable（rotation 罕见）。
+- **Per-tenant `teams` 表** — @server teamResolver 仍占位；等 cs-user `teams` 表落地后做 cross-service 集成。
+- **Bootstrap 多 git server 支持** — 当前 template row 仅 1 个（env-driven）；多 Gitea 实例需要 admin UI / API 创建额外 `git_servers` row，未来 slice。
+
+**回滚步骤**：
+
+- cs-user：删 `git_servers` migration + `models.GitServer` + `gitserver.*` + handler；`giteasync.Service` revert 到 `client *GiteaClient`。tenant.git_server_id column 残留无害（nullable）。
+- @server：revert commit `<9>`（handler path + main.go wiring + config），revert commit `<8>`（service 签名），revert commit `<7>`（resolver 包），revert commit `<6>`（RPC client）。`GiteaConfig`/`TeamSyncConfig` 通过 git revert 恢复。
+- 环境变量：恢复 `GITEA_BASE_URL` / `GITEA_ADMIN_TOKEN` / `TEAM_SYNC_MAPPINGS` / `CS_USER_GITEA_BASE_URL` / `CS_USER_GITEA_ADMIN_TOKEN` 即可。
+
+**测试覆盖（合计 71 测试）**：
+
+- cs-user: 4 (model) + 5 (resolver) + 5 (bootstrap) + 13 (giteasync service) + 7 (handler) = **34**
+- @server: 12 (rpc client) + 10 (resolver) + 15 (gitsync service) + 8 (handler team_sync) = **45** （含 4 个 per-tenant 回归测试）
 
 ---
 
