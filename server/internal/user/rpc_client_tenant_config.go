@@ -142,6 +142,7 @@ func (c *RPCClient) doTenantConfig(ctx context.Context, method string, body []by
 	if actorSubjectID != "" {
 		req.Header.Set(ActorSubjectIDHeader, actorSubjectID)
 	}
+	applyActorMetaHeaders(req, ctx)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
