@@ -35,7 +35,7 @@
 | Phase 0 | cs-user 服务抽离（user 数据 ownership + read-through RPC） | 82 | 81 | 99% | 🟡 进行中（P0-1 + P0-2 + P0-3 + P0-4 + P0-5 + P0-6 + P0-7 + P0-8a + cs-user Phase 2 write API + P0-8b RPCWriter/DualWriter + DB trigger 完成；P0-8b 剩余：操作侧 cutover sequence） |
 | Phase A | JWT 自签 + 雇佣上下文最小集 | ~40 | 10 | 25% | 🟡 进行中（A1 + A2 + A6 + A4 service 层 + A4b endpoint+server wiring + A3 JWT signer + A5 claims 扩展 + A7 cs-user endpoint + A7b server 端 OAuth callback wiring + A8 灰度 三态门控 完成；Phase A 代码级 acceptance bar 已落地（`phasea_integration_test.go` 4 tests），运维级 acceptance 项待 runbook 驱动） |
 | Phase B | tenant 维度落地（数据隔离） | ~28 | 12 | 43% | 🟡 进行中（B1 tenants + tenant_admins 表 + 默认 default 租户行 + tenant_configs FK 完成；B2 给 users / user_auth_identities / employment_identities 加 tenant_id 列 + FK + 索引 完成；B3 tenant.Resolver 三层 fallback primitives + email_domains typed reader 完成；B3b.1 cs-user 侧 HTTP middleware + TenantConfig + context helpers 完成；B3b.2a server 侧 tenant slug forwarding（middleware + RPC header 注入 + ApexDomains 配置）完成；B3b.2b-step1 ctx 穿透 UserWriter interface（write-path slug 转发激活）完成；B3b.2b-step2a cs-user `/api/internal/tenants/resolve-by-email` RPC 端点 + ListByEmailDomain resolver primitive 完成；B3b.2b-step2b server RPC client + AuthCallback Try 2 email-domain 解析（cookie + ctx 注入）完成；B7 `(tenant_id, username)` 复合唯一索引（email 全局唯一保留）完成；B3b.2c cross-tenant 检测（JWT `tenant_slug` claim 路径：cs-user 签发 + server 解析 + TenantMatch middleware）完成；B4 JWT `tenant_id` claim → request ctx（TenantContext middleware + tenant.WithTenantID/TenantIDFromContext helpers + DefaultTenantID 常量）完成；B5 cs-user 侧 `tenant.Scope(ctx)` query helper + 4 read 方法迁移（GetUserByID/GetUsersByIDs/SearchUsers/ListIdentities）完成；B3b.2b-step2c server 端 `/api/tenants/suggest` wrapper endpoint（picker UI suggestion 接口）完成；B5 write 方法 scoping follow-up（GetOrCreateUser/BindIdentityToUser/TransferIdentityToUser/UnbindIdentityByProvider + refreshUserProfileFromIdentitiesTx 全路径 tenant scope）完成；B3b.2b-step2c AuthCallback picker redirect + 前端 picker 页面 待启动；**B6 RLS 已降级为未来工作（2026-07-17）** — 业务确认无需当前做代码防范，设计草案保留供触发条件满足后取用） |
-| Phase C | 三级权限 + admin API | ~16 | 7 | 44% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；**admin-user-migration 切片（option A 完整迁移，9 commits）已落地 2026-07-20**：@server `/api/admin/users/*` 身份 + status 走 cs-user RPC，cs-user 成为身份 + status 单一真相源，Casdoor 仅作登录源认证；详见下方"admin-user-migration 实现细节"；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 / C4.3 audit-log list endpoints 待启动） |
+| Phase C | 三级权限 + admin API | ~16 | 8 | 50% | 🟡 进行中（C1 platform_admins 表 + 模型 + service readers + JWT claims 扩展（cs-user EnterpriseClaims + server AuthClaims）+ reissue-token handler wiring + permission middlewares（RequirePlatformAdmin / RequireTenantAdmin / RequireTenantMember）+ 36 测试全绿 完成；C2 platform_admin tenant CRUD API（7 endpoints + tenant.Admin service + RPC client + server handlers）完成，RequirePlatformAdmin 首次 wiring；C3.1 tenant_admin 用户列表（GET /api/tenant/users + RPC client + RequireTenantAdmin 首次 wiring）完成；C3.2 tenant config CRUD（GET + PUT /api/tenant/config + cs-user tenantconfig.Service + RPC client + server handlers）完成；C3.3 provider_mapping typed editing（GET + PUT /api/tenant/provider-mapping + cs-user ProviderMapping typed struct + Validate/Parse/Serialize + Node-based yaml merge 保 sibling sections + RPC client + server handlers）完成；C4.1 审计日志基础设施（user_center_audit_log 表 + auditlog.Service 最佳努力写入器 + 6 写路径 instrument + server ActorMeta ctx-carrier → X-Actor-Tenant-Role/X-Actor-Platform-Scope headers 转发）完成；**admin-user-migration 切片（option A 完整迁移，9 commits）已落地 2026-07-20**：@server `/api/admin/users/*` 身份 + status 走 cs-user RPC，cs-user 成为身份 + status 单一真相源，Casdoor 仅作登录源认证；详见下方"admin-user-migration 实现细节"；**C4.3 audit-log list endpoints 切片（7 commits）已落地 2026-07-20**：cs-user `auditlog.Service.List` reader + 2 内部 endpoints（platform cross-tenant + tenant-scoped via X-Tenant-Id）+ @server RPC client + 2 public endpoints（RequirePlatformAdmin + RequireTenantAdmin）+ main.go wiring；详见下方"C4.3 audit-log list 实现细节"；跨 tenant 用户 ops / email allowlist 等 C2 其他切片 + C4.2 active 越权检测 待启动） |
 | Phase E | 身份联邦扩展（多 IdP + Gitea + webhook） | ~20 | 3 | 15% | 🟡 进行中（E3a.1 Gitea user 自动开户切片已落地：`user_gitea_binding` 表 + `giteasync.GiteaClient` HTTP 客户端（establishes cs-user 首个 outbound HTTP client 模式）+ `giteasync.Service` 状态机（pending → synced | error，409 → lookup 恢复，timeout 保持 pending 待 reconciliation cron）+ `user.Service.GetOrCreateUser` 新用户 hook（best-effort，Gitea 宕机永不 fail signup）+ `GET /api/internal/users/:subject_id/gitea-binding` 读 endpoint + `user.gitea_provisioned` audit vocab；**E3a.1 被 E3b.1.1 重构：per-tenant Gitea 解析替换全局 `CS_USER_GITEA_BASE_URL`/`CS_USER_GITEA_ADMIN_TOKEN`**（见下方 E3b.1.1）；E3b.1 @server GitServerAdapter MVP 框架已落地；**E3b.1.1 per-tenant Gitea fix 已落地**（cs-user `git_servers` 表 + 两端 `ResolveAdapterForTenant` per-tenant 解析；见下方 E3b.1.1 实现细节）；E3a.2 cascades + reconciliation cron / E3a.3 fork JWT middleware / E3b.2 real provider swap + cron + delta sync / E4 webhook 待启动） |
 
 > **Phase 0 大任务颗粒度**：8 个 P0-X 子任务 + 验收清单，当前完成 P0-1（骨架）/ P0-2（Postgres + 迁移）/ P0-3（models + read CRUD）/ P0-4（认证中间件）/ P0-5（Helm chart）/ P0-6（ETL 脚本）/ P0-7（read-through RPC client in server）/ P0-8a（应用层 write gate）/ cs-user Phase 2 write API（5 endpoints）/ **P0-8b 应用层 RPCWriter+DualWriter（OAuth callback + admin 写路径 re-route）** 九个完整大任务。下一步推进 P0-8b 剩余两项—— **DB trigger 兜底**（costrict-web `users` 表 `BEFORE INSERT/UPDATE/DELETE` 拒写）+ **操作侧 cutover**（`docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md` step 3-5：dual-write canary 24h → readonly+rpc cutover → trigger enable）。应用层写路径已 unblock：`UserModule.Writer` 按 `(Backend, WriteMode)` 矩阵选 writer（local / DualWriter / RPCWriter），P0-8a readonly+rpc boot fatal 已移除。详见 `docs/identity-tenant/P0-8_CUTOVER_RUNBOOK.md`。
@@ -1319,7 +1319,7 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 **已知 deferred（不在 C4.1 范围）**：
 
 - **C4.2 active 越权检测 middleware** — 今天 cross-tenant protection 仅依赖 JWT → AuthClaims → `X-Tenant-Id` → ResolveTenant 链 + RequireTenantAdmin role check；C4.1 仅记录**成功**的 admin 动作，不记录拒绝尝试。
-- **C4.3 list endpoints**（`GET /api/platform/audit-logs` + `GET /api/tenants/me/audit-logs`）— pagination + filter by action/actor/target/date range。表 + indexes 已 ready 支撑。
+- **C4.3 list endpoints**（`GET /api/platform/audit-logs` + `GET /api/tenants/me/audit-logs`）— pagination + filter by action/actor/target/date range。表 + indexes 已 ready 支撑。**✅ 已落地 2026-07-20（7 commits）**，详见下方"C4.3 audit-log list 实现细节"。
 - **`tenant.update` audit event** — UpdateTenant PATCH（display_name/edition/domains 等）目前未审计；deferred 直到合规审查标需要。
 - **payload diff** — 当前 payload 仅记 post-state（bytes / provider_count 等）；before/after diff 需 service 协作；deferred。
 - **retention/TTL cron** — 表无限增长；7-year retention policy + cron 是独立 ops PR。
@@ -1533,3 +1533,50 @@ progress 文档（1 commit）：
 - [身份联邦 ADR](../docs/identity-tenant/IDENTITY_FEDERATION_DECISION.md) — Gitea JWT fork
 - [团队/组织统一](../docs/identity-tenant/TEAM_ORG_UNIFICATION.md) — GitServerAdapter 归属
 - [用户表前身进度](./USER_TABLE_PROGRESS.md) — server 单体内 user 表 + CachedUserService（cs-user 抽离的依赖）
+
+---
+
+### C4.3 audit-log list 实现细节：`GET /api/platform/audit-logs` + `GET /api/tenant/audit-logs`（已落地 2026-07-20，7 commits）
+
+**目标**：把 C4.1 落地的 `user_center_audit_log` 表 + 3 indexes 暴露成两个面向消费方的 query endpoints：
+- platform-admin 跨 tenant 视图（`GET /api/platform/audit-logs`，RequirePlatformAdmin）
+- tenant_admin 本 tenant 视图（`GET /api/tenant/audit-logs`，RequireTenantAdmin；cs-user 通过 X-Tenant-Id header 强制 scope）
+
+cs-user 仍是 `user_center_audit_log` 唯一真相源（ADR D1）；@server 仅作 RPC proxy。
+
+**7 commit 分解**（5 cs-user + 1 @server handler/main.go 合并 + 1 doc；落地顺序）：
+
+| # | 仓库 | 文件 | 内容 |
+|---|------|------|------|
+| 1 | cs-user | `internal/auditlog/service.go` + `service_test.go` | `ListParams` / `ListResult` 类型 + `Service.List(ctx, ListParams)` 分页 reader（newest-first，limit 默认 100 cap 500，offset 默认 0；7 测试覆盖 empty / defaults+caps / tenant filter / action+actor+target AND / time range / ordering / pagination / nil-svc） |
+| 2 | cs-user | `internal/handlers/audit_logs.go` + `audit_logs_test.go` | `PlatformAuditLogsAPI.List` + `TenantAuditLogsAPI.List` 内部 endpoints（共享 query 合约：action/actor_subject_id/target_type/target_id/from/to/limit/offset；platform 透传 tenant_id query，tenant 强制从 ctx 覆盖（防跨 tenant 伪造）；10 handler 测试，含 spoofing-protection 用例） |
+| 3 | cs-user | `internal/app/app.go` | `registerPlatformAuditLogRoutes` + `registerTenantAuditLogRoutes` + `unavailableAuditLogService` 503 stub（返回 `auditlog.ErrNilDB` 映射 503，保持 swagger 路径稳定） |
+| 4 | server | `internal/user/rpc_client_audit_log.go` + `rpc_client_audit_log_test.go` | `*RPCClient.ListAuditLogs` + `ListAuditLogsForTenant` — `trustTenantID` flag 控制 URL builder 是否带 tenant_id（platform 透传，tenant strip）；3 sentinel：`ErrNotConfigured` / `ErrRPCUnavailable` / `ErrAuditLogRPCBadRequest`；11 测试覆盖 URL plumbing + sentinel 映射 + tenant-scope 防泄漏 + 3 个 `buildAuditLogQuery` 单元测试 |
+| 5+6 | server | `internal/handlers/audit_log.go` + `audit_log_test.go` + `cmd/api/main.go` | `PlatformAuditLogAPI.PlatformListAuditLogs` + `TenantAuditLogAPI.TenantListAuditLogs` 公开 endpoints；main.go wiring 2 route groups + 2 `build*Service` helpers（同 `*RPCClient` via `Module.TenantResolver`，local backend 模式 nil → 502）；14 handler 测试覆盖 happy / 400 / 502 / 500 / nil-Svc 502 / date-only / tenant_id-stripped 防伪造 |
+| 7 | doc | `todo/IDENTITY_TENANT_PROGRESS.md` | Phase C 计数 7→8、44%→50%；标记 C4.3 已落地；新增本节 |
+
+**关键设计决策**：
+
+1. **scope 强制在 handler 层，不在 service 层** — `auditlog.Service.List` 接受任意 `TenantID` 过滤（scope-agnostic）；cs-user 的 `TenantAuditLogsAPI.List` 从 `tenant.IDFromContext(ctx)` 强制覆盖 query 来的 tenant_id；@server 的 `TenantAuditLogAPI.TenantListAuditLogs` 在转发前 strip query tenant_id。两层独立防护。
+2. **trustTenantID flag** — RPC client URL builder 用单一 bool flag 区分 platform vs tenant 路径；避免重复代码。
+3. **timestamp 宽松解析** — handler 接受 RFC3339Nano / RFC3339 / `2006-01-02T15:04:05` / `2006-01-02 15:04:05` / `2006-01-02` 五种格式，方便 curl 手测；服务端再统一转 RFC3339Nano UTC 发给 cs-user。
+4. **empty 200，非 404** — `Total=0, Logs=[]` 是合法答案；不让消费方把"无记录"当错误处理。
+5. **default-tenant fallback** — tenant-scope endpoint 在 ctx 无 tenant 时 fallback 到 `tenant.DefaultTenantID` 而非 4xx，保持 pre-cutover 窗口 200-stable。
+6. **ErrNilDB 503 stub** — cs-user app.go 的 `unavailableAuditLogService` 返回 `auditlog.ErrNilDB`（非 `errServiceUnavailable`）以让 `respondAuditLogErr` 一致映射 503。
+7. **typed-nil trap 防御** — `*RPCClient.Configured()` nil-receiver check 防止 `(*RPCClient)(nil)` 通过 `interface{}` 非空比较；同 admin-user-migration step 6。
+8. **compile-time interface assertion** — `var _ PlatformAuditLogService = (*userpkg.RPCClient)(nil)` + `var _ TenantAuditLogService = (*userpkg.RPCClient)(nil)` 防 RPC client signature drift。
+9. **cross-DB split 保留** — @server 仍 own capability_items / item_distributions / activity counts（同 admin-user-migration），audit-log 表归属 cs-user（C4.1）。
+
+**测试覆盖**：7 service + 10 cs-user handler + 11 RPC client + 14 @server handler = **42 测试**（全部 PASS；cs-user handler 包 `-race` 在无关的 `TestGetTenantGitServer_*` pre-existing race 上失败，非本切片引入；不带 `-race` 全绿）。
+
+**Deferred items**（不在本切片）：
+- **C4.2 active 越权检测 middleware** — 仍仅记录成功 admin 动作；拒绝尝试不入 audit。下一步可加。
+- **`target_id` 跨表 join 视图**（如把 `target_id=user:u-123` 关联到用户展示名）— 当前 raw `target_id` 字符串透传，消费方自己解析。
+- **streaming / cursor 分页** — 当前 limit/offset；如 audit 量级超 10M 行，可换 cursor-based。
+- **audit log retention / 短期高基数表分区** — DB 层运维，不在应用切片。
+
+**Rollback steps**：
+1. `git revert` 7 commits（按相反顺序：doc → handler/main.go → RPC client → cs-user handlers → cs-user service）。
+2. 应用层：cs-user 容器 `Deps.AuditLog = nil` 让 audit 写入 skip（与 C4.1 回滚步骤共享），list endpoint 自动 503。
+3. DB 层：`user_center_audit_log` 表保留（C4.1 写入端；如要彻底回滚，按 C4.1 步骤处理）。
+
