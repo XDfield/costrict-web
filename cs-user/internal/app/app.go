@@ -157,6 +157,8 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// Organization roll-up — admin filter dropdown. Static literal path
 	// wins over the :subject_id wildcard in gin's radix tree.
 	users.GET("/organizations", usersAPI.ListOrganizations)
+	// Admin per-user profile (identity-only; @server merges activity counts).
+	users.GET("/:subject_id/profile", usersAPI.GetUserProfile)
 
 	// Phase 2 write endpoints.
 	users.POST("/get-or-create", usersAPI.GetOrCreate)
