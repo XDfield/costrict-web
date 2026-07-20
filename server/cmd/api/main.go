@@ -465,6 +465,7 @@ func main() {
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
+			authed.GET("/me", handlers.GetMe)
 			authed.GET("/auth/identities", handlers.ListBoundIdentities)
 			authed.POST("/auth/bind/start", handlers.StartBindAuth)
 			authed.POST("/auth/bind/confirm-merge", handlers.ConfirmMergeIdentity)
@@ -609,6 +610,26 @@ func main() {
 			providerMapping.Use(middleware.RequireTenantAdmin("owner", "admin"))
 			providerMapping.GET("", providerMappingAPI.GetProviderMapping)
 			providerMapping.PUT("", providerMappingAPI.UpdateProviderMapping)
+
+			// Phase C4.3 — audit-log list endpoints. Two surfaces on the
+			// same *RPCClient: platform-scope (cross-tenant, gated by
+			// RequirePlatformAdmin) and tenant-scope (this tenant only,
+			// gated by RequireTenantAdmin; cs-user forces tenant scope
+			// from X-Tenant-Id header). cs-user owns user_center_audit_log
+			// (ADR D1); local backend mode → 502.
+			platformAuditLogAPI := &handlers.PlatformAuditLogAPI{
+				Svc: buildPlatformAuditLogService(userModule),
+			}
+			platformAuditLogs := authed.Group("/platform/audit-logs")
+			platformAuditLogs.Use(middleware.RequirePlatformAdmin())
+			platformAuditLogs.GET("", platformAuditLogAPI.PlatformListAuditLogs)
+
+			tenantAuditLogAPI := &handlers.TenantAuditLogAPI{
+				Svc: buildTenantAuditLogService(userModule),
+			}
+			tenantAuditLogs := authed.Group("/tenant/audit-logs")
+			tenantAuditLogs.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantAuditLogs.GET("", tenantAuditLogAPI.TenantListAuditLogs)
 
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
@@ -1067,6 +1088,33 @@ func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigServi
 // provider_mapping editor (Phase C3.3). Shares the same RPC client as
 // C3.2 — both surfaces are methods on *userpkg.RPCClient.
 func buildProviderMappingService(module *userpkg.Module) handlers.TenantProviderMappingService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildPlatformAuditLogService wires the RPCClient for the platform-scope
+// audit-log list (Phase C4.3). Same single transport as every other cs-user
+// RPC surface. nil in local backend mode; handler returns 502.
+func buildPlatformAuditLogService(module *userpkg.Module) handlers.PlatformAuditLogService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantAuditLogService wires the RPCClient for the tenant-scope
+// audit-log list (Phase C4.3). Same *RPCClient; the platform vs tenant
+// distinction is encoded in which method the handler calls
+// (ListAuditLogs vs ListAuditLogsForTenant).
+func buildTenantAuditLogService(module *userpkg.Module) handlers.TenantAuditLogService {
 	if module == nil {
 		return nil
 	}
