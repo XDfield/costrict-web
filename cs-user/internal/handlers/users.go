@@ -60,6 +60,9 @@ type UserService interface {
 	// SetUserStatus applies an admin status transition. operatorID is
 	// used for the self-lock check (cannot change own status).
 	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*user.SetUserStatusResult, error)
+	// ListOrganizations groups users by organization, busiest first.
+	// Powers the admin filter dropdown; NULL/empty orgs are skipped.
+	ListOrganizations(ctx context.Context) ([]user.OrganizationCount, error)
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.

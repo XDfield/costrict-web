@@ -29,6 +29,8 @@ type AdminUsersService interface {
 	// SetUserStatus applies an admin status transition. operatorID is used
 	// for the self-lock check (admin cannot lock themselves out).
 	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*userpkg.SetUserStatusResult, error)
+	// ListOrganizations returns the per-tenant organization roll-up.
+	ListOrganizations(ctx context.Context) ([]userpkg.OrganizationCount, error)
 }
 
 // Ensure *UsersAPI can also serve admin endpoints by composing the admin
@@ -210,4 +212,28 @@ func (a *UsersAPI) SetUserStatus(c *gin.Context) {
 		"from_status": res.FromStatus,
 		"to_status":   res.ToStatus,
 	})
+}
+
+// ListOrganizations godoc
+//
+//	@Summary		List organizations with member counts (admin)
+//	@Description	Returns the per-tenant organization roll-up (grouped by users.organization, busiest first). Powers the admin console's organization filter dropdown. NULL/empty organizations are skipped. Used by @server's GET /api/admin/users/organizations (admin-user-migration slice).
+//	@Tags			users,admin
+//	@Produce		json
+//	@Security		InternalToken
+//	@Success		200	{object}	object{organizations=[]user.OrganizationCount}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/api/internal/users/organizations [get]
+func (a *UsersAPI) ListOrganizations(c *gin.Context) {
+	orgs, err := a.Svc.ListOrganizations(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	// Empty slice (not nil) so the JSON serializes as `[]` not `null` —
+	// keeps the admin UI's iteration simple (no null-guard required).
+	if orgs == nil {
+		orgs = []userpkg.OrganizationCount{}
+	}
+	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
 }

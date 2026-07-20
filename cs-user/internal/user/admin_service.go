@@ -199,3 +199,37 @@ func (s *Service) ListUsers(ctx context.Context, p ListUsersParams) ([]*models.U
 	}
 	return users, total, nil
 }
+
+// OrganizationCount is one row of the organization roll-up. Mirrors
+// @server's admin_service.go struct 1:1 — @server's RPC client passes the
+// payload through with no field reshaping, so the JSON tags must stay in
+// lockstep (snake_case for organization, camelCase for memberCount).
+type OrganizationCount struct {
+	Organization string `json:"organization"`
+	MemberCount  int64  `json:"memberCount"`
+}
+
+// ListOrganizations groups users by organization and returns member counts,
+// busiest first. NULL/empty organizations are skipped — they don't make
+// useful filter targets in the admin UI.
+//
+// B5: applies tenant.Scope(ctx) so platform-admin viewing tenant A's orgs
+// only sees tenant A's roll-up. @server's original signature had no ctx
+// because it had no tenant scoping; cs-user's version takes ctx explicitly.
+func (s *Service) ListOrganizations(ctx context.Context) ([]OrganizationCount, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	var rows []OrganizationCount
+	if err := s.db.WithContext(ctx).
+		Scopes(tenant.Scope(ctx)).
+		Model(&models.User{}).
+		Select("organization AS organization, COUNT(*) AS member_count").
+		Where("organization IS NOT NULL AND organization <> ''").
+		Group("organization").
+		Order("member_count DESC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
