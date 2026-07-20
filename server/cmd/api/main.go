@@ -681,8 +681,18 @@ func main() {
 			audit.NewModule(db).RegisterRoutes(admin)
 
 			// Admin member management (M1, platform admin only): user list,
-			// profile, status switch, organization roll-up.
-			adminuser.New(userModule.Service).RegisterRoutes(admin)
+			// profile, status switch, organization roll-up. Identity + status
+			// proxy to cs-user via RPCClient (admin-user-migration slice,
+			// option A full migration); activity counts and roles stay local
+			// to @server because the underlying tables (capability_items,
+			// item_distributions, user_system_roles) live in costrict_db.
+			// rpcClient is nil when USER_SERVICE_BACKEND != rpc; handlers
+			// return 503 in that mode.
+			var adminUserRPC *userpkg.RPCClient
+			if rpc, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpc != nil {
+				adminUserRPC = rpc
+			}
+			adminuser.New(adminUserRPC, userModule.Service).RegisterRoutes(admin)
 
 			// Admin department tree (M1 org view, platform admin only): proxies the
 			// external dept-sync service for the real org tree and correlates its
