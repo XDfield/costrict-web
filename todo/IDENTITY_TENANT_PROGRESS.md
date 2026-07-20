@@ -1245,7 +1245,7 @@ Fallback：legacy token 无 `TenantSlug` 时用 `TenantID`（cs-user `WHERE tena
 
 **复用而非新增**：cs-user RPC primitive `POST /api/internal/users/:subject_id/status` 早已存在（admin-user-migration step 3），且 `cs-user/internal/user/admin_service.go::SetUserStatus` 通过 `tenant.Scope(ctx)` 做 row-level scope — 一个 tenant X 的 admin targeting Y 的用户会 surface 为 `ErrAdminUserRPCNotFound`（行不在 scope filter 下）。本切片**完全在 @server 侧**完成：仅加 handler + 扩 interface + wire route，cs-user 一行未改。
 
-**对齐 @server 既有 surface**：handler 形状刻意镜像 `adminuser.SetUserStatusHandler`（PUT /admin/users/:id/status）——同样的 request body（`{"status":"..."}`）、同样的 sentinel→HTTP 映射（invalid_status→400 / self_lock→400 保留 legacy / not_found→404 / RPC unavailable→503）、同样调用 `middleware.InvalidateStatusCache(subjectID)`。前端可复用同一个表单组件，只是 URL 不同。
+**对齐 @server 既有 surface**：handler 形状刻意镜像 `adminuser.SetUserStatusHandler`（PUT /admin/users/:id/status）——同样的 request body（`{"status":"..."}`）、同样的 sentinel→HTTP 映射（invalid_status→400 / self_lock→400 保留 legacy / not_found→404）、同样调用 `middleware.InvalidateStatusCache(subjectID)`。前端可复用同一个表单组件，只是 URL 不同。**唯一刻意差异**：RPC unavailable 时返回 **502**（不是 platform_admin 的 503）——与同 `TenantUserAPI` 的 `respondTenantUserErr`（list 路径）保持一致，整个 tenant surface 统一用 502 表达"upstream cs-user 不可达"。
 
 **slug + operator 注入链**：`AuthClaims.TenantSlug`（fallback TenantID）→ `tenant.WithSlug(ctx)` → RPC client → `X-Tenant-Id` header → cs-user `ResolveTenant` middleware → `tenant.Scope(ctx)`；operator = `AuthClaims.Sub`（与 `c.GetString(UserIDKey)` 同源 — auth middleware 同时设置两个）。
 
