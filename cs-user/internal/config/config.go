@@ -20,6 +20,7 @@ type Config struct {
 	Internal InternalConfig
 	JWT      JWTConfig
 	Tenant   TenantConfig
+	Gitea    GiteaConfig
 }
 
 type HTTPConfig struct {
@@ -66,6 +67,31 @@ type InternalConfig struct {
 // dev where the host is bare localhost without subdomain.
 type TenantConfig struct {
 	ApexDomains []string
+}
+
+// GiteaConfig holds the Phase E3a.1 Gitea auto-provisioning settings.
+//
+// Both fields OPTIONAL: when either is empty, cs-user treats Gitea
+// auto-provisioning as disabled — the giteasync hook is a no-op and the
+// /api/internal/users/:subject_id/gitea-binding endpoint still responds
+// (always 404 in that case). Local dev + tests therefore need no real
+// Gitea instance to run.
+//
+// BaseURL is the Gitea root (e.g. https://gitea.example.com); the
+// trailing slash is stripped so tests/curl don't have to care.
+//
+// AdminToken is a Gitea PAT with admin scope (used for the
+// "Authorization: token <PAT>" header on POST /admin/users). Stored in
+// env / k8s secret — never logged.
+type GiteaConfig struct {
+	BaseURL    string
+	AdminToken string
+}
+
+// Enabled returns true when both BaseURL + AdminToken are populated. cs-user
+// uses this to decide whether to construct *giteasync.Service at boot.
+func (g GiteaConfig) Enabled() bool {
+	return g.BaseURL != "" && g.AdminToken != ""
 }
 
 // JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
@@ -134,6 +160,10 @@ func Load() (*Config, error) {
 		JWT: jwtCfg,
 		Tenant: TenantConfig{
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
+		},
+		Gitea: GiteaConfig{
+			BaseURL:    strings.TrimRight(os.Getenv("CS_USER_GITEA_BASE_URL"), "/"),
+			AdminToken: os.Getenv("CS_USER_GITEA_ADMIN_TOKEN"),
 		},
 	}
 

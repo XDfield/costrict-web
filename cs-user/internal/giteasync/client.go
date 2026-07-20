@@ -75,11 +75,11 @@ const defaultTimeout = 10 * time.Second
 //   - MustChangePassword — false (we never want the user prompted; the
 //     password is throwaway).
 type GiteaUserParams struct {
-	Username            string
-	Email               string
-	Password            string
-	SourceID            int64
-	MustChangePassword  bool
+	Username           string
+	Email              string
+	Password           string
+	SourceID           int64
+	MustChangePassword bool
 }
 
 // GiteaUser is the minimal slice of Gitea's user payload that the
