@@ -514,20 +514,20 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	userID := userInfo.Sub
 	userName := userInfo.PreferredUsername
 	authClaims := AuthClaims{
-		ID:             userInfo.ID,
-		Sub:             userInfo.Sub,
-		UniversalID:    userInfo.UniversalID,
-		Name:           userInfo.Name,
+		ID:                userInfo.ID,
+		Sub:               userInfo.Sub,
+		UniversalID:       userInfo.UniversalID,
+		Name:              userInfo.Name,
 		PreferredUsername: userInfo.PreferredUsername,
-		Email:          userInfo.Email,
-		Provider:       userInfo.Provider,
-		ProviderUserID: userInfo.ProviderUserID,
-		Phone:          userInfo.Phone,
-		TenantID:       userInfo.TenantID,
-		TenantSlug:     userInfo.TenantSlug,
-		PlatformAdmin:  userInfo.PlatformAdmin,
-		PlatformScope:  userInfo.PlatformScope,
-		TenantRoles:    userInfo.TenantRoles,
+		Email:             userInfo.Email,
+		Provider:          userInfo.Provider,
+		ProviderUserID:    userInfo.ProviderUserID,
+		Phone:             userInfo.Phone,
+		TenantID:          userInfo.TenantID,
+		TenantSlug:        userInfo.TenantSlug,
+		PlatformAdmin:     userInfo.PlatformAdmin,
+		PlatformScope:     userInfo.PlatformScope,
+		TenantRoles:       userInfo.TenantRoles,
 	}
 	if subjectResolver != nil {
 		resolvedID, resolvedName, err := subjectResolver(authClaims)

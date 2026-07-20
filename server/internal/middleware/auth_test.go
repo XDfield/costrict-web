@@ -1080,7 +1080,7 @@ func TestParseJWTToken_EnterpriseClaimsRoundTrip(t *testing.T) {
 		"tenant_roles":   []string{"owner", "admin"},
 
 		// Phase B — identity federation (provider side)
-		"provider":        "casdoor",
+		"provider":         "casdoor",
 		"provider_user_id": "casdoor:alice-001",
 	})
 
@@ -1181,8 +1181,8 @@ func TestParseJWTToken_TenantRolesNonStringRejected(t *testing.T) {
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
 
 	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":      "u-test",
-		"exp":      time.Now().Add(1 * time.Hour).Unix(),
+		"sub":          "u-test",
+		"exp":          time.Now().Add(1 * time.Hour).Unix(),
 		"tenant_roles": []any{"owner", 42, "admin"}, // middle element wrong type
 	})
 
