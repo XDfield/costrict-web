@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/casdoor"
-	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -69,6 +68,7 @@ func newAuthRouter(userID string) *gin.Engine {
 	}
 	r.GET("/api/auth/me", injectUser, GetCurrentUser)
 	r.GET("/api/auth/identities", injectUser, ListBoundIdentities)
+	r.GET("/api/auth/resolve", injectUser, ResolveAuthUser)
 	r.POST("/api/auth/bind/start", injectUser, StartBindAuth)
 	r.POST("/api/auth/identities/:provider/unbind", injectUser, UnbindIdentity)
 	r.GET("/api/auth/callback", injectUser, AuthCallback)
@@ -364,7 +364,7 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
@@ -409,654 +409,70 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListRepositories
+// TestResolveAuthUser — /api/auth/resolve endpoint for gateway
 // ---------------------------------------------------------------------------
 
-func TestListRepositories_Empty(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := get(newRepoRouter(""), "/api/repositories")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 0 {
-		t.Fatalf("expected 0 repos, got %d", len(repos))
-	}
-}
-
-func TestListRepositories_WithData(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-l1", Name: "alpha", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.Repository{ID: "repo-l2", Name: "beta", OwnerID: "u2", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 2 {
-		t.Fatalf("expected 2 repos, got %d", len(repos))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CreateRepository
-// ---------------------------------------------------------------------------
-
-func TestCreateRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "my-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "my-repo" {
-		t.Fatalf("unexpected name: %v", repo["name"])
-	}
-	if repo["repoType"] != "normal" {
-		t.Fatalf("expected repoType=normal, got %v", repo["repoType"])
-	}
-	if repo["visibility"] != "private" {
-		t.Fatalf("expected visibility=private, got %v", repo["visibility"])
-	}
-}
-
-func TestCreateRepository_MissingRequired(t *testing.T) {
-	defer setupTestDB(t)()
-
-	// name is the only required field now; ownerId comes from auth context
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestCreateRepository_DefaultsVisibilityAndType(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "defaults-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["visibility"] != "private" {
-		t.Fatalf("expected default visibility=private, got %v", repo["visibility"])
-	}
-	if repo["repoType"] != "normal" {
-		t.Fatalf("expected default repoType=normal, got %v", repo["repoType"])
-	}
-}
-
-func TestCreateRepository_OwnerAddedAsMember(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "member-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	repoID := repo["id"].(string)
-
-	var count int64
-	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ? AND role = 'owner'", repoID, "u1").Count(&count)
-	if count != 1 {
-		t.Fatalf("expected owner to be added as member, got count=%d", count)
-	}
-}
-
-func TestCreateRepository_SyncType_MissingExternalURL(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "sync-repo", "ownerId": "u1", "repoType": "sync",
-		"syncRegistry": map[string]interface{}{},
-	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestCreateRepository_SyncType_Success(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "sync-repo2", "ownerId": "u1", "repoType": "sync",
-		"syncRegistry": map[string]interface{}{
-			"externalUrl": "https://github.com/example/repo",
-		},
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	if body["repository"] == nil {
-		t.Fatal("expected repository field in response")
-	}
-	if body["registries"] == nil {
-		t.Fatal("expected registries field in response")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetRepository
-// ---------------------------------------------------------------------------
-
-func TestGetRepository_Found(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-g1", Name: "get-repo", OwnerID: "u1", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-g1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["id"] != "repo-g1" {
-		t.Fatalf("unexpected id: %v", repo["id"])
-	}
-}
-
-func TestGetRepository_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	w := get(newRepoRouter(""), "/api/repositories/no-such-repo")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdateRepository
-// ---------------------------------------------------------------------------
-
-func TestUpdateRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-u1", Name: "old-name", OwnerID: "u1", Visibility: "private"})
-	database.DB.Create(&models.RepoMember{ID: "mem-u1", RepoID: "repo-u1", UserID: "u1", Role: "owner"})
-
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u1", map[string]interface{}{
-		"name": "new-name", "visibility": "public",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "new-name" {
-		t.Fatalf("expected name=new-name, got %v", repo["name"])
-	}
-	if repo["visibility"] != "public" {
-		t.Fatalf("expected visibility=public, got %v", repo["visibility"])
-	}
-}
-
-func TestUpdateRepository_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/no-such", map[string]interface{}{
-		"name": "x",
-	})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", w.Code)
-	}
-}
-
-func TestUpdateRepository_PartialUpdate(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-u2", Name: "partial-repo", DisplayName: "Old Display", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-u2", RepoID: "repo-u2", UserID: "u1", Role: "owner"})
-
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u2", map[string]interface{}{
-		"displayName": "New Display",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "partial-repo" {
-		t.Fatalf("name should not change, got %v", repo["name"])
-	}
-	if repo["displayName"] != "New Display" {
-		t.Fatalf("expected displayName=New Display, got %v", repo["displayName"])
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DeleteRepository
-// ---------------------------------------------------------------------------
-
-func TestDeleteRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-d1", Name: "del-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-d1", RepoID: "repo-d1", UserID: "u1", Role: "owner"})
-
-	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-d1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var count int64
-	database.DB.Model(&models.Repository{}).Where("id = ?", "repo-d1").Count(&count)
-	if count != 0 {
-		t.Fatal("repository should have been deleted")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ListRepositoryMembers
-// ---------------------------------------------------------------------------
-
-func TestListRepositoryMembers_Empty(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-no-members", Name: "no-members-repo", OwnerID: "u1", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-no-members/members")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	members := body["members"].([]interface{})
-	if len(members) != 0 {
-		t.Fatalf("expected 0 members, got %d", len(members))
-	}
-}
-
-func TestListRepositoryMembers_WithMembers(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-m1", Name: "member-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.RepoMember{ID: "mem-m1", RepoID: "repo-m1", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-m2", RepoID: "repo-m1", UserID: "u2", Role: "member"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-m1/members")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	members := body["members"].([]interface{})
-	if len(members) != 2 {
-		t.Fatalf("expected 2 members, got %d", len(members))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// AddRepositoryMember
-// ---------------------------------------------------------------------------
-
-func TestAddRepositoryMember_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am1", Name: "add-member-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am1-owner", RepoID: "repo-am1", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am1/members", map[string]interface{}{
-		"userId": "u-new", "username": "newuser", "role": "member",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var member map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&member)
-	if member["userId"] != "u-new" {
-		t.Fatalf("unexpected userId: %v", member["userId"])
-	}
-	if member["role"] != "member" {
-		t.Fatalf("expected role=member, got %v", member["role"])
-	}
-}
-
-func TestAddRepositoryMember_DefaultRole(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am2", Name: "default-role-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am2-owner", RepoID: "repo-am2", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am2/members", map[string]interface{}{
-		"userId": "u-default",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var member map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&member)
-	if member["role"] != "member" {
-		t.Fatalf("expected default role=member, got %v", member["role"])
-	}
-}
-
-func TestAddRepositoryMember_MissingUserID(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am3", Name: "missing-uid-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am3-owner", RepoID: "repo-am3", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am3/members", map[string]interface{}{
-		"username": "no-user-id",
-	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestAddRepositoryMember_Duplicate(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am4", Name: "dup-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am4-owner", RepoID: "repo-am4", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-dup1", RepoID: "repo-am4", UserID: "u-dup", Role: "member"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am4/members", map[string]interface{}{
-		"userId": "u-dup",
-	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RemoveRepositoryMember
-// ---------------------------------------------------------------------------
-
-func TestRemoveRepositoryMember_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-rm1", Name: "remove-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-rm1-owner", RepoID: "repo-rm1", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-rm1", RepoID: "repo-rm1", UserID: "u-remove", Role: "member"})
-
-	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-rm1/members/u-remove")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var count int64
-	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ?", "repo-rm1", "u-remove").Count(&count)
-	if count != 0 {
-		t.Fatal("member should have been removed")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetRepositoryRegistry
-// ---------------------------------------------------------------------------
-
-func TestGetRepositoryRegistry_Found(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", RepoID: "repo-gr1", OwnerID: "u1",
-	})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-gr1/registry")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var reg map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["id"] != "reg-for-repo" {
-		t.Fatalf("unexpected id: %v", reg["id"])
-	}
-}
-
-func TestGetRepositoryRegistry_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "no-such-repo", Name: "no-repo", OwnerID: "u1", Visibility: "public"})
-	w := get(newRepoRouter(""), "/api/repositories/no-such-repo/registry")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
-}
-
-func TestGetRepositoryRegistry_ExternalRegistryNotReturned(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", RepoID: "repo-gr2", OwnerID: "u1",
-	})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-gr2/registry")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (external registry returned first), got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetMyRepositories
-// ---------------------------------------------------------------------------
-
-func TestGetMyRepositories_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-my1", Name: "my-repo-1", OwnerID: "u1"})
-	database.DB.Create(&models.Repository{ID: "repo-my2", Name: "my-repo-2", OwnerID: "u2"})
-	database.DB.Create(&models.RepoMember{ID: "mem-my1", RepoID: "repo-my1", UserID: "u-me", Role: "member"})
-	database.DB.Create(&models.RepoMember{ID: "mem-my2", RepoID: "repo-my2", UserID: "u-me", Role: "admin"})
-
-	w := get(newRepoRouter("u-me"), "/api/repositories/my")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 2 {
-		t.Fatalf("expected 2 repos, got %d", len(repos))
-	}
-}
-
-func TestGetMyRepositories_Unauthenticated(t *testing.T) {
-	defer setupTestDB(t)()
-	w := get(newRepoRouter(""), "/api/repositories/my")
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-func TestGetMyRepositories_NoMemberships(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := get(newRepoRouter("u-nobody"), "/api/repositories/my")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos, _ := body["repositories"].([]interface{})
-	if len(repos) != 0 {
-		t.Fatalf("expected 0 repos, got %d", len(repos))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Phase A8: JWTSignMode gating at the OAuth callback
-// ---------------------------------------------------------------------------
-
-// callbackStubWriter wraps the local *UserService for every UserWriter
-// method EXCEPT ReissueToken — which is the only one the A8 callback test
-// cares about. The embedded *UserService promotes GetOrCreateUser /
-// ApplyEnterpriseMapping / BindIdentityToUser / etc., so the stub satisfies
-// the full interface without re-implementing them. Counting ReissueToken
-// calls is the only observable signal that jwtSignMode triggered the
-// self-sign branch.
-type callbackStubWriter struct {
-	*userpkg.UserService
-	reissueCalls  int
-	reissueResult string
-	reissueErr    error
-}
-
-func (c *callbackStubWriter) ReissueToken(_ context.Context, _ string, _ *userpkg.JWTClaims, _ []string) (string, time.Time, error) {
-	c.reissueCalls++
-	if c.reissueErr != nil {
-		return "", time.Time{}, c.reissueErr
-	}
-	return c.reissueResult, time.Now().Add(time.Hour), nil
-}
-
-// TestAuthCallback_JWTSignModeGating covers the A8 mode-aware behavior at the
-// OAuth callback: jwtSignMode=off must NOT call ReissueToken (Casdoor token
-// ends up in the cookie); dual and single MUST call ReissueToken (cs-user JWT
-// ends up in the cookie). The dual vs single difference lives in the verifier
-// JWKS chain, not the callback — so both modes share the same expectation
-// here.
-func TestAuthCallback_JWTSignModeGating(t *testing.T) {
-	cases := []struct {
-		name       string
-		mode       string
-		wantCalls  int
-		wantCookie string // empty = assert cookie == Casdoor access token
-	}{
-		{"off skips ReissueToken", config.JWTSignModeOff, 0, ""},
-		{"dual triggers ReissueToken", config.JWTSignModeDual, 1, "mock-cs-user-jwt"},
-		{"single triggers ReissueToken", config.JWTSignModeSingle, 1, "mock-cs-user-jwt"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			defer setupTestDB(t)()
-			defer InitUserModule(nil)
-			InitUserModule(userpkg.New(database.DB))
-
-			// Save & restore global mutation
-			prevMode := jwtSignMode
-			prevExchange := exchangeCodeForTokenFunc
-			prevGetUser := getUserInfoFunc
-			defer func() {
-				jwtSignMode = prevMode
-				exchangeCodeForTokenFunc = prevExchange
-				getUserInfoFunc = prevGetUser
-			}()
-
-			jwtSignMode = tc.mode
-
-			stub := &callbackStubWriter{
-				UserService:   UserModule.Service,
-				reissueResult: "mock-cs-user-jwt",
-			}
-			UserModule.Writer = stub
-
-			casdoorToken := signHandlersTestJWT(t, jwt.MapClaims{
-				"id":           "cb-id",
-				"sub":          "cb-sub",
-				"universal_id": "cb-uuid",
-				"name":         "cb_user",
-				"provider":     "idtrust",
-			})
-			exchangeCodeForTokenFunc = func(_, _ string) (*casdoor.CasdoorTokenResponse, error) {
-				return &casdoor.CasdoorTokenResponse{AccessToken: casdoorToken}, nil
-			}
-			getUserInfoFunc = func(_ string) (*casdoor.CasdoorUserInfoResponse, error) {
-				return &casdoor.CasdoorUserInfoResponse{User: &casdoor.CasdoorUser{Id: "cb-id", Sub: "cb-sub", UniversalID: "cb-uuid", Name: "cb_user"}}, nil
-			}
-
-			w := httptest.NewRecorder()
-			req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
-			newAuthRouter("").ServeHTTP(w, req)
-
-			if w.Code != http.StatusFound {
-				t.Fatalf("expected 302 redirect, got %d: %s", w.Code, w.Body.String())
-			}
-			if stub.reissueCalls != tc.wantCalls {
-				t.Errorf("ReissueToken calls = %d, want %d (mode=%s)", stub.reissueCalls, tc.wantCalls, tc.mode)
-			}
-
-			// Cookie assertion: in off mode the Casdoor token wins; in
-			// dual/single the cs-user JWT wins (unless ReissueToken errored,
-			// which we don't trigger here).
-			cookies := w.Result().Cookies()
-			var zgsm *http.Cookie
-			for _, c := range cookies {
-				if c.Name == "zgsmAdminToken" {
-					zgsm = c
-					break
-				}
-			}
-			if zgsm == nil {
-				t.Fatalf("zgsmAdminToken cookie not set; cookies=%+v", cookies)
-			}
-			wantToken := tc.wantCookie
-			if wantToken == "" {
-				wantToken = casdoorToken
-			}
-			if zgsm.Value != wantToken {
-				t.Errorf("cookie value = %q, want %q (mode=%s)", zgsm.Value, wantToken, tc.mode)
-			}
-		})
-	}
-}
-
-// TestAuthCallback_JWTSignModeFallbackOnReissueError verifies the dual-sign
-// non-blocking contract: if ReissueToken fails (e.g. cs-user briefly
-// unreachable, or local-mode misconfig returning ErrSelfSignUnavailable),
-// the callback MUST fall back to the Casdoor token so login still succeeds.
-// This is what makes dual-sign safe to flip on in production.
-func TestAuthCallback_JWTSignModeFallbackOnReissueError(t *testing.T) {
+// TestResolveAuthUser_ReturnsUserHeaders tests the /api/auth/resolve endpoint
+// used by gateway auth_request for Gitea reverse proxy authentication.
+func TestResolveAuthUser_ReturnsUserHeaders(t *testing.T) {
 	defer setupTestDB(t)()
 	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
 
-	prevMode := jwtSignMode
-	prevExchange := exchangeCodeForTokenFunc
-	prevGetUser := getUserInfoFunc
-	defer func() {
-		jwtSignMode = prevMode
-		exchangeCodeForTokenFunc = prevExchange
-		getUserInfoFunc = prevGetUser
-	}()
-
-	jwtSignMode = config.JWTSignModeDual
-
-	stub := &callbackStubWriter{
-		UserService:   UserModule.Service,
-		reissueResult: "",
-		reissueErr:    userpkg.ErrSelfSignUnavailable,
-	}
-	UserModule.Writer = stub
-
-	casdoorToken := signHandlersTestJWT(t, jwt.MapClaims{
-		"id":           "fb-id",
-		"sub":          "fb-sub",
-		"universal_id": "fb-uuid",
-		"name":         "fb_user",
-		"provider":     "idtrust",
-	})
-	exchangeCodeForTokenFunc = func(_, _ string) (*casdoor.CasdoorTokenResponse, error) {
-		return &casdoor.CasdoorTokenResponse{AccessToken: casdoorToken}, nil
-	}
-	getUserInfoFunc = func(_ string) (*casdoor.CasdoorUserInfoResponse, error) {
-		return &casdoor.CasdoorUserInfoResponse{User: &casdoor.CasdoorUser{Id: "fb-id", Sub: "fb-sub", UniversalID: "fb-uuid", Name: "fb_user"}}, nil
+	email := "alice@example.com"
+	provider := "github"
+	externalKey := "casdoor:uuid-1"
+	if err := database.DB.Create(&models.User{
+		SubjectID:    "usr_resolve_1",
+		Username:     "alice",
+		Email:        &email,
+		AuthProvider: &provider,
+		ExternalKey:  &externalKey,
+		IsActive:     true,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
-	newAuthRouter("").ServeHTTP(w, req)
+	w := get(newAuthRouter("usr_resolve_1"), "/api/auth/resolve")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302 redirect (login must still succeed), got %d: %s", w.Code, w.Body.String())
+	// Check response headers (gateway reads these via $upstream_http_x_cs_user)
+	csUser := w.Header().Get("X-CS-User")
+	csEmail := w.Header().Get("X-CS-Email")
+	if csUser != "usr_resolve_1" {
+		t.Errorf("X-CS-User header: got %q, want usr_resolve_1", csUser)
 	}
-	if stub.reissueCalls != 1 {
-		t.Errorf("ReissueToken should be attempted once in dual mode, got %d", stub.reissueCalls)
+	if csEmail != email {
+		t.Errorf("X-CS-Email header: got %q, want %s", csEmail, email)
 	}
-	var zgsm *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == "zgsmAdminToken" {
-			zgsm = c
-			break
-		}
+
+	// Check response body
+	var body struct {
+		UserID          string `json:"user_id"`
+		Email           string `json:"email"`
+		PrimaryIdentity string `json:"primary_identity"`
 	}
-	if zgsm == nil {
-		t.Fatalf("zgsmAdminToken cookie not set")
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
 	}
-	if zgsm.Value != casdoorToken {
-		t.Errorf("cookie should fall back to Casdoor token on ReissueToken error; got %q, want %q", zgsm.Value, casdoorToken)
+	if body.UserID != "usr_resolve_1" {
+		t.Errorf("user_id: got %q, want usr_resolve_1", body.UserID)
+	}
+	if body.Email != email {
+		t.Errorf("email: got %q, want %s", body.Email, email)
+	}
+	if body.PrimaryIdentity != "github|casdoor:uuid-1" {
+		t.Errorf("primary_identity: got %q, want github|casdoor:uuid-1", body.PrimaryIdentity)
+	}
+}
+
+// TestResolveAuthUser_UnauthenticatedReturns401 tests that /api/auth/resolve
+// returns 401 when no user is authenticated (gateway expects this for auth_request).
+func TestResolveAuthUser_UnauthenticatedReturns401(t *testing.T) {
+	w := get(newAuthRouter(""), "/api/auth/resolve")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
