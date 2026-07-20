@@ -1039,3 +1039,158 @@ func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
 		t.Errorf("expected 'fallback-cookie' when Authorization is not Bearer, got %q", token)
 	}
 }
+
+// ===========================================================================
+// Phase A/B/C enterprise claims round-trip — locks the cs-user → server
+// contract for non-OIDC claims (tenant_id, tenant_slug, platform_admin,
+// platform_scope, tenant_roles). Without this, silent drift in
+// cs-user/internal/auth/claims.go JSON tags vs the manual reads in
+// parseJWTToken would only surface at runtime in production traffic.
+// ===========================================================================
+
+// TestParseJWTToken_EnterpriseClaimsRoundTrip verifies every Phase A/B/C
+// custom claim emitted by cs-user's EnterpriseClaims surfaces in the
+// resulting CasdoorUserInfo. Mirrors the JSON tag keys cs-user emits.
+func TestParseJWTToken_EnterpriseClaimsRoundTrip(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "cs-user-active"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	// Mirror cs-user/internal/auth/claims.go EnterpriseClaims JSON tags
+	// exactly — drift in either direction fails this test.
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		// Standard + OIDC (handled by NormalizeClaimsMap)
+		"iss":                "cs-user",
+		"sub":                "user-base",
+		"aud":                "costrict-web",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+		"iat":                time.Now().Unix(),
+		"name":               "Alice Admin",
+		"preferred_username": "alice",
+		"email":              "alice@corp.acme.example",
+		"universal_id":       "u-alice-001",
+
+		// Phase A — employment / tenant context
+		"tenant_id":   "t-acme",
+		"tenant_slug": "acme",
+
+		// Phase C1 — platform / tenant-admin permissions
+		"platform_admin": true,
+		"platform_scope": "tenant.read,user.read",
+		"tenant_roles":   []string{"owner", "admin"},
+
+		// Phase B — identity federation (provider side)
+		"provider":        "casdoor",
+		"provider_user_id": "casdoor:alice-001",
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken: %v", err)
+	}
+
+	// Standard + OIDC
+	if info.Sub != "u-alice-001" {
+		t.Errorf("Sub = %q, want u-alice-001 (Sub falls back to universal_id when present)", info.Sub)
+	}
+	if info.UniversalID != "u-alice-001" {
+		t.Errorf("UniversalID = %q, want u-alice-001 (silent drift from cs-user JSON tag 'universal_id')", info.UniversalID)
+	}
+	if info.Name != "Alice Admin" {
+		t.Errorf("Name = %q", info.Name)
+	}
+	if info.Email != "alice@corp.acme.example" {
+		t.Errorf("Email = %q", info.Email)
+	}
+	if info.PreferredUsername != "alice" {
+		t.Errorf("PreferredUsername = %q", info.PreferredUsername)
+	}
+
+	// Phase A/B — tenant context
+	if info.TenantID != "t-acme" {
+		t.Errorf("TenantID = %q, want t-acme (Phase A cs-user canonical tenant PK)", info.TenantID)
+	}
+	if info.TenantSlug != "acme" {
+		t.Errorf("TenantSlug = %q, want acme (Phase A7 custom claim)", info.TenantSlug)
+	}
+
+	// Phase C1 — permission claims
+	if !info.PlatformAdmin {
+		t.Errorf("PlatformAdmin = false, want true (drift from 'platform_admin' JSON tag)")
+	}
+	if info.PlatformScope != "tenant.read,user.read" {
+		t.Errorf("PlatformScope = %q", info.PlatformScope)
+	}
+	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
+		t.Errorf("TenantRoles = %+v, want [owner admin]", info.TenantRoles)
+	}
+
+	// Phase B — federation. cs-user emits a top-level provider_user_id
+	// claim (different shape from Casdoor's nested properties.<provider>.id);
+	// server reads the top-level form for cs-user tokens.
+	if info.ProviderUserID != "casdoor:alice-001" {
+		t.Errorf("ProviderUserID = %q, want casdoor:alice-001 (top-level provider_user_id claim from cs-user)", info.ProviderUserID)
+	}
+}
+
+// TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak verifies a legacy
+// Casdoor-issued token (no tenant_slug / tenant_id / platform_admin /
+// platform_scope / tenant_roles) still parses cleanly via the manual-read
+// path — pre-cutover compat. The middleware must not crash or return
+// non-default values when these custom claims are absent.
+func TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "casdoor-legacy"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-legacy",
+		"name":               "Legacy User",
+		"preferred_username": "legacy",
+		"email":              "legacy@old.example",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken on legacy Casdoor token: %v", err)
+	}
+	if info.TenantID != "" {
+		t.Errorf("TenantID = %q, want empty for legacy token", info.TenantID)
+	}
+	if info.TenantSlug != "" {
+		t.Errorf("TenantSlug = %q, want empty", info.TenantSlug)
+	}
+	if info.PlatformAdmin {
+		t.Errorf("PlatformAdmin = true, want false")
+	}
+	if info.PlatformScope != "" {
+		t.Errorf("PlatformScope = %q, want empty", info.PlatformScope)
+	}
+	if info.TenantRoles != nil {
+		t.Errorf("TenantRoles = %+v, want nil", info.TenantRoles)
+	}
+}
+
+// TestParseJWTToken_TenantRolesNonStringRejected verifies malformed
+// tenant_roles entries are silently skipped (defensive — a single bad
+// element should not corrupt the whole claim).
+func TestParseJWTToken_TenantRolesNonStringRejected(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "cs-user-active"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":      "u-test",
+		"exp":      time.Now().Add(1 * time.Hour).Unix(),
+		"tenant_roles": []any{"owner", 42, "admin"}, // middle element wrong type
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken: %v", err)
+	}
+	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
+		t.Errorf("TenantRoles = %+v, want [owner admin] (non-string element should be skipped)", info.TenantRoles)
+	}
+}

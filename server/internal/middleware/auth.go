@@ -422,6 +422,16 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		}
 	}
 
+	// Phase B — provider_user_id. cs-user emits a top-level claim (different
+	// shape from Casdoor's nested properties.<provider>.id which
+	// NormalizeClaimsMap handles). Prefer the explicitly-emitted top-level
+	// value when present; fall back to the nested-extracted one for legacy
+	// Casdoor tokens.
+	providerUserID := normalized.ProviderUserID
+	if v, ok := claims["provider_user_id"].(string); ok && v != "" {
+		providerUserID = v
+	}
+
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
 		Sub:               sub,
@@ -430,7 +440,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		PreferredUsername: normalized.PreferredUsername,
 		Email:             normalized.Email,
 		Provider:          normalized.Provider,
-		ProviderUserID:    normalized.ProviderUserID,
+		ProviderUserID:    providerUserID,
 		Phone:             normalized.Phone,
 		TenantID:          tenantID,
 		TenantSlug:        tenantSlug,
