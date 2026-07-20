@@ -10,27 +10,27 @@ import (
 )
 
 type Config struct {
-	Port                      string
-	DatabaseURL               string
-	RedisURL                  string
-	CloudBaseURL              string
-	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
-	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
-	MulticaAPIURL             string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
-	ReleaseDownloadBaseURL    string
-	SystemToken               string
-	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
-	InternalSecret            string
-	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
-	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
-	Casdoor                   CasdoorConfig
-	Channels                  ChannelSystemConfig
-	LLM                       LLMConfig
-	Embedding                 EmbeddingConfig
-	Search                    SearchConfig
-	DeptSync                  DeptSyncConfig
-	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
-	UserService               UserServiceConfig
+	Port                    string
+	DatabaseURL             string
+	RedisURL                string
+	CloudBaseURL            string
+	WebhookBaseURL          string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
+	AppURL                  string // Public URL for frontend links in notifications; defaults to CloudBaseURL
+	MulticaAPIURL           string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
+	ReleaseDownloadBaseURL  string
+	SystemToken             string
+	FrontendURLs            []string // Allowed frontend origins for OAuth redirects; first entry is the default
+	InternalSecret          string
+	CookieSecure            bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CORSAllowedOrigins      []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	Casdoor                 CasdoorConfig
+	Channels                ChannelSystemConfig
+	LLM                     LLMConfig
+	Embedding               EmbeddingConfig
+	Search                  SearchConfig
+	DeptSync                DeptSyncConfig
+	UserSyncIntervalMinutes int // User sync interval in minutes, default 15
+	UserService             UserServiceConfig
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -65,6 +65,8 @@ type Config struct {
 	// "dual"; false/unset maps to "off". JWT_SIGN_MODE wins when both
 	// are set.
 	JWTSignMode string
+	Gitea       GiteaConfig
+	TeamSync    TeamSyncConfig
 }
 
 // JWTSignMode values for Config.JWTSignMode.
@@ -117,7 +119,7 @@ type ClawAgentSessionConfig struct {
 	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
 	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
 	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
-	NotificationDelaySeconds    int // Delay before sending AI notification to user (default 30)
+	NotificationDelaySeconds     int // Delay before sending AI notification to user (default 30)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -133,6 +135,36 @@ type DeptSyncConfig struct {
 	AuthHeader  string // auth header name, default X-Query-Key
 	TimeoutSec  int    // per-request HTTP timeout, default 10s
 	CacheTTLSec int    // in-memory cache TTL for tree/users responses, default 60s
+}
+
+// GiteaConfig holds @server's outbound Gitea admin API credentials for
+// team-level operations (Phase E3b.1). BaseURL is the Gitea root (no
+// /api/v1 suffix); AdminToken is a Gitea PAT with org/admin scope.
+//
+// Empty BaseURL or AdminToken disables the feature: cmd/api/main.go
+// treats this as "feature off" and does not construct the gitsync
+// Service; the /api/admin/teams/:team_id/sync endpoint returns 503.
+//
+// Distinct from cs-user's CS_USER_GITEA_* config — per ADR-3 v3, the
+// two services each hold their own admin PAT (cs-user for user-level,
+// @server for team-level).
+type GiteaConfig struct {
+	BaseURL    string
+	AdminToken string
+}
+
+// TeamSyncConfig configures the team_id → gitea_team_id mapping that
+// gitsync.Service uses to translate logical team IDs (provider's
+// namespace) into numeric Gitea team IDs (API path segment).
+//
+// Mappings is parsed from TEAM_SYNC_MAPPINGS env var as
+// "team_id=gitea_team_id,team_id2=gitea_team_id2". Empty env → empty
+// map → sync endpoint returns 404 for any team_id (no resolver mapping).
+//
+// Future slice replaces this with a DB-backed team metadata table when
+// team lifecycle needs to be admin-managed rather than env-managed.
+type TeamSyncConfig struct {
+	Mappings map[string]int64
 }
 
 type ChannelSystemConfig struct {
@@ -211,19 +243,19 @@ func Load() *Config {
 	frontendURLs := getEnvSlice("FRONTEND_URLS", []string{cloudBaseURL})
 
 	return &Config{
-		Port:                      getEnv("PORT", "8080"),
-		DatabaseURL:               getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
-		RedisURL:                  getEnv("REDIS_URL", ""),
-		CloudBaseURL:              cloudBaseURL,
-		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
-		AppURL:                    getEnv("APP_URL", cloudBaseURL),
-		MulticaAPIURL:             getEnv("MULTICA_API_URL", ""),
-		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
-		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
-		FrontendURLs:              frontendURLs,
-		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
-		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
-		CORSAllowedOrigins:        getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
+		Port:                   getEnv("PORT", "8080"),
+		DatabaseURL:            getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		RedisURL:               getEnv("REDIS_URL", ""),
+		CloudBaseURL:           cloudBaseURL,
+		WebhookBaseURL:         getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
+		AppURL:                 getEnv("APP_URL", cloudBaseURL),
+		MulticaAPIURL:          getEnv("MULTICA_API_URL", ""),
+		ReleaseDownloadBaseURL: getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
+		SystemToken:            getEnv("SYSTEM_TOKEN", ""),
+		FrontendURLs:           frontendURLs,
+		InternalSecret:         getEnv("INTERNAL_SECRET", ""),
+		CookieSecure:           getEnvBool("COOKIE_SECURE", true),
+		CORSAllowedOrigins:     getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
 			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			InternalEndpoint: getEnv("CASDOOR_INTERNAL_ENDPOINT", ""),
@@ -273,7 +305,7 @@ func Load() *Config {
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", false),
-				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
+			WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
 			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", false),
 			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", false),
 			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
@@ -301,7 +333,7 @@ func Load() *Config {
 				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
 				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
 				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
-					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
+				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
 		// Phase A8: three-state JWT self-sign mode. Loader prefers
@@ -309,7 +341,62 @@ func Load() *Config {
 		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
 		// OFF — Casdoor JWT stays authoritative until operator flips.
 		JWTSignMode: loadJWTSignMode(),
+		Gitea: GiteaConfig{
+			BaseURL:    getEnv("GITEA_BASE_URL", ""),
+			AdminToken: getEnv("GITEA_ADMIN_TOKEN", ""),
+		},
+		TeamSync: TeamSyncConfig{
+			Mappings: loadTeamSyncMappings(),
+		},
 	}
+}
+
+// loadTeamSyncMappings parses TEAM_SYNC_MAPPINGS env var into a map.
+// Format: "team_id=gitea_team_id,team_id2=gitea_team_id2". Whitespace
+// around entries is trimmed; invalid entries (missing '=', non-numeric
+// id, empty team_id) are silently skipped — operator correctness check
+// happens via the admin endpoint's 404 response on first use.
+func loadTeamSyncMappings() map[string]int64 {
+	raw := getEnv("TEAM_SYNC_MAPPINGS", "")
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]int64)
+	for _, entry := range splitCommaList(raw) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		teamID := strings.TrimSpace(parts[0])
+		idStr := strings.TrimSpace(parts[1])
+		if teamID == "" || idStr == "" {
+			continue
+		}
+		var id int64
+		parsed, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		id = parsed
+		out[teamID] = id
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// splitCommaList splits a comma-separated env value. Reuses the same
+// semantics as getEnvSlice but without the default-value plumbing.
+func splitCommaList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // loadJWTSignMode resolves the JWT self-sign mode from environment.

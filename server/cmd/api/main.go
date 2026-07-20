@@ -48,6 +48,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
 	"github.com/costrict/costrict-web/server/internal/leader"
@@ -125,6 +126,20 @@ func main() {
 	handlers.InitCookieConfig(cfg)
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
+
+	// Phase E3b.1: @server-side Gitea team sync (manual admin trigger).
+	// Constructed only when both GITEA_BASE_URL and GITEA_ADMIN_TOKEN are
+	// set; nil service → /api/admin/teams/:team_id/sync returns 503.
+	// Stub provider is the MVP data source; future slice swaps in a real
+	// provider (cs-user team RPC after org-team-service integration per
+	// ADR-10, or E4 webhook payload adapter) behind the same interface.
+	if cfg.Gitea.BaseURL != "" && cfg.Gitea.AdminToken != "" {
+		giteaClient := gitsync.NewClient(cfg.Gitea.BaseURL, cfg.Gitea.AdminToken)
+		teamProvider := gitsync.NewStubProvider() // TODO(E3b.2): replace with real provider
+		teamResolver := gitsync.NewConfigTeamResolver(cfg.TeamSync.Mappings)
+		teamSyncSvc := gitsync.NewService(teamProvider, giteaClient, teamResolver, logger.L())
+		handlers.InitTeamSyncService(teamSyncSvc)
+	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
 	if storagePath == "" {
@@ -645,6 +660,11 @@ func main() {
 			// Admin distribution management (platform admin only)
 			admin.GET("/distributions", distHandler.ListAllDistributions)
 			admin.GET("/distributions/:id/receipts", distHandler.ListDistributionReceipts)
+
+			// Phase E3b.1: manual team-sync trigger (platform admin only).
+			// POST /api/admin/teams/:team_id/sync runs a full reconcile
+			// against Gitea; returns 503 if feature is unconfigured.
+			admin.POST("/teams/:team_id/sync", handlers.SyncTeam)
 
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.
