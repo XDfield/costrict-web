@@ -57,9 +57,41 @@ func (s *stubClient) RemoveTeamMember(ctx context.Context, giteaTeamID int64, us
 	return nil
 }
 
-func newTestService(t *testing.T, provider TeamDataProvider, client GiteaTeamMemberAPI, resolver GiteaTeamResolver) *Service {
+// stubGitResolver is a canned GitServerResolver. Returns cfg on success,
+// or err if set. Captures the last tenant_id passed for assertion.
+type stubGitResolver struct {
+	cfg        *GitServerConfig
+	err        error
+	lastTenant string
+	calls      int
+}
+
+func (r *stubGitResolver) Resolve(ctx context.Context, tenantID string) (*GitServerConfig, error) {
+	r.calls++
+	r.lastTenant = tenantID
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.cfg != nil {
+		return r.cfg, nil
+	}
+	return &GitServerConfig{
+		ServerID:   "gs-test",
+		Kind:       "gitea",
+		Endpoint:   "https://gitea.test.local",
+		AdminToken: "tok-test",
+	}, nil
+}
+
+// newTestService wires a Service with a stub GitServerResolver and a
+// clientFactory that returns the supplied stubClient regardless of input
+// config. This keeps tests focused on diff/apply logic; per-tenant
+// resolution is exercised separately in TestSyncTeam_PerTenantResolverCalled.
+func newTestService(t *testing.T, provider TeamDataProvider, client GiteaTeamMemberAPI, teamResolver GiteaTeamResolver) *Service {
 	t.Helper()
-	return NewService(provider, client, resolver, zap.NewNop())
+	svc := NewService(provider, &stubGitResolver{}, teamResolver, zap.NewNop())
+	svc.clientFactory = func(GitServerConfig) GiteaTeamMemberAPI { return client }
+	return svc
 }
 
 func sorted(ss []string) []string {
@@ -76,7 +108,7 @@ func TestSyncTeam_AddsExpectedNotInCurrent(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "team-a")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +134,7 @@ func TestSyncTeam_RemovesCurrentNotInExpected(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "team-a")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -122,7 +154,7 @@ func TestSyncTeam_IdempotentWhenInSync(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "team-a")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +180,7 @@ func TestSyncTeam_PerMemberErrorContinuesBatch(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "team-a")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if err != nil {
 		t.Fatalf("unexpected top-level error: %v", err)
 	}
@@ -168,7 +200,7 @@ func TestSyncTeam_UnknownTeamReturnsErrTeamNotFound(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	_, err := svc.SyncTeam(context.Background(), "nonexistent")
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "nonexistent")
 	if !errors.Is(err, ErrTeamNotFound) {
 		t.Errorf("expected ErrTeamNotFound, got %v", err)
 	}
@@ -182,7 +214,7 @@ func TestSyncTeam_NoResolverMappingReturnsErrTeamNotFound(t *testing.T) {
 	resolver := NewConfigTeamResolver(nil) // no mappings
 	svc := newTestService(t, provider, client, resolver)
 
-	_, err := svc.SyncTeam(context.Background(), "team-a")
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if !errors.Is(err, ErrTeamNotFound) {
 		t.Errorf("expected ErrTeamNotFound, got %v", err)
 	}
@@ -199,7 +231,7 @@ func TestSyncTeam_ListErrorPropagatesAsSentinel(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	_, err := svc.SyncTeam(context.Background(), "team-a")
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if !errors.Is(err, ErrGiteaUnauthorized) {
 		t.Errorf("expected ErrGiteaUnauthorized, got %v", err)
 	}
@@ -207,7 +239,7 @@ func TestSyncTeam_ListErrorPropagatesAsSentinel(t *testing.T) {
 
 func TestSyncTeam_NilServiceReturnsErr(t *testing.T) {
 	var svc *Service
-	_, err := svc.SyncTeam(context.Background(), "team-a")
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if !errors.Is(err, ErrGiteaUnreachable) {
 		t.Errorf("expected ErrGiteaUnreachable, got %v", err)
 	}
@@ -223,7 +255,7 @@ func TestSyncTeam_EmptyExpectedPurgesAllCurrent(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"empty-team": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "empty-team")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "empty-team")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +277,7 @@ func TestSyncTeam_SkipsEmptyUsernameInExpected(t *testing.T) {
 	resolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
 	svc := newTestService(t, provider, client, resolver)
 
-	result, err := svc.SyncTeam(context.Background(), "team-a")
+	result, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,8 +291,79 @@ func TestSyncTeam_SkipsEmptyUsernameInExpected(t *testing.T) {
 
 func TestSyncTeam_EmptyTeamIDReturnsError(t *testing.T) {
 	svc := newTestService(t, NewStubProvider(), &stubClient{}, NewConfigTeamResolver(nil))
-	_, err := svc.SyncTeam(context.Background(), "")
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "")
 	if err == nil {
 		t.Errorf("expected error for empty team_id, got nil")
+	}
+}
+
+// TestSyncTeam_EmptyTenantIDReturnsError verifies the per-tenant fix's
+// new input guard: SyncTeam without a tenant_id fails fast.
+func TestSyncTeam_EmptyTenantIDReturnsError(t *testing.T) {
+	svc := newTestService(t, NewStubProvider(), &stubClient{}, NewConfigTeamResolver(nil))
+	_, err := svc.SyncTeam(context.Background(), "", "team-a")
+	if err == nil {
+		t.Errorf("expected error for empty tenant_id, got nil")
+	}
+}
+
+// TestSyncTeam_PerTenantResolverCalled verifies the per-tenant fix
+// (E3b.1.1): syncing a team for tenant "t-acme" calls Resolve("t-acme"),
+// not the legacy global default. Regression test for the bug this
+// refactor fixes.
+func TestSyncTeam_PerTenantResolverCalled(t *testing.T) {
+	provider := NewStubProviderFromMap(map[string][]TeamMember{
+		"team-a": {{GiteaUsername: "alice"}},
+	})
+	client := &stubClient{current: nil}
+	teamResolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
+
+	gitResolver := &stubGitResolver{}
+	svc := NewService(provider, gitResolver, teamResolver, zap.NewNop())
+	svc.clientFactory = func(GitServerConfig) GiteaTeamMemberAPI { return client }
+
+	if _, err := svc.SyncTeam(context.Background(), "t-acme", "team-a"); err != nil {
+		t.Fatalf("SyncTeam: %v", err)
+	}
+	if gitResolver.calls != 1 {
+		t.Fatalf("resolver.calls: got %d, want 1", gitResolver.calls)
+	}
+	if gitResolver.lastTenant != "t-acme" {
+		t.Errorf("resolver.lastTenant: got %q, want t-acme (per-tenant resolution)",
+			gitResolver.lastTenant)
+	}
+}
+
+// TestSyncTeam_ResolverErrorSurfaces verifies that a failed Resolve (e.g.
+// cs-user RPC returns ErrGitServerNoBinding) surfaces as an error from
+// SyncTeam without firing any Gitea API calls.
+func TestSyncTeam_ResolverErrorSurfaces(t *testing.T) {
+	provider := NewStubProviderFromMap(map[string][]TeamMember{
+		"team-a": {{GiteaUsername: "alice"}},
+	})
+	client := &stubClient{current: nil}
+	teamResolver := NewConfigTeamResolver(map[string]int64{"team-a": 42})
+
+	gitResolver := &stubGitResolver{err: errors.New("tenant has no git_server_id")}
+	svc := NewService(provider, gitResolver, teamResolver, zap.NewNop())
+	svc.clientFactory = func(GitServerConfig) GiteaTeamMemberAPI { return client }
+
+	_, err := svc.SyncTeam(context.Background(), "t-acme", "team-a")
+	if err == nil {
+		t.Fatalf("SyncTeam: got nil err, want resolver error")
+	}
+	if len(client.addCalls) != 0 || len(client.removeCalls) != 0 {
+		t.Errorf("Gitea fired despite resolver miss: add=%v remove=%v",
+			client.addCalls, client.removeCalls)
+	}
+}
+
+// TestSyncTeam_NilGitResolverReturnsNilService verifies the
+// feature-disabled signal: NewService with a nil GitServerResolver
+// returns nil so cmd/api/main.go can skip wiring the handler.
+func TestSyncTeam_NilGitResolverReturnsNilService(t *testing.T) {
+	svc := NewService(NewStubProvider(), nil, NewConfigTeamResolver(nil), zap.NewNop())
+	if svc != nil {
+		t.Errorf("NewService with nil GitServerResolver: got non-nil Service, want nil")
 	}
 }

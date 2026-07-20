@@ -70,6 +70,11 @@ type SyncResult struct {
 
 // Service owns the full-reconcile diff/apply loop. Construct via NewService.
 //
+// Per Phase E3b.1.1, the Service resolves the tenant's Git server endpoint
+// on each SyncTeam call (via GitServerResolver) and constructs a transient
+// Client. This fixes the E3b.1 bug where every tenant's team sync hit the
+// same global Gitea endpoint.
+//
 // The sync contract is:
 //
 //   - Idempotent: identical inputs produce identical Gitea state across calls.
@@ -77,32 +82,40 @@ type SyncResult struct {
 //     the batch; the failure is recorded in SyncResult.Errors.
 //   - Bounded: the caller's ctx deadline is honored across all Gitea calls.
 type Service struct {
-	provider TeamDataProvider
-	client   GiteaTeamMemberAPI
-	resolver GiteaTeamResolver
-	logger   *zap.Logger
+	provider      TeamDataProvider
+	gitResolver   GitServerResolver
+	teamResolver  GiteaTeamResolver
+	logger        *zap.Logger
+	clientFactory func(GitServerConfig) GiteaTeamMemberAPI
 }
 
-// NewService wires a Service. nil client returns nil (feature-disabled
+// NewService wires a Service. nil gitResolver returns nil (feature-disabled
 // signal to cmd/api/main.go — handler layer treats nil Service as 503).
-// nil resolver / nil logger are tolerated with sensible defaults so tests
-// don't have to construct the full dependency graph.
-func NewService(provider TeamDataProvider, client GiteaTeamMemberAPI, resolver GiteaTeamResolver, logger *zap.Logger) *Service {
-	if client == nil {
+// nil teamResolver / nil logger are tolerated with sensible defaults so
+// tests don't have to construct the full dependency graph.
+func NewService(provider TeamDataProvider, gitResolver GitServerResolver, teamResolver GiteaTeamResolver, logger *zap.Logger) *Service {
+	if gitResolver == nil {
 		return nil
 	}
-	if resolver == nil {
-		resolver = NewConfigTeamResolver(nil)
+	if teamResolver == nil {
+		teamResolver = NewConfigTeamResolver(nil)
 	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Service{
-		provider: provider,
-		client:   client,
-		resolver: resolver,
-		logger:   logger,
+		provider:      provider,
+		gitResolver:   gitResolver,
+		teamResolver:  teamResolver,
+		logger:        logger,
+		clientFactory: defaultClientFactory,
 	}
+}
+
+// defaultClientFactory is the production factory — wraps NewClient so the
+// field is overridable in tests.
+func defaultClientFactory(cfg GitServerConfig) GiteaTeamMemberAPI {
+	return NewClient(cfg.Endpoint, cfg.AdminToken)
 }
 
 // syncTimeout caps the total wall-clock for one SyncTeam call when the
@@ -111,22 +124,29 @@ func NewService(provider TeamDataProvider, client GiteaTeamMemberAPI, resolver G
 // UI indefinitely.
 const syncTimeout = 30 * time.Second
 
-// SyncTeam runs a full reconcile for one team_id.
+// SyncTeam runs a full reconcile for one (tenantID, team_id) pair.
 //
-// Flow: provider → expected list; resolver → gitea_team_id; client → current
-// list; diff → toAdd/toRemove; apply per member.
+// Flow: gitResolver → tenant's GitServer endpoint; provider → expected
+// member list; teamResolver → gitea_team_id; client → current list;
+// diff → toAdd/toRemove; apply per member.
+//
+// tenantID selects which tenant's Gitea we sync against (per-tenant fix,
+// Phase E3b.1.1). team_id is the logical team in the provider's namespace.
 //
 // Returned errors are sentinel (ErrTeamNotFound / ErrGiteaTeamNotFound /
 // ErrGiteaUnauthorized / ErrGiteaUnreachable) so the handler can map to
 // the right HTTP status. Per-member failures are NOT returned as the
 // top-level error — they go into SyncResult.Errors and the call returns
 // successfully with whatever subset of operations succeeded.
-func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, error) {
+func (s *Service) SyncTeam(ctx context.Context, tenantID, teamID string) (*SyncResult, error) {
 	if s == nil {
 		return nil, ErrGiteaUnreachable
 	}
 	if teamID == "" {
 		return nil, fmt.Errorf("gitsync: team_id is required")
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("gitsync: tenant_id is required")
 	}
 	if s.provider == nil {
 		return nil, ErrTeamNotFound
@@ -139,6 +159,20 @@ func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, err
 		defer cancel()
 	}
 
+	// Resolve the tenant's Git server endpoint + admin_token, then build a
+	// transient Client scoped to it. Constructing a Client is cheap;
+	// caching is YAGNI for admin-triggered sync (RPCResolver already caches
+	// the resolved config for 5 min).
+	serverCfg, err := s.gitResolver.Resolve(ctx, tenantID)
+	if err != nil {
+		s.logger.Warn("gitsync.SyncTeam: resolve git server failed",
+			zap.String("tenant_id", tenantID),
+			zap.String("team_id", teamID),
+			zap.Error(err))
+		return nil, fmt.Errorf("gitsync: resolve git server for tenant %q: %w", tenantID, err)
+	}
+	client := s.clientFactory(*serverCfg)
+
 	expected, err := s.provider.ListTeamMembers(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, ErrTeamNotFound) {
@@ -147,14 +181,14 @@ func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, err
 		return nil, fmt.Errorf("gitsync: provider error: %w", err)
 	}
 
-	giteaTeamID, ok := s.resolver.ResolveGiteaTeamID(teamID)
+	giteaTeamID, ok := s.teamResolver.ResolveGiteaTeamID(teamID)
 	if !ok {
 		s.logger.Warn("gitsync.SyncTeam: no gitea_team_id mapping for team_id",
 			zap.String("team_id", teamID))
 		return nil, ErrTeamNotFound
 	}
 
-	current, err := s.client.ListTeamMembers(ctx, giteaTeamID)
+	current, err := client.ListTeamMembers(ctx, giteaTeamID)
 	if err != nil {
 		// Surface the sentinel directly so handler maps status correctly.
 		return nil, err
@@ -192,7 +226,7 @@ func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, err
 			result.Skipped = append(result.Skipped, username)
 			continue
 		}
-		if err := s.client.AddTeamMember(ctx, giteaTeamID, username); err != nil {
+		if err := client.AddTeamMember(ctx, giteaTeamID, username); err != nil {
 			result.Errors = append(result.Errors, MemberSyncError{
 				GiteaUsername: username,
 				Operation:     "add",
@@ -213,7 +247,7 @@ func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, err
 		if _, present := expectedSet[username]; present {
 			continue
 		}
-		if err := s.client.RemoveTeamMember(ctx, giteaTeamID, username); err != nil {
+		if err := client.RemoveTeamMember(ctx, giteaTeamID, username); err != nil {
 			result.Errors = append(result.Errors, MemberSyncError{
 				GiteaUsername: username,
 				Operation:     "remove",
@@ -230,6 +264,7 @@ func (s *Service) SyncTeam(ctx context.Context, teamID string) (*SyncResult, err
 	}
 
 	s.logger.Info("gitsync.SyncTeam: completed",
+		zap.String("tenant_id", tenantID),
 		zap.String("team_id", teamID),
 		zap.Int64("gitea_team_id", giteaTeamID),
 		zap.Int("added", len(result.Added)),
