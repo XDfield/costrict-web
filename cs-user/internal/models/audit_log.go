@@ -38,6 +38,12 @@ const (
 	// user_gitea_binding:<user_subject_id>. Payload records sync_status +
 	// gitea_uid (or last_error on failure).
 	ActionUserGiteaProvisioned = "user.gitea_provisioned"
+	// ActionUserStatusChanged — platform_admin / tenant_admin changes a
+	// user's status (active ↔ disabled, → banned). Target: user:<subject_id>.
+	// Payload records from_status + to_status + reason. Migrated from
+	// @server's admin_audit_logs (action user.status_change) when admin
+	// user management moved to cs-user as the single source of truth.
+	ActionUserStatusChanged = "user.status_changed"
 )
 
 // Target type constants — pair with target_id to identify the audit row's
@@ -49,6 +55,9 @@ const (
 	TargetTypeProviderMapping = "provider_mapping"
 	// TargetTypeUserGiteaBinding — Phase E3a.1 user_gitea_binding row.
 	TargetTypeUserGiteaBinding = "user_gitea_binding"
+	// TargetTypeUser — users row targeted by an admin operation (status
+	// change, role grant, etc.). Target_id is the user's subject_id.
+	TargetTypeUser = "user"
 )
 
 // AuditLog records one admin write operation (Phase C4.1).
