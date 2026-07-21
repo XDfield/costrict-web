@@ -402,7 +402,7 @@ func RotateDeviceTokenHandler(svc *services.DeviceService) gin.HandlerFunc {
 // @Failure      401   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /workspaces/{workspaceID}/devices [get]
-func ListWorkspaceDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
+func ListWorkspaceDevicesHandler(svc *services.DeviceService, registry *gateway.GatewayRegistry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
 		if userID == "" {
@@ -431,8 +431,20 @@ func ListWorkspaceDevicesHandler(svc *services.DeviceService) gin.HandlerFunc {
 			return
 		}
 
+		gwAPI := liveGatewayAPIMap(registry)
+		items := make([]gin.H, 0, len(devices))
+		for _, d := range devices {
+			item := deviceToMap(d)
+			if url := clusterAPIURLFor(registry, gwAPI, d.DeviceID); url != "" {
+				item["clusterAPIURL"] = url
+			} else {
+				item["clusterAPIURL"] = nil
+			}
+			items = append(items, item)
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"devices":  devices,
+			"devices":  items,
 			"total":    total,
 			"page":     page,
 			"pageSize": pageSize,

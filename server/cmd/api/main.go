@@ -500,7 +500,7 @@ func main() {
 				devices.PUT("/:deviceID/fingerprint", handlers.UpdateLegacyFingerprintHandler(deviceSvc))
 			}
 
-			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc))
+			authed.GET("/workspaces/:workspaceID/devices", handlers.ListWorkspaceDevicesHandler(deviceSvc, gatewayRegistry))
 
 			// Workspace routes
 			workspaces := authed.Group("/workspaces")
