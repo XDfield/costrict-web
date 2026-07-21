@@ -62,7 +62,9 @@ nginx-router 运行时(detect_dns 已能自动探测 cluster domain 与 nameserv
 
 | 文件 | 删除/修改内容 |
 |---|---|
-| `templates/nginx-configmap.yaml` | server-registry init 分支整体删除;router.lua 中 `resolve_from_registry`、`http_get`、`read_chunked_body`(仅 registry 客户端使用)删除;`resolve_host`/`query_a`/`read_pod_namespace`/search 域展开**保留**(static 自动生成依赖);`mode == "server-registry"` 时 `{{ fail }}` 明确报错 |
+| `templates/nginx-configmap.yaml` | server-registry init 分支整体删除;router.lua 中 `resolve_from_registry`、`http_get`、`read_chunked_body`(仅 registry 客户端使用)删除;`mode == "server-registry"` 时 `{{ fail }}` 明确报错 |
+
+> 修正(2026-07-21,写实施计划时):原稿称 `resolve_host`/`query_a`/`read_pod_namespace`/search 域展开保留("static 自动生成依赖")。实际上 static 自动生成镜像 dns 模式的 FQDN 构造(运行时拼接探测到的 cluster domain,`headless_fqdn = headless_base .. "." .. cluster_domain`),不依赖 search 展开;server-registry 删除后这些函数成为死代码,按 YAGNI 一并删除。
 | `values.yaml` | 删除 `nginxRouter.discovery.serverUrl`、`nginxRouter.internalSecret`;`discovery.mode` 注释改为 `dns \| static` |
 | `templates/nginx-deployment.yaml` | 删除 `INTERNAL_SECRET` env 条件块 |
 | `templates/statefulset.yaml` / `deployment.yaml` / `daemonset.yaml` | 清理残留的 server-registry 相关注释 |
