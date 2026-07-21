@@ -75,6 +75,10 @@ config:
   # 三种模式下留空均保持自动生成行为。
   gatewayIdPrefix: ""
   endpoint: ""
+  # 本集群 Server 的公网 API 地址（如 https://api-a.example.com）。
+  # 多集群（共享数据库、域名不同）部署时必填：Gateway 注册时上报，
+  # Web 前端据此把设备请求路由到设备归属集群。单集群部署留空即可。
+  apiBaseURL: ""
   internalUrl: ""
   region: "default"
   capacity: 100
@@ -89,6 +93,7 @@ config:
     namespaceId: ""         # optional namespace ID
     group: "DEFAULT_GROUP"  # config group
     dataID: ""              # config data ID
+    apiBaseURLDataID: ""  # optional: data ID holding this cluster's Server public API URL
     timeoutMs: 5000
     username: ""            # optional Nacos auth username
     password: ""            # optional Nacos auth password
