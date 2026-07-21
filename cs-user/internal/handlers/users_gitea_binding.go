@@ -36,7 +36,7 @@ import (
 //	@Produce		json
 //	@Security		InternalToken
 //	@Param			subject_id	path		string	true	"User subject_id"
-//	@Success		200			{object}	models.UserGiteaBinding
+//	@Success		200			{object}	object
 //	@Failure		400			{object}	object{error=string}
 //	@Failure		404			{object}	object{error=string}
 //	@Failure		500			{object}	object{error=string}

@@ -1,5 +1,18 @@
 basePath: /
 definitions:
+  github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult:
+    properties:
+      limit:
+        type: integer
+      logs:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.AuditLog'
+        type: array
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_auth.JWK:
     properties:
       alg:
@@ -27,6 +40,35 @@ definitions:
         items:
           $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWK'
         type: array
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.AuditLog:
+    properties:
+      action:
+        type: string
+      actor_platform_scope:
+        type: string
+      actor_subject_id:
+        type: string
+      actor_tenant_role:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: integer
+      ip:
+        type: string
+      payload:
+        items:
+          type: integer
+        type: array
+      target_id:
+        type: string
+      target_type:
+        type: string
+      tenant_id:
+        type: string
+      user_agent:
+        type: string
     type: object
   github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions:
     properties:
@@ -73,6 +115,8 @@ definitions:
       email_domains:
         type: string
       features:
+        type: string
+      git_server_id:
         type: string
       limits:
         type: string
@@ -224,6 +268,74 @@ definitions:
           $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider'
         type: object
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount:
+    properties:
+      memberCount:
+        type: integer
+      organization:
+        type: string
+    type: object
+  internal_handlers.adminUserListItem:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      is_active:
+        type: boolean
+      organization:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_handlers.adminUserListResponse:
+    properties:
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+      users:
+        items:
+          $ref: '#/definitions/internal_handlers.adminUserListItem'
+        type: array
+    type: object
+  internal_handlers.adminUserProfileDTO:
+    properties:
+      auth_provider:
+        type: string
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      is_active:
+        type: boolean
+      last_login_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      username:
+        type: string
+    type: object
   internal_handlers.applyEnterpriseMappingRequest:
     properties:
       provider:
@@ -346,6 +458,15 @@ definitions:
     required:
     - email
     type: object
+  internal_handlers.setUserStatusRequest:
+    properties:
+      operator_id:
+        type: string
+      status:
+        type: string
+    required:
+    - status
+    type: object
   internal_handlers.tenantCandidate:
     properties:
       name:
@@ -361,6 +482,17 @@ definitions:
         type: string
     required:
     - config_yaml
+    type: object
+  internal_handlers.tenantGitServerResponse:
+    properties:
+      admin_token:
+        type: string
+      endpoint:
+        type: string
+      kind:
+        type: string
+      server_id:
+        type: string
     type: object
   internal_handlers.transferIdentityRequest:
     properties:
@@ -442,6 +574,82 @@ paths:
       summary: Internal handshake
       tags:
       - internal
+  /api/internal/platform/audit-logs:
+    get:
+      description: 'Returns paginated audit-log entries. Platform-admin scope sees
+        all tenants; pass tenant_id to narrow. Filters: action / actor_subject_id
+        / target_type / target_id / from / to (ISO8601) / limit (default 100, cap
+        500) / offset (default 0). Newest first.'
+      parameters:
+      - description: Exact tenant_id match
+        in: query
+        name: tenant_id
+        type: string
+      - description: Exact actor_subject_id match
+        in: query
+        name: actor_subject_id
+        type: string
+      - description: Exact action match (e.g. tenant.create, user.status_changed)
+        in: query
+        name: action
+        type: string
+      - description: Exact target_type match (e.g. tenant, user)
+        in: query
+        name: target_type
+        type: string
+      - description: Exact target_id match
+        in: query
+        name: target_id
+        type: string
+      - description: ISO8601 lower bound on created_at (inclusive)
+        in: query
+        name: from
+        type: string
+      - description: ISO8601 upper bound on created_at (inclusive)
+        in: query
+        name: to
+        type: string
+      - description: Page size (default 100, cap 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List audit-log entries (platform-admin, cross-tenant)
+      tags:
+      - platform-audit-logs
   /api/internal/platform/tenants:
     get:
       description: Returns a paginated list of tenants (newest first). Optional status
@@ -901,6 +1109,128 @@ paths:
       summary: Update provider_mapping (tenant admin)
       tags:
       - tenant-provider-mapping
+  /api/internal/tenants/{tenant_id}/git-server:
+    get:
+      description: Returns the endpoint + admin_token bound to the supplied tenant.
+        Internal-token gated; consumed by @server gitsync.
+      parameters:
+      - description: Tenant ID
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.tenantGitServerResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Read a tenant's Git server config (internal RPC)
+      tags:
+      - tenant-git-server
+  /api/internal/tenants/audit-logs:
+    get:
+      description: 'Returns paginated audit-log entries scoped to the request''s tenant
+        (resolved from X-Tenant-Id header). Client-supplied tenant_id is ignored.
+        Filters: action / actor_subject_id / target_type / target_id / from / to (ISO8601)
+        / limit (default 100, cap 500) / offset (default 0). Newest first.'
+      parameters:
+      - description: Exact actor_subject_id match
+        in: query
+        name: actor_subject_id
+        type: string
+      - description: Exact action match (e.g. tenant_config.update, user.status_changed)
+        in: query
+        name: action
+        type: string
+      - description: Exact target_type match
+        in: query
+        name: target_type
+        type: string
+      - description: Exact target_id match
+        in: query
+        name: target_id
+        type: string
+      - description: ISO8601 lower bound on created_at (inclusive)
+        in: query
+        name: from
+        type: string
+      - description: ISO8601 upper bound on created_at (inclusive)
+        in: query
+        name: to
+        type: string
+      - description: Page size (default 100, cap 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List audit-log entries (tenant-scoped)
+      tags:
+      - tenant-audit-logs
   /api/internal/tenants/resolve-by-email:
     post:
       consumes:
@@ -1087,6 +1417,50 @@ paths:
       summary: Bind an identity to a user
       tags:
       - users
+  /api/internal/users/{subject_id}/gitea-binding:
+    get:
+      description: Returns the user_gitea_binding row for the given subject_id. 404
+        when the user has no binding (Gitea provisioning not yet run). Drives ops
+        visibility + future fork JWT middleware (E3a.3).
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get a user's Gitea binding
+      tags:
+      - users
   /api/internal/users/{subject_id}/identities/{provider}:
     delete:
       description: Soft-deletes every identity matching the provider on the user and
@@ -1142,6 +1516,121 @@ paths:
       summary: Unbind all identities for a provider
       tags:
       - users
+  /api/internal/users/{subject_id}/profile:
+    get:
+      description: 'Returns the identity + status slice of a user''s profile (subject_id,
+        username, contact info, status, login metadata). Privacy-scoped: infra-only
+        identifiers (external_key, casdoor_*, provider_user_id) are NOT returned.
+        @server supplements this with locally-computed activity counts (createdItemCount,
+        distributedCount, receivedCount) before returning the full profile to the
+        admin UI. Used by @server''s GET /api/admin/users/:id/profile (admin-user-migration
+        slice).'
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserProfileDTO'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get a user's identity profile (admin)
+      tags:
+      - users
+      - admin
+  /api/internal/users/{subject_id}/status:
+    post:
+      consumes:
+      - application/json
+      description: Transitions the user's status to active | disabled | banned. Refuses
+        to change the operator's own status (self-lock guard). Records a user_center_audit_log
+        row keyed action=user.status_changed with from_status / to_status on success.
+        Used by @server's POST /api/admin/users/:id/status (admin-user-migration slice).
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: New status + operator_id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.setUserStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              from_status:
+                type: string
+              to_status:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Set a user's account status (admin)
+      tags:
+      - users
+      - admin
   /api/internal/users/apply-enterprise-mapping:
     post:
       consumes:
@@ -1274,6 +1763,95 @@ paths:
       summary: Upsert user from JWT claims (login entry point)
       tags:
       - users
+  /api/internal/users/list:
+    get:
+      description: Paginated list of all users in the current tenant scope, optionally
+        filtered by keyword / organization / status. Unlike /search, this surface
+        includes disabled + banned accounts so admins can see the full roster. Used
+        by @server's GET /api/admin/users (admin-user-migration slice).
+      parameters:
+      - description: Matched against username / display_name / email (LIKE %keyword%)
+        in: query
+        name: keyword
+        type: string
+      - description: Exact organization match
+        in: query
+        name: organization
+        type: string
+      - description: 'Account status: active | disabled | banned'
+        enum:
+        - active
+        - disabled
+        - banned
+        in: query
+        name: status
+        type: string
+      - description: 1-based page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 200)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List users for admin console
+      tags:
+      - users
+      - admin
+  /api/internal/users/organizations:
+    get:
+      description: Returns the per-tenant organization roll-up (grouped by users.organization,
+        busiest first). Powers the admin console's organization filter dropdown. NULL/empty
+        organizations are skipped. Used by @server's GET /api/admin/users/organizations
+        (admin-user-migration slice).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              organizations:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List organizations with member counts (admin)
+      tags:
+      - users
+      - admin
   /api/internal/users/reissue-token:
     post:
       consumes:
