@@ -16,38 +16,6 @@ import (
 
 var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
-// GatewayListHandler godoc
-// @Summary      List live gateways
-// @Description  Return the list of currently online gateways (heartbeat not timed out). Used by nginx-router to discover gateway internal URLs.
-// @Tags         internal-gateway
-// @Produce      json
-// @Param        X-Internal-Secret  header  string  true  "Internal shared secret"
-// @Success      200  {object}  object{gateways=[]object{gatewayID=string,internalURL=string}}
-// @Failure      500  {object}  object{error=string}
-// @Router       /internal/gateway/list [get]
-func GatewayListHandler(registry *GatewayRegistry) gin.HandlerFunc {
-	type gatewayListItem struct {
-		GatewayID   string `json:"gatewayID"`
-		InternalURL string `json:"internalURL"`
-	}
-	return func(c *gin.Context) {
-		gateways, err := registry.ListLiveGateways()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list gateways"})
-			return
-		}
-
-		items := make([]gatewayListItem, 0, len(gateways))
-		for _, gw := range gateways {
-			items = append(items, gatewayListItem{
-				GatewayID:   gw.ID,
-				InternalURL: gw.InternalURL,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"gateways": items})
-	}
-}
-
 // GatewayRegisterHandler godoc
 // @Summary      Register gateway
 // @Description  Register a new gateway instance with the server. The gateway receives a heartbeat interval in the response.
@@ -472,7 +440,6 @@ func ExtractBearerToken(r *http.Request) string {
 
 func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, client *Client, deviceSvc *services.DeviceService) {
 	gatewayGroup := group.Group("/gateway")
-	gatewayGroup.GET("/list", GatewayListHandler(registry))
 	gatewayGroup.POST("/register", GatewayRegisterHandler(registry))
 	gatewayGroup.POST("/:gatewayID/heartbeat", GatewayHeartbeatHandler(registry))
 	gatewayGroup.DELETE("/:gatewayID", GatewayDeregisterHandler(registry))

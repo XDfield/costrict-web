@@ -5,8 +5,8 @@
 与 [DaemonSet + headless Service DNS 自动发现方案](./gateway-daemonset-apisix-chash.md) 相比：
 
 - **Gateway 改为 StatefulSet**：Pod 名稳定（`costrict-web-gateway-0`、`costrict-web-gateway-1`…），重启后 `GATEWAY_ID` 不变。
-- **nginx-router 改为静态 FQDN 发现**：不再解析 headless Service DNS A 记录，而是逐个解析运维配置的固定 Pod FQDN。
-- **无需维护漂移的 Pod IP**：IP 漂移由 nginx-router 定时刷新自动跟踪，运维只维护稳定的 FQDN 列表。
+- **nginx-router 改为静态 FQDN 发现**：static 模式下 `staticFQDNs` 留空，nginx-router 会按 Gateway 副本数（`replicaCount`）自动生成 StatefulSet Pod FQDN（`<release>-<i>.<release>-headless.<namespace>.svc.<cluster-domain>`），cluster-domain 运行时自动探测，跨集群无需修改配置。扩缩容只需修改 `replicaCount` 并滚动重启 nginx-router。
+- **无需维护漂移的 Pod IP**：IP 漂移由 nginx-router 定时刷新自动跟踪，运维只维护 Gateway 副本数（`replicaCount`）。
 
 ## 架构
 
@@ -27,7 +27,7 @@
 │         nginx-router (OpenResty)     │
 │  ├─ 从 /device/{deviceID}/... 提取 deviceID
 │  ├─ chash 一致性哈希到 Gateway Pod
-│  └─ 解析固定的 StatefulSet Pod FQDN 列表
+│  └─ 按 `replicaCount` 自动生成 StatefulSet Pod FQDN 并解析到当前 IP
 └──────┬──────────────────────────────┘
        │ (轮询解析每个 Pod FQDN 到当前 IP)
        ▼
@@ -63,7 +63,7 @@ helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
   --set config.capacity=1000 \
   --set nginxRouter.enabled=true \
   --set nginxRouter.discovery.mode=static \
-  --set 'nginxRouter.discovery.staticFQDNs={costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local}'
+  --set replicaCount=2
 ```
 
 关键参数：
@@ -71,8 +71,9 @@ helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
 | 参数 | 说明 |
 |---|---|
 | `statefulSet.enabled=true` | 启用 StatefulSet 模式，与 Deployment/DaemonSet 互斥 |
-| `nginxRouter.discovery.mode=static` | nginx-router 使用固定 FQDN 列表 |
-| `nginxRouter.discovery.staticFQDNs` | 逗号分隔的 StatefulSet Pod FQDN 列表 |
+| `nginxRouter.discovery.mode=static` | nginx-router 使用静态 FQDN 发现；`staticFQDNs` 留空时按 `replicaCount` 自动生成 |
+| `replicaCount` | Gateway 副本数，nginx-router 会据此生成对应数量的 StatefulSet Pod FQDN |
+| `nginxRouter.discovery.staticFQDNs` | （可选）逗号分隔的显式 FQDN 列表；留空时按 `replicaCount` 自动生成 |
 | `nginxRouter.resolver` | （可选）集群 DNS 地址；留空时自动从 `/etc/resolv.conf` 探测 |
 | `nginxRouter.discovery.clusterDomain` | （可选）集群域名后缀；留空时自动探测 |
 
@@ -88,15 +89,13 @@ helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
 2. 运行生成脚本获得最新的 `nginx-router-configmap.yaml`：
    ```bash
    cd /path/to/your/project/gateway-statefulset-static
-   ./generate.sh costrict-web-gateway costrict \
-     "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local"
+   ./generate.sh costrict-web-gateway costrict 2
    ```
 
    `CLUSTER_DNS` 为可选参数；省略时 nginx-router 会自动从 Pod 的 `/etc/resolv.conf` 探测 DNS 配置。仅在 hostNetwork、自定义 `dnsConfig` 等非常规场景需要显式指定，例如：
 
    ```bash
-   ./generate.sh costrict-web-gateway costrict \
-     "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local" \
+   ./generate.sh costrict-web-gateway costrict 2 \
      kube-dns.kube-system.svc.cluster.local
    ```
 
@@ -183,8 +182,8 @@ websocat "wss://api.example.com/device/test-device-001/tunnel?token=xxx"
 ## 4. 扩缩容与 Pod 重建
 
 - **扩缩容**：
-  1. 修改 StatefulSet `replicas`。
-  2. 同步更新 `nginxRouter.discovery.staticFQDNs`（Helm）或 `nginx-router-configmap.yaml` 中的 FQDN 列表（半手动）。
+  1. 修改 StatefulSet `replicas`（Helm 中为 `replicaCount`）。
+  2. 同步修改 `replicaCount`/副本数，`staticFQDNs` 留空时 nginx-router 会自动生成对应 FQDN。
   3. 滚动重启 nginx-router 以加载新 ConfigMap：
      ```bash
      kubectl rollout restart deployment/costrict-web-gateway-nginx-router -n costrict
@@ -193,38 +192,8 @@ websocat "wss://api.example.com/device/test-device-001/tunnel?token=xxx"
 - **Pod 重建**：
   StatefulSet Pod 名不变，IP 可能变化。nginx-router 每 5 秒刷新 FQDN，自动解析到新 IP，**无需手动修改 IP**。
 
-## 5. 备选：server-registry 发现模式（完全不依赖 DNS）
 
-如果容器云甚至连单个 Pod FQDN 的 DNS 解析都不稳定，可以启用 `server-registry` 模式：
-
-```bash
-helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
-  --namespace costrict \
-  --set statefulSet.enabled=true \
-  --set nginxRouter.enabled=true \
-  --set nginxRouter.discovery.mode=server-registry \
-  --set nginxRouter.discovery.serverUrl="http://costrict-web-api:8080" \
-  --set nginxRouter.internalSecret="your-internal-secret"
-```
-
-此模式下 nginx-router 每 5 秒调用 Server 的 `GET /internal/gateway/list` 接口，拉取当前在线 Gateway 的 `internalURL`（Gateway 注册时上报的 Pod IP），发现环节完全绕过 DNS。需要 nginx-router 与 Server 内网可达。
-
-**彻底不用域名的做法**：`serverUrl` 直接填 `costrict-web-api` Service 的 **ClusterIP**——ClusterIP 在 Service 生命周期内固定不变，不属于"需要维护的漂移 IP"：
-
-```bash
-# 先查出 ClusterIP（一次性操作）
-kubectl get svc -n costrict costrict-web-api
-#   NAME               TYPE       CLUSTER-IP    PORT(S)
-#   costrict-web-api   ClusterIP  10.96.0.10    8080/TCP
-
---set nginxRouter.discovery.serverUrl="http://10.96.0.10:8080"
-```
-
-同理，Gateway 自身的 `SERVER_URL`（注册/心跳回调地址）也可以填同一个 ClusterIP，这样整条 Gateway 链路（注册、心跳、nginx-router 发现、反向代理）都不再出现任何域名。
-
-注意：该模式下 nginx-router 的发现链路依赖 Server 可用性。运行中的 nginx-router 有 last-known-good 缓存兜底（Server 短暂不可用不影响转发）；只有 Server 与 nginx-router 同时重启且缓存为空时才需要等 Server 恢复。
-
-## 6. 从 DaemonSet / Deployment 迁移
+## 5. 从 DaemonSet / Deployment 迁移
 
 1. 以新 release 名（如 `costrict-web-gateway-ss`）部署 StatefulSet，避免标签冲突。
 2. 更新 APISIX 路由指向新的 nginx-router Service。
@@ -232,9 +201,9 @@ kubectl get svc -n costrict costrict-web-api
 4. 下线旧的 DaemonSet / Deployment。
 5. 旧 Gateway ID 会在 60 秒心跳超时后从 `GatewayRegistry` 自动清理。
 
-## 7. 常见问题
+## 6. 常见问题
 
-### 7.1 nginx-router 发现不到 Gateway
+### 6.1 nginx-router 发现不到 Gateway
 
 - 检查 FQDN 是否正确：`costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local`
 - 在 nginx-router Pod 内执行解析测试：
@@ -243,13 +212,13 @@ kubectl get svc -n costrict costrict-web-api
   ```
 - 如果 `/etc/resolv.conf` 自动探测失败（如 hostNetwork、自定义 `dnsConfig`），可显式设置 `nginxRouter.resolver` 或 `CLUSTER_DNS` 占位符。
 
-### 7.2 同一 deviceID 路由到不同 Pod
+### 6.2 同一 deviceID 路由到不同 Pod
 
 - 检查所有 nginx-router 副本的 `/router_status` 返回的 IP 列表是否一致。
 - 确保 FQDN 列表在所有副本中相同，且解析结果一致。
 - StatefulSet Pod 重建后 IP 变化是正常的，但多个副本必须在同一时间点看到相同的有序 IP 集合。
 
-### 7.3 从 StatefulSet 回滚到 DaemonSet
+### 6.3 从 StatefulSet 回滚到 DaemonSet
 
 - 切换 `statefulSet.enabled=false`、`daemonSet.enabled=true`。
 - 注意 `GATEWAY_ID` 会从 Pod 名变为 Node 名，已绑定设备会重新分配。

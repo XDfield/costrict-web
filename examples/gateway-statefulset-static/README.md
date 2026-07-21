@@ -6,17 +6,19 @@
 相比原 DaemonSet + headless Service DNS 自动发现方案，本方案：
 
 - 使用 **StatefulSet** 提供稳定的 Pod 名（`gateway-0`, `gateway-1`…）。
-- nginx-router 通过**固定 FQDN 列表**解析 Gateway Pod，不依赖 headless Service DNS 自动发现。
-- 运维只需维护 FQDN 列表，**无需跟踪漂移的 Pod IP**。
+- nginx-router 按副本数**自动生成 StatefulSet Pod FQDN** 并逐个解析，不依赖 headless Service DNS 自动发现。
+- 运维只需维护**副本数**(`gateway_replicas`)，**无需跟踪漂移的 Pod IP，也无需手填 FQDN 列表**。
 
 > 如果你可以使用 Helm，更推荐直接用 chart 部署：
 > ```bash
 > helm upgrade --install costrict-web-gateway ./deploy/charts/gateway \
 >   --set statefulSet.enabled=true \
+>   --set replicaCount=2 \
 >   --set nginxRouter.enabled=true \
->   --set nginxRouter.discovery.mode=static \
->   --set 'nginxRouter.discovery.staticFQDNs={...}'
+>   --set nginxRouter.discovery.mode=static
 > ```
+>
+> static 模式下 `staticFQDNs` 留空即按 `replicaCount` 自动生成 Pod FQDN。
 
 ## 文件说明
 
@@ -38,7 +40,6 @@
 
    - `<NAMESPACE>` — 命名空间
    - `<RELEASE_NAME>` — release 名，如 `costrict-web-gateway`
-   - `<CLUSTER_DOMAIN>` — 集群 DNS 域名，通常为 `cluster.local`
    - `<CLUSTER_DNS>` — （可选）集群 DNS 服务地址，如 `kube-dns.kube-system.svc.cluster.local`；留空时 nginx-router 自动从 `/etc/resolv.conf` 探测
    - `<GATEWAY_IMAGE>` — Gateway 镜像，如 `ghcr.io/xdfield/costrict-web-gateway:latest`
    - `<GATEWAY_PORT>` — Gateway 端口，默认 `8081`
@@ -48,19 +49,12 @@
    - `<GATEWAY_ID_PREFIX>` — Gateway ID 前缀，可留空
    - `<INTERNAL_SECRET>` — 与 Server 内部接口共享的密钥
 
-2. **重点修改 FQDN 列表**
+2. **确认副本数一致**
 
-   在 `nginx-router-configmap.yaml` 的 `nginx.conf` 中，找到 `static_fqdns` 表，
-   替换为实际 StatefulSet Pod FQDN：
-
-   ```lua
-   local static_fqdns = {
-       "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local",
-       "costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local",
-   }
-   ```
-
-   FQDN 格式：`<pod-name>.<headless-service-name>.<namespace>.svc.<cluster-domain>`
+   在 `nginx-router-configmap.yaml` 的 `nginx.conf` 中，找到
+   `local gateway_replicas = {{REPLICAS}}`，替换为 StatefulSet 实际副本数。
+   nginx-router 会据此自动生成 `<RELEASE_NAME>-0/1/...` 的 Pod FQDN，
+   cluster domain 运行时自动探测，无需手填。
 
 3. **应用 manifest**
 
@@ -81,8 +75,8 @@
 
 ## 扩缩容与 Pod 重建
 
-- **扩缩容**：修改 StatefulSet `replicas` 和 `nginx-router-configmap.yaml` 中的 `static_fqdns`，
-  然后重新应用 ConfigMap，最后滚动重启 nginx-router Deployment：
+- **扩缩容**：修改 StatefulSet `replicas` 和 `nginx-router-configmap.yaml` 中的
+  `local gateway_replicas`，然后重新应用 ConfigMap，最后滚动重启 nginx-router Deployment：
 
   ```bash
   kubectl rollout restart deployment/<RELEASE_NAME>-nginx-router -n <NAMESPACE>
@@ -105,9 +99,7 @@
 
 ```bash
 cd examples/gateway-statefulset-static
-./generate.sh <RELEASE_NAME> <NAMESPACE> \
-  "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local" \
-  [CLUSTER_DNS]
+./generate.sh <RELEASE_NAME> <NAMESPACE> <REPLICAS> [CLUSTER_DNS]
 ```
 
 `CLUSTER_DNS` 为可选参数；省略时 nginx-router 会自动从 Pod 的 `/etc/resolv.conf` 探测 DNS 配置。仅在 hostNetwork、自定义 `dnsConfig` 等非常规场景需要显式指定。

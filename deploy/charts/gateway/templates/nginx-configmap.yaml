@@ -20,10 +20,6 @@ data:
     error_log /dev/stderr notice;
     pid /tmp/nginx.pid;
 
-    # Make the internal secret visible to Lua for server-registry mode.
-    # NOTE: the env directive is only valid in the main context (top level).
-    env INTERNAL_SECRET;
-
     events {
         worker_connections 1024;
     }
@@ -125,13 +121,30 @@ data:
 
             ngx.log(ngx.INFO,
                 "nginx-router static fqdn config: source=", dns_source,
-                " nameservers=[", table.concat(nameservers, ","), "]")
+                " nameservers=[", table.concat(nameservers, ","), "]",
+                " domain=", cluster_domain or "unknown")
 
             local static_fqdns = {
                 {{- range .Values.nginxRouter.discovery.staticFQDNs }}
                 "{{ . }}",
                 {{- end }}
             }
+            {{- if not .Values.nginxRouter.discovery.staticFQDNs }}
+            {{- if not .Values.statefulSet.enabled }}
+            {{- fail "nginxRouter.discovery.staticFQDNs is empty: automatic Pod FQDN generation requires statefulSet.enabled=true; otherwise set staticFQDNs explicitly" }}
+            {{- end }}
+            -- staticFQDNs left empty: generate the StatefulSet Pod FQDNs from the
+            -- replica count. Pod names are stable (<statefulset>-<ordinal>) and the
+            -- cluster domain comes from the runtime detection above, so the
+            -- rendered config stays identical across clusters.
+            local pod_name_prefix = "{{ .Release.Name }}"
+            local headless_base = "{{ $headlessName }}.{{ .Release.Namespace }}.svc"
+            local gateway_replicas = {{ .Values.replicaCount }}
+            for i = 0, gateway_replicas - 1 do
+                static_fqdns[#static_fqdns + 1] = pod_name_prefix .. "-" .. i .. "." .. headless_base .. "." .. cluster_domain
+            end
+            ngx.log(ngx.INFO, "auto-generated ", #static_fqdns, " gateway pod FQDN(s) for ", pod_name_prefix)
+            {{- end }}
 
             local function discover_and_update(premature)
                 if premature then return end
@@ -162,59 +175,8 @@ data:
                     state:set("dns_meta", meta, ttl_seconds)
                 end
             end
-            {{- else if eq .Values.nginxRouter.discovery.mode "server-registry" }}
-            local registry_url = "{{ .Values.nginxRouter.discovery.serverUrl }}"
-            local internal_secret = os.getenv("INTERNAL_SECRET") or ""
-
-            -- serverUrl may be a hostname; cosocket TCP connect needs an IP,
-            -- so resolve it using the same auto-detected nameservers as dns mode.
-            local resolver_override = "{{ .Values.nginxRouter.resolver }}"
-            local domain_override   = "{{ .Values.nginxRouter.discovery.clusterDomain }}"
-            local nameservers, cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)
-
-            -- resty.dns.resolver is a raw DNS client: unlike the OS resolver
-            -- (getaddrinfo) it does NOT apply /etc/resolv.conf search domains,
-            -- so a short name like "costrict-web-api" comes back NXDOMAIN.
-            -- Build the same search suffixes ourselves so short names work:
-            --   <ns>.svc.<domain>, svc.<domain>, <domain>
-            local search_domains = {}
-            local pod_ns = router.read_pod_namespace()
-            if cluster_domain and cluster_domain ~= "" then
-                if pod_ns and pod_ns ~= "" then
-                    search_domains[#search_domains + 1] = pod_ns .. ".svc." .. cluster_domain
-                end
-                search_domains[#search_domains + 1] = "svc." .. cluster_domain
-                search_domains[#search_domains + 1] = cluster_domain
-            end
-
-            ngx.log(ngx.INFO,
-                "nginx-router server-registry dns config: source=", dns_source,
-                " nameservers=[", table.concat(nameservers, ","), "]",
-                " namespace=", pod_ns or "unknown",
-                " search=[", table.concat(search_domains, ","), "]")
-
-            local function discover_and_update(premature)
-                if premature then return end
-                local ips, err = router.resolve_from_registry(registry_url, internal_secret, refresh_ms, nameservers, search_domains)
-                if not ips then
-                    ngx.log(ngx.ERR, "server-registry discovery failed: ", err)
-                    return
-                end
-                if #ips == 0 then
-                    ngx.log(ngx.WARN, "no gateway pods returned from server registry")
-                    return
-                end
-
-                local ok, encoded = pcall(router.cjson.encode, ips)
-                if not ok then
-                    ngx.log(ngx.ERR, "failed to encode ips: ", encoded)
-                    return
-                end
-
-                state:set("ips", encoded, ttl_seconds)
-            end
             {{- else }}
-            {{- fail (printf "Unsupported nginxRouter.discovery.mode: %s" .Values.nginxRouter.discovery.mode) }}
+            {{- fail (printf "Unsupported nginxRouter.discovery.mode: %q (supported: dns, static)" .Values.nginxRouter.discovery.mode) }}
             {{- end }}
 
             -- Defer first discovery into a timer context; UDP sockets (used by
@@ -331,13 +293,9 @@ data:
     local ngx_crc32_long = ngx.crc32_long
     local table_sort = table.sort
     local table_concat = table.concat
-    local table_insert = table.insert
     local ipairs = ipairs
-    local pairs = pairs
     local floor = math.floor
-    local tonumber = tonumber
     local tostring = tostring
-    local type = type
 
     local _M = {
         cjson = cjson,
@@ -397,238 +355,6 @@ data:
                     if not seen[ip] then
                         seen[ip] = true
                         ips[#ips + 1] = ip
-                    end
-                end
-            end
-        end
-        table_sort(ips)
-        return ips
-    end
-
-    -- Minimal HTTP/1.1 GET client using ngx.socket.tcp. Does not depend on
-    -- lua-resty-http, so it works in the stock openresty image.
-    local function read_chunked_body(sock)
-        local parts = {}
-        while true do
-            local line, err = sock:receive("*l")
-            if not line then return nil, err end
-            local size = tonumber(line, 16)
-            if not size then return nil, "invalid chunk size" end
-            if size == 0 then
-                sock:receive("*l") -- trailing CRLF
-                break
-            end
-            local chunk, err = sock:receive(size)
-            if not chunk then return nil, err end
-            table_insert(parts, chunk)
-            sock:receive(2) -- chunk trailing CRLF
-        end
-        return table_concat(parts)
-    end
-
-    -- Read the namespace this pod runs in from the serviceaccount mount.
-    -- Returns nil when the file is absent (e.g. running outside Kubernetes).
-    function _M.read_pod_namespace()
-        local f = io.open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", "r")
-        if not f then
-            return nil
-        end
-        local ns = f:read("*l")
-        f:close()
-        if ns and ns ~= "" then
-            return ns
-        end
-        return nil
-    end
-
-    -- Single A-record query for an exact name. Returns ip or nil, err.
-    local function query_a(name, nameservers)
-        local r, err = resolver:new{
-            nameservers = nameservers,
-            retrans = 3,
-            timeout = 2000,
-        }
-        if not r then
-            return nil, "resolver init failed: " .. (err or "unknown")
-        end
-        local answers, err = r:query(name, { qtype = r.TYPE_A })
-        if not answers then
-            return nil, "dns query failed: " .. (err or "unknown")
-        end
-        if answers.errcode then
-            return nil, "dns query error code: " .. tostring(answers.errcode)
-        end
-        for _, ans in ipairs(answers) do
-            if ans.address and ans.type == r.TYPE_A then
-                return ans.address
-            end
-        end
-        return nil, "no A record found"
-    end
-
-    -- Resolve a hostname to an IPv4 address. IPs are returned as-is.
-    -- When the literal name does not resolve, search-domain suffixes are
-    -- tried in order (mirrors what the OS resolver does with the
-    -- /etc/resolv.conf "search" option, which resty.dns.resolver ignores).
-    local function resolve_host(host, nameservers, search_domains)
-        -- Very small IPv4 literal check; IPv6 not supported by this client.
-        if host:match("^%d+%.%d+%.%d+%.%d+$") then
-            return host
-        end
-        local ip, err = query_a(host, nameservers)
-        if ip then
-            return ip
-        end
-        for _, suffix in ipairs(search_domains or {}) do
-            ip = query_a(host .. "." .. suffix, nameservers)
-            if ip then
-                return ip
-            end
-        end
-        return nil, err or "no A record found"
-    end
-
-    function _M.http_get(url, headers, timeout_ms)
-        -- Parse http://host:port/path ; IPv6 not supported by this minimal client.
-        local host, port_str, path = url:match("^http://([^:/]+):?(%d*)/?(.*)$")
-        if not host then
-            return nil, "invalid registry url"
-        end
-        local port = tonumber(port_str) or 80
-        local request_path = "/" .. path
-        if path ~= "" and path:sub(-1) ~= "/" then
-            request_path = request_path .. "/"
-        end
-        request_path = request_path .. "internal/gateway/list"
-
-        local sock = ngx.socket.tcp()
-        sock:settimeout(timeout_ms or 2000)
-        local ok, err = sock:connect(host, port)
-        if not ok then
-            return nil, "connect failed: " .. (err or "unknown")
-        end
-
-        -- Honor a caller-supplied Host header (used when we connect by IP
-        -- but still want the original hostname sent to the server).
-        local host_header = host
-        if headers then
-            for k, v in pairs(headers) do
-                if k:lower() == "host" then
-                    host_header = v
-                    break
-                end
-            end
-        end
-
-        local lines = {
-            "GET " .. request_path .. " HTTP/1.1",
-            "Host: " .. host_header,
-            "Connection: close",
-        }
-        for k, v in pairs(headers or {}) do
-            if k:lower() ~= "host" then
-                table_insert(lines, k .. ": " .. v)
-            end
-        end
-        table_insert(lines, "")
-        table_insert(lines, "")
-
-        local bytes, err = sock:send(table.concat(lines, "\r\n"))
-        if not bytes then
-            return nil, "send failed: " .. (err or "unknown")
-        end
-
-        local status_line, err = sock:receive("*l")
-        if not status_line then
-            return nil, "failed to read status: " .. (err or "unknown")
-        end
-        local status = tonumber(status_line:match("HTTP/%d%.%d%s+(%d+)"))
-        if not status then
-            return nil, "invalid status line"
-        end
-
-        local content_length = nil
-        local chunked = false
-        while true do
-            local line, err = sock:receive("*l")
-            if not line then
-                return nil, "failed to read header: " .. (err or "unknown")
-            end
-            if line == "" then break end
-            local k, v = line:match("^([^:]+):%s*(.*)$")
-            if k then
-                local kl = k:lower()
-                if kl == "content-length" then
-                    content_length = tonumber(v)
-                elseif kl == "transfer-encoding" and v:lower() == "chunked" then
-                    chunked = true
-                end
-            end
-        end
-
-        local body
-        if chunked then
-            body, err = read_chunked_body(sock)
-            if not body then return nil, err end
-        elseif content_length then
-            body, err = sock:receive(content_length)
-            if not body then return nil, "failed to read body: " .. (err or "unknown") end
-        else
-            body, err = sock:receive("*a")
-            if not body then return nil, "failed to read body: " .. (err or "unknown") end
-        end
-
-        sock:close()
-        return body, status
-    end
-
-    -- Pull the live gateway list from the Server registry and return a sorted
-    -- "ip:port" list parsed from each gateway's internalURL.
-    -- nameservers is required when server_url uses a hostname instead of an IP;
-    -- search_domains lets short names (e.g. "costrict-web-api") resolve.
-    function _M.resolve_from_registry(server_url, secret, timeout_ms, nameservers, search_domains)
-        local headers = {}
-        if secret and secret ~= "" then
-            headers["X-Internal-Secret"] = secret
-        end
-
-        -- server_url may be a hostname, but raw cosocket TCP connect needs an IP.
-        local original_host, port_str, path = server_url:match("^http://([^:/]+):?(%d*)/?(.*)$")
-        if not original_host then
-            return nil, "invalid registry url"
-        end
-        nameservers = nameservers or {}
-        local ip, err = resolve_host(original_host, nameservers, search_domains)
-        if not ip then
-            return nil, "resolve failed: " .. (err or "unknown")
-        end
-        local resolved_url = "http://" .. ip .. ":" .. (port_str ~= "" and port_str or "80") .. "/" .. path
-        headers["Host"] = original_host
-
-        local body, status = _M.http_get(resolved_url, headers, timeout_ms)
-        if not body then
-            return nil, status
-        end
-        if status ~= 200 then
-            return nil, "registry returned status " .. tostring(status)
-        end
-
-        local data, err = cjson.decode(body)
-        if not data then
-            return nil, "failed to decode registry response: " .. (err or "unknown")
-        end
-
-        local seen = {}
-        local ips = {}
-        if type(data.gateways) == "table" then
-            for _, gw in ipairs(data.gateways) do
-                local internal_url = gw.internalURL
-                if internal_url then
-                    -- internalURL is like http://10.244.1.10:8081
-                    local host_port = internal_url:match("^https?://(.+)$")
-                    if host_port and not seen[host_port] then
-                        seen[host_port] = true
-                        ips[#ips + 1] = host_port
                     end
                 end
             end

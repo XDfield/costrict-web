@@ -11,25 +11,22 @@ metadata:
 data:
   nginx.conf: "# AUTO-GENERATED from deploy/charts/gateway (static discovery mode).\n\
     # You can regenerate this file with:\n#   ./generate.sh costrict-web-gateway costrict\
-    \ \\\n#     \"costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local\"\
-    \ \\\n#     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n#\n# CRITICAL:\
-    \ replace the FQDNs in the static_fqdns Lua table below with the\n# actual StatefulSet\
-    \ Pod FQDNs in your cluster. Example pattern:\n#   {release}-0.{release}-headless.{namespace}.svc.{cluster-domain}\n\
-    worker_processes auto;\n# Stock openresty image runs as root by default; this\
-    \ chart runs the\n# container as UID 1000 (nginx-deployment.yaml securityContext),\
-    \ so all\n# writable paths must live under /tmp (an emptyDir mounted writable).\n\
-    # Logs go to stderr/stdout so `kubectl logs` can capture them.\nerror_log /dev/stderr\
-    \ notice;\npid /tmp/nginx.pid;\n\n# Make the internal secret visible to Lua for\
-    \ server-registry mode.\n# NOTE: the env directive is only valid in the main context\
-    \ (top level).\nenv INTERNAL_SECRET;\n\nevents {\n    worker_connections 1024;\n\
-    }\n\nhttp {\n    include /usr/local/openresty/nginx/conf/mime.types;\n    default_type\
-    \ application/octet-stream;\n\n    access_log /dev/stdout;\n\n    # Redirect every\
-    \ runtime-temp path off the read-only prefix into /tmp.\n    client_body_temp_path\
-    \ /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n    fastcgi_temp_path\
-    \     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n    scgi_temp_path\
-    \        /tmp/scgi_temp;\n\n    # Shared across workers: JSON-encoded discovered\
-    \ pod list and DNS metadata\n    lua_shared_dict router_state 1m;\n\n    lua_package_path\
-    \ \"/usr/local/openresty/site/lualib/?.lua;;\";\n\n    init_worker_by_lua_block\
+    \ \\\n#     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n#\n# The\
+    \ ConfigMap auto-generates StatefulSet Pod FQDNs from the replica count\n# below\
+    \ (\"local gateway_replicas\"); keep it in sync when you scale the\n# StatefulSet,\
+    \ then restart nginx-router.\nworker_processes auto;\n# Stock openresty image\
+    \ runs as root by default; this chart runs the\n# container as UID 1000 (nginx-deployment.yaml\
+    \ securityContext), so all\n# writable paths must live under /tmp (an emptyDir\
+    \ mounted writable).\n# Logs go to stderr/stdout so `kubectl logs` can capture\
+    \ them.\nerror_log /dev/stderr notice;\npid /tmp/nginx.pid;\n\nevents {\n    worker_connections\
+    \ 1024;\n}\n\nhttp {\n    include /usr/local/openresty/nginx/conf/mime.types;\n\
+    \    default_type application/octet-stream;\n\n    access_log /dev/stdout;\n\n\
+    \    # Redirect every runtime-temp path off the read-only prefix into /tmp.\n\
+    \    client_body_temp_path /tmp/client_temp;\n    proxy_temp_path       /tmp/proxy_temp;\n\
+    \    fastcgi_temp_path     /tmp/fastcgi_temp;\n    uwsgi_temp_path       /tmp/uwsgi_temp;\n\
+    \    scgi_temp_path        /tmp/scgi_temp;\n\n    # Shared across workers: JSON-encoded\
+    \ discovered pod list and DNS metadata\n    lua_shared_dict router_state 1m;\n\
+    \n    lua_package_path \"/usr/local/openresty/site/lualib/?.lua;;\";\n\n    init_worker_by_lua_block\
     \ {\n        -- Only worker 0 performs discovery; the result is shared with all\n\
     \        -- workers via the router_state dict. This avoids N concurrent DNS\n\
     \        -- queries (one per worker) on every refresh.\n        if ngx.worker.id()\
@@ -48,11 +45,19 @@ data:
     \ cluster_domain, dns_source = dns_utils.detect_dns(resolver_override, domain_override)\n\
     \n        ngx.log(ngx.INFO,\n            \"nginx-router static fqdn config: source=\"\
     , dns_source,\n            \" nameservers=[\", table.concat(nameservers, \",\"\
-    ), \"]\")\n\n        local static_fqdns = {\n                -- TODO: replace\
-    \ with your actual StatefulSet Pod FQDNs\n                \"{{RELEASE_NAME}}-0.{{RELEASE_NAME}}-headless.{{NAMESPACE}}.svc.{{CLUSTER_DOMAIN}}\"\
-    ,\n                \"{{RELEASE_NAME}}-1.{{RELEASE_NAME}}-headless.{{NAMESPACE}}.svc.{{CLUSTER_DOMAIN}}\"\
-    ,\n            }\n\n        local function discover_and_update(premature)\n  \
-    \          if premature then return end\n            local ips, err = router.resolve_static_fqdns(static_fqdns,\
+    ), \"]\",\n            \" domain=\", cluster_domain or \"unknown\")\n\n      \
+    \  local static_fqdns = {\n        }\n        -- staticFQDNs left empty: generate\
+    \ the StatefulSet Pod FQDNs from the\n        -- replica count. Pod names are\
+    \ stable (<statefulset>-<ordinal>) and the\n        -- cluster domain comes from\
+    \ the runtime detection above, so the\n        -- rendered config stays identical\
+    \ across clusters.\n        local pod_name_prefix = \"{{RELEASE_NAME}}\"\n   \
+    \     local headless_base = \"{{RELEASE_NAME}}-headless.{{NAMESPACE}}.svc\"\n\
+    \        local gateway_replicas = {{REPLICAS}}\n        for i = 0, gateway_replicas\
+    \ - 1 do\n            static_fqdns[#static_fqdns + 1] = pod_name_prefix .. \"\
+    -\" .. i .. \".\" .. headless_base .. \".\" .. cluster_domain\n        end\n \
+    \       ngx.log(ngx.INFO, \"auto-generated \", #static_fqdns, \" gateway pod FQDN(s)\
+    \ for \", pod_name_prefix)\n\n        local function discover_and_update(premature)\n\
+    \            if premature then return end\n            local ips, err = router.resolve_static_fqdns(static_fqdns,\
     \ gateway_port, nameservers)\n            if not ips then\n                ngx.log(ngx.ERR,\
     \ \"static fqdn discovery failed: \", err)\n                return\n         \
     \   end\n            if #ips == 0 then\n                ngx.log(ngx.WARN, \"no\
@@ -115,196 +120,92 @@ data:
     \            return 200 \"ok\\n\";\n        }\n    }\n}\n"
   dns_utils.lua: "-- AUTO-GENERATED from deploy/charts/gateway (static discovery mode).\n\
     -- You can regenerate this file with:\n--   ./generate.sh costrict-web-gateway\
-    \ costrict \\\n--     \"costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local\"\
-    \ \\\n--     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n--\n-- CRITICAL:\
-    \ replace the FQDNs in the static_fqdns Lua table below with the\n-- actual StatefulSet\
-    \ Pod FQDNs in your cluster. Example pattern:\n--   {release}-0.{release}-headless.{namespace}.svc.{cluster-domain}\n\
-    -- Pure-Lua DNS configuration helpers for nginx-router.\n-- This module intentionally\
-    \ does NOT depend on ngx/OpenResty APIs so it can be\n-- unit-tested with a standard\
-    \ Lua interpreter.\n\nlocal _M = {}\n\n-- Parse /etc/resolv.conf into nameserver\
-    \ list and cluster domain.\n-- Returns: nameservers (array of strings), cluster_domain\
-    \ (string or nil)\nfunction _M.parse_resolv_conf(text)\n    if not text or text\
-    \ == \"\" then\n        return {}, nil\n    end\n\n    local nameservers = {}\n\
-    \    local cluster_domain = nil\n\n    for line in text:gmatch(\"[^\\r\\n]+\"\
-    ) do\n        -- strip comments\n        local comment_pos = line:find(\"[%#;]\"\
-    )\n        if comment_pos then\n            line = line:sub(1, comment_pos - 1)\n\
-    \        end\n        line = line:match(\"^%s*(.-)%s*$\")\n        if line ~=\
-    \ \"\" then\n            local ns = line:match(\"^nameserver%s+(%S+)$\")\n   \
-    \         if ns then\n                nameservers[#nameservers + 1] = ns\n   \
-    \         else\n                local search_list = line:match(\"^search%s+(.+)$\"\
-    )\n                if search_list and not cluster_domain then\n              \
-    \      for part in search_list:gmatch(\"%S+\") do\n                        local\
-    \ domain = part:match(\"^[^%.]+%.svc%.(.+)$\")\n                        if domain\
-    \ then\n                            cluster_domain = domain\n                \
-    \            break\n                        end\n                    end\n   \
-    \             end\n            end\n        end\n    end\n\n    return nameservers,\
-    \ cluster_domain\nend\n\n-- Detect effective DNS configuration for this Pod.\n\
-    -- Parameters are the raw Helm-rendered overrides (empty string means \"not set\"\
-    ).\n-- resolv_conf_text is optional; nil means read /etc/resolv.conf from disk.\n\
-    -- Returns: nameservers (array), cluster_domain (string), source (string)\nfunction\
-    \ _M.detect_dns(resolver_override, domain_override, resolv_conf_text)\n    local\
-    \ source = \"manual\"\n    local nameservers = {}\n    local cluster_domain =\
-    \ nil\n\n    if resolver_override and resolver_override ~= \"\" then\n       \
-    \ for part in resolver_override:gmatch(\"%S+\") do\n            nameservers[#nameservers\
-    \ + 1] = part\n        end\n    end\n\n    if domain_override and domain_override\
-    \ ~= \"\" then\n        cluster_domain = domain_override\n    end\n\n    if #nameservers\
-    \ == 0 or not cluster_domain then\n        local text = resolv_conf_text\n   \
-    \     if not text then\n            local f = io.open(\"/etc/resolv.conf\", \"\
-    r\")\n            if f then\n                text = f:read(\"*a\")\n         \
-    \       f:close()\n            end\n        end\n\n        if text then\n    \
-    \        local auto_ns, auto_domain = _M.parse_resolv_conf(text)\n           \
-    \ if #nameservers == 0 and #auto_ns > 0 then\n                nameservers = auto_ns\n\
-    \                source = \"auto\"\n            end\n            if not cluster_domain\
-    \ and auto_domain then\n                cluster_domain = auto_domain\n       \
-    \         if source == \"manual\" then source = \"auto\" end\n            end\n\
-    \        end\n    end\n\n    if #nameservers == 0 then\n        nameservers =\
-    \ {\"kube-dns.kube-system.svc.\" .. (cluster_domain or \"cluster.local\")}\n \
-    \       source = \"fallback\"\n    end\n\n    if not cluster_domain then\n   \
-    \     cluster_domain = \"cluster.local\"\n        if source == \"auto\" then source\
-    \ = \"fallback\" end\n    end\n\n    return nameservers, cluster_domain, source\n\
-    end\n\nreturn _M\n"
+    \ costrict \\\n--     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n\
+    --\n-- The ConfigMap auto-generates StatefulSet Pod FQDNs from the replica count\n\
+    -- below (\"local gateway_replicas\"); keep it in sync when you scale the\n--\
+    \ StatefulSet, then restart nginx-router.\n-- Pure-Lua DNS configuration helpers\
+    \ for nginx-router.\n-- This module intentionally does NOT depend on ngx/OpenResty\
+    \ APIs so it can be\n-- unit-tested with a standard Lua interpreter.\n\nlocal\
+    \ _M = {}\n\n-- Parse /etc/resolv.conf into nameserver list and cluster domain.\n\
+    -- Returns: nameservers (array of strings), cluster_domain (string or nil)\nfunction\
+    \ _M.parse_resolv_conf(text)\n    if not text or text == \"\" then\n        return\
+    \ {}, nil\n    end\n\n    local nameservers = {}\n    local cluster_domain = nil\n\
+    \n    for line in text:gmatch(\"[^\\r\\n]+\") do\n        -- strip comments\n\
+    \        local comment_pos = line:find(\"[%#;]\")\n        if comment_pos then\n\
+    \            line = line:sub(1, comment_pos - 1)\n        end\n        line =\
+    \ line:match(\"^%s*(.-)%s*$\")\n        if line ~= \"\" then\n            local\
+    \ ns = line:match(\"^nameserver%s+(%S+)$\")\n            if ns then\n        \
+    \        nameservers[#nameservers + 1] = ns\n            else\n              \
+    \  local search_list = line:match(\"^search%s+(.+)$\")\n                if search_list\
+    \ and not cluster_domain then\n                    for part in search_list:gmatch(\"\
+    %S+\") do\n                        local domain = part:match(\"^[^%.]+%.svc%.(.+)$\"\
+    )\n                        if domain then\n                            cluster_domain\
+    \ = domain\n                            break\n                        end\n \
+    \                   end\n                end\n            end\n        end\n \
+    \   end\n\n    return nameservers, cluster_domain\nend\n\n-- Detect effective\
+    \ DNS configuration for this Pod.\n-- Parameters are the raw Helm-rendered overrides\
+    \ (empty string means \"not set\").\n-- resolv_conf_text is optional; nil means\
+    \ read /etc/resolv.conf from disk.\n-- Returns: nameservers (array), cluster_domain\
+    \ (string), source (string)\nfunction _M.detect_dns(resolver_override, domain_override,\
+    \ resolv_conf_text)\n    local source = \"manual\"\n    local nameservers = {}\n\
+    \    local cluster_domain = nil\n\n    if resolver_override and resolver_override\
+    \ ~= \"\" then\n        for part in resolver_override:gmatch(\"%S+\") do\n   \
+    \         nameservers[#nameservers + 1] = part\n        end\n    end\n\n    if\
+    \ domain_override and domain_override ~= \"\" then\n        cluster_domain = domain_override\n\
+    \    end\n\n    if #nameservers == 0 or not cluster_domain then\n        local\
+    \ text = resolv_conf_text\n        if not text then\n            local f = io.open(\"\
+    /etc/resolv.conf\", \"r\")\n            if f then\n                text = f:read(\"\
+    *a\")\n                f:close()\n            end\n        end\n\n        if text\
+    \ then\n            local auto_ns, auto_domain = _M.parse_resolv_conf(text)\n\
+    \            if #nameservers == 0 and #auto_ns > 0 then\n                nameservers\
+    \ = auto_ns\n                source = \"auto\"\n            end\n            if\
+    \ not cluster_domain and auto_domain then\n                cluster_domain = auto_domain\n\
+    \                if source == \"manual\" then source = \"auto\" end\n        \
+    \    end\n        end\n    end\n\n    if #nameservers == 0 then\n        nameservers\
+    \ = {\"kube-dns.kube-system.svc.\" .. (cluster_domain or \"cluster.local\")}\n\
+    \        source = \"fallback\"\n    end\n\n    if not cluster_domain then\n  \
+    \      cluster_domain = \"cluster.local\"\n        if source == \"auto\" then\
+    \ source = \"fallback\" end\n    end\n\n    return nameservers, cluster_domain,\
+    \ source\nend\n\nreturn _M\n"
   router.lua: "-- AUTO-GENERATED from deploy/charts/gateway (static discovery mode).\n\
     -- You can regenerate this file with:\n--   ./generate.sh costrict-web-gateway\
-    \ costrict \\\n--     \"costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local,costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local\"\
-    \ \\\n--     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n--\n-- CRITICAL:\
-    \ replace the FQDNs in the static_fqdns Lua table below with the\n-- actual StatefulSet\
-    \ Pod FQDNs in your cluster. Example pattern:\n--   {release}-0.{release}-headless.{namespace}.svc.{cluster-domain}\n\
-    -- Pure-Lua DNS discovery + ketama consistent-hash helper for nginx-router.\n\
-    -- Runs inside OpenResty; uses only built-in modules.\n\nlocal dns_utils = require\
-    \ \"dns_utils\"\nlocal resolver = require \"resty.dns.resolver\"\nlocal cjson\
-    \ = require \"cjson.safe\"\nlocal ngx_crc32_long = ngx.crc32_long\nlocal table_sort\
-    \ = table.sort\nlocal table_concat = table.concat\nlocal table_insert = table.insert\n\
-    local ipairs = ipairs\nlocal pairs = pairs\nlocal floor = math.floor\nlocal tonumber\
-    \ = tonumber\nlocal tostring = tostring\nlocal type = type\n\nlocal _M = {\n \
-    \   cjson = cjson,\n}\n\n-- Worker-local cache of the most recently built ring,\
-    \ so we rebuild only\n-- when the discovered pod set actually changes (not on\
-    \ every request).\nlocal _ring_cache = nil\nlocal _ring_cache_key = nil\n\n--\
-    \ Resolve all A records for a single FQDN and return sorted \"ip:port\" list.\n\
-    local function resolve_fqdn(fqdn, port, nameservers)\n    local r, err = resolver:new{\n\
-    \        nameservers = nameservers,\n        retrans = 3,\n        timeout = 2000,\n\
-    \    }\n    if not r then\n        return nil, \"resolver init failed: \" .. (err\
-    \ or \"unknown\")\n    end\n\n    local answers, err = r:query(fqdn, { qtype =\
-    \ r.TYPE_A })\n    if not answers then\n        return nil, \"dns query failed:\
-    \ \" .. (err or \"unknown\")\n    end\n    if answers.errcode then\n        return\
-    \ nil, \"dns query error code: \" .. tostring(answers.errcode)\n    end\n\n  \
-    \  local ips = {}\n    for _, ans in ipairs(answers) do\n        -- Only A records\
-    \ carry a usable IP; skip CNAME/other record types.\n        if ans.address and\
-    \ ans.type == r.TYPE_A then\n            ips[#ips + 1] = ans.address .. \":\"\
-    \ .. tostring(port)\n        end\n    end\n    table_sort(ips)\n    return ips\n\
-    end\n\n-- Resolve all A records for a headless Service and return sorted \"ip:port\"\
-    \ list.\nfunction _M.resolve_ips(fqdn, port, nameservers)\n    return resolve_fqdn(fqdn,\
-    \ port, nameservers)\nend\n\n-- Resolve a fixed list of StatefulSet Pod FQDNs,\
-    \ merge and deduplicate the\n-- resulting IPs, and return a sorted \"ip:port\"\
-    \ list.\nfunction _M.resolve_static_fqdns(fqdns, port, nameservers)\n    local\
-    \ seen = {}\n    local ips = {}\n    for _, fqdn in ipairs(fqdns) do\n       \
-    \ local resolved, err = resolve_fqdn(fqdn, port, nameservers)\n        if not\
-    \ resolved then\n            ngx.log(ngx.WARN, \"failed to resolve \", fqdn, \"\
-    : \", err)\n        else\n            for _, ip in ipairs(resolved) do\n     \
-    \           if not seen[ip] then\n                    seen[ip] = true\n      \
-    \              ips[#ips + 1] = ip\n                end\n            end\n    \
-    \    end\n    end\n    table_sort(ips)\n    return ips\nend\n\n-- Minimal HTTP/1.1\
-    \ GET client using ngx.socket.tcp. Does not depend on\n-- lua-resty-http, so it\
-    \ works in the stock openresty image.\nlocal function read_chunked_body(sock)\n\
-    \    local parts = {}\n    while true do\n        local line, err = sock:receive(\"\
-    *l\")\n        if not line then return nil, err end\n        local size = tonumber(line,\
-    \ 16)\n        if not size then return nil, \"invalid chunk size\" end\n     \
-    \   if size == 0 then\n            sock:receive(\"*l\") -- trailing CRLF\n   \
-    \         break\n        end\n        local chunk, err = sock:receive(size)\n\
-    \        if not chunk then return nil, err end\n        table_insert(parts, chunk)\n\
-    \        sock:receive(2) -- chunk trailing CRLF\n    end\n    return table_concat(parts)\n\
-    end\n\n-- Read the namespace this pod runs in from the serviceaccount mount.\n\
-    -- Returns nil when the file is absent (e.g. running outside Kubernetes).\nfunction\
-    \ _M.read_pod_namespace()\n    local f = io.open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
-    , \"r\")\n    if not f then\n        return nil\n    end\n    local ns = f:read(\"\
-    *l\")\n    f:close()\n    if ns and ns ~= \"\" then\n        return ns\n    end\n\
-    \    return nil\nend\n\n-- Single A-record query for an exact name. Returns ip\
-    \ or nil, err.\nlocal function query_a(name, nameservers)\n    local r, err =\
-    \ resolver:new{\n        nameservers = nameservers,\n        retrans = 3,\n  \
-    \      timeout = 2000,\n    }\n    if not r then\n        return nil, \"resolver\
-    \ init failed: \" .. (err or \"unknown\")\n    end\n    local answers, err = r:query(name,\
-    \ { qtype = r.TYPE_A })\n    if not answers then\n        return nil, \"dns query\
-    \ failed: \" .. (err or \"unknown\")\n    end\n    if answers.errcode then\n \
-    \       return nil, \"dns query error code: \" .. tostring(answers.errcode)\n\
-    \    end\n    for _, ans in ipairs(answers) do\n        if ans.address and ans.type\
-    \ == r.TYPE_A then\n            return ans.address\n        end\n    end\n   \
-    \ return nil, \"no A record found\"\nend\n\n-- Resolve a hostname to an IPv4 address.\
-    \ IPs are returned as-is.\n-- When the literal name does not resolve, search-domain\
-    \ suffixes are\n-- tried in order (mirrors what the OS resolver does with the\n\
-    -- /etc/resolv.conf \"search\" option, which resty.dns.resolver ignores).\nlocal\
-    \ function resolve_host(host, nameservers, search_domains)\n    -- Very small\
-    \ IPv4 literal check; IPv6 not supported by this client.\n    if host:match(\"\
-    ^%d+%.%d+%.%d+%.%d+$\") then\n        return host\n    end\n    local ip, err\
-    \ = query_a(host, nameservers)\n    if ip then\n        return ip\n    end\n \
-    \   for _, suffix in ipairs(search_domains or {}) do\n        ip = query_a(host\
-    \ .. \".\" .. suffix, nameservers)\n        if ip then\n            return ip\n\
-    \        end\n    end\n    return nil, err or \"no A record found\"\nend\n\nfunction\
-    \ _M.http_get(url, headers, timeout_ms)\n    -- Parse http://host:port/path ;\
-    \ IPv6 not supported by this minimal client.\n    local host, port_str, path =\
-    \ url:match(\"^http://([^:/]+):?(%d*)/?(.*)$\")\n    if not host then\n      \
-    \  return nil, \"invalid registry url\"\n    end\n    local port = tonumber(port_str)\
-    \ or 80\n    local request_path = \"/\" .. path\n    if path ~= \"\" and path:sub(-1)\
-    \ ~= \"/\" then\n        request_path = request_path .. \"/\"\n    end\n    request_path\
-    \ = request_path .. \"internal/gateway/list\"\n\n    local sock = ngx.socket.tcp()\n\
-    \    sock:settimeout(timeout_ms or 2000)\n    local ok, err = sock:connect(host,\
-    \ port)\n    if not ok then\n        return nil, \"connect failed: \" .. (err\
-    \ or \"unknown\")\n    end\n\n    -- Honor a caller-supplied Host header (used\
-    \ when we connect by IP\n    -- but still want the original hostname sent to the\
-    \ server).\n    local host_header = host\n    if headers then\n        for k,\
-    \ v in pairs(headers) do\n            if k:lower() == \"host\" then\n        \
-    \        host_header = v\n                break\n            end\n        end\n\
-    \    end\n\n    local lines = {\n        \"GET \" .. request_path .. \" HTTP/1.1\"\
-    ,\n        \"Host: \" .. host_header,\n        \"Connection: close\",\n    }\n\
-    \    for k, v in pairs(headers or {}) do\n        if k:lower() ~= \"host\" then\n\
-    \            table_insert(lines, k .. \": \" .. v)\n        end\n    end\n   \
-    \ table_insert(lines, \"\")\n    table_insert(lines, \"\")\n\n    local bytes,\
-    \ err = sock:send(table.concat(lines, \"\\r\\n\"))\n    if not bytes then\n  \
-    \      return nil, \"send failed: \" .. (err or \"unknown\")\n    end\n\n    local\
-    \ status_line, err = sock:receive(\"*l\")\n    if not status_line then\n     \
-    \   return nil, \"failed to read status: \" .. (err or \"unknown\")\n    end\n\
-    \    local status = tonumber(status_line:match(\"HTTP/%d%.%d%s+(%d+)\"))\n   \
-    \ if not status then\n        return nil, \"invalid status line\"\n    end\n\n\
-    \    local content_length = nil\n    local chunked = false\n    while true do\n\
-    \        local line, err = sock:receive(\"*l\")\n        if not line then\n  \
-    \          return nil, \"failed to read header: \" .. (err or \"unknown\")\n \
-    \       end\n        if line == \"\" then break end\n        local k, v = line:match(\"\
-    ^([^:]+):%s*(.*)$\")\n        if k then\n            local kl = k:lower()\n  \
-    \          if kl == \"content-length\" then\n                content_length =\
-    \ tonumber(v)\n            elseif kl == \"transfer-encoding\" and v:lower() ==\
-    \ \"chunked\" then\n                chunked = true\n            end\n        end\n\
-    \    end\n\n    local body\n    if chunked then\n        body, err = read_chunked_body(sock)\n\
-    \        if not body then return nil, err end\n    elseif content_length then\n\
-    \        body, err = sock:receive(content_length)\n        if not body then return\
-    \ nil, \"failed to read body: \" .. (err or \"unknown\") end\n    else\n     \
-    \   body, err = sock:receive(\"*a\")\n        if not body then return nil, \"\
-    failed to read body: \" .. (err or \"unknown\") end\n    end\n\n    sock:close()\n\
-    \    return body, status\nend\n\n-- Pull the live gateway list from the Server\
-    \ registry and return a sorted\n-- \"ip:port\" list parsed from each gateway's\
-    \ internalURL.\n-- nameservers is required when server_url uses a hostname instead\
-    \ of an IP;\n-- search_domains lets short names (e.g. \"costrict-web-api\") resolve.\n\
-    function _M.resolve_from_registry(server_url, secret, timeout_ms, nameservers,\
-    \ search_domains)\n    local headers = {}\n    if secret and secret ~= \"\" then\n\
-    \        headers[\"X-Internal-Secret\"] = secret\n    end\n\n    -- server_url\
-    \ may be a hostname, but raw cosocket TCP connect needs an IP.\n    local original_host,\
-    \ port_str, path = server_url:match(\"^http://([^:/]+):?(%d*)/?(.*)$\")\n    if\
-    \ not original_host then\n        return nil, \"invalid registry url\"\n    end\n\
-    \    nameservers = nameservers or {}\n    local ip, err = resolve_host(original_host,\
-    \ nameservers, search_domains)\n    if not ip then\n        return nil, \"resolve\
-    \ failed: \" .. (err or \"unknown\")\n    end\n    local resolved_url = \"http://\"\
-    \ .. ip .. \":\" .. (port_str ~= \"\" and port_str or \"80\") .. \"/\" .. path\n\
-    \    headers[\"Host\"] = original_host\n\n    local body, status = _M.http_get(resolved_url,\
-    \ headers, timeout_ms)\n    if not body then\n        return nil, status\n   \
-    \ end\n    if status ~= 200 then\n        return nil, \"registry returned status\
-    \ \" .. tostring(status)\n    end\n\n    local data, err = cjson.decode(body)\n\
-    \    if not data then\n        return nil, \"failed to decode registry response:\
-    \ \" .. (err or \"unknown\")\n    end\n\n    local seen = {}\n    local ips =\
-    \ {}\n    if type(data.gateways) == \"table\" then\n        for _, gw in ipairs(data.gateways)\
-    \ do\n            local internal_url = gw.internalURL\n            if internal_url\
-    \ then\n                -- internalURL is like http://10.244.1.10:8081\n     \
-    \           local host_port = internal_url:match(\"^https?://(.+)$\")\n      \
-    \          if host_port and not seen[host_port] then\n                    seen[host_port]\
-    \ = true\n                    ips[#ips + 1] = host_port\n                end\n\
-    \            end\n        end\n    end\n    table_sort(ips)\n    return ips\n\
-    end\n\n-- Build ketama ring points deterministically from sorted node list.\n\
+    \ costrict \\\n--     (omit CLUSTER_DNS to auto-detect from /etc/resolv.conf)\n\
+    --\n-- The ConfigMap auto-generates StatefulSet Pod FQDNs from the replica count\n\
+    -- below (\"local gateway_replicas\"); keep it in sync when you scale the\n--\
+    \ StatefulSet, then restart nginx-router.\n-- Pure-Lua DNS discovery + ketama\
+    \ consistent-hash helper for nginx-router.\n-- Runs inside OpenResty; uses only\
+    \ built-in modules.\n\nlocal dns_utils = require \"dns_utils\"\nlocal resolver\
+    \ = require \"resty.dns.resolver\"\nlocal cjson = require \"cjson.safe\"\nlocal\
+    \ ngx_crc32_long = ngx.crc32_long\nlocal table_sort = table.sort\nlocal table_concat\
+    \ = table.concat\nlocal ipairs = ipairs\nlocal floor = math.floor\nlocal tostring\
+    \ = tostring\n\nlocal _M = {\n    cjson = cjson,\n}\n\n-- Worker-local cache of\
+    \ the most recently built ring, so we rebuild only\n-- when the discovered pod\
+    \ set actually changes (not on every request).\nlocal _ring_cache = nil\nlocal\
+    \ _ring_cache_key = nil\n\n-- Resolve all A records for a single FQDN and return\
+    \ sorted \"ip:port\" list.\nlocal function resolve_fqdn(fqdn, port, nameservers)\n\
+    \    local r, err = resolver:new{\n        nameservers = nameservers,\n      \
+    \  retrans = 3,\n        timeout = 2000,\n    }\n    if not r then\n        return\
+    \ nil, \"resolver init failed: \" .. (err or \"unknown\")\n    end\n\n    local\
+    \ answers, err = r:query(fqdn, { qtype = r.TYPE_A })\n    if not answers then\n\
+    \        return nil, \"dns query failed: \" .. (err or \"unknown\")\n    end\n\
+    \    if answers.errcode then\n        return nil, \"dns query error code: \" ..\
+    \ tostring(answers.errcode)\n    end\n\n    local ips = {}\n    for _, ans in\
+    \ ipairs(answers) do\n        -- Only A records carry a usable IP; skip CNAME/other\
+    \ record types.\n        if ans.address and ans.type == r.TYPE_A then\n      \
+    \      ips[#ips + 1] = ans.address .. \":\" .. tostring(port)\n        end\n \
+    \   end\n    table_sort(ips)\n    return ips\nend\n\n-- Resolve all A records\
+    \ for a headless Service and return sorted \"ip:port\" list.\nfunction _M.resolve_ips(fqdn,\
+    \ port, nameservers)\n    return resolve_fqdn(fqdn, port, nameservers)\nend\n\n\
+    -- Resolve a fixed list of StatefulSet Pod FQDNs, merge and deduplicate the\n\
+    -- resulting IPs, and return a sorted \"ip:port\" list.\nfunction _M.resolve_static_fqdns(fqdns,\
+    \ port, nameservers)\n    local seen = {}\n    local ips = {}\n    for _, fqdn\
+    \ in ipairs(fqdns) do\n        local resolved, err = resolve_fqdn(fqdn, port,\
+    \ nameservers)\n        if not resolved then\n            ngx.log(ngx.WARN, \"\
+    failed to resolve \", fqdn, \": \", err)\n        else\n            for _, ip\
+    \ in ipairs(resolved) do\n                if not seen[ip] then\n             \
+    \       seen[ip] = true\n                    ips[#ips + 1] = ip\n            \
+    \    end\n            end\n        end\n    end\n    table_sort(ips)\n    return\
+    \ ips\nend\n\n-- Build ketama ring points deterministically from sorted node list.\n\
     -- Returns a flat array of {hash=uint32, id=string}, sorted by hash with a\n--\
     \ stable tie-break on id so all workers/replicas agree on ordering even\n-- when\
     \ two points hash to the same value.\nlocal function build_ring(ips, replicas)\n\
