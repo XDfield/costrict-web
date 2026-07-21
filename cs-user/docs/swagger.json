@@ -92,6 +92,120 @@
                 }
             }
         },
+        "/api/internal/platform/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns paginated audit-log entries. Platform-admin scope sees all tenants; pass tenant_id to narrow. Filters: action / actor_subject_id / target_type / target_id / from / to (ISO8601) / limit (default 100, cap 500) / offset (default 0). Newest first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-audit-logs"
+                ],
+                "summary": "List audit-log entries (platform-admin, cross-tenant)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact tenant_id match",
+                        "name": "tenant_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact actor_subject_id match",
+                        "name": "actor_subject_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact action match (e.g. tenant.create, user.status_changed)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_type match (e.g. tenant, user)",
+                        "name": "target_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_id match",
+                        "name": "target_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 lower bound on created_at (inclusive)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 upper bound on created_at (inclusive)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, cap 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/platform/tenants": {
             "get": {
                 "security": [
@@ -786,6 +900,114 @@
                 }
             }
         },
+        "/api/internal/tenants/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns paginated audit-log entries scoped to the request's tenant (resolved from X-Tenant-Id header). Client-supplied tenant_id is ignored. Filters: action / actor_subject_id / target_type / target_id / from / to (ISO8601) / limit (default 100, cap 500) / offset (default 0). Newest first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-audit-logs"
+                ],
+                "summary": "List audit-log entries (tenant-scoped)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact actor_subject_id match",
+                        "name": "actor_subject_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact action match (e.g. tenant_config.update, user.status_changed)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_type match",
+                        "name": "target_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_id match",
+                        "name": "target_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 lower bound on created_at (inclusive)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 upper bound on created_at (inclusive)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, cap 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/tenants/resolve-by-email": {
             "post": {
                 "security": [
@@ -852,6 +1074,84 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/tenants/{tenant_id}/git-server": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the endpoint + admin_token bound to the supplied tenant. Internal-token gated; consumed by @server gitsync.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-git-server"
+                ],
+                "summary": "Read a tenant's Git server config (internal RPC)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantGitServerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1042,6 +1342,136 @@
                             "properties": {
                                 "error": {
                                     "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/list": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Paginated list of all users in the current tenant scope, optionally filtered by keyword / organization / status. Unlike /search, this surface includes disabled + banned accounts so admins can see the full roster. Used by @server's GET /api/admin/users (admin-user-migration slice).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "admin"
+                ],
+                "summary": "List users for admin console",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Matched against username / display_name / email (LIKE %keyword%)",
+                        "name": "keyword",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact organization match",
+                        "name": "organization",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "active",
+                            "disabled",
+                            "banned"
+                        ],
+                        "type": "string",
+                        "description": "Account status: active | disabled | banned",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "1-based page number (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 200)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.adminUserListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/organizations": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the per-tenant organization roll-up (grouped by users.organization, busiest first). Powers the admin console's organization filter dropdown. NULL/empty organizations are skipped. Used by @server's GET /api/admin/users/organizations (admin-user-migration slice).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "admin"
+                ],
+                "summary": "List organizations with member counts (admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "organizations": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount"
+                                    }
                                 }
                             }
                         }
@@ -1477,6 +1907,73 @@
                 }
             }
         },
+        "/api/internal/users/{subject_id}/gitea-binding": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the user_gitea_binding row for the given subject_id. 404 when the user has no binding (Gitea provisioning not yet run). Drives ops visibility + future fork JWT middleware (E3a.3).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Get a user's Gitea binding",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/{subject_id}/identities/{provider}": {
             "delete": {
                 "security": [
@@ -1511,6 +2008,173 @@
                 "responses": {
                     "204": {
                         "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/{subject_id}/profile": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the identity + status slice of a user's profile (subject_id, username, contact info, status, login metadata). Privacy-scoped: infra-only identifiers (external_key, casdoor_*, provider_user_id) are NOT returned. @server supplements this with locally-computed activity counts (createdItemCount, distributedCount, receivedCount) before returning the full profile to the admin UI. Used by @server's GET /api/admin/users/:id/profile (admin-user-migration slice).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "admin"
+                ],
+                "summary": "Get a user's identity profile (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.adminUserProfileDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/{subject_id}/status": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Transitions the user's status to active | disabled | banned. Refuses to change the operator's own status (self-lock guard). Records a user_center_audit_log row keyed action=user.status_changed with from_status / to_status on success. Used by @server's POST /api/admin/users/:id/status (admin-user-migration slice).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "admin"
+                ],
+                "summary": "Set a user's account status (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target user subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status + operator_id",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.setUserStatusRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "from_status": {
+                                    "type": "string"
+                                },
+                                "to_status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "Bad Request",
@@ -1625,6 +2289,26 @@
         }
     },
     "definitions": {
+        "github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "logs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.AuditLog"
+                    }
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_auth.JWK": {
             "type": "object",
             "properties": {
@@ -1662,6 +2346,50 @@
                     "items": {
                         "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWK"
                     }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_models.AuditLog": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actor_platform_scope": {
+                    "type": "string"
+                },
+                "actor_subject_id": {
+                    "type": "string"
+                },
+                "actor_tenant_role": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "ip": {
+                    "type": "string"
+                },
+                "payload": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "target_id": {
+                    "type": "string"
+                },
+                "target_type": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "user_agent": {
+                    "type": "string"
                 }
             }
         },
@@ -1733,6 +2461,9 @@
                     "type": "string"
                 },
                 "features": {
+                    "type": "string"
+                },
+                "git_server_id": {
                     "type": "string"
                 },
                 "limits": {
@@ -1964,6 +2695,110 @@
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount": {
+            "type": "object",
+            "properties": {
+                "memberCount": {
+                    "type": "integer"
+                },
+                "organization": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.adminUserListItem": {
+            "type": "object",
+            "properties": {
+                "avatar_url": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "organization": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.adminUserListResponse": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
+                },
+                "page_size": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.adminUserListItem"
+                    }
+                }
+            }
+        },
+        "internal_handlers.adminUserProfileDTO": {
+            "type": "object",
+            "properties": {
+                "auth_provider": {
+                    "type": "string"
+                },
+                "avatar_url": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "last_login_at": {
+                    "type": "string"
+                },
+                "organization": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.applyEnterpriseMappingRequest": {
             "type": "object",
             "required": [
@@ -2128,6 +2963,20 @@
                 }
             }
         },
+        "internal_handlers.setUserStatusRequest": {
+            "type": "object",
+            "required": [
+                "status"
+            ],
+            "properties": {
+                "operator_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.tenantCandidate": {
             "type": "object",
             "properties": {
@@ -2149,6 +2998,23 @@
             ],
             "properties": {
                 "config_yaml": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantGitServerResponse": {
+            "type": "object",
+            "properties": {
+                "admin_token": {
+                    "type": "string"
+                },
+                "endpoint": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "server_id": {
                     "type": "string"
                 }
             }
