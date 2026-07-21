@@ -121,13 +121,30 @@ data:
 
             ngx.log(ngx.INFO,
                 "nginx-router static fqdn config: source=", dns_source,
-                " nameservers=[", table.concat(nameservers, ","), "]")
+                " nameservers=[", table.concat(nameservers, ","), "]",
+                " domain=", cluster_domain or "unknown")
 
             local static_fqdns = {
                 {{- range .Values.nginxRouter.discovery.staticFQDNs }}
                 "{{ . }}",
                 {{- end }}
             }
+            {{- if not .Values.nginxRouter.discovery.staticFQDNs }}
+            {{- if not .Values.statefulSet.enabled }}
+            {{- fail "nginxRouter.discovery.staticFQDNs is empty: automatic Pod FQDN generation requires statefulSet.enabled=true; otherwise set staticFQDNs explicitly" }}
+            {{- end }}
+            -- staticFQDNs left empty: generate the StatefulSet Pod FQDNs from the
+            -- replica count. Pod names are stable (<statefulset>-<ordinal>) and the
+            -- cluster domain comes from the runtime detection above, so the
+            -- rendered config stays identical across clusters.
+            local pod_name_prefix = "{{ .Release.Name }}"
+            local headless_base = "{{ $headlessName }}.{{ .Release.Namespace }}.svc"
+            local gateway_replicas = {{ .Values.replicaCount }}
+            for i = 0, gateway_replicas - 1 do
+                static_fqdns[#static_fqdns + 1] = pod_name_prefix .. "-" .. i .. "." .. headless_base .. "." .. cluster_domain
+            end
+            ngx.log(ngx.INFO, "auto-generated ", #static_fqdns, " gateway pod FQDN(s) for ", pod_name_prefix)
+            {{- end }}
 
             local function discover_and_update(premature)
                 if premature then return end
@@ -278,7 +295,6 @@ data:
     local table_concat = table.concat
     local ipairs = ipairs
     local floor = math.floor
-    local tonumber = tonumber
     local tostring = tostring
 
     local _M = {
