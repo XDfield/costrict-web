@@ -48,6 +48,22 @@ func main() {
 	}
 	log.Printf("[Gateway] endpoint resolved: source=%s value=%s", source, endpoint)
 
+	apiBaseURL, err := gw.NewEndpointResolver().ResolveAPIBaseURL(cfg)
+	apiSource := "env"
+	if gw.NacosAPIBaseURLEnabled(cfg.Nacos) && err == nil {
+		apiSource = "nacos"
+	}
+	if err != nil {
+		if errors.Is(err, gw.ErrNacosConfigNotFound) {
+			log.Printf("[Gateway] Nacos apiBaseURL config not found (dataId=%s, group=%s), falling back to env", cfg.Nacos.APIBaseURLDataID, cfg.Nacos.Group)
+		} else {
+			log.Printf("[Gateway] failed to resolve apiBaseURL from Nacos, falling back to env: %v", err)
+		}
+		apiBaseURL = cfg.APIBaseURL
+		apiSource = "env"
+	}
+	log.Printf("[Gateway] apiBaseURL resolved: source=%s value=%q", apiSource, apiBaseURL)
+
 	// Start HTTP server first (for health checks)
 	r := gw.SetupRouter(manager, cfg)
 	srv := &http.Server{
@@ -63,10 +79,10 @@ func main() {
 	}()
 
 	// Register with server in background
-	registerWithRetry(cfg, endpoint)
+	registerWithRetry(cfg, endpoint, apiBaseURL)
 
 	stopHeartbeat := make(chan struct{})
-	go heartbeatLoop(cfg, manager, endpoint, stopHeartbeat)
+	go heartbeatLoop(cfg, manager, endpoint, apiBaseURL, stopHeartbeat)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
@@ -85,9 +101,9 @@ func main() {
 	log.Printf("[Gateway] shutdown complete")
 }
 
-func registerWithRetry(cfg *gw.Config, endpoint string) {
+func registerWithRetry(cfg *gw.Config, endpoint, apiBaseURL string) {
 	for {
-		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); err != nil {
+		if err := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity, apiBaseURL); err != nil {
 			log.Printf("[Gateway] register failed, retrying in 5s: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -97,7 +113,7 @@ func registerWithRetry(cfg *gw.Config, endpoint string) {
 	}
 }
 
-func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, endpoint string, stop <-chan struct{}) {
+func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, endpoint, apiBaseURL string, stop <-chan struct{}) {
 	ticker := time.NewTicker(gw.HeartbeatInterval * time.Second)
 	defer ticker.Stop()
 	var lastEpoch int64
@@ -110,7 +126,7 @@ func heartbeatLoop(cfg *gw.Config, manager *gw.TunnelManager, endpoint string, s
 		epoch, err := gw.Heartbeat(cfg.ServerURL, cfg.GatewayID, cfg.InternalSecret, manager.Count())
 		if err != nil {
 			log.Printf("[Gateway] heartbeat failed: %v, re-registering...", err)
-			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity); regErr != nil {
+			if regErr := gw.Register(cfg.ServerURL, cfg.GatewayID, endpoint, cfg.InternalURL, cfg.Region, cfg.InternalSecret, cfg.Capacity, apiBaseURL); regErr != nil {
 				log.Printf("[Gateway] re-register failed: %v", regErr)
 				continue
 			}
