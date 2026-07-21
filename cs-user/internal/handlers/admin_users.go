@@ -221,7 +221,7 @@ func (a *UsersAPI) SetUserStatus(c *gin.Context) {
 //	@Tags			users,admin
 //	@Produce		json
 //	@Security		InternalToken
-//	@Success		200	{object}	object{organizations=[]user.OrganizationCount}
+//	@Success		200	{object}	object{organizations=[]userpkg.OrganizationCount}
 //	@Failure		500	{object}	object{error=string}
 //	@Router			/api/internal/users/organizations [get]
 func (a *UsersAPI) ListOrganizations(c *gin.Context) {
