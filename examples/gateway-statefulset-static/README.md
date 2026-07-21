@@ -40,7 +40,6 @@
 
    - `<NAMESPACE>` — 命名空间
    - `<RELEASE_NAME>` — release 名，如 `costrict-web-gateway`
-   - `<CLUSTER_DOMAIN>` — 集群 DNS 域名，通常为 `cluster.local`
    - `<CLUSTER_DNS>` — （可选）集群 DNS 服务地址，如 `kube-dns.kube-system.svc.cluster.local`；留空时 nginx-router 自动从 `/etc/resolv.conf` 探测
    - `<GATEWAY_IMAGE>` — Gateway 镜像，如 `ghcr.io/xdfield/costrict-web-gateway:latest`
    - `<GATEWAY_PORT>` — Gateway 端口，默认 `8081`

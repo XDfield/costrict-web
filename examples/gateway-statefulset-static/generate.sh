@@ -24,6 +24,11 @@ if [ -z "$REPLICAS" ]; then
     exit 1
 fi
 
+if ! [[ "$REPLICAS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: REPLICAS must be a positive integer, got: $REPLICAS" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHART_DIR="${SCRIPT_DIR}/../../deploy/charts/gateway"
 OUT_FILE="${SCRIPT_DIR}/nginx-router-configmap.yaml"
