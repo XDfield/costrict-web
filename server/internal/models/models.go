@@ -122,6 +122,7 @@ type GatewayRegistry struct {
 	ID            string    `gorm:"primaryKey;type:text" json:"id"`
 	Endpoint      string    `gorm:"not null;type:text" json:"endpoint"`
 	InternalURL   string    `gorm:"not null;type:text" json:"internalUrl"`
+	APIBaseURL    string    `gorm:"column:api_base_url;type:text;not null;default:''" json:"apiBaseUrl"`
 	Region        string    `gorm:"not null;type:text" json:"region"`
 	Capacity      int       `gorm:"not null;default:0" json:"capacity"`
 	CurrentConns  int       `gorm:"not null;default:0" json:"currentConns"`

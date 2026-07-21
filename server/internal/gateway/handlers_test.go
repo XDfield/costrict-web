@@ -350,3 +350,47 @@ func TestDeviceOnlineHandler_ConcurrentTakeover(t *testing.T) {
 		t.Fatalf("device should be bound to gwA or gwB, got %q", gw)
 	}
 }
+
+func TestGatewayRegisterHandler_WithAPIBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	registry := NewGatewayRegistry(NewMemoryStore(), nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/internal/gateway/register",
+		strings.NewReader(`{"gatewayID":"gw-a-0","endpoint":"https://device-a.example.com","internalURL":"http://10.0.0.1:8081","region":"a","capacity":100,"apiBaseURL":"https://api-a.example.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	GatewayRegisterHandler(registry)(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	gw := registry.GetGatewayInfo("gw-a-0")
+	if gw == nil {
+		t.Fatal("gateway not registered")
+	}
+	if gw.APIBaseURL != "https://api-a.example.com" {
+		t.Fatalf("expected APIBaseURL persisted, got %q", gw.APIBaseURL)
+	}
+}
+
+func TestGatewayRegisterHandler_WithoutAPIBaseURL_BackwardCompatible(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	registry := NewGatewayRegistry(NewMemoryStore(), nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/internal/gateway/register",
+		strings.NewReader(`{"gatewayID":"gw-old","endpoint":"https://device.example.com","internalURL":"http://10.0.0.2:8081"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	GatewayRegisterHandler(registry)(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gw := registry.GetGatewayInfo("gw-old"); gw == nil || gw.APIBaseURL != "" {
+		t.Fatalf("expected empty APIBaseURL for legacy gateway, got %+v", gw)
+	}
+}
