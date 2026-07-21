@@ -120,10 +120,9 @@ readinessProbe:
 # nginx-router 中间层配置。
 # 启用后，由 OpenResty 负责从 /device/{deviceID}/... 提取 deviceID、
 # 一致性哈希(chash)路由以及发现 Gateway Pod。
-# 支持三种发现模式：
+# 支持两种发现模式：
 #   dns            - 解析 Gateway headless Service DNS A 记录（默认，兼容旧行为）
-#   static         - 解析固定的 StatefulSet Pod FQDN 列表
-#   server-registry- 从 Server /internal/gateway/list 拉取在线 Gateway 的 internalURL
+#   static         - 解析 StatefulSet Pod FQDN；staticFQDNs 留空时按 replicaCount 自动生成
 # APISIX 退化为薄 WebSocket 透传层，不再需要 K8s 服务发现及对应 RBAC。
 nginxRouter:
   enabled: false
@@ -137,7 +136,7 @@ nginxRouter:
     port: 8080
   # Gateway Pod 发现相关
   discovery:
-    # 发现模式：dns | static | server-registry
+    # 发现模式：dns | static
     mode: "dns"
     # dns 模式下解析的 headless Service；留空时使用 <release>-headless.<namespace>.svc.cluster.local
     headlessServiceName: ""
@@ -148,18 +147,14 @@ nginxRouter:
     # 集群域名后缀（如 cluster.local / k8s.internal）。
     # 留空时由 nginx-router 在启动时从 Pod 的 /etc/resolv.conf 自动探测。
     clusterDomain: ""
-    # static 模式下需要解析的 StatefulSet Pod FQDN 列表
+    # static 模式下需要解析的 StatefulSet Pod FQDN 列表。
+    # 留空时按 statefulSet 的 replicaCount 自动生成
+    # <release>-<i>.<release>-headless.<namespace>.svc.<cluster-domain>（i = 0..N-1），
+    # cluster-domain 由 nginx-router 运行时自动探测；仅在 Pod 命名不规则时才需显式填写。
     # 示例：
     #   - "costrict-web-gateway-0.costrict-web-gateway-headless.costrict.svc.cluster.local"
     #   - "costrict-web-gateway-1.costrict-web-gateway-headless.costrict.svc.cluster.local"
     staticFQDNs: []
-    # server-registry 模式下 Server 的地址，用于拉取在线 Gateway 列表。
-    # 可填集群内域名（如 http://costrict-web-api:8080）；当集群 DNS 不可用时，
-    # 直接填 costrict-web-api Service 的固定 ClusterIP（如 http://10.96.0.10:8080），
-    # ClusterIP 在 Service 生命周期内不漂移，可完全不依赖 DNS。
-    serverUrl: ""
-  # server-registry 模式下访问 Server 内部接口的共享密钥，与 Gateway 的 INTERNAL_SECRET 一致
-  internalSecret: ""
   # DNS 服务器地址；多个地址可用空格/逗号分隔。
   # 留空时由 nginx-router 在启动时从 Pod 的 /etc/resolv.conf 自动探测。
   # 仅在 hostNetwork、自定义 dnsConfig 等非常规场景需要显式指定。
