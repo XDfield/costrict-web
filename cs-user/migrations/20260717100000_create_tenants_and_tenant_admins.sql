@@ -91,12 +91,12 @@ CREATE TABLE IF NOT EXISTS tenant_admins (
 
     CONSTRAINT fk_tenant_admins_user
         FOREIGN KEY (user_id)
-        REFERENCES users(id)
+        REFERENCES users(subject_id)
         ON DELETE CASCADE,
 
     CONSTRAINT fk_tenant_admins_granted_by
         FOREIGN KEY (granted_by)
-        REFERENCES users(id)
+        REFERENCES users(subject_id)
         ON DELETE RESTRICT
 );
 
