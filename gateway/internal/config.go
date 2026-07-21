@@ -11,6 +11,7 @@ type Config struct {
 	GatewayID      string      // 网关唯一标识符，用于在 API 服务中注册和识别
 	Port           string      // 网关服务监听端口
 	Endpoint       string      // 网关外部访问地址，客户端通过此地址建立 WebSocket 隧道连接
+	APIBaseURL     string      // 本集群 Server 公网 API 地址，多集群部署时供 Web 前端路由设备请求；单集群可留空
 	InternalURL    string      // 网关内部访问地址，API 服务通过此地址代理请求到设备
 	Region         string      // 网关所属区域，用于就近分配和区域隔离
 	Capacity       int         // 网关最大连接容量，超过容量后不再分配新设备
@@ -23,14 +24,15 @@ type Config struct {
 // When ServerAddr and DataID are non-empty, the gateway will fetch the
 // endpoint from Nacos and prefer it over the GATEWAY_ENDPOINT env var.
 type NacosConfig struct {
-	ServerAddr  string // e.g. "nacos-headless.nacos.svc.cluster.local:8848"
-	NamespaceID string // empty for public namespace
-	Group       string // defaults to "DEFAULT_GROUP"
-	DataID      string // required to enable Nacos lookup
-	TimeoutMs   uint64 // request timeout, defaults to 5000
-	Username    string // optional Nacos auth username
-	Password    string // optional Nacos auth password
-	AccessToken string // optional Nacos auth access token
+	ServerAddr       string // e.g. "nacos-headless.nacos.svc.cluster.local:8848"
+	NamespaceID      string // empty for public namespace
+	Group            string // defaults to "DEFAULT_GROUP"
+	DataID           string // required to enable Nacos lookup
+	APIBaseURLDataID string // optional: data ID for resolving APIBaseURL from Nacos
+	TimeoutMs        uint64 // request timeout, defaults to 5000
+	Username         string // optional Nacos auth username
+	Password         string // optional Nacos auth password
+	AccessToken      string // optional Nacos auth access token
 }
 
 func LoadConfig() *Config {
@@ -41,20 +43,22 @@ func LoadConfig() *Config {
 		GatewayID:      getEnv("GATEWAY_ID", "gw-01"),
 		Port:           getEnv("GATEWAY_PORT", "8081"),
 		Endpoint:       getEnv("GATEWAY_ENDPOINT", "http://localhost:8081"),
+		APIBaseURL:     getEnv("GATEWAY_API_BASE_URL", ""),
 		InternalURL:    getEnv("GATEWAY_INTERNAL_URL", "http://localhost:8081"),
 		Region:         getEnv("GATEWAY_REGION", "default"),
 		Capacity:       getEnvInt("GATEWAY_CAPACITY", 1000),
 		ServerURL:      getEnv("SERVER_URL", "http://localhost:8080"),
 		InternalSecret: getEnv("INTERNAL_SECRET", ""),
 		Nacos: NacosConfig{
-			ServerAddr:  getEnv("GATEWAY_NACOS_SERVER_ADDR", ""),
-			NamespaceID: getEnv("GATEWAY_NACOS_NAMESPACE_ID", ""),
-			Group:       getEnv("GATEWAY_NACOS_GROUP", "DEFAULT_GROUP"),
-			DataID:      getEnv("GATEWAY_NACOS_DATA_ID", ""),
-			TimeoutMs:   getEnvUint64("GATEWAY_NACOS_TIMEOUT_MS", 5000),
-			Username:    getEnv("GATEWAY_NACOS_USERNAME", ""),
-			Password:    getEnv("GATEWAY_NACOS_PASSWORD", ""),
-			AccessToken: getEnv("GATEWAY_NACOS_ACCESS_TOKEN", ""),
+			ServerAddr:       getEnv("GATEWAY_NACOS_SERVER_ADDR", ""),
+			NamespaceID:      getEnv("GATEWAY_NACOS_NAMESPACE_ID", ""),
+			Group:            getEnv("GATEWAY_NACOS_GROUP", "DEFAULT_GROUP"),
+			DataID:           getEnv("GATEWAY_NACOS_DATA_ID", ""),
+			APIBaseURLDataID: getEnv("GATEWAY_NACOS_API_BASE_URL_DATA_ID", ""),
+			TimeoutMs:        getEnvUint64("GATEWAY_NACOS_TIMEOUT_MS", 5000),
+			Username:         getEnv("GATEWAY_NACOS_USERNAME", ""),
+			Password:         getEnv("GATEWAY_NACOS_PASSWORD", ""),
+			AccessToken:      getEnv("GATEWAY_NACOS_ACCESS_TOKEN", ""),
 		},
 	}
 }
