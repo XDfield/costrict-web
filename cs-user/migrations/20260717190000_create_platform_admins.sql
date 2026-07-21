@@ -44,12 +44,12 @@ CREATE TABLE IF NOT EXISTS platform_admins (
 
     CONSTRAINT fk_platform_admins_user
         FOREIGN KEY (user_id)
-        REFERENCES users(id)
+        REFERENCES users(subject_id)
         ON DELETE CASCADE,
 
     CONSTRAINT fk_platform_admins_granted_by
         FOREIGN KEY (granted_by)
-        REFERENCES users(id)
+        REFERENCES users(subject_id)
         ON DELETE RESTRICT
 );
 
