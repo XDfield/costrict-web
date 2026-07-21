@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -94,7 +95,7 @@ func RegisterDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 // @Failure      401   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /devices [get]
-func ListDevicesHandler(svc *services.DeviceService, updateSvc *services.UpdateService) gin.HandlerFunc {
+func ListDevicesHandler(svc *services.DeviceService, updateSvc *services.UpdateService, registry *gateway.GatewayRegistry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
 		if userID == "" {
@@ -111,9 +112,15 @@ func ListDevicesHandler(svc *services.DeviceService, updateSvc *services.UpdateS
 		result := make([]gin.H, 0, len(devices))
 
 		releasesMap, _ := updateSvc.GetLatestReleasesMap()
+		gwAPI := liveGatewayAPIMap(registry)
 
 		for _, d := range devices {
 			item := deviceToMap(d)
+			if url := clusterAPIURLFor(registry, gwAPI, d.DeviceID); url != "" {
+				item["clusterAPIURL"] = url
+			} else {
+				item["clusterAPIURL"] = nil
+			}
 
 			latest, ok := releasesMap[d.Platform]
 			if ok {
@@ -137,6 +144,39 @@ func deviceToMap(d models.Device) gin.H {
 	m := gin.H{}
 	json.Unmarshal(b, &m)
 	return m
+}
+
+// liveGatewayAPIMap 返回 gatewayID -> apiBaseURL 映射（仅含存活且上报了 apiBaseURL 的网关）。
+func liveGatewayAPIMap(registry *gateway.GatewayRegistry) map[string]string {
+	m := map[string]string{}
+	if registry == nil {
+		return m
+	}
+	gateways, err := registry.ListLiveGateways()
+	if err != nil {
+		return m
+	}
+	for _, gw := range gateways {
+		if gw.APIBaseURL != "" {
+			m[gw.ID] = gw.APIBaseURL
+		}
+	}
+	return m
+}
+
+// clusterAPIURLFor 返回设备归属集群的 Server 公网 API 地址；未绑定或未上报时返回空串。
+func clusterAPIURLFor(registry *gateway.GatewayRegistry, gwAPI map[string]string, deviceID string) string {
+	if gwAPI == nil {
+		return ""
+	}
+	if registry == nil {
+		return ""
+	}
+	gwID := registry.GetDeviceGatewayID(deviceID)
+	if gwID == "" {
+		return ""
+	}
+	return gwAPI[gwID]
 }
 
 func isNewerVersion(candidate, current string) bool {
@@ -169,7 +209,7 @@ func normalizeSemver(v string) string {
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /devices/{deviceID} [get]
-func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
+func GetDeviceHandler(svc *services.DeviceService, registry *gateway.GatewayRegistry) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)
 		if userID == "" {
@@ -188,7 +228,14 @@ func GetDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"device": device})
+		item := deviceToMap(*device)
+		gwAPI := liveGatewayAPIMap(registry)
+		if url := clusterAPIURLFor(registry, gwAPI, device.DeviceID); url != "" {
+			item["clusterAPIURL"] = url
+		} else {
+			item["clusterAPIURL"] = nil
+		}
+		c.JSON(http.StatusOK, gin.H{"device": item})
 	}
 }
 

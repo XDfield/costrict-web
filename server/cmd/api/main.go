@@ -275,6 +275,34 @@ func main() {
 	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
+	var redisClient *redis.Client
+	var store gateway.Store
+	if cfg.RedisURL != "" {
+		opt, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("Invalid REDIS_URL: %v", err)
+		}
+		redisClient = redis.NewClient(opt)
+		store = gateway.NewRedisStore(redisClient)
+		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
+	} else if db != nil {
+		store = gateway.NewPostgresStore(db)
+		log.Printf("Gateway store: PostgreSQL")
+	} else {
+		store = gateway.NewMemoryStore()
+		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
+	}
+
+	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
+		for _, id := range deviceIDs {
+			if err := deviceSvc.SetOffline(id); err != nil {
+				log.Printf("[gateway-registry] failed to mark device offline: deviceID=%s error=%v", id, err)
+			} else {
+				log.Printf("[gateway-registry] device marked offline due to gateway heartbeat timeout: deviceID=%s", id)
+			}
+		}
+	})
+
 	authzModule, err := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{}, casdoorEndpoint, jwksProvider)
 	if err != nil {
 		log.Fatalf("failed to initialize authz module: %v", err)
@@ -464,8 +492,8 @@ func main() {
 			devices := authed.Group("/devices")
 			{
 				devices.POST("/register", handlers.RegisterDeviceHandler(deviceSvc))
-				devices.GET("", handlers.ListDevicesHandler(deviceSvc, updateSvc))
-				devices.GET("/:deviceID", handlers.GetDeviceHandler(deviceSvc))
+				devices.GET("", handlers.ListDevicesHandler(deviceSvc, updateSvc, gatewayRegistry))
+				devices.GET("/:deviceID", handlers.GetDeviceHandler(deviceSvc, gatewayRegistry))
 				devices.PUT("/:deviceID", handlers.UpdateDeviceHandler(deviceSvc))
 				devices.DELETE("/:deviceID", handlers.DeleteDeviceHandler(deviceSvc))
 				devices.POST("/:deviceID/token/rotate", handlers.RotateDeviceTokenHandler(deviceSvc))
@@ -574,38 +602,11 @@ func main() {
 		}
 	}
 
-	var redisClient *redis.Client
-	var store gateway.Store
-	if cfg.RedisURL != "" {
-		opt, err := redis.ParseURL(cfg.RedisURL)
-		if err != nil {
-			log.Fatalf("Invalid REDIS_URL: %v", err)
-		}
-		redisClient = redis.NewClient(opt)
-		store = gateway.NewRedisStore(redisClient)
-		log.Printf("Gateway store: Redis (%s)", cfg.RedisURL)
-	} else if db != nil {
-		store = gateway.NewPostgresStore(db)
-		log.Printf("Gateway store: PostgreSQL")
-	} else {
-		store = gateway.NewMemoryStore()
-		log.Printf("Gateway store: Memory (set REDIS_URL to enable Redis)")
-	}
-
 	// Wire the Redis-backed rate limiter for trust behavior writes (SRC-2026-4791
 	// P1-1). The handler applies it only to trust actions (not view/click), keyed
 	// by user id; a nil redisClient (REDIS_URL unset) makes it a no-op (fail-open).
 	recommendHandler.SetBehaviorRateLimiter(redisClient, 30)
 
-	gatewayRegistry := gateway.NewGatewayRegistry(store, func(deviceIDs []string) {
-		for _, id := range deviceIDs {
-			if err := deviceSvc.SetOffline(id); err != nil {
-				log.Printf("[gateway-registry] failed to mark device offline: deviceID=%s error=%v", id, err)
-			} else {
-				log.Printf("[gateway-registry] device marked offline due to gateway heartbeat timeout: deviceID=%s", id)
-			}
-		}
-	})
 	// Only one replica should run the stale-device checker.
 	go leader.NewElection(db, "costrict-stale-device-checker", 10*time.Second).Run(ctx, func() {
 		go func() {
