@@ -77,6 +77,44 @@ func TestResolver_HappyPath(t *testing.T) {
 	}
 }
 
+// TestResolver_PropagatesAdminBasicAuth verifies that admin_user /
+// admin_password in the config blob are surfaced on Config so the @server
+// gitsync client can use Basic auth for token-mint endpoints.
+func TestResolver_PropagatesAdminBasicAuth(t *testing.T) {
+	t.Parallel()
+	db := newResolverDB(t)
+
+	if err := db.Create(&models.GitServer{
+		ServerID:    "gs-acme",
+		Kind:        models.GitServerKindGitea,
+		Endpoint:    "https://gitea.acme.com",
+		DisplayName: "Acme Gitea",
+		Config:      `{"admin_token":"tok","admin_user":"gitea-admin","admin_password":"s3cret"}`,
+	}).Error; err != nil {
+		t.Fatalf("seed git_server: %v", err)
+	}
+	if err := db.Create(&models.Tenant{
+		TenantID:    "t-acme",
+		Slug:        "acme",
+		DisplayName: "Acme",
+		Status:      "active",
+		GitServerID: strPtr("gs-acme"),
+	}).Error; err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	got, err := NewDBResolver(db).Resolve(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.AdminUser != "gitea-admin" {
+		t.Errorf("AdminUser: got %q, want gitea-admin", got.AdminUser)
+	}
+	if got.AdminPassword != "s3cret" {
+		t.Errorf("AdminPassword: got %q, want s3cret", got.AdminPassword)
+	}
+}
+
 // TestResolver_TenantNotFound ensures an unknown tenant_id surfaces
 // ErrTenantNotFound (handler maps to 404).
 func TestResolver_TenantNotFound(t *testing.T) {

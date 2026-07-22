@@ -44,11 +44,18 @@ var (
 
 // Config is the minimum the calling Git client needs. It's intentionally a
 // value type — copies are cheap and there's no internal state worth hiding.
+//
+// AdminUser / AdminPassword are optional credentials required by Gitea
+// endpoints that reject admin PAT auth (POST /users/{name}/tokens sits
+// behind reqBasicOrRevProxyAuth in upstream Gitea). Empty = not configured;
+// callers that need them should fall back to a clear error.
 type Config struct {
-	ServerID   string
-	Kind       string
-	Endpoint   string
-	AdminToken string
+	ServerID      string
+	Kind          string
+	Endpoint      string
+	AdminToken    string
+	AdminUser     string
+	AdminPassword string
 }
 
 // Resolver interface allows the giteasync package to depend on a tiny surface
@@ -108,38 +115,59 @@ func (r *DBResolver) Resolve(ctx context.Context, tenantID string) (*Config, err
 		return nil, ErrGitServerDisabled
 	}
 
-	// Parse config JSON for admin_token.
-	token, err := parseAdminToken(gs.Config)
+	// Parse config JSON for admin_token (required) + admin_user/admin_password
+	// (optional, only needed for endpoints behind reqBasicOrRevProxyAuth).
+	parsed, err := parseConfig(gs.Config)
 	if err != nil {
 		return nil, fmt.Errorf("%w: server=%s", ErrConfigMalformed, gs.ServerID)
 	}
-	if token == "" {
+	if parsed.AdminToken == "" {
 		return nil, fmt.Errorf("%w: admin_token empty: server=%s", ErrConfigMalformed, gs.ServerID)
 	}
 
 	return &Config{
-		ServerID:   gs.ServerID,
-		Kind:       gs.Kind,
-		Endpoint:   gs.Endpoint,
-		AdminToken: token,
+		ServerID:      gs.ServerID,
+		Kind:          gs.Kind,
+		Endpoint:      gs.Endpoint,
+		AdminToken:    parsed.AdminToken,
+		AdminUser:     parsed.AdminUser,
+		AdminPassword: parsed.AdminPassword,
 	}, nil
 }
 
 // gitServerConfigJSON is the JSON shape of git_servers.config.
-// v1 only carries admin_token; future fields (webhook_secret, rate_limit, ...)
-// land here as a single-source change.
+// admin_token is required; admin_user/admin_password are optional (only
+// needed for endpoints behind reqBasicOrRevProxyAuth, e.g. token-mint).
+// Future fields (webhook_secret, rate_limit, ...) land here as a
+// single-source change.
 type gitServerConfigJSON struct {
-	AdminToken string `json:"admin_token"`
+	AdminToken    string `json:"admin_token"`
+	AdminUser     string `json:"admin_user,omitempty"`
+	AdminPassword string `json:"admin_password,omitempty"`
+}
+
+// parseConfig decodes the config JSONB blob. Empty / "{}" → zero-value
+// struct (caller treats empty AdminToken as ErrConfigMalformed). Malformed
+// JSON → returned error (caller wraps with server_id).
+func parseConfig(raw string) (gitServerConfigJSON, error) {
+	if raw == "" || raw == "{}" {
+		return gitServerConfigJSON{}, nil
+	}
+	var cfg gitServerConfigJSON
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return gitServerConfigJSON{}, err
+	}
+	return cfg, nil
 }
 
 // parseAdminToken decodes the config JSONB blob and extracts admin_token.
 // Empty / malformed JSON → ErrConfigMalformed (caller wraps with server_id).
+//
+// Deprecated: kept for backward-compat with existing call sites; new code
+// should call parseConfig to also pick up admin_user/admin_password.
 func parseAdminToken(raw string) (string, error) {
-	if raw == "" || raw == "{}" {
-		return "", nil
-	}
-	var cfg gitServerConfigJSON
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+	cfg, err := parseConfig(raw)
+	if err != nil {
 		return "", err
 	}
 	return cfg.AdminToken, nil

@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -42,6 +43,7 @@ import (
 	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
 	"github.com/costrict/costrict-web/server/internal/clawagent"
 	"github.com/costrict/costrict-web/server/internal/cloud"
+	cryptopkg "github.com/costrict/costrict-web/server/internal/crypto"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/deptsync"
@@ -63,6 +65,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/settings"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/costrict/costrict-web/server/internal/teamns"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -148,6 +151,31 @@ func main() {
 		)
 		teamSyncSvc := gitsync.NewService(teamProvider, gitResolver, teamResolver, logger.L())
 		handlers.InitTeamSyncService(teamSyncSvc)
+
+		// Phase E3c: team-namespace API v1.1 surface. Wires:
+		//   - AES-GCM for bot token at rest (env CS_BOT_TOKEN_KEY base64-32byte)
+		//   - UserRefResolver (cs-user RPC)
+		//   - teamns.Service (orchestration)
+		// Missing CS_BOT_TOKEN_KEY → feature stays disabled; handlers return 503.
+		if aesKey, err := loadBotTokenKey(); err == nil {
+			aes, err := cryptopkg.NewAESGCM(aesKey)
+			if err != nil {
+				log.Printf("teamns: AES-GCM init failed (%v); team-namespace API disabled", err)
+			} else {
+				uref := userpkg.NewUserRefResolver(rpcClient)
+				teamnsSvc := teamns.NewService(db, teamSyncSvc, uref, aes, logger.L())
+				handlers.InitTeamNSService(teamnsSvc)
+			}
+		} else {
+			log.Printf("teamns: CS_BOT_TOKEN_KEY not configured (%v); team-namespace API disabled", err)
+		}
+
+		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). TeamResolver
+		// delegates to cs-user's /api/internal/users/:subject_id/teams, which
+		// today returns 503 ORG_TEAM_SERVICE_UNAVAILABLE until org-team-service
+		// lands. CSUserTeamResolver surfaces that as ErrOrgTeamServiceUnavailable
+		// so KBEnsure fails closed (KB_USER_ENSURE_API.md §2.3).
+		handlers.InitTeamResolver(&handlers.CSUserTeamResolver{Client: rpcClient})
 	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
@@ -638,6 +666,11 @@ func main() {
 			tenantAuditLogs.Use(middleware.RequireTenantAdmin("owner", "admin"))
 			tenantAuditLogs.GET("", tenantAuditLogAPI.TenantListAuditLogs)
 
+			// KB ensure — user-side entry, JWT-authed. Mirrors
+			// internalAPI.POST("/workflow/init") but with user JWT and team
+			// auto-derivation. See docs/repo-management/KB_USER_ENSURE_API.md.
+			authed.POST("/kb/ensure", handlers.KBEnsure)
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -824,6 +857,21 @@ func main() {
 	authzModule.RegisterInternalRoutes(internalGroup)
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
+
+	// Phase E3c: team-namespace API v1.1 internal surface. Mounted at
+	// /api/internal/* per docs/repo-management/TEAM_NAMESPACE_API_REFERENCE.md.
+	// Same X-Internal-Service-Token gate as /internal/* — the API prefix is
+	// what the doc spec mandates.
+	internalAPI := r.Group("/api/internal")
+	internalAPI.Use(middleware.InternalAuth(cfg.InternalSecret))
+	internalAPI.POST("/teams", handlers.CreateTeam)
+	internalAPI.GET("/teams", handlers.ListTeams)
+	internalAPI.GET("/teams/:team_id", handlers.GetTeam)
+	internalAPI.PATCH("/teams/:team_id", handlers.PatchTeam)
+	internalAPI.POST("/teams/:team_id/members:sync", handlers.SyncTeamMembers)
+	internalAPI.POST("/teams/:team_id/dissolve", handlers.DissolveTeam)
+	internalAPI.POST("/teams/:team_id/bot-token:rotate", handlers.RotateBotToken)
+	internalAPI.POST("/workflow/init", handlers.WorkflowInit)
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
@@ -1129,4 +1177,19 @@ func buildTenantAuditLogService(module *userpkg.Module) handlers.TenantAuditLogS
 		return rpc
 	}
 	return nil
+}
+
+// loadBotTokenKey reads CS_BOT_TOKEN_KEY (base64-encoded 32-byte AES key)
+// from env. Returns an error when unset OR malformed — caller treats both
+// as "feature disabled" so we get clean 503s without crashing boot.
+func loadBotTokenKey() ([]byte, error) {
+	raw := os.Getenv("CS_BOT_TOKEN_KEY")
+	if raw == "" {
+		return nil, fmt.Errorf("CS_BOT_TOKEN_KEY not set")
+	}
+	key, err := cryptopkg.DecodeBase64Key(raw)
+	if err != nil {
+		return nil, fmt.Errorf("CS_BOT_TOKEN_KEY invalid: %w", err)
+	}
+	return key, nil
 }

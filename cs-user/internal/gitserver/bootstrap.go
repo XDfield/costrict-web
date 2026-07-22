@@ -26,11 +26,16 @@ import (
 
 // TemplateInput is the env-var-derived shape main.go passes in. Endpoint +
 // AdminToken are the only required fields; DisplayName defaults to endpoint
-// host if empty.
+// host if empty. AdminUser / AdminPassword are optional — when set they're
+// written into git_servers.config so the @server gitsync client can use
+// Basic auth for token-mint endpoints (Gitea's reqBasicOrRevProxyAuth
+// middleware rejects admin PAT on those paths).
 type TemplateInput struct {
-	Endpoint    string
-	AdminToken  string
-	DisplayName string
+	Endpoint      string
+	AdminToken    string
+	DisplayName   string
+	AdminUser     string
+	AdminPassword string
 }
 
 // BootstrapTemplate ensures a git_servers row marked is_template=true exists
@@ -75,7 +80,15 @@ func BootstrapTemplate(ctx context.Context, db *gorm.DB, in TemplateInput) (stri
 	if displayName == "" {
 		displayName = in.Endpoint
 	}
-	configBytes, err := json.Marshal(map[string]string{"admin_token": in.AdminToken})
+	// Build the config blob. admin_token is always present; admin_user /
+	// admin_password only when the operator supplied them (needed for
+	// token-mint endpoints; other Gitea setups can omit).
+	configMap := map[string]string{"admin_token": in.AdminToken}
+	if in.AdminUser != "" && in.AdminPassword != "" {
+		configMap["admin_user"] = in.AdminUser
+		configMap["admin_password"] = in.AdminPassword
+	}
+	configBytes, err := json.Marshal(configMap)
 	if err != nil {
 		return "", fmt.Errorf("gitserver: marshal template config: %w", err)
 	}

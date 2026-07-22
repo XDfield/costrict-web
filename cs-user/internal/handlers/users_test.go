@@ -26,6 +26,7 @@ type stubUserService struct {
 	getByID                func(context.Context, string) (*models.User, error)
 	getByIDs               func(context.Context, []string) (map[string]*models.User, error)
 	searchUsers            func(context.Context, string, int) ([]*models.User, error)
+	searchUsersByEmpNo     func(context.Context, string, int) ([]*models.User, error)
 	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
 	transfer               func(context.Context, string, string, string) error
@@ -54,6 +55,12 @@ func (s stubUserService) SearchUsers(ctx context.Context, kw string, lim int) ([
 		panic("stubUserService.searchUsers not wired")
 	}
 	return s.searchUsers(ctx, kw, lim)
+}
+func (s stubUserService) SearchUsersByEmployeeNumber(ctx context.Context, empNo string, lim int) ([]*models.User, error) {
+	if s.searchUsersByEmpNo == nil {
+		panic("stubUserService.searchUsersByEmpNo not wired")
+	}
+	return s.searchUsersByEmpNo(ctx, empNo, lim)
 }
 func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
 	if s.getOrCreate == nil {
@@ -313,6 +320,62 @@ func TestSearchUsers_RejectsGarbageLimit(t *testing.T) {
 	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?limit=abc", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestSearchUsers_ByEmployeeNumberRoutes: passing employee_number should
+// (a) NOT call the keyword path, (b) call SearchUsersByEmployeeNumber with
+// the parsed emp no and limit, and (c) return the service's response.
+func TestSearchUsers_ByEmployeeNumberRoutes(t *testing.T) {
+	keywordCalled := false
+	empCalled := false
+	_, r := newUsersAPI(stubUserService{
+		searchUsers: func(context.Context, string, int) ([]*models.User, error) {
+			keywordCalled = true
+			return nil, nil
+		},
+		searchUsersByEmpNo: func(_ context.Context, empNo string, lim int) ([]*models.User, error) {
+			empCalled = true
+			if empNo != "1001" {
+				t.Errorf("emp no: got %q want 1001", empNo)
+			}
+			if lim != 1 {
+				t.Errorf("limit: got %d want 1", lim)
+			}
+			return []*models.User{{SubjectID: "usr-1", Username: "alice"}}, nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?employee_number=1001&limit=1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !empCalled {
+		t.Error("SearchUsersByEmployeeNumber not invoked")
+	}
+	if keywordCalled {
+		t.Error("keyword path should not run when employee_number is set")
+	}
+	var resp struct {
+		Users []*models.User `json:"users"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Users) != 1 || resp.Users[0].SubjectID != "usr-1" {
+		t.Errorf("got %+v, want usr-1", resp.Users)
+	}
+}
+
+// TestSearchUsers_RejectsKeywordAndEmployeeNumberBoth: doc v1.1 §5.2 marks
+// the two query params mutually exclusive — supplying both is a 400 so the
+// caller fixes their bug rather than getting a silent precedence choice.
+func TestSearchUsers_RejectsKeywordAndEmployeeNumberBoth(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?keyword=ali&employee_number=1001", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (mutual exclusion)", w.Code)
 	}
 }
 

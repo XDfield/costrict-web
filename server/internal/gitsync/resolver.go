@@ -38,6 +38,14 @@ type GitServerConfig struct {
 	Kind       string
 	Endpoint   string
 	AdminToken string
+	// AdminUser / AdminPassword are OPTIONAL credentials used for Gitea
+	// endpoints that reject admin PAT auth. Specifically, upstream Gitea's
+	// POST /users/{name}/tokens is locked behind reqBasicOrRevProxyAuth,
+	// which 401s any "Authorization: token ..." request. When these are
+	// empty, the Client falls back to token auth (sufficient for every
+	// other endpoint, including bot user creation under /admin/users).
+	AdminUser     string
+	AdminPassword string
 }
 
 // GitServerResolver is the abstract surface the Service consumes.

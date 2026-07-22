@@ -36,6 +36,10 @@ var (
 	// ErrRPCUnavailable covers any transport failure, timeout, or 5xx response
 	// from cs-user. Handlers translate it to HTTP 503.
 	ErrRPCUnavailable = errors.New("user rpc client: upstream unavailable")
+	// ErrUserNotFound signals cs-user returned no rows for a lookup. Used by
+	// UserRef.employee_number path (team-namespace doc v1.1 §5.2); handlers
+	// translate it to HTTP 404.
+	ErrUserNotFound = errors.New("user rpc client: user not found")
 )
 
 const defaultTimeout = 10 * time.Second
@@ -126,6 +130,75 @@ func (c *RPCClient) SearchUsers(ctx context.Context, keyword string, limit int) 
 		return []*models.User{}, nil
 	}
 	return resp.Users, nil
+}
+
+// SearchByEmployeeNumber calls GET /api/internal/users/search?employee_number=...&limit=1.
+// Backs the UserRef.employee_number path (team-namespace doc v1.1 §5.2).
+// Returns ErrUserNotFound when cs-user returns no rows — handler maps that
+// to HTTP 404 to match the doc's INVALID_USER_REF / USER_NOT_FOUND shape.
+func (c *RPCClient) SearchByEmployeeNumber(ctx context.Context, employeeNumber string) (*models.User, error) {
+	users, err := c.SearchByEmployeeNumberN(ctx, employeeNumber, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, ErrUserNotFound
+	}
+	return users[0], nil
+}
+
+// SearchByEmployeeNumberN is the multi-row variant — exposed for tests and
+// future callers that need to enumerate ambiguous matches.
+func (c *RPCClient) SearchByEmployeeNumberN(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	q := url.Values{}
+	q.Set("employee_number", employeeNumber)
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	var resp struct {
+		Users []*models.User `json:"users"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/internal/users/search?"+q.Encode(), nil, &resp, decodeUsersList); err != nil {
+		return nil, err
+	}
+	if resp.Users == nil {
+		return []*models.User{}, nil
+	}
+	return resp.Users, nil
+}
+
+// GiteaBinding mirrors the bare JSON shape returned by
+// GET /api/internal/users/:subject_id/gitea-binding on cs-user. Only the
+// fields load-bearing for the team-namespace UserRef path are decoded.
+// Lives here (not in server/internal/models) because the binding row is
+// cs-user's source of truth — server only reads it via RPC.
+type GiteaBinding struct {
+	UserSubjectID string `json:"user_subject_id"`
+	TenantID      string `json:"tenant_id"`
+	GiteaUID      *int64 `json:"gitea_uid,omitempty"`
+	GiteaUsername string `json:"gitea_username"`
+	SyncStatus    string `json:"sync_status"`
+}
+
+// GetGiteaBinding calls GET /api/internal/users/:subject_id/gitea-binding.
+// HTTP 404 → gorm.ErrRecordNotFound — caller (UserRefResolver) treats this as
+// "user has no Gitea account yet" and surfaces USER_NOT_GITEA_READY.
+func (c *RPCClient) GetGiteaBinding(ctx context.Context, userSubjectID string) (*GiteaBinding, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if userSubjectID == "" {
+		return nil, fmt.Errorf("user rpc client: subject_id is required")
+	}
+	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/gitea-binding"
+	var binding GiteaBinding
+	if err := c.do(ctx, http.MethodGet, path, nil, &binding, decodeBareUser); err != nil {
+		return nil, err
+	}
+	return &binding, nil
 }
 
 // ListUserIdentities calls GET /api/internal/users/:subject_id/auth-identities.

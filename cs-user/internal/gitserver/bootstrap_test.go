@@ -5,6 +5,7 @@ package gitserver
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
@@ -61,6 +62,42 @@ func TestBootstrap_CreatesTemplateFromEnv(t *testing.T) {
 	}
 	if gs.Config != `{"admin_token":"tok-xyz"}` {
 		t.Errorf("Config: got %q", gs.Config)
+	}
+}
+
+// TestBootstrap_PersistsAdminBasicAuth verifies that when the operator
+// supplies AdminUser / AdminPassword via env, bootstrap writes them into
+// the config blob so @server's gitsync can use Basic auth for the
+// token-mint endpoints (POST /users/{name}/tokens sits behind Gitea's
+// reqBasicOrRevProxyAuth middleware).
+func TestBootstrap_PersistsAdminBasicAuth(t *testing.T) {
+	t.Parallel()
+	db := newBootstrapDB(t)
+
+	serverID, err := BootstrapTemplate(context.Background(), db, TemplateInput{
+		Endpoint:      "https://gitea.example.com",
+		AdminToken:    "tok-xyz",
+		AdminUser:     "gitea-admin",
+		AdminPassword: "s3cret",
+	})
+	if err != nil {
+		t.Fatalf("BootstrapTemplate: %v", err)
+	}
+
+	var gs models.GitServer
+	if err := db.First(&gs, "server_id = ?", serverID).Error; err != nil {
+		t.Fatalf("load template: %v", err)
+	}
+	// All three keys must land in the config blob; the resolver unpacks
+	// them via parseConfig.
+	for _, want := range []string{
+		`"admin_token":"tok-xyz"`,
+		`"admin_user":"gitea-admin"`,
+		`"admin_password":"s3cret"`,
+	} {
+		if !strings.Contains(gs.Config, want) {
+			t.Errorf("Config %q missing %s", gs.Config, want)
+		}
 	}
 }
 

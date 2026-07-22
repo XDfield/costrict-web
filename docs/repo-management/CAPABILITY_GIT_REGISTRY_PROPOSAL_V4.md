@@ -409,6 +409,8 @@ https://gitea.costrict.local/<owner>/<repo>/-/tree/<ref>/<path>
 
 **类型锁定后的变更**：必须先在 costrict-web 后台"申请类型变更"——审核通过后 unlock → 改文件 → re-sync。直接改文件结构会触发健康度告警（见 §11）。
 
+> **POC 简化决策（2026-07）**：`capability_type` 仅用于 costrict-web 应用层的锁定与展示，**不参与 §7.4 硬配额的差异化计算**——配额仅按 owner/repo 维度生效（统一默认值 + per-repo 覆盖）。fork Gitea 完全不感知类型，类型识别与锁定均由 sync worker 在应用层完成。
+
 **Mirror repo 特殊处理**：mirror pull 后 server 检测 upstream 文件结构变化（如 `SKILL.md` 消失）→ 标记 `polluted`（见 §11），由 owner 决定是否继续 mirror。
 
 ### 4.7 公私能力与可见性
