@@ -2,18 +2,13 @@ package memory
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // CreateMemoryRequest 创建/上报记忆请求
@@ -56,15 +51,33 @@ func (s *Service) buildStorageKey(userID, memoryID string, version int) string {
 	return fmt.Sprintf("memory/%s/%s/v%d.md", userID, memoryID, version)
 }
 
+/*
 func md5Hash(content string) string {
 	h := md5.New()
 	_, _ = h.Write([]byte(content))
 	return hex.EncodeToString(h.Sum(nil))
 }
+*/
 
 // CreateOrUpdateMemory 创建或更新记忆
 // 如果 (userID, projectPath, slug) 已存在则更新，否则创建
 func (s *Service) CreateOrUpdateMemory(ctx context.Context, userID string, req *CreateMemoryRequest) (*models.MemoryFile, error) {
+	// STUB: 禁用数据库与 storage 写入，直接返回成功
+	return &models.MemoryFile{
+		ID:             "stub-memory-id",
+		UserID:         userID,
+		ProjectPath:    req.ProjectPath,
+		WorkDir:        req.WorkDir,
+		Name:           req.Name,
+		Slug:           req.Slug,
+		Type:           req.Type,
+		Description:    req.Description,
+		CurrentVersion: 1,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}, nil
+
+	/*
 	var existing models.MemoryFile
 	err := s.DB.Where("user_id = ? AND project_path = ? AND slug = ? AND deleted_at IS NULL", userID, req.ProjectPath, req.Slug).First(&existing).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -116,10 +129,22 @@ func (s *Service) CreateOrUpdateMemory(ctx context.Context, userID string, req *
 	}
 
 	return memory, nil
+	*/
 }
 
 // UpdateMemory 更新记忆
 func (s *Service) UpdateMemory(ctx context.Context, userID, memoryID string, req *UpdateMemoryRequest) (*models.MemoryFile, error) {
+	// STUB: 禁用数据库与 storage 写入，直接返回成功
+	return &models.MemoryFile{
+		ID:             memoryID,
+		UserID:         userID,
+		Name:           req.Name,
+		Description:    req.Description,
+		CurrentVersion: 1,
+		UpdatedAt:      time.Now(),
+	}, nil
+
+	/*
 	var memory models.MemoryFile
 	if err := s.DB.Where("id = ? AND user_id = ? AND deleted_at IS NULL", memoryID, userID).First(&memory).Error; err != nil {
 		return nil, err
@@ -221,6 +246,7 @@ func (s *Service) UpdateMemory(ctx context.Context, userID, memoryID string, req
 	}
 
 	return &memory, nil
+	*/
 }
 
 // ListMemories 查询记忆列表
@@ -323,5 +349,7 @@ func (s *Service) GetVersionContent(ctx context.Context, userID, memoryID string
 
 // DeleteMemory 删除记忆（软删除）
 func (s *Service) DeleteMemory(userID, memoryID string) error {
-	return s.DB.Where("id = ? AND user_id = ?", memoryID, userID).Delete(&models.MemoryFile{}).Error
+	// STUB: 禁用数据库删除，直接返回成功
+	return nil
+	// return s.DB.Where("id = ? AND user_id = ?", memoryID, userID).Delete(&models.MemoryFile{}).Error
 }
