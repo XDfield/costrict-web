@@ -478,3 +478,182 @@ func (e *e2eEnv) giteaReadFile(t *testing.T, owner, repo, branch, path string) (
 	cleaned := strings.ReplaceAll(out.Content, "\n", "")
 	return base64.StdEncoding.DecodeString(cleaned)
 }
+
+// giteaListBranches returns the branch names of owner/repo.
+func (e *e2eEnv) giteaListBranches(t *testing.T, owner, repo string) ([]string, error) {
+	t.Helper()
+	u := fmt.Sprintf("%s/api/v1/repos/%s/%s/branches", e.giteaURL, owner, repo)
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Authorization", "token "+e.adminToken)
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Name)
+	}
+	return out, nil
+}
+
+// giteaListBranchProtectionRules returns the rule_name set for owner/repo.
+func (e *e2eEnv) giteaListBranchProtectionRules(t *testing.T, owner, repo string) ([]string, error) {
+	t.Helper()
+	u := fmt.Sprintf("%s/api/v1/repos/%s/%s/branch_protections", e.giteaURL, owner, repo)
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Authorization", "token "+e.adminToken)
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+	var rows []struct {
+		RuleName string `json:"rule_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.RuleName)
+	}
+	return out, nil
+}
+
+// TestE2E_EnsureKBRepo_FullPath drives the user-facing kb provisioning
+// pipeline against real Gitea. Compared to the workflow variant:
+//
+//   - kb repo `kb-<host>__<segs>` is created (private, default_branch=main)
+//   - ONLY main branch protection is set (no inst-* glob)
+//   - NO definition_snapshot file is written
+//   - NO instance branch is created
+//   - second call is idempotent (Created.KbRepo=false)
+func TestE2E_EnsureKBRepo_FullPath(t *testing.T) {
+	env := setupE2E(t)
+	teamID := freshTeamID()
+	short := teamID[:8]
+	orgName := "t-" + short
+	botUser := "bot-t-" + short
+	env.cleanupTeamGitea(t, orgName, botUser)
+	t.Cleanup(func() { env.cleanupTeamGitea(t, orgName, botUser) })
+
+	// Seed team_ns + bot creds so EnsureKBRepo has a context.
+	now := time.Now().UTC()
+	ns := &models.TeamNamespace{
+		TeamID: teamID, TenantID: env.tenantID,
+		TeamDisplayName: "E2E KB Team",
+		TeamNSOrg:       orgName, TeamShort: short, GitServerID: "gitea-local",
+		Status: "active", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := env.db.Create(ns).Error; err != nil {
+		t.Fatalf("seed team_ns: %v", err)
+	}
+	enc, _ := env.aesKey.Seal([]byte("placeholder"))
+	creds := &models.TeamBotCredentials{
+		TeamID: teamID, TenantID: env.tenantID, GitServerID: "gitea-local",
+		GiteaUsername: botUser, GiteaUserID: 1, GiteaTokenID: 1,
+		TokenEncrypted: enc, TokenSHA256: "sha", CreatedAt: now,
+	}
+	if err := env.db.Create(creds).Error; err != nil {
+		t.Fatalf("seed team_bot_credentials: %v", err)
+	}
+
+	// EnsureKBRepo doesn't create the org; pre-provision it via gitsync.
+	if err := env.gs.EnsureOrg(context.Background(), env.tenantID, orgName, "E2E KB Team"); err != nil {
+		t.Fatalf("EnsureOrg: %v", err)
+	}
+
+	svc := env.newService(t)
+	codeRepoURL := "https://github.com/costrict/somerepo.git"
+
+	// First call — kb repo should be newly created.
+	res1, err := svc.EnsureKBRepo(env.withTenant(context.Background()), teamID, codeRepoURL)
+	if err != nil {
+		t.Fatalf("EnsureKBRepo (first): %v", err)
+	}
+	if !res1.KbRepoCreated || !res1.BranchProtectionSet {
+		t.Fatalf("expected Created + ProtectionSet on first call: %+v", res1)
+	}
+	wantPath := "t-" + short + "/kb-github.com__costrict__somerepo"
+	if res1.KbRepoPath != wantPath {
+		t.Errorf("kb_repo_path: got %q want %q", res1.KbRepoPath, wantPath)
+	}
+
+	// Verify repo exists on Gitea.
+	repoName := "kb-github.com__costrict__somerepo"
+	branches, err := env.giteaListBranches(t, orgName, repoName)
+	if err != nil {
+		t.Fatalf("list branches: %v", err)
+	}
+	// Only main should exist (auto-init); no inst-* branch.
+	for _, b := range branches {
+		if strings.HasPrefix(b, "inst-") {
+			t.Errorf("kb repo must NOT have instance branches, found %q", b)
+		}
+	}
+	hasMain := false
+	for _, b := range branches {
+		if b == "main" {
+			hasMain = true
+		}
+	}
+	if !hasMain {
+		t.Errorf("expected main branch in kb repo, got %v", branches)
+	}
+
+	// Only ONE branch protection rule (main); no inst-* glob.
+	rules, err := env.giteaListBranchProtectionRules(t, orgName, repoName)
+	if err != nil {
+		t.Fatalf("list protections: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != "main" {
+		t.Errorf("expected exactly 1 protection rule (main), got %v", rules)
+	}
+
+	// KB must not write a definition_snapshot file. ReadFile should 404.
+	if _, err := env.giteaReadFile(t, orgName, repoName, "main", "definition_snapshot.json"); err == nil {
+		t.Errorf("kb repo must NOT contain definition_snapshot.json")
+	}
+
+	// Second call — idempotent.
+	res2, err := svc.EnsureKBRepo(env.withTenant(context.Background()), teamID, codeRepoURL)
+	if err != nil {
+		t.Fatalf("EnsureKBRepo (second): %v", err)
+	}
+	if res2.KbRepoCreated {
+		t.Errorf("expected KbRepoCreated=false on idempotent re-call: %+v", res2)
+	}
+	if !res2.BranchProtectionSet {
+		t.Errorf("expected BranchProtectionSet=true (idempotent re-apply permitted): %+v", res2)
+	}
+
+	// Verify a different code_repo_url produces a separate kb repo (path
+	// determinism). The two repos coexist under the same org.
+	res3, err := svc.EnsureKBRepo(env.withTenant(context.Background()), teamID,
+		"https://github.com/costrict/another.git")
+	if err != nil {
+		t.Fatalf("EnsureKBRepo (third, different url): %v", err)
+	}
+	if !res3.KbRepoCreated {
+		t.Errorf("expected KbRepoCreated=true for new url: %+v", res3)
+	}
+	wantPath3 := "t-" + short + "/kb-github.com__costrict__another"
+	if res3.KbRepoPath != wantPath3 {
+		t.Errorf("kb_repo_path 3: got %q want %q", res3.KbRepoPath, wantPath3)
+	}
+}
