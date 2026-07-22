@@ -55,12 +55,19 @@ const MaxYAMLLength = 64 * 1024
 // Service is the tenant_configs CRUD surface. Constructed once in main.go
 // and injected into Deps as TenantConfig.
 type Service struct {
-	db *gorm.DB
+	db       *gorm.DB
+	cacher   Cacher // optional; if set, updates invalidate the cache
 }
 
 // New constructs a Service. db must be non-nil; main.go asserts this.
 func New(db *gorm.DB) *Service {
 	return &Service{db: db}
+}
+
+// SetCacher attaches a cache invalidation callback to the service.
+// Called by main.go when wiring the CachedService layer.
+func (s *Service) SetCacher(cacher Cacher) {
+	s.cacher = cacher
 }
 
 // Get returns the tenant_configs row for the given tenant. When no row
@@ -179,6 +186,12 @@ func (s *Service) Update(ctx context.Context, p UpdateParams) (*models.TenantCon
 	if err != nil {
 		return nil, err
 	}
+
+	// Invalidate cache for this tenant (E1.5)
+	if s.cacher != nil {
+		s.cacher.Invalidate(p.TenantID)
+	}
+
 	return &out, nil
 }
 
@@ -244,6 +257,11 @@ func (s *Service) UpdateProviderMapping(ctx context.Context, p UpdateProviderMap
 		UpdatedBy:  p.UpdatedBy,
 	}); err != nil {
 		return nil, err
+	}
+
+	// Invalidate cache for this tenant (E1.5)
+	if s.cacher != nil {
+		s.cacher.Invalidate(p.TenantID)
 	}
 
 	// Re-parse the merged result so callers see the canonical view
@@ -327,4 +345,77 @@ func mergeProviderMappingSection(blob, section string) (string, error) {
 		return "", fmt.Errorf("tenantconfig: marshal merged blob: %w", err)
 	}
 	return string(out), nil
+}
+
+// LoadProviderMapping loads and merges the provider_mapping for a tenant,
+// following MULTI_TENANCY_DESIGN.md §17.2. Returns the effective mapping
+// after applying global defaults + tenant-specific overrides.
+//
+// Merge semantics:
+//   - global default is loaded from GlobalProviderMapping() (code-defined)
+//   - tenant-specific override is loaded from tenant_configs.provider_mapping
+//   - deep merge: tenant entries fully replace global entries with same name
+//   - provider names present only in global are preserved
+//
+// This is the E1 implementation of provider_mapping standardization.
+func (s *Service) LoadProviderMapping(ctx context.Context, tenantID string) (*ProviderMapping, error) {
+	if tenantID == "" {
+		return nil, ErrEmptyTenantID
+	}
+
+	// 1. Load global default (code-defined)
+	global := GlobalProviderMapping()
+
+	// 2. Load tenant-specific override
+	tc, err := s.Get(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	tenantMapping, err := ParseProviderMapping(tc.ConfigYAML)
+	if err != nil {
+		// Parse error in tenant config — log but return global only
+		// This prevents a malformed tenant config from breaking login entirely
+		return global, nil
+	}
+
+	// 3. Deep merge: start with global, overlay tenant entries
+	merged := &ProviderMapping{
+		Version:  global.Version,           // Copy version from global
+		Providers: make(map[string]Provider),
+	}
+
+	// Copy all global entries first
+	for name, p := range global.Providers {
+		merged.Providers[name] = p
+	}
+
+	// Overlay tenant entries (full replace, not field-level merge)
+	for name, p := range tenantMapping.Providers {
+		merged.Providers[name] = p
+	}
+
+	return merged, nil
+}
+
+// GetEnabledProviders returns the list of enabled provider names for a tenant.
+// This is an E1.6 helper for E2 (tenant-level IdP integration). It loads
+// the effective provider mapping (global + tenant merge) and filters to
+// enabled=true entries.
+//
+// Returns a sorted list of provider names (deterministic for UI rendering).
+// Returns an empty slice (not nil) if no providers are enabled.
+func (s *Service) GetEnabledProviders(ctx context.Context, tenantID string) ([]string, error) {
+	mapping, err := s.LoadProviderMapping(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	var enabled []string
+	for name, p := range mapping.Providers {
+		if p.Enabled != nil && *p.Enabled {
+			enabled = append(enabled, name)
+		}
+	}
+
+	return enabled, nil
 }

@@ -32,6 +32,7 @@ var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fa
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 var bindStateSecret string
+
 // jwtSignMode gates the Phase A8 OAuth-callback takeover. Anything other than
 // config.JWTSignModeOff makes the callback ask cs-user to reissue a
 // self-signed JWT carrying enterprise claims (Phase A5). Set from
@@ -62,6 +63,26 @@ type authUserDTO struct {
 	CasdoorUniversalID *string        `json:"casdoorUniversalId,omitempty"`
 	SystemRoles        []string       `json:"systemRoles,omitempty"`
 	Auth               map[string]any `json:"auth,omitempty"`
+}
+
+// meUserDTO is the privacy-scoped view of the current user. Unlike
+// authUserDTO (legacy /api/auth/me), it carries ONLY basic identity +
+// account activity metadata — deliberately omits Casdoor infrastructure
+// IDs (CasdoorUniversalID, CasdoorID, CasdoorSub), external identity
+// keys (ExternalKey, ProviderUserID), organization, system roles, and
+// the auth{} map. The user querying /me is reading their own data, so
+// email/phone are surfaced; everything else is filtered as PII.
+type meUserDTO struct {
+	ID          string     `json:"id"`
+	SubjectID   string     `json:"subjectId"`
+	Username    string     `json:"username"`
+	DisplayName string     `json:"displayName"`
+	Email       *string    `json:"email,omitempty"`
+	Phone       *string    `json:"phone,omitempty"`
+	AvatarURL   string     `json:"avatarUrl"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	LastSyncAt  *time.Time `json:"lastSyncAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
 }
 
 type authIdentityDTO struct {
@@ -141,13 +162,13 @@ type oauthState struct {
 }
 
 type bindState struct {
-	Action       string `json:"action"`
+	Action        string `json:"action"`
 	UserSubjectID string `json:"userSubjectId"`
-	Provider     string `json:"provider"`
-	RedirectTo   string `json:"redirectTo"`
-	CallbackURL  string `json:"callbackUrl"`
-	ExpiresAt    int64  `json:"expiresAt"`
-	Nonce        string `json:"nonce"`
+	Provider      string `json:"provider"`
+	RedirectTo    string `json:"redirectTo"`
+	CallbackURL   string `json:"callbackUrl"`
+	ExpiresAt     int64  `json:"expiresAt"`
+	Nonce         string `json:"nonce"`
 }
 
 func encodeOAuthState(s oauthState) string {
@@ -355,6 +376,29 @@ func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
 		Phone:       identity.Phone,
 		IsPrimary:   identity.IsPrimary,
 		LastLoginAt: identity.LastLoginAt,
+	}
+}
+
+// buildMeUserDTO projects a *models.User into the privacy-scoped meUserDTO.
+// DisplayName falls back to "" when missing (caller may merge with Username).
+// AvatarURL is dereferenced to empty string for the common "no avatar"
+// case; Email/Phone pointers are passed through so JSON omitempty drops nulls.
+func buildMeUserDTO(user *models.User) meUserDTO {
+	displayName := ""
+	if user.DisplayName != nil && *user.DisplayName != "" {
+		displayName = *user.DisplayName
+	}
+	return meUserDTO{
+		ID:          user.SubjectID,
+		SubjectID:   user.SubjectID,
+		Username:    user.Username,
+		DisplayName: displayName,
+		Email:       user.Email,
+		Phone:       user.Phone,
+		AvatarURL:   derefString(user.AvatarURL),
+		LastLoginAt: user.LastLoginAt,
+		LastSyncAt:  user.LastSyncAt,
+		CreatedAt:   user.CreatedAt,
 	}
 }
 
@@ -881,6 +925,51 @@ func GetCurrentUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
+}
+
+// GetMe godoc
+// @Summary      Get current user (privacy-scoped)
+// @Description  Returns the authenticated user's basic identity and account activity metadata. Deliberately excludes Casdoor infrastructure IDs, external identity keys, organization, system roles, and the auth{} map surfaced by the legacy /api/auth/me — only basic profile fields plus last-login / last-sync / created-at timestamps. Falls back to /api/auth/me for richer fields when the caller needs them.
+// @Tags         me
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{user=object}
+// @Failure      401  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /me [get]
+func GetMe(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		middleware.ClearAuthCookie(c)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// /me is intentionally strict: unlike /api/auth/me, it has NO
+	// Casdoor fallback path. If the user is authenticated (JWT validated)
+	// but not in our local store, that's a state-mismatch we surface as
+	// 404 — callers needing the fallback path should use /api/auth/me.
+	if UserModule == nil || (UserModule.CachedService == nil && UserModule.Service == nil) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "User service unavailable"})
+		return
+	}
+
+	var (
+		user *models.User
+		err  error
+	)
+	if UserModule.CachedService != nil {
+		user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
+	} else {
+		user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
+	}
+	if err != nil || user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": buildMeUserDTO(user)})
 }
 
 // ListBoundIdentities godoc
