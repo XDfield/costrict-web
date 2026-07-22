@@ -31,9 +31,11 @@ func (a *tenantGitServerAdapter) GetTenantGitServer(ctx context.Context, tenantI
 		return nil, nil
 	}
 	return &gitsync.GitServerConfig{
-		ServerID:   cfg.ServerID,
-		Kind:       cfg.Kind,
-		Endpoint:   cfg.Endpoint,
-		AdminToken: cfg.AdminToken,
+		ServerID:      cfg.ServerID,
+		Kind:          cfg.Kind,
+		Endpoint:      cfg.Endpoint,
+		AdminToken:    cfg.AdminToken,
+		AdminUser:     cfg.AdminUser,
+		AdminPassword: cfg.AdminPassword,
 	}, nil
 }

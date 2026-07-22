@@ -19,6 +19,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
+	"github.com/costrict/costrict-web/cs-user/internal/userteams"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -182,6 +183,14 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// callback after GetOrCreateUser. Lives outside the :subject_id path
 	// subtree so it doesn't collide with the routes above.
 	users.POST("/apply-enterprise-mapping", usersAPI.ApplyEnterpriseMapping)
+
+	// KB ensure backing: list teams for a user. Called by @server's
+	// POST /api/kb/ensure to resolve the caller's team list. Currently
+	// returns 503 ORG_TEAM_SERVICE_UNAVAILABLE — contract is fixed so
+	// @server can wire its TeamResolver now and swap to a real impl when
+	// org-team-service lands. See docs/repo-management/KB_USER_ENSURE_API.md §2.3.
+	userTeamsAPI := handlers.UserTeamsAPI{Svc: userteams.New()}
+	users.GET("/:subject_id/teams", userTeamsAPI.ListUserTeams)
 }
 
 // registerAuthIdentityRoutes wires GET /users/:subject_id/auth-identities.
@@ -313,6 +322,9 @@ func (unavailableUserService) GetUsersByIDs(_ context.Context, _ []string) (map[
 	return nil, errServiceUnavailable
 }
 func (unavailableUserService) SearchUsers(_ context.Context, _ string, _ int) ([]*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) SearchUsersByEmployeeNumber(_ context.Context, _ string, _ int) ([]*models.User, error) {
 	return nil, errServiceUnavailable
 }
 func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, error) {

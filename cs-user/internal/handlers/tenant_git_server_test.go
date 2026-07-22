@@ -56,10 +56,12 @@ func doTenantGitServer(t *testing.T, router *gin.Engine, tenantID string) *httpt
 func TestGetTenantGitServer_HappyPath(t *testing.T) {
 	t.Parallel()
 	resolver := &stubGitServerResolver{cfg: &gitserver.Config{
-		ServerID:   "gs-acme",
-		Kind:       "gitea",
-		Endpoint:   "https://gitea.acme.com",
-		AdminToken: "tok-acme-XYZ",
+		ServerID:      "gs-acme",
+		Kind:          "gitea",
+		Endpoint:      "https://gitea.acme.com",
+		AdminToken:    "tok-acme-XYZ",
+		AdminUser:     "gitea-admin",
+		AdminPassword: "s3cret",
 	}}
 	router := newTenantGitServerRouter(resolver)
 
@@ -82,6 +84,16 @@ func TestGetTenantGitServer_HappyPath(t *testing.T) {
 	}
 	if resp.Kind != "gitea" {
 		t.Errorf("kind: got %q", resp.Kind)
+	}
+	// Defense-in-depth: server's gitsync.Client needs Basic-auth creds to
+	// successfully call Gitea's /users/{name}/tokens endpoint (admin PAT is
+	// rejected by reqBasicOrRevProxyAuth middleware). Verify they survive
+	// the RPC hop.
+	if resp.AdminUser != "gitea-admin" {
+		t.Errorf("admin_user: got %q, want gitea-admin", resp.AdminUser)
+	}
+	if resp.AdminPassword != "s3cret" {
+		t.Errorf("admin_password: got %q, want s3cret", resp.AdminPassword)
 	}
 	if resolver.last != "t-acme" {
 		t.Errorf("resolver called with %q, want t-acme", resolver.last)

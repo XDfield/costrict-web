@@ -87,6 +87,11 @@ type Service struct {
 	teamResolver  GiteaTeamResolver
 	logger        *zap.Logger
 	clientFactory func(GitServerConfig) GiteaTeamMemberAPI
+	// botAccountClientFactory produces a *Client for the bot-provisioning
+	// surface (Phase E3c). Separate field from clientFactory so existing
+	// SyncTeam tests don't need to widen their stub; default returns a
+	// *Client that satisfies both interfaces.
+	botAccountClientFactory func(GitServerConfig) *Client
 }
 
 // NewService wires a Service. nil gitResolver returns nil (feature-disabled
@@ -104,12 +109,25 @@ func NewService(provider TeamDataProvider, gitResolver GitServerResolver, teamRe
 		logger = zap.NewNop()
 	}
 	return &Service{
-		provider:      provider,
-		gitResolver:   gitResolver,
-		teamResolver:  teamResolver,
-		logger:        logger,
-		clientFactory: defaultClientFactory,
+		provider:                provider,
+		gitResolver:             gitResolver,
+		teamResolver:            teamResolver,
+		logger:                  logger,
+		clientFactory:           defaultClientFactory,
+		botAccountClientFactory: defaultBotClientFactory,
 	}
+}
+
+// defaultBotClientFactory is the production factory for the bot-account
+// surface — returns a *Client (which satisfies both GiteaTeamMemberAPI
+// and BotAccountAPI) instead of the narrow GiteaTeamMemberAPI interface.
+// When cfg carries AdminUser/AdminPassword (required for token-mint
+// endpoints — see NewClientWithBasicAuth), the richer constructor is used.
+func defaultBotClientFactory(cfg GitServerConfig) *Client {
+	if cfg.AdminUser != "" && cfg.AdminPassword != "" {
+		return NewClientWithBasicAuth(cfg.Endpoint, cfg.AdminToken, cfg.AdminUser, cfg.AdminPassword)
+	}
+	return NewClient(cfg.Endpoint, cfg.AdminToken)
 }
 
 // defaultClientFactory is the production factory — wraps NewClient so the

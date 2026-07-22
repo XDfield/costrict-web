@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -23,7 +25,7 @@ func newTestService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.User{}, &models.UserAuthIdentity{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.UserAuthIdentity{}, &models.EmploymentIdentity{}); err != nil {
 		t.Fatalf("AutoMigrate: %v", err)
 	}
 	t.Cleanup(func() {
@@ -255,6 +257,166 @@ func TestListIdentities_NoRowsReturnsEmpty(t *testing.T) {
 	}
 }
 
+// seedEmployment inserts an employment_identities row tied to userSubjectID.
+// The closure overrides defaults; tenant_id defaults to "default" via column
+// default so the B5 tenant.Scope lookup (default tenant fallback) matches.
+func seedEmployment(t *testing.T, svc *Service, opts func(*models.EmploymentIdentity)) *models.EmploymentIdentity {
+	t.Helper()
+	e := &models.EmploymentIdentity{
+		TenantID:      tenant.DefaultTenantID,
+		UserSubjectID: "subj-1",
+		Provider:      "idtrust",
+		LastSyncedAt:  time.Now().UTC(),
+	}
+	if opts != nil {
+		opts(e)
+	}
+	if err := svc.db.Create(e).Error; err != nil {
+		t.Fatalf("seed employment: %v", err)
+	}
+	return e
+}
+
+func TestSearchUsersByEmployeeNumber_Hit(t *testing.T) {
+	svc := newTestService(t)
+	u := seedUser(t, svc, func(u *models.User) { u.SubjectID, u.Username = "emp-1", "alice" })
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = u.SubjectID
+		empNo := "1001"
+		e.EmployeeNumber = &empNo
+	})
+
+	got, err := svc.SearchUsersByEmployeeNumber(context.Background(), "1001", 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d users, want 1", len(got))
+	}
+	if got[0].SubjectID != "emp-1" {
+		t.Errorf("subject_id: got %q want emp-1", got[0].SubjectID)
+	}
+}
+
+func TestSearchUsersByEmployeeNumber_NoMatchReturnsNil(t *testing.T) {
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) { u.SubjectID = "u-no-emp" })
+
+	got, err := svc.SearchUsersByEmployeeNumber(context.Background(), "9999", 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if got != nil && len(got) != 0 {
+		t.Errorf("got %v, want empty slice for no match", got)
+	}
+}
+
+func TestSearchUsersByEmployeeNumber_MultipleRowsPicksLatestSync(t *testing.T) {
+	// Same employee_number on two users (pre-Phase-B non-uniqueness allowed).
+	// Service should pick the most recently synced one.
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) { u.SubjectID = "older" })
+	seedUser(t, svc, func(u *models.User) { u.SubjectID = "newer" })
+
+	empNo := "2002"
+	older := time.Now().Add(-2 * time.Hour).UTC()
+	newer := time.Now().UTC()
+
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "older"
+		e.EmployeeNumber = &empNo
+		e.LastSyncedAt = older
+	})
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "newer"
+		e.EmployeeNumber = &empNo
+		e.LastSyncedAt = newer
+	})
+
+	got, err := svc.SearchUsersByEmployeeNumber(context.Background(), empNo, 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d users, want 1 (latest sync wins)", len(got))
+	}
+	if got[0].SubjectID != "newer" {
+		t.Errorf("got %q, want newer (latest last_synced_at)", got[0].SubjectID)
+	}
+}
+
+func TestSearchUsersByEmployeeNumber_InactiveUserExcluded(t *testing.T) {
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) {
+		u.SubjectID, u.IsActive = "inactive-emp", false
+	})
+	empNo := "3003"
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "inactive-emp"
+		e.EmployeeNumber = &empNo
+	})
+
+	got, err := svc.SearchUsersByEmployeeNumber(context.Background(), empNo, 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d users, want 0 (inactive user excluded)", len(got))
+	}
+}
+
+func TestSearchUsersByEmployeeNumber_TenantScoped(t *testing.T) {
+	// Two tenants, same employee_number, different physical users. The ctx
+	// tenant signal decides which one is visible.
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) {
+		u.SubjectID = "tenant-a-user"
+		u.TenantID = "tenant-a"
+	})
+	seedUser(t, svc, func(u *models.User) {
+		u.SubjectID = "tenant-b-user"
+		u.TenantID = "tenant-b"
+	})
+	empNo := "4004"
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "tenant-a-user"
+		e.TenantID = "tenant-a"
+		e.EmployeeNumber = &empNo
+	})
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "tenant-b-user"
+		e.TenantID = "tenant-b"
+		e.EmployeeNumber = &empNo
+	})
+
+	tenantA := &models.Tenant{TenantID: "tenant-a"}
+	ctxA := tenant.WithTenant(context.Background(), tenantA)
+	got, err := svc.SearchUsersByEmployeeNumber(ctxA, empNo, 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if len(got) != 1 || got[0].SubjectID != "tenant-a-user" {
+		t.Errorf("tenant-a scope: got %v, want [tenant-a-user]", got)
+	}
+
+	tenantB := &models.Tenant{TenantID: "tenant-b"}
+	ctxB := tenant.WithTenant(context.Background(), tenantB)
+	got, err = svc.SearchUsersByEmployeeNumber(ctxB, empNo, 1)
+	if err != nil {
+		t.Fatalf("SearchUsersByEmployeeNumber: %v", err)
+	}
+	if len(got) != 1 || got[0].SubjectID != "tenant-b-user" {
+		t.Errorf("tenant-b scope: got %v, want [tenant-b-user]", got)
+	}
+}
+
+func TestSearchUsersByEmployeeNumber_EmptyArgErrors(t *testing.T) {
+	svc := newTestService(t)
+	if _, err := svc.SearchUsersByEmployeeNumber(context.Background(), "", 1); !errors.Is(err, ErrEmptyEmployeeNumber) {
+		t.Errorf("got %v, want ErrEmptyEmployeeNumber", err)
+	}
+}
+
 // TestService_NilDBGuards asserts every method short-circuits cleanly when
 // the service is constructed without a DB (defensive against future callers
 // that forget to inject one).
@@ -268,6 +430,9 @@ func TestService_NilDBGuards(t *testing.T) {
 	}
 	if _, err := svc.SearchUsers(context.Background(), "x", 1); err == nil {
 		t.Error("SearchUsers on nil db should error")
+	}
+	if _, err := svc.SearchUsersByEmployeeNumber(context.Background(), "x", 1); err == nil {
+		t.Error("SearchUsersByEmployeeNumber on nil db should error")
 	}
 	if _, err := svc.ListIdentities(context.Background(), "x"); err == nil {
 		t.Error("ListIdentities on nil db should error")
