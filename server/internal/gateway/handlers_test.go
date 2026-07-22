@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -348,5 +349,52 @@ func TestDeviceOnlineHandler_ConcurrentTakeover(t *testing.T) {
 	gw := registry.GetDeviceGatewayID("devX")
 	if gw != "gwA" && gw != "gwB" {
 		t.Fatalf("device should be bound to gwA or gwB, got %q", gw)
+	}
+}
+
+func TestInternalDeviceProxyHandler_ForwardsThroughGateway(t *testing.T) {
+	registry := setupTestRegistry(t)
+	client := NewClient("test-secret")
+
+	var gotPath string
+	var gotSecret string
+	var gotBody string
+	fakeGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSecret = r.Header.Get("X-Internal-Secret")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+	}))
+	defer fakeGateway.Close()
+
+	registry.store.RegisterGateway(&GatewayInfo{
+		ID:          "gwA",
+		Endpoint:    "e",
+		InternalURL: fakeGateway.URL,
+	})
+	registry.store.BindDevice("devX", "gwA", "conn1")
+
+	r := gin.New()
+	r.Any("/internal/gateway/device/:deviceID/proxy/*path", InternalDeviceProxyHandler(registry, client))
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/gateway/device/devX/proxy/api/v1/workflow/tasks/task-1/run", strings.NewReader(`{"task_id":"task-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/device/devX/proxy/api/v1/workflow/tasks/task-1/run" {
+		t.Fatalf("gateway path = %q", gotPath)
+	}
+	if gotSecret != "test-secret" {
+		t.Fatalf("gateway secret = %q", gotSecret)
+	}
+	if gotBody != `{"task_id":"task-1"}` {
+		t.Fatalf("gateway body = %q", gotBody)
 	}
 }

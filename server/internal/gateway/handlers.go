@@ -332,6 +332,30 @@ func DeviceProxyHandler(registry *GatewayRegistry, client *Client, deviceSvc *se
 	}
 }
 
+// InternalDeviceProxyHandler proxies an internal service request to a connected
+// device. Authentication is provided by the /internal route group, so this
+// handler intentionally does not require a Casdoor user or device ownership.
+func InternalDeviceProxyHandler(registry *GatewayRegistry, client *Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		deviceID := c.Param("deviceID")
+		if deviceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "deviceID required"})
+			return
+		}
+
+		gw, err := registry.GetDeviceGateway(deviceID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
+			return
+		}
+
+		c.Request.URL.Path = c.Param("path")
+		if err := client.ProxyRequest(gw.InternalURL, deviceID, c.Request, c.Writer); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		}
+	}
+}
+
 // GatewayDeregisterHandler godoc
 // @Summary      Deregister gateway
 // @Description  Remove a gateway instance from the registry.
@@ -479,4 +503,5 @@ func RegisterInternalRoutes(group *gin.RouterGroup, registry *GatewayRegistry, c
 	gatewayGroup.POST("/device/online", DeviceOnlineHandler(registry, client, deviceSvc))
 	gatewayGroup.POST("/device/offline", DeviceOfflineHandler(registry, deviceSvc))
 	gatewayGroup.POST("/device/verify-token", DeviceVerifyTokenHandler(deviceSvc))
+	gatewayGroup.Any("/device/:deviceID/proxy/*path", InternalDeviceProxyHandler(registry, client))
 }
