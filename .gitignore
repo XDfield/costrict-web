@@ -63,6 +63,10 @@ server/coverage_handlers.out
 server/*.out
 server/logs/
 
+cs-user/logs/
+cs-user/coverage
+cs-user/*.out
+
 gateway/bin/
 gateway/*.exe
 gateway/*.exe~

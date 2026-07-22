@@ -36,7 +36,20 @@ import (
 
 // ProviderMapping is the typed view of the provider_mapping subsection.
 // JSON shape matches what the API returns / accepts.
+//
+// Schema (per docs/identity-tenant/MULTI_TENANCY_DESIGN.md §9.3):
+//
+//	version: "1.0"                   # format version for forward compatibility
+//	providers:
+//	  <name>:
+//	    enabled: true|false           # default true when omitted
+//	    rank: 200                     # int; tiebreak ordering
+//	    field_map:                    # IdP claim → system attribute
+//	      employee_number: "emp_id"
+//	    enterprise_sync:
+//	      interval: "6h"              # Go duration string
 type ProviderMapping struct {
+	Version   string            `yaml:"version" json:"version"`
 	Providers map[string]Provider `yaml:"providers" json:"providers"`
 }
 
@@ -64,8 +77,15 @@ type EnterpriseSync struct {
 // failures; these sentinels cover the typed-schema layer.
 var (
 	ErrProviderNameInvalid = errors.New("provider_mapping: invalid provider name")
+	ErrVersionInvalid      = errors.New("provider_mapping: unsupported version")
 	ErrIntervalInvalid     = errors.New("provider_mapping: invalid enterprise_sync.interval")
 	ErrRankNegative        = errors.New("provider_mapping: rank must be non-negative")
+)
+
+const (
+	// CurrentSupportedVersion is the only version we support. This allows
+	// future schema evolution while maintaining backward compatibility.
+	CurrentSupportedVersion = "1.0"
 )
 
 // providerNamePattern matches the canonical provider name shape.
@@ -79,12 +99,26 @@ var providerNamePattern = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 const maxInterval = 30 * 24 * time.Hour
 
 // Validate enforces the typed schema. Returns nil on success.
-// Side effect: applies defaults (Enabled → true when nil) in place so
-// the subsequent serialize is canonical.
+// Side effect: applies defaults (Version → "1.0" when empty, Enabled → true
+// when nil) in place so the subsequent serialize is canonical.
 func (m *ProviderMapping) Validate() error {
 	if m == nil {
 		return nil // empty mapping is valid
 	}
+
+	// Validate and default version
+	if m.Version == "" {
+		m.Version = CurrentSupportedVersion
+	}
+	if m.Version != CurrentSupportedVersion {
+		return fmt.Errorf("%w: got %q, only %q is supported",
+			ErrVersionInvalid, m.Version, CurrentSupportedVersion)
+	}
+
+	if m.Providers == nil {
+		m.Providers = map[string]Provider{}
+	}
+
 	for name, p := range m.Providers {
 		if !providerNamePattern.MatchString(name) {
 			return fmt.Errorf("%w: %q must match %s", ErrProviderNameInvalid, name, providerNamePattern.String())

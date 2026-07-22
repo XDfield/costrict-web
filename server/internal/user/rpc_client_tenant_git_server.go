@@ -38,11 +38,19 @@ import (
 
 // TenantGitServerConfig is the local projection of cs-user's
 // tenantGitServerResponse. Server-side type decoupled from cs-user per ADR D1.
+//
+// AdminUser / AdminPassword are optional credentials required for Gitea
+// endpoints that reject admin PAT auth (notably POST /users/{name}/tokens —
+// upstream Gitea's reqBasicOrRevProxyAuth middleware). cs-user returns them
+// when the git_servers.config row carries them; absent fields mean the
+// tenant's Gitea cannot provision bot PATs until ops adds the credentials.
 type TenantGitServerConfig struct {
-	ServerID   string `json:"server_id"`
-	Kind       string `json:"kind"`
-	Endpoint   string `json:"endpoint"`
-	AdminToken string `json:"admin_token"`
+	ServerID      string `json:"server_id"`
+	Kind          string `json:"kind"`
+	Endpoint      string `json:"endpoint"`
+	AdminToken    string `json:"admin_token"`
+	AdminUser     string `json:"admin_user,omitempty"`
+	AdminPassword string `json:"admin_password,omitempty"`
 }
 
 // Per-tenant git-server sentinel errors (server-side). Distinct from

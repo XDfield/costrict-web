@@ -39,39 +39,47 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/giteasync"
 	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
+	"github.com/costrict/costrict-web/cs-user/internal/idp"
+	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 func main() {
-	logger, err := zap.NewProduction()
-	if err != nil {
-		log.Fatalf("init logger: %v", err)
+	// Dev convenience: load .env from CWD if present. In production the
+	// container runtime injects env vars directly and .env is absent —
+	// godotenv.Load returns nil for missing files and is a safe no-op.
+	// Existing process env wins (Load does not override set vars).
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		log.Printf("load .env: %v (continuing with process env)", err)
 	}
+
+	logger.Init(logger.Config{FilePrefix: "cs-user", Console: true})
 	defer logger.Sync()
-	zap.ReplaceGlobals(logger)
 
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatal("load config", zap.Error(err))
+		logger.L().Fatal("load config", zap.Error(err))
 	}
 
 	// Open the independent Postgres pool (ADR D1). main owns the lifecycle;
 	// shutdown closes it after the HTTP server stops accepting traffic.
 	pool, err := storage.Open(cfg)
 	if err != nil {
-		logger.Fatal("open postgres", zap.Error(err))
+		logger.L().Fatal("open postgres", zap.Error(err))
 	}
 	defer func() {
 		if cerr := pool.Close(); cerr != nil {
-			logger.Error("close postgres pool", zap.Error(cerr))
+			logger.L().Error("close postgres pool", zap.Error(cerr))
 		}
 	}()
-	logger.Info("postgres pool opened",
+	logger.L().Info("postgres pool opened",
 		zap.String("host", cfg.Postgres.Host),
 		zap.String("db", cfg.Postgres.Database))
 
@@ -91,9 +99,9 @@ func main() {
 		giteaResolver := gitserver.NewDBResolver(pool.Gorm)
 		giteaSvc := giteasync.NewService(pool.Gorm, giteaResolver, auditSvc, nil)
 		userSvc.SetGiteaSync(giteaSvc)
-		logger.Info("Gitea auto-provisioning enabled (per-tenant resolver)")
+		logger.L().Info("Gitea auto-provisioning enabled (per-tenant resolver)")
 	} else {
-		logger.Warn("Gitea auto-provisioning disabled — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
+		logger.L().Warn("Gitea auto-provisioning disabled — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
 	}
 
 	// Dev-mode auto-migrate: when CS_USER_AUTO_MIGRATE is truthy ("1"/"true"),
@@ -103,20 +111,20 @@ func main() {
 	if isTruthy(os.Getenv("CS_USER_AUTO_MIGRATE")) {
 		sqlDB, err := pool.SQLDB()
 		if err != nil {
-			logger.Fatal("acquire sql.DB for migration", zap.Error(err))
+			logger.L().Fatal("acquire sql.DB for migration", zap.Error(err))
 		}
 		// gorm postgres driver maps to the "postgres" goose dialect.
 		runner, err := migration.NewRunner(sqlDB, "postgres")
 		if err != nil {
-			logger.Fatal("init migration runner", zap.Error(err))
+			logger.L().Fatal("init migration runner", zap.Error(err))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := runner.Up(ctx); err != nil {
 			cancel()
-			logger.Fatal("auto-migrate", zap.Error(err))
+			logger.L().Fatal("auto-migrate", zap.Error(err))
 		}
 		cancel()
-		logger.Info("auto-migrate applied")
+		logger.L().Info("auto-migrate applied")
 	}
 
 	// Phase E3b.1.1: bootstrap the git_servers template row from env vars.
@@ -128,17 +136,19 @@ func main() {
 	if cfg.Gitea.Enabled() {
 		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		templateID, err := gitserver.BootstrapTemplate(bootCtx, pool.Gorm, gitserver.TemplateInput{
-			Endpoint:    cfg.Gitea.BaseURL,
-			AdminToken:  cfg.Gitea.AdminToken,
-			DisplayName: "Gitea (env bootstrap)",
+			Endpoint:      cfg.Gitea.BaseURL,
+			AdminToken:    cfg.Gitea.AdminToken,
+			DisplayName:   "Gitea (env bootstrap)",
+			AdminUser:     cfg.Gitea.AdminUser,
+			AdminPassword: cfg.Gitea.AdminPassword,
 		})
 		bootCancel()
 		if err != nil {
-			logger.Fatal("bootstrap git_servers template", zap.Error(err))
+			logger.L().Fatal("bootstrap git_servers template", zap.Error(err))
 		}
-		logger.Info("git_servers template ready", zap.String("server_id", templateID))
+		logger.L().Info("git_servers template ready", zap.String("server_id", templateID))
 	} else {
-		logger.Warn("git_servers template bootstrap skipped — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
+		logger.L().Warn("git_servers template bootstrap skipped — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
 	}
 
 	// Load the JWT signer when configured (Phase A3). When the env var is
@@ -150,11 +160,11 @@ func main() {
 	if cfg.JWT.SigningKeyPath != "" {
 		signer, err = auth.NewSignerFromPEMPath(cfg.JWT.SigningKeyPath)
 		if err != nil {
-			logger.Fatal("load JWT signing key", zap.String("path", cfg.JWT.SigningKeyPath), zap.Error(err))
+			logger.L().Fatal("load JWT signing key", zap.String("path", cfg.JWT.SigningKeyPath), zap.Error(err))
 		}
-		logger.Info("JWT signer loaded", zap.String("kid", signer.KID()))
+		logger.L().Info("JWT signer loaded", zap.String("kid", signer.KID()))
 	} else {
-		logger.Warn("CS_USER_JWT_SIGNING_KEY_PATH unset — /.well-known/jwks returns 503; JWT issuance disabled")
+		logger.L().Warn("CS_USER_JWT_SIGNING_KEY_PATH unset — /.well-known/jwks returns 503; JWT issuance disabled")
 	}
 
 	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
@@ -171,6 +181,7 @@ func main() {
 		TenantConfig:      tenantconfig.New(pool.Gorm),
 		AuditLog:          auditSvc,
 		GitServerResolver: gitserver.NewDBResolver(pool.Gorm),
+		IdPSources:        newIdPService(pool.Gorm, cfg.IDP.AllowInsecure),
 	})
 
 	srv := &http.Server{
@@ -180,23 +191,23 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("cs-user listening", zap.String("port", cfg.HTTP.Port))
+		logger.L().Info("cs-user listening", zap.String("port", cfg.HTTP.Port))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Fatal("listen", zap.Error(err))
+			logger.L().Fatal("listen", zap.Error(err))
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	logger.Info("shutdown signal received")
+	logger.L().Info("shutdown signal received")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("forced shutdown", zap.Error(err))
+		logger.L().Error("forced shutdown", zap.Error(err))
 	}
-	logger.Info("bye")
+	logger.L().Info("bye")
 }
 
 // isTruthy returns true for common affirmative env values ("1", "true", "yes"
@@ -209,3 +220,18 @@ func isTruthy(v string) bool {
 	}
 	return false
 }
+
+// newIdPService constructs the IdP service with the validator configured
+// per env. When CS_USER_IDP_ALLOW_INSECURE=true, the validator permits
+// http:// IdP endpoint URLs (required for local dev where Casdoor / mock
+// IdPs run on plain HTTP). Production must leave this false.
+func newIdPService(db *gorm.DB, allowInsecure bool) *idp.Service {
+	svc := idp.New(db)
+	if allowInsecure {
+		v := idp.NewValidator()
+		v.AllowInsecure = true
+		svc.SetValidator(v)
+	}
+	return svc
+}
+

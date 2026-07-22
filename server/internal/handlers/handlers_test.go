@@ -67,6 +67,7 @@ func newAuthRouter(userID string) *gin.Engine {
 		c.Next()
 	}
 	r.GET("/api/auth/me", injectUser, GetCurrentUser)
+	r.GET("/api/me", injectUser, GetMe)
 	r.GET("/api/auth/identities", injectUser, ListBoundIdentities)
 	r.GET("/api/auth/resolve", injectUser, ResolveAuthUser)
 	r.POST("/api/auth/bind/start", injectUser, StartBindAuth)
@@ -168,7 +169,9 @@ func TestListBoundIdentities(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var body struct{ Identities []map[string]any `json:"identities"` }
+	var body struct {
+		Identities []map[string]any `json:"identities"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -223,12 +226,18 @@ func TestStartBindAuthReturnsSignedURL(t *testing.T) {
 	getLoginURLWithCallbackFunc = func(state, callbackURL string) string {
 		return "https://casdoor.example/login?state=" + state
 	}
-	defer func() { getLoginURLWithCallbackFunc = func(state, callbackURL string) string { return CasdoorClient.GetLoginURLWithCallback(state, callbackURL) } }()
+	defer func() {
+		getLoginURLWithCallbackFunc = func(state, callbackURL string) string {
+			return CasdoorClient.GetLoginURLWithCallback(state, callbackURL)
+		}
+	}()
 	w := postJSON(newAuthRouter("usr_local_1"), "/api/auth/bind/start", map[string]any{"provider": "github", "redirectTo": "https://zgsm.sangfor.com/cloud/settings/account"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var body struct{ AuthURL string `json:"authUrl"` }
+	var body struct {
+		AuthURL string `json:"authUrl"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -269,8 +278,12 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 		AuthCallback(c)
 	})
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 	exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
 		boundToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "bound-id", "sub": "bound-sub", "universal_id": "bound-uuid", "name": "bound_user", "provider": "idtrust", "properties": map[string]any{"oauth_Custom_id": "custom-user-001", "oauth_Custom_username": "custom_user", "oauth_Custom_displayName": "Display Custom User"}})
@@ -304,8 +317,12 @@ func TestBindCallbackSuccess(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
@@ -359,8 +376,12 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
@@ -474,5 +495,156 @@ func TestResolveAuthUser_UnauthenticatedReturns401(t *testing.T) {
 	w := get(newAuthRouter(""), "/api/auth/resolve")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetMe_HappyPath verifies /api/me returns the full basic-identity +
+// activity-metadata DTO when the user is authenticated and exists locally.
+func TestGetMe_HappyPath(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	displayName := "Alice Wonder"
+	email := "alice@example.com"
+	phone := "+86-13800000000"
+	avatar := "https://example.com/a.png"
+	lastLogin := time.Now().Add(-1 * time.Hour).UTC()
+	syncAt := time.Now().Add(-10 * time.Minute).UTC()
+	if err := database.DB.Create(&models.User{
+		SubjectID:   "usr_local_me",
+		Username:    "alice",
+		DisplayName: &displayName,
+		Email:       &email,
+		Phone:       &phone,
+		AvatarURL:   &avatar,
+		IsActive:    true,
+		LastLoginAt: &lastLogin,
+		LastSyncAt:  &syncAt,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	w := get(newAuthRouter("usr_local_me"), "/api/me")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		User struct {
+			ID          string     `json:"id"`
+			SubjectID   string     `json:"subjectId"`
+			Username    string     `json:"username"`
+			DisplayName string     `json:"displayName"`
+			Email       *string    `json:"email"`
+			Phone       *string    `json:"phone"`
+			AvatarURL   string     `json:"avatarUrl"`
+			LastLoginAt *time.Time `json:"lastLoginAt"`
+			LastSyncAt  *time.Time `json:"lastSyncAt"`
+			CreatedAt   time.Time  `json:"createdAt"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.User.SubjectID != "usr_local_me" || body.User.Username != "alice" {
+		t.Errorf("unexpected identity: %+v", body.User)
+	}
+	if body.User.DisplayName != displayName {
+		t.Errorf("displayName mismatch: got %q want %q", body.User.DisplayName, displayName)
+	}
+	if body.User.Email == nil || *body.User.Email != email {
+		t.Errorf("email mismatch: %+v", body.User)
+	}
+	if body.User.Phone == nil || *body.User.Phone != phone {
+		t.Errorf("phone mismatch: %+v", body.User)
+	}
+	if body.User.LastLoginAt == nil {
+		t.Errorf("lastLoginAt should be present")
+	}
+	if body.User.CreatedAt.IsZero() {
+		t.Errorf("createdAt should be non-zero")
+	}
+}
+
+// TestGetMe_NoAuthReturns401 covers the missing-auth branch: empty
+// UserIDKey -> ClearAuthCookie + 401, before any service call.
+func TestGetMe_NoAuthReturns401(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	w := get(newAuthRouter(""), "/api/me")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetMe_UserNotFoundReturns404 covers the strict no-Casdoor-fallback
+// contract: authenticated JWT but no local user row -> 404 (unlike
+// /api/auth/me which would fall through to claims).
+func TestGetMe_UserNotFoundReturns404(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	w := get(newAuthRouter("usr_does_not_exist"), "/api/me")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetMe_DoesNotLeakInfraIDs is the core privacy regression test.
+// It seeds a user with every Casdoor/external field populated and then
+// asserts the response JSON contains NONE of them. This locks the
+// contract: /me must never expose infrastructure identifiers to the
+// frontend even if they exist in the DB row.
+func TestGetMe_DoesNotLeakInfraIDs(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	universalID := "uuid-leak"
+	casdoorID := "cd-leak"
+	casdoorSub := "sub-leak"
+	org := "built-in"
+	extKey := "casdoor:uuid-leak"
+	providerUserID := "prov-leak"
+	provider := "casdoor"
+	if err := database.DB.Create(&models.User{
+		SubjectID:          "usr_leak_test",
+		Username:           "leakuser",
+		CasdoorUniversalID: &universalID,
+		CasdoorID:          &casdoorID,
+		CasdoorSub:         &casdoorSub,
+		Organization:       &org,
+		ExternalKey:        &extKey,
+		ProviderUserID:     &providerUserID,
+		AuthProvider:       &provider,
+		IsActive:           true,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	w := get(newAuthRouter("usr_leak_test"), "/api/me")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	raw := w.Body.String()
+	for _, banned := range []string{
+		"casdoorUniversalId",
+		"casdoorId",
+		"casdoorSub",
+		"organization",
+		"externalKey",
+		"providerUserId",
+		"authProvider",
+		"systemRoles",
+		"\"auth\"",
+	} {
+		if strings.Contains(raw, "\""+banned+"\"") {
+			t.Errorf("response leaks forbidden field %q: %s", banned, raw)
+		}
 	}
 }

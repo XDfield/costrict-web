@@ -21,6 +21,7 @@ type Config struct {
 	JWT      JWTConfig
 	Tenant   TenantConfig
 	Gitea    GiteaConfig
+	IDP      IDPConfig
 }
 
 type HTTPConfig struct {
@@ -86,12 +87,29 @@ type TenantConfig struct {
 type GiteaConfig struct {
 	BaseURL    string
 	AdminToken string
+	// AdminUser / AdminPassword are OPTIONAL credentials propagated into
+	// git_servers.config as admin_user / admin_password. Required by the
+	// token-mint endpoints (POST /users/{name}/tokens) which sit behind
+	// Gitea's reqBasicOrRevProxyAuth middleware and reject admin PAT auth.
+	// When unset, bot provisioning against this Gitea cannot mint PATs.
+	AdminUser     string
+	AdminPassword string
 }
 
 // Enabled returns true when both BaseURL + AdminToken are populated. cs-user
 // uses this to decide whether to construct *giteasync.Service at boot.
 func (g GiteaConfig) Enabled() bool {
 	return g.BaseURL != "" && g.AdminToken != ""
+}
+
+// IDPConfig holds IdP source validation knobs.
+//
+// AllowInsecure permits http:// (not just https://) URLs in IdP OAuth
+// endpoints. Required for local dev where Casdoor / mock IdPs run on plain
+// HTTP (e.g. http://127.0.0.1:8010). Production deployments must leave this
+// false — checked at the validator layer, never bypassed elsewhere.
+type IDPConfig struct {
+	AllowInsecure bool
 }
 
 // JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
@@ -162,8 +180,13 @@ func Load() (*Config, error) {
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
 		},
 		Gitea: GiteaConfig{
-			BaseURL:    strings.TrimRight(os.Getenv("CS_USER_GITEA_BASE_URL"), "/"),
-			AdminToken: os.Getenv("CS_USER_GITEA_ADMIN_TOKEN"),
+			BaseURL:       strings.TrimRight(os.Getenv("CS_USER_GITEA_BASE_URL"), "/"),
+			AdminToken:    os.Getenv("CS_USER_GITEA_ADMIN_TOKEN"),
+			AdminUser:     strings.TrimSpace(os.Getenv("CS_USER_GITEA_ADMIN_USER")),
+			AdminPassword: os.Getenv("CS_USER_GITEA_ADMIN_PASSWORD"),
+		},
+		IDP: IDPConfig{
+			AllowInsecure: envBool("CS_USER_IDP_ALLOW_INSECURE", false),
 		},
 	}
 
@@ -217,6 +240,20 @@ func loadJWTConfig() (JWTConfig, error) {
 func envDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// envBool parses a truthy env var. Accepts "1", "true", "yes" (case-
+// insensitive). Empty or anything else → fallback. Used for CS_USER_IDP_
+// ALLOW_INSECURE-style flags where the absence of the var means "off".
+func envBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
 	}
 	return fallback
 }
