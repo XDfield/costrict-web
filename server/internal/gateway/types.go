@@ -4,6 +4,7 @@ type GatewayInfo struct {
 	ID            string
 	Endpoint      string
 	InternalURL   string
+	APIBaseURL    string
 	Region        string
 	Capacity      int
 	CurrentConns  int

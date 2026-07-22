@@ -338,3 +338,129 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	t.lastURL = req.URL.String()
 	return nil, fmt.Errorf("intentional transport failure")
 }
+
+func TestResolveAPIBaseURL_NoNacos(t *testing.T) {
+	resolver := NewEndpointResolver()
+	cfg := &Config{APIBaseURL: "https://api-a.example.com"}
+
+	got, err := resolver.ResolveAPIBaseURL(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != cfg.APIBaseURL {
+		t.Fatalf("expected %q, got %q", cfg.APIBaseURL, got)
+	}
+}
+
+func TestResolveAPIBaseURL_NacosSuccess(t *testing.T) {
+	expected := "https://api-a.example.com"
+	var capturedDataID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedDataID = r.URL.Query().Get("dataId")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, expected)
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		APIBaseURL: "https://static.example.com",
+		Nacos: NacosConfig{
+			ServerAddr:       server.URL,
+			DataID:           "endpoint-data-id",
+			APIBaseURLDataID: "api-base-url-data-id",
+			Group:            "DEFAULT_GROUP",
+		},
+	}
+
+	got, err := resolver.ResolveAPIBaseURL(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+	if capturedDataID != "api-base-url-data-id" {
+		t.Fatalf("expected dataId %q, got %q", "api-base-url-data-id", capturedDataID)
+	}
+}
+
+func TestResolveAPIBaseURL_NacosNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		APIBaseURL: "https://static.example.com",
+		Nacos: NacosConfig{
+			ServerAddr:       server.URL,
+			APIBaseURLDataID: "missing",
+		},
+	}
+
+	_, err := resolver.ResolveAPIBaseURL(cfg)
+	if !errors.Is(err, ErrNacosConfigNotFound) {
+		t.Fatalf("expected ErrNacosConfigNotFound, got %v", err)
+	}
+}
+
+func TestResolveAPIBaseURL_NacosInvalidURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "not-a-url")
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		Nacos: NacosConfig{
+			ServerAddr:       server.URL,
+			APIBaseURLDataID: "bad",
+		},
+	}
+
+	_, err := resolver.ResolveAPIBaseURL(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid URL from Nacos")
+	}
+}
+
+func TestResolveAPIBaseURL_NilConfig(t *testing.T) {
+	resolver := NewEndpointResolver()
+
+	_, err := resolver.ResolveAPIBaseURL(nil)
+	if err == nil {
+		t.Fatal("expected error for nil config")
+	}
+	if !strings.Contains(err.Error(), "config is nil") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestResolveAPIBaseURL_NacosEmptyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "   ")
+	}))
+	defer server.Close()
+
+	resolver := NewEndpointResolverWithClient(server.Client())
+	cfg := &Config{
+		APIBaseURL: "https://static.example.com",
+		Nacos: NacosConfig{
+			ServerAddr:       server.URL,
+			APIBaseURLDataID: "empty-api-base-url",
+		},
+	}
+
+	_, err := resolver.ResolveAPIBaseURL(cfg)
+	if err == nil {
+		t.Fatal("expected error when Nacos returns empty apiBaseURL")
+	}
+	if !strings.Contains(err.Error(), "empty apiBaseURL") {
+		t.Fatalf("expected error to mention empty apiBaseURL, got: %v", err)
+	}
+}

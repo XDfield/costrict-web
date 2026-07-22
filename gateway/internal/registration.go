@@ -37,13 +37,14 @@ func internalRequest(method, url, secret string) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-func Register(serverURL, gatewayID, endpoint, internalURL, region, secret string, capacity int) error {
+func Register(serverURL, gatewayID, endpoint, internalURL, region, secret string, capacity int, apiBaseURL string) error {
 	body := map[string]any{
 		"gatewayID":   gatewayID,
 		"endpoint":    endpoint,
 		"internalURL": internalURL,
 		"region":      region,
 		"capacity":    capacity,
+		"apiBaseURL":  apiBaseURL,
 	}
 	data, _ := json.Marshal(body)
 	resp, err := internalPost(serverURL+"/internal/gateway/register", secret, data)

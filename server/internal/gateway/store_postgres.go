@@ -24,11 +24,12 @@ func NewPostgresStore(db *gorm.DB) Store {
 func (s *PostgresStore) RegisterGateway(info *GatewayInfo) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"endpoint", "internal_url", "region", "capacity", "current_conns", "last_heartbeat", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"endpoint", "internal_url", "api_base_url", "region", "capacity", "current_conns", "last_heartbeat", "updated_at"}),
 	}).Create(&models.GatewayRegistry{
 		ID:            info.ID,
 		Endpoint:      info.Endpoint,
 		InternalURL:   info.InternalURL,
+		APIBaseURL:    info.APIBaseURL,
 		Region:        info.Region,
 		Capacity:      info.Capacity,
 		CurrentConns:  info.CurrentConns,
@@ -65,6 +66,7 @@ func (s *PostgresStore) ListGateways() ([]*GatewayInfo, error) {
 			ID:            r.ID,
 			Endpoint:      r.Endpoint,
 			InternalURL:   r.InternalURL,
+			APIBaseURL:    r.APIBaseURL,
 			Region:        r.Region,
 			Capacity:      r.Capacity,
 			CurrentConns:  r.CurrentConns,
@@ -87,6 +89,7 @@ func (s *PostgresStore) GetGateway(gatewayID string) (*GatewayInfo, error) {
 		ID:            row.ID,
 		Endpoint:      row.Endpoint,
 		InternalURL:   row.InternalURL,
+		APIBaseURL:    row.APIBaseURL,
 		Region:        row.Region,
 		Capacity:      row.Capacity,
 		CurrentConns:  row.CurrentConns,

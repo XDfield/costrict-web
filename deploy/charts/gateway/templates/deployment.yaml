@@ -56,6 +56,8 @@ spec:
               value: "{{ .Values.config.gatewayIdPrefix }}$(POD_NAME)"
             - name: GATEWAY_ENDPOINT
               value: {{ .Values.config.endpoint | quote }}
+            - name: GATEWAY_API_BASE_URL
+              value: {{ .Values.config.apiBaseURL | quote }}
             {{- if .Values.config.nacos.enabled }}
             - name: GATEWAY_NACOS_SERVER_ADDR
               value: {{ .Values.config.nacos.serverAddr | quote }}
@@ -65,6 +67,8 @@ spec:
               value: {{ .Values.config.nacos.group | quote }}
             - name: GATEWAY_NACOS_DATA_ID
               value: {{ .Values.config.nacos.dataID | quote }}
+            - name: GATEWAY_NACOS_API_BASE_URL_DATA_ID
+              value: {{ .Values.config.nacos.apiBaseURLDataID | quote }}
             - name: GATEWAY_NACOS_TIMEOUT_MS
               value: {{ .Values.config.nacos.timeoutMs | quote }}
             - name: GATEWAY_NACOS_USERNAME

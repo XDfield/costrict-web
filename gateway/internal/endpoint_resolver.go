@@ -11,16 +11,21 @@ import (
 	"time"
 )
 
-// ErrNacosConfigNotFound is returned by Resolve when Nacos responds with 404,
-// indicating the requested config dataId does not exist. Callers can treat this
-// as a graceful fallback signal to the statically configured endpoint.
+// ErrNacosConfigNotFound is returned by Resolve and ResolveAPIBaseURL when
+// Nacos responds with 404, indicating the requested config dataId does not
+// exist. Callers can treat this as a graceful fallback signal to the
+// statically configured endpoint.
 var ErrNacosConfigNotFound = errors.New("nacos config not found")
 
-// EndpointResolver resolves the public endpoint the gateway should register.
-// If Nacos is configured, it fetches the configured data ID; otherwise it
-// returns the statically configured endpoint.
+// EndpointResolver resolves the public endpoint and API base URL the gateway
+// should register. If Nacos is configured, it fetches the configured data ID;
+// otherwise it returns the statically configured value.
 type EndpointResolver interface {
 	Resolve(cfg *Config) (string, error)
+	// ResolveAPIBaseURL resolves the cluster's public Server API base URL.
+	// Uses Nacos when APIBaseURLDataID is configured; otherwise returns the
+	// statically configured value. May be empty in single-cluster setups.
+	ResolveAPIBaseURL(cfg *Config) (string, error)
 }
 
 // NewEndpointResolver returns the default resolver.
@@ -49,7 +54,7 @@ func (r *defaultEndpointResolver) Resolve(cfg *Config) (string, error) {
 		return cfg.Endpoint, nil
 	}
 
-	endpoint, err := resolveFromNacos(r.client, cfg.Nacos)
+	endpoint, err := resolveFromNacos(r.client, cfg.Nacos, cfg.Nacos.DataID)
 	if err != nil {
 		return "", fmt.Errorf("resolve endpoint from Nacos failed: %w", err)
 	}
@@ -59,23 +64,54 @@ func (r *defaultEndpointResolver) Resolve(cfg *Config) (string, error) {
 		return "", errors.New("Nacos returned empty endpoint")
 	}
 
-	if err := validateEndpoint(endpoint); err != nil {
+	if err := validateURL(endpoint); err != nil {
 		return "", err
 	}
 
 	return endpoint, nil
 }
 
-func validateEndpoint(endpoint string) error {
-	u, err := url.Parse(endpoint)
+func (r *defaultEndpointResolver) ResolveAPIBaseURL(cfg *Config) (string, error) {
+	if cfg == nil {
+		return "", errors.New("config is nil")
+	}
+
+	if !NacosAPIBaseURLEnabled(cfg.Nacos) {
+		return cfg.APIBaseURL, nil
+	}
+
+	apiBaseURL, err := resolveFromNacos(r.client, cfg.Nacos, cfg.Nacos.APIBaseURLDataID)
 	if err != nil {
-		return fmt.Errorf("Nacos returned invalid endpoint URL %q: %w", endpoint, err)
+		return "", fmt.Errorf("resolve apiBaseURL from Nacos failed: %w", err)
+	}
+
+	apiBaseURL = strings.TrimSpace(apiBaseURL)
+	if apiBaseURL == "" {
+		return "", errors.New("Nacos returned empty apiBaseURL")
+	}
+
+	if err := validateURL(apiBaseURL); err != nil {
+		return "", err
+	}
+
+	return apiBaseURL, nil
+}
+
+// NacosAPIBaseURLEnabled reports whether Nacos apiBaseURL resolution is configured.
+func NacosAPIBaseURLEnabled(n NacosConfig) bool {
+	return n.ServerAddr != "" && n.APIBaseURLDataID != ""
+}
+
+func validateURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("Nacos returned invalid URL %q: %w", rawURL, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("Nacos returned invalid endpoint URL %q: scheme must be http or https", endpoint)
+		return fmt.Errorf("Nacos returned invalid URL %q: scheme must be http or https", rawURL)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("Nacos returned invalid endpoint URL %q: missing host", endpoint)
+		return fmt.Errorf("Nacos returned invalid URL %q: missing host", rawURL)
 	}
 	return nil
 }
@@ -85,7 +121,7 @@ func NacosEnabled(n NacosConfig) bool {
 	return n.ServerAddr != "" && n.DataID != ""
 }
 
-func resolveFromNacos(client *http.Client, n NacosConfig) (string, error) {
+func resolveFromNacos(client *http.Client, n NacosConfig, dataID string) (string, error) {
 	serverAddr := n.ServerAddr
 	if !strings.Contains(serverAddr, "://") {
 		serverAddr = "http://" + serverAddr
@@ -101,7 +137,7 @@ func resolveFromNacos(client *http.Client, n NacosConfig) (string, error) {
 
 	base.Path = "/nacos/v1/cs/configs"
 	q := base.Query()
-	q.Set("dataId", n.DataID)
+	q.Set("dataId", dataID)
 	q.Set("group", n.Group)
 	if n.NamespaceID != "" {
 		q.Set("tenant", n.NamespaceID)

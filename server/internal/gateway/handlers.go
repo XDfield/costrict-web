@@ -23,7 +23,7 @@ var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
 // @Accept       json
 // @Produce      json
 // @Param        X-Internal-Secret  header  string  true  "Internal shared secret"
-// @Param        body  body  object{gatewayID=string,endpoint=string,internalURL=string,region=string,capacity=integer}  true  "Gateway registration data"
+// @Param        body  body  object{gatewayID=string,endpoint=string,internalURL=string,region=string,capacity=integer,apiBaseURL=string}  true  "Gateway registration data"
 // @Success      200  {object}  object{success=boolean,heartbeatInterval=integer}
 // @Failure      400  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
@@ -36,6 +36,7 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 			InternalURL string `json:"internalURL" binding:"required"`
 			Region      string `json:"region"`
 			Capacity    int    `json:"capacity"`
+			APIBaseURL  string `json:"apiBaseURL"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -46,6 +47,7 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 			ID:            body.GatewayID,
 			Endpoint:      body.Endpoint,
 			InternalURL:   body.InternalURL,
+			APIBaseURL:    body.APIBaseURL,
 			Region:        body.Region,
 			Capacity:      body.Capacity,
 			LastHeartbeat: time.Now().UnixMilli(),

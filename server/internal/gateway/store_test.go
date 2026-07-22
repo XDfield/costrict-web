@@ -211,3 +211,22 @@ func TestMemoryStore_NoPersistence(t *testing.T) {
 		t.Fatal("new MemoryStore should not have data from previous instance")
 	}
 }
+
+func TestMemoryStore_APIBaseURLRoundTrip(t *testing.T) {
+	s := NewMemoryStore()
+	info := &GatewayInfo{ID: "gw-1", Endpoint: "https://d.example.com", InternalURL: "http://10.0.0.1:8081", APIBaseURL: "https://api-a.example.com"}
+	if err := s.RegisterGateway(info); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetGateway("gw-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIBaseURL != info.APIBaseURL {
+		t.Fatalf("expected %q, got %q", info.APIBaseURL, got.APIBaseURL)
+	}
+	list, err := s.ListGateways()
+	if err != nil || len(list) != 1 || list[0].APIBaseURL != info.APIBaseURL {
+		t.Fatalf("ListGateways lost APIBaseURL: %+v, err=%v", list, err)
+	}
+}
