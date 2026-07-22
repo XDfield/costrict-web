@@ -39,6 +39,10 @@ type UserService interface {
 	GetUserByID(ctx context.Context, subjectID string) (*models.User, error)
 	GetUsersByIDs(ctx context.Context, subjectIDs []string) (map[string]*models.User, error)
 	SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error)
+	// SearchUsersByEmployeeNumber is the UserRef resolution path (doc v1.1
+	// §5.2): join employment_identities on users by employee_number, scoped
+	// to ctx's tenant. Missing employee_number → empty slice (server maps to 404).
+	SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error)
 	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
 	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error)
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
@@ -139,18 +143,25 @@ func (a *UsersAPI) GetUsersByIDs(c *gin.Context) {
 // SearchUsers godoc
 //
 //	@Summary		Search active users
-//	@Description	Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200.
+//	@Description	Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass `employee_number` to short-circuit the keyword path and look up users via employment_identities (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). `keyword` and `employee_number` are mutually exclusive — supplying both yields 400.
 //	@Tags			users
 //	@Produce		json
 //	@Security		InternalToken
-//	@Param			keyword	query		string	false	"Search keyword (matched against username / display_name / email)"
-//	@Param			limit	query		int		false	"Max results (default 50, max 200)"
-//	@Success		200		{object}	object{users=[]models.User}
-//	@Failure		400		{object}	object{error=string}
-//	@Failure		500		{object}	object{error=string}
+//	@Param			keyword			query		string	false	"Search keyword (matched against username / display_name / email)"
+//	@Param			employee_number	query		string	false	"Employee number (工号) — short-circuits keyword path; goes through employment_identities JOIN users"
+//	@Param			limit			query		int		false	"Max results (default 50 for keyword / 1 for employee_number, max 200)"
+//	@Success		200				{object}	object{users=[]models.User}
+//	@Failure		400				{object}	object{error=string}
+//	@Failure		500				{object}	object{error=string}
 //	@Router			/api/internal/users/search [get]
 func (a *UsersAPI) SearchUsers(c *gin.Context) {
 	keyword := c.Query("keyword")
+	employeeNumber := c.Query("employee_number")
+
+	if keyword != "" && employeeNumber != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "keyword and employee_number are mutually exclusive"})
+		return
+	}
 
 	limit := 0
 	if v := c.Query("limit"); v != "" {
@@ -165,7 +176,20 @@ func (a *UsersAPI) SearchUsers(c *gin.Context) {
 		limit = n
 	}
 
-	users, err := a.Svc.SearchUsers(c.Request.Context(), keyword, limit)
+	var (
+		users []*models.User
+		err   error
+	)
+	switch {
+	case employeeNumber != "":
+		users, err = a.Svc.SearchUsersByEmployeeNumber(c.Request.Context(), employeeNumber, limit)
+		if errors.Is(err, user.ErrEmptyEmployeeNumber) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	default:
+		users, err = a.Svc.SearchUsers(c.Request.Context(), keyword, limit)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return

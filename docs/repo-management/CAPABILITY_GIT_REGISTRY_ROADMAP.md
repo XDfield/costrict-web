@@ -104,7 +104,7 @@ Phase 8 ─── 后续优化（持续，无终点）
 
 | # | 决策项 | 选项 | 默认推荐 | 影响 |
 |---|---|---|---|---|
-| 0.3.1 | 单文件大小默认上限 | 5MB / 10MB / 50MB | skill 1MB / command 1MB / subagent 5MB / mcp 10MB / plugin 50MB（按 capability_type 差异化） | fork pre-receive hook 逻辑 |
+| 0.3.1 | 单文件大小默认上限 | 5MB / 10MB / 50MB | **统一 5MB**（POC 简化：不按 capability_type 差异化，仅作量级防护；类型锁定与限制隔离由 costrict-web 应用层维护，见 §4.6） | fork pre-receive hook 逻辑 |
 | 0.3.2 | owner 默认配额 | 50MB / 100MB / 500MB | `costrict` 50MB / `costrict-plugins` 500MB / `costrict-mirror` 2GB / `costrict-config` 64MB / `u-*` 100MB | quota.yaml 内容 |
 | 0.3.3 | mirror pull 频率 | 全部 24h / hot mirror 1h | 默认 24h，白名单 hot mirror 1h（如 awesome-claude-skills） | Gitea mirror 配置 |
 
@@ -168,7 +168,7 @@ Phase 8 ─── 后续优化（持续，无终点）
 
 - [ ] 修改 `modules/gitrepo/hooks.go` `CreateDelegateHooks`（~20 行）：加入系统级 pre-receive hook 路径 fallback
 - [ ] 新增 `modules/git/preceive_global.go`（~80 行）：
-  - 单文件大小限制（按 capability_type 差异化，Phase 0.3.1）
+  - 单文件大小限制（**统一默认值，不按 capability_type 差异化**，Phase 0.3.1 简化决策）
   - repo 总大小配额（owner 默认 + per-repo 覆盖）
   - commit message 不检查
 - [ ] 新增 `modules/setting/quota.go`（~20 行）：加载 app.ini 中的 quota 默认配置

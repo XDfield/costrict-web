@@ -44,13 +44,19 @@ type TenantGitServerResolver interface {
 
 // tenantGitServerResponse is the JSON body returned to the caller.
 //
-//	admin_token is sensitive — the internal network is trusted (already
-//	used for user-gitea-binding reads), but the handler must NEVER log it.
+//	admin_token / admin_password are sensitive — the internal network is
+//	trusted (already used for user-gitea-binding reads), but the handler
+//	must NEVER log them. admin_user / admin_password are optional; absent
+//	when the tenant's git_servers.config doesn't carry them (the calling
+//	gitsync.Client falls back to admin-token-only auth, which suffices for
+//	every endpoint except the token-mint paths).
 type tenantGitServerResponse struct {
-	ServerID   string `json:"server_id"`
-	Kind       string `json:"kind"`
-	Endpoint   string `json:"endpoint"`
-	AdminToken string `json:"admin_token"`
+	ServerID      string `json:"server_id"`
+	Kind          string `json:"kind"`
+	Endpoint      string `json:"endpoint"`
+	AdminToken    string `json:"admin_token"`
+	AdminUser     string `json:"admin_user,omitempty"`
+	AdminPassword string `json:"admin_password,omitempty"`
 }
 
 // GetTenantGitServer godoc
@@ -85,10 +91,12 @@ func (a *TenantGitServerAPI) GetTenantGitServer(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, tenantGitServerResponse{
-		ServerID:   cfg.ServerID,
-		Kind:       cfg.Kind,
-		Endpoint:   cfg.Endpoint,
-		AdminToken: cfg.AdminToken,
+		ServerID:      cfg.ServerID,
+		Kind:          cfg.Kind,
+		Endpoint:      cfg.Endpoint,
+		AdminToken:    cfg.AdminToken,
+		AdminUser:     cfg.AdminUser,
+		AdminPassword: cfg.AdminPassword,
 	})
 }
 

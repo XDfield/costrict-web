@@ -169,6 +169,71 @@ func (s *Service) SearchUsers(ctx context.Context, keyword string, limit int) ([
 	return users, err
 }
 
+// SearchUsersByEmployeeNumber 反查路径：用 employment_identities.employee_number
+// 解析物理用户，供 team-namespace workflow 的 UserRef（doc v1.1 §5.2）使用。
+//
+// 与 SearchUsers 不同——后者基于 users 表的 username/display_name/email LIKE；
+// 本方法走 employment_identities JOIN users，因为 employee_number 字段不在
+// users 表上，而是 IdP sync 落到 employment_identities（Phase A4b）。
+//
+// tenant 范围由 ctx 上的 tenant.Scope(ctx) 决定，匹配 B5 约定。
+//
+// 非唯一性：本期 (tenant_id, employee_number) 唯一索引未落地（需要 enterprise_uid
+// 字段先落地，见 EmploymentIdentity 模型注释）。命中多行时按 last_synced_at DESC
+// 取最近一条；doc 中 `ambiguous` 严格语义推迟到 Phase B。
+//
+// 不返回错误：找不到匹配行时返回 (nil, nil) —— server 侧据此映射 HTTP 404。
+func (s *Service) SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	if employeeNumber == "" {
+		return nil, ErrEmptyEmployeeNumber
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+
+	tenantID := tenant.IDFromContext(ctx)
+
+	// 子查询：每个 tenant 内匹配 employee_number 的最近 last_synced_at 行。
+	// GORM 不擅长写 PARTITION BY，直接落原始 SQL — Postgres / sqlite 都支持
+	// 这种 ROW_NUMBER 模式，避免在 Go 内存里去重。
+	//
+	// SQL 形如：
+	//   SELECT u.* FROM users u
+	//   JOIN employment_identities e
+	//     ON e.user_subject_id = u.subject_id
+	//    AND e.tenant_id = u.tenant_id
+	//   WHERE u.tenant_id = ?
+	//     AND u.is_active = true
+	//     AND e.deleted_at IS NULL
+	//     AND e.employee_number = ?
+	//   ORDER BY e.last_synced_at DESC
+	//   LIMIT ?
+	var users []*models.User
+	err := s.db.WithContext(ctx).
+		Table("users AS u").
+		Joins("JOIN employment_identities AS e "+
+			"ON e.user_subject_id = u.subject_id "+
+			"AND e.tenant_id = u.tenant_id").
+		Where("u.tenant_id = ?", tenantID).
+		Where("u.is_active = ?", true).
+		Where("e.deleted_at IS NULL").
+		Where("e.employee_number = ?", employeeNumber).
+		Order("e.last_synced_at DESC, u.subject_id ASC").
+		Limit(limit).
+		Find(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// ErrEmptyEmployeeNumber signals a caller-programming error (empty
+// employee_number). Surfaced as a sentinel so handlers map it to 400.
+var ErrEmptyEmployeeNumber = errors.New("employee_number must not be empty")
+
 // ListIdentities returns every auth identity bound to the user, ordered so
 // the primary identity surfaces first (callers building "linked accounts"
 // UI render it at the top).
