@@ -203,7 +203,15 @@ func (s *BehaviorService) updateItemStats(itemID string, actionType models.Actio
 	}
 }
 
-func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID string) (int64, bool, error) {
+// FavoriteItem marks an item as favorited for the user (idempotent) and persists
+// the per-user invokeMode preference. invokeMode is "auto" or "manual"; an empty
+// value defaults to "auto". For an already-favorited item this upserts the mode
+// (so the user can switch auto/manual without unfavorite+refavorite).
+func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID, invokeMode string) (int64, bool, error) {
+	if invokeMode != "manual" {
+		invokeMode = "auto"
+	}
+
 	tx := s.db.WithContext(ctx).Begin()
 	if tx.Error != nil {
 		return 0, false, tx.Error
@@ -215,7 +223,7 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID strin
 		}
 	}()
 
-	count, created, err := s.favoriteItemTx(tx, itemID, userID)
+	count, created, err := s.favoriteItemTx(tx, itemID, userID, invokeMode)
 	if err != nil {
 		tx.Rollback()
 		return 0, false, err
@@ -229,16 +237,18 @@ func (s *BehaviorService) FavoriteItem(ctx context.Context, itemID, userID strin
 
 // FavoriteItemTx adds a favorite within the caller's transaction. Used by the
 // distribution resume path so re-adding recipients' favorites is atomic with the
-// status change (and consistent with UnfavoriteItemTx below).
+// status change (and consistent with UnfavoriteItemTx below). Distributed
+// favorites default to "auto" (AI-auto-invokable), matching prior behavior.
 func (s *BehaviorService) FavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
-	return s.favoriteItemTx(tx, itemID, userID)
+	return s.favoriteItemTx(tx, itemID, userID, "auto")
 }
 
-func (s *BehaviorService) favoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
+func (s *BehaviorService) favoriteItemTx(tx *gorm.DB, itemID, userID, invokeMode string) (int64, bool, error) {
 	favorite := models.ItemFavorite{
-		ID:     uuid.New().String(),
-		ItemID: itemID,
-		UserID: userID,
+		ID:         uuid.New().String(),
+		ItemID:     itemID,
+		UserID:     userID,
+		InvokeMode: invokeMode,
 	}
 	var existing models.ItemFavorite
 	err := tx.Where("item_id = ? AND user_id = ?", itemID, userID).First(&existing).Error
@@ -254,6 +264,15 @@ func (s *BehaviorService) favoriteItemTx(tx *gorm.DB, itemID, userID string) (in
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
 			UpdateColumn("favorite_count", gorm.Expr("favorite_count + 1")).Error; err != nil {
+			return 0, false, err
+		}
+	} else if existing.InvokeMode != invokeMode {
+		// Already favorited: update the per-user invoke mode in place (count unchanged).
+		// No tx.Rollback here — this helper runs inside the caller's tx; the caller
+		// (FavoriteItem / the distribution path) owns rollback on a returned error.
+		if err := tx.Model(&models.ItemFavorite{}).
+			Where("id = ?", existing.ID).
+			UpdateColumn("invoke_mode", invokeMode).Error; err != nil {
 			return 0, false, err
 		}
 	}

@@ -223,10 +223,11 @@ func setupTestDB(t *testing.T) func() {
 			created_at   DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS item_favorites (
-			id         TEXT PRIMARY KEY,
-			item_id    TEXT NOT NULL,
-			user_id    TEXT NOT NULL,
-			created_at DATETIME,
+			id          TEXT PRIMARY KEY,
+			item_id     TEXT NOT NULL,
+			user_id     TEXT NOT NULL,
+			invoke_mode TEXT NOT NULL DEFAULT 'auto',
+			created_at  DATETIME,
 			UNIQUE(item_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS item_distributions (

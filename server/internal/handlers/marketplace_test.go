@@ -979,6 +979,97 @@ func TestFavoriteItem_Success(t *testing.T) {
 	}
 }
 
+func TestFavoriteItem_ManualMode(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-favm", Name: "repo-favm", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-favm", Name: "fav-regm", SourceType: "internal", RepoID: "repo-favm", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-favm", RegistryID: "reg-favm", RepoID: "repo-favm", Slug: "fav-skillm", ItemType: "skill",
+		Name: "Favorite Skill M", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-favm")
+	w := postJSON(r, "/api/items/item-favm/favorite", map[string]interface{}{"invokeMode": "manual"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["invokeMode"] != "manual" {
+		t.Fatalf("expected response invokeMode=manual, got %v", resp["invokeMode"])
+	}
+
+	var fav models.ItemFavorite
+	if err := database.DB.Where("item_id = ? AND user_id = ?", "item-favm", "user-favm").First(&fav).Error; err != nil {
+		t.Fatalf("load favorite: %v", err)
+	}
+	if fav.InvokeMode != "manual" {
+		t.Fatalf("expected persisted invoke_mode=manual, got %q", fav.InvokeMode)
+	}
+}
+
+func TestFavoriteItem_InvalidMode(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-favx", Name: "repo-favx", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-favx", Name: "fav-regx", SourceType: "internal", RepoID: "repo-favx", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-favx", RegistryID: "reg-favx", RepoID: "repo-favx", Slug: "fav-skillx", ItemType: "skill",
+		Name: "Favorite Skill X", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-favx")
+	w := postJSON(r, "/api/items/item-favx/favorite", map[string]interface{}{"invokeMode": "bogus"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid invokeMode, got %d: %s", w.Code, w.Body.String())
+	}
+	// No favorite should have been created.
+	var count int64
+	database.DB.Model(&models.ItemFavorite{}).Where("item_id = ?", "item-favx").Count(&count)
+	if count != 0 {
+		t.Fatalf("expected no favorite row on invalid mode, got %d", count)
+	}
+}
+
+func TestFavoriteItem_SwitchMode(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.Repository{
+		ID: "repo-favs", Name: "repo-favs", OwnerID: "u1", Visibility: "public",
+	})
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-favs", Name: "fav-regs", SourceType: "internal", RepoID: "repo-favs", OwnerID: "u1",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-favs", RegistryID: "reg-favs", RepoID: "repo-favs", Slug: "fav-skills", ItemType: "skill",
+		Name: "Favorite Skill S", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+	})
+
+	r := newMarketplaceRouter("user-favs")
+	postJSON(r, "/api/items/item-favs/favorite", map[string]interface{}{"invokeMode": "auto"})
+	w := postJSON(r, "/api/items/item-favs/favorite", map[string]interface{}{"invokeMode": "manual"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item models.CapabilityItem
+	database.DB.First(&item, "id = ?", "item-favs")
+	if item.FavoriteCount != 1 {
+		t.Fatalf("expected favorite_count stays 1 after switch, got %d", item.FavoriteCount)
+	}
+	var fav models.ItemFavorite
+	database.DB.Where("item_id = ? AND user_id = ?", "item-favs", "user-favs").First(&fav)
+	if fav.InvokeMode != "manual" {
+		t.Fatalf("expected invoke_mode flipped to manual, got %q", fav.InvokeMode)
+	}
+}
+
 func TestFavoriteItem_Idempotent(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{

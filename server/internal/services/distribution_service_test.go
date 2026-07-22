@@ -200,7 +200,7 @@ func setupRevokeFavoriteDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY, distribution_id TEXT NOT NULL, user_id TEXT NOT NULL,
 			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT, created_at DATETIME, updated_at DATETIME)`,
 		`CREATE TABLE capability_items (id TEXT PRIMARY KEY, name TEXT, favorite_count INTEGER DEFAULT 0)`,
-		`CREATE TABLE item_favorites (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at DATETIME)`,
+		`CREATE TABLE item_favorites (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL, invoke_mode TEXT NOT NULL DEFAULT 'auto', created_at DATETIME)`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {

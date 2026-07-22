@@ -513,6 +513,11 @@ type ItemFavorite struct {
 	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_favorite" json:"itemId"`
 	UserID    string    `gorm:"type:varchar(191);not null;uniqueIndex:idx_item_favorite;index" json:"userId"`
+	// InvokeMode is a per-user subscription preference for skill-family items:
+	// "auto" (AI may auto-invoke via skill discovery) or "manual" (slash-command only).
+	// Honored by the csc client when materializing SKILL.md (disable-model-invocation).
+	// Stored for all item types but only meaningful for skill/command/subagent.
+	InvokeMode string    `gorm:"type:varchar(16);not null;default:'auto'" json:"invokeMode"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

@@ -548,6 +548,7 @@ type ItemResponse struct {
 	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
 	RepoName            string                      `json:"repoName,omitempty"`
 	Favorited           bool                        `json:"favorited"`
+	InvokeMode          *string                     `json:"invokeMode,omitempty"` // per-user invoke mode (auto|manual); nil when not favorited
 	IsBuiltIn           bool                        `json:"isBuiltIn"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
 	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
@@ -715,11 +716,13 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		resp.RepoName = getRepoName(item.Registry.RepoID)
 	}
 	if userID != "" {
-		var count int64
-		if err := db.Model(&models.ItemFavorite{}).
+		var fav models.ItemFavorite
+		if err := db.Select("invoke_mode").
 			Where("item_id = ? AND user_id = ?", item.ID, userID).
-			Count(&count).Error; err == nil {
-			resp.Favorited = count > 0
+			First(&fav).Error; err == nil {
+			resp.Favorited = true
+			mode := fav.InvokeMode
+			resp.InvokeMode = &mode
 		}
 	}
 	if item.ID != "" {
@@ -2232,8 +2235,9 @@ func ListAllItems(c *gin.Context) {
 		}
 	}
 
-	// Batch-fetch favorited status for current user
+	// Batch-fetch favorited status + per-user invoke mode for current user
 	favoritedSet := make(map[string]bool)
+	favoriteModeMap := make(map[string]string)
 	if uid != "" && len(items) > 0 {
 		itemIDs := make([]string, len(items))
 		for i, item := range items {
@@ -2243,6 +2247,7 @@ func ListAllItems(c *gin.Context) {
 		db.Where("user_id = ? AND item_id IN ?", uid, itemIDs).Find(&favs)
 		for _, fav := range favs {
 			favoritedSet[fav.ItemID] = true
+			favoriteModeMap[fav.ItemID] = fav.InvokeMode
 		}
 	}
 
@@ -2272,15 +2277,19 @@ func ListAllItems(c *gin.Context) {
 	// Populate repoName and favorited into each item
 	type ItemWithRepo struct {
 		models.CapabilityItem
-		RepoName         string `json:"repoName,omitempty"`
-		Favorited        bool   `json:"favorited"`
-		ForkCount        int    `json:"forkCount"`
-		ParentPluginName string `json:"parentPluginName,omitempty"`
-		ParentPluginSlug string `json:"parentPluginSlug,omitempty"`
+		RepoName         string  `json:"repoName,omitempty"`
+		Favorited        bool    `json:"favorited"`
+		InvokeMode       *string `json:"invokeMode,omitempty"` // per-user invoke mode (auto|manual); nil when not favorited
+		ForkCount        int     `json:"forkCount"`
+		ParentPluginName string  `json:"parentPluginName,omitempty"`
+		ParentPluginSlug string  `json:"parentPluginSlug,omitempty"`
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
 		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID], ForkCount: forkCountMap[item.ID]}
+		if mode, ok := favoriteModeMap[item.ID]; ok {
+			out[i].InvokeMode = &mode
+		}
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]
 		}
