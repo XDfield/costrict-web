@@ -321,5 +321,376 @@ func TestService_UpdateProviderMapping_EmptyTenantID(t *testing.T) {
 	}
 }
 
-// intPtr is a small helper because Go doesn't have one in stdlib.
-func intPtr(n int) *int { return &n }
+// ---------------- LoadProviderMapping (E1.2) ----------------
+
+func TestLoadProviderMapping_ReturnsGlobalPlusTenantMerge(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	// No tenant-specific override — should return global default only
+	mapping, err := s.LoadProviderMapping(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("LoadProviderMapping: %v", err)
+	}
+
+	// Check global defaults exist
+	if mapping.Version != CurrentSupportedVersion {
+		t.Errorf("Version: got %q want %q", mapping.Version, CurrentSupportedVersion)
+	}
+
+	// Check a known global provider exists
+	gh, ok := mapping.Providers["github"]
+	if !ok {
+		t.Fatal("github provider missing from global defaults")
+	}
+	if gh.Enabled == nil || !*gh.Enabled {
+		t.Error("github provider should be enabled by default")
+	}
+	if gh.Rank == nil || *gh.Rank != 100 {
+		t.Errorf("github rank: got %v want 100", gh.Rank)
+	}
+}
+
+func TestLoadProviderMapping_TenantOverride_ReplacesGlobal(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	// Seed tenant-specific config that overrides github
+	tenantYAML := `
+version: "1.0"
+provider_mapping:
+  providers:
+    github:
+      enabled: false
+      rank: 50
+`
+	_, err := s.Update(context.Background(), UpdateParams{
+		TenantID:   "t-acme",
+		ConfigYAML: tenantYAML,
+		UpdatedBy:  strPtr("test"),
+	})
+	if err != nil {
+		t.Fatalf("seed tenant config: %v", err)
+	}
+
+	// Load effective mapping
+	mapping, err := s.LoadProviderMapping(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("LoadProviderMapping: %v", err)
+	}
+
+	// Check tenant override is applied
+	gh, ok := mapping.Providers["github"]
+	if !ok {
+		t.Fatal("github provider missing")
+	}
+	if gh.Enabled == nil || *gh.Enabled {
+		t.Error("github provider should be disabled per tenant override")
+	}
+	if gh.Rank == nil || *gh.Rank != 50 {
+		t.Errorf("github rank: got %v want 50 (tenant override)", gh.Rank)
+	}
+
+	// Check other global providers still exist
+	google, ok := mapping.Providers["google"]
+	if !ok {
+		t.Error("google provider should still be present from global defaults")
+	}
+	if google.Enabled == nil || !*google.Enabled {
+		t.Error("google provider should be enabled (no tenant override)")
+	}
+}
+
+func TestLoadProviderMapping_MalformedTenantConfig_ReturnsGlobalOnly(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	// Seed invalid YAML
+	tenantYAML := `
+provider_mapping:
+  providers:
+    github:
+      enabled: not-a-boolean
+`
+	_, err := s.Update(context.Background(), UpdateParams{
+		TenantID:   "t-acme",
+		ConfigYAML: tenantYAML,
+		UpdatedBy:  strPtr("test"),
+	})
+	if err != nil {
+		t.Fatalf("seed tenant config: %v", err)
+	}
+
+	// Should return global defaults without error
+	mapping, err := s.LoadProviderMapping(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("LoadProviderMapping should not fail on malformed tenant config: %v", err)
+	}
+
+	// Should have global defaults
+	if mapping.Version != CurrentSupportedVersion {
+		t.Errorf("Version: got %q want %q (global default)", mapping.Version, CurrentSupportedVersion)
+	}
+	_, ok := mapping.Providers["github"]
+	if !ok {
+		t.Error("github provider should be present from global defaults")
+	}
+}
+
+func TestLoadProviderMapping_EmptyTenantID_ReturnsError(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	_, err := s.LoadProviderMapping(context.Background(), "")
+	if err == nil {
+		t.Fatal("LoadProviderMapping should return error for empty tenantID")
+	}
+}
+
+// ---------------- GetEnabledProviders (E1.6) ----------------
+
+func TestGetEnabledProviders_ReturnsEnabledOnly(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	providers, err := s.GetEnabledProviders(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("GetEnabledProviders: %v", err)
+	}
+
+	// Should contain github (enabled by default)
+	hasGitHub := false
+	for _, p := range providers {
+		if p == "github" {
+			hasGitHub = true
+		}
+	}
+	if !hasGitHub {
+		t.Error("github should be in enabled providers")
+	}
+
+	// Should contain google (enabled by default)
+	hasGoogle := false
+	for _, p := range providers {
+		if p == "google" {
+			hasGoogle = true
+		}
+	}
+	if !hasGoogle {
+		t.Error("google should be in enabled providers")
+	}
+}
+
+func TestGetEnabledProviders_TenantOverride_MergesCorrectly(t *testing.T) {
+	db := newDB(t)
+	s := New(db)
+
+	// Tenant enables a disabled provider
+	tenantYAML := `
+version: "1.0"
+provider_mapping:
+  providers:
+    ldap:
+      enabled: true
+      rank: 400
+`
+	_, err := s.Update(context.Background(), UpdateParams{
+		TenantID:   "t-acme",
+		ConfigYAML: tenantYAML,
+		UpdatedBy:  strPtr("test"),
+	})
+	if err != nil {
+		t.Fatalf("seed tenant config: %v", err)
+	}
+
+	providers, err := s.GetEnabledProviders(context.Background(), "t-acme")
+	if err != nil {
+		t.Fatalf("GetEnabledProviders: %v", err)
+	}
+
+	// Should contain ldap (enabled by tenant override)
+	hasLDAP := false
+	for _, p := range providers {
+		if p == "ldap" {
+			hasLDAP = true
+		}
+	}
+	if !hasLDAP {
+		t.Error("ldap should be in enabled providers (tenant override)")
+	}
+
+	// Should still contain github (global default)
+	hasGitHub := false
+	for _, p := range providers {
+		if p == "github" {
+			hasGitHub = true
+		}
+	}
+	if !hasGitHub {
+		t.Error("github should still be in enabled providers (global default)")
+	}
+}
+
+// ---------------- Cache (E1.4 + E1.5) ----------------
+
+func TestCache_HitMiss_WorksCorrectly(t *testing.T) {
+	db := newDB(t)
+	inner := New(db)
+	cacher := NewMemoryCache()
+	s := NewCachedService(inner, cacher)
+
+	ctx := context.Background()
+	tenantID := "t-acme"
+
+	// First call — cache miss, loads from DB
+	mapping1, err := s.LoadProviderMapping(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (first call): %v", err)
+	}
+
+	// Verify it's cached
+	_, found := cacher.Get(tenantID)
+	if !found {
+		t.Error("mapping should be cached after first load")
+	}
+
+	// Second call — cache hit (should return same instance)
+	mapping2, err := s.LoadProviderMapping(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (second call): %v", err)
+	}
+
+	// Should be the same instance (from cache)
+	if mapping1 != mapping2 {
+		t.Error("cache hit should return the same instance")
+	}
+}
+
+func TestCache_Invalidation_WorksCorrectly(t *testing.T) {
+	db := newDB(t)
+	inner := New(db)
+	cacher := NewMemoryCache()
+	s := NewCachedService(inner, cacher)
+
+	ctx := context.Background()
+	tenantID := "t-acme"
+
+	// Load and cache
+	_, err := s.LoadProviderMapping(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (before update): %v", err)
+	}
+
+	// Update provider mapping via service (should invalidate cache)
+	tenantYAML := `
+version: "1.0"
+provider_mapping:
+  providers:
+    github:
+      enabled: false
+`
+	_, err = s.inner.Update(ctx, UpdateParams{
+		TenantID:   tenantID,
+		ConfigYAML: tenantYAML,
+		UpdatedBy:  strPtr("test"),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Cache should be invalidated
+	_, found := cacher.Get(tenantID)
+	if found {
+		t.Error("cache should be invalidated after update")
+	}
+
+	// Next load should get fresh data
+	mapping, err := s.LoadProviderMapping(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (after update): %v", err)
+	}
+
+	gh, ok := mapping.Providers["github"]
+	if !ok {
+		t.Fatal("github provider missing")
+	}
+	if gh.Enabled == nil || *gh.Enabled {
+		t.Error("github should be disabled after tenant update")
+	}
+}
+
+func TestCache_InvalidateAll_WorksCorrectly(t *testing.T) {
+	db := newDB(t)
+	inner := New(db)
+	cacher := NewMemoryCache()
+	s := NewCachedService(inner, cacher)
+
+	ctx := context.Background()
+
+	// Load mappings for multiple tenants
+	_, err := s.LoadProviderMapping(ctx, "t-acme")
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (t-acme): %v", err)
+	}
+	_, err = s.LoadProviderMapping(ctx, "t-globex")
+	if err != nil {
+		t.Fatalf("LoadProviderMapping (t-globex): %v", err)
+	}
+
+	// Invalidate all
+	s.InvalidateAllCaches()
+
+	// Both should be gone
+	_, found := cacher.Get("t-acme")
+	if found {
+		t.Error("t-acme should be invalidated")
+	}
+	_, found = cacher.Get("t-globex")
+	if found {
+		t.Error("t-globex should be invalidated")
+	}
+}
+
+// ---------------- Version Validation (E1.3) ----------------
+
+func TestVersion_DefaultsTo10WhenEmpty(t *testing.T) {
+	mapping := &ProviderMapping{
+		Providers: map[string]Provider{
+			"test": {Enabled: boolPtr(true)},
+		},
+	}
+
+	err := mapping.Validate()
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	if mapping.Version != CurrentSupportedVersion {
+		t.Errorf("Version should default to %q, got %q", CurrentSupportedVersion, mapping.Version)
+	}
+}
+
+func TestVersion_InvalidVersion_ReturnsError(t *testing.T) {
+	mapping := &ProviderMapping{
+		Version: "2.0",
+		Providers: map[string]Provider{
+			"test": {Enabled: boolPtr(true)},
+		},
+	}
+
+	err := mapping.Validate()
+	if err == nil {
+		t.Fatal("Validate should return error for unsupported version")
+	}
+	if !errors.Is(err, ErrVersionInvalid) {
+		t.Errorf("want ErrVersionInvalid, got %v", err)
+	}
+}
+
+func TestVersion_NilMapping_Valid(t *testing.T) {
+	var mapping *ProviderMapping
+	err := mapping.Validate()
+	if err != nil {
+		t.Fatalf("Validate on nil mapping should succeed: %v", err)
+	}
+}

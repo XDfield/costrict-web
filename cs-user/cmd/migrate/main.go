@@ -23,6 +23,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
 	"github.com/costrict/costrict-web/cs-user/migrations"
+	"github.com/joho/godotenv"
 	"github.com/pressly/goose/v3"
 )
 
@@ -35,6 +36,14 @@ const (
 )
 
 func main() {
+	// Dev convenience: load .env from CWD if present. In production the
+	// container runtime injects env vars directly and .env is absent —
+	// godotenv.Load returns nil for missing files and is a safe no-op.
+	// Existing process env wins (Load does not override set vars).
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		log.Printf("load .env: %v (continuing with process env)", err)
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "help", "-h", "--help":
@@ -103,10 +112,10 @@ func main() {
 // acquireAdvisoryLock wraps pg_advisory_lock(int4,int4). Blocks until the lock
 // is acquired or the query fails.
 func acquireAdvisoryLock(db *sql.DB) error {
-	var ok bool
-	return db.QueryRow(
+	_, err := db.Exec(
 		"SELECT pg_advisory_lock($1, $2)", csUserLockKey1, csUserLockKey2,
-	).Scan(&ok)
+	)
+	return err
 }
 
 // releaseAdvisoryLock best-effort releases the lock at shutdown. A failure
