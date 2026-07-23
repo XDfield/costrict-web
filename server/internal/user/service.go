@@ -29,6 +29,12 @@ type JWTClaims struct {
 	Provider          string
 	ProviderUserID    string
 	Phone             string
+	// ExternalClaims carries the raw IdP userinfo map (Profile.Raw from the
+	// multi-idp OAuth client) so cs-user can run field_map extraction on the
+	// tenant's employment_providers config. json tag is explicit so the wire
+	// key matches cs-user's models.JWTClaims.ExternalClaims tag ("external_claims")
+	// without relying on encoding/json's case-insensitive fallback.
+	ExternalClaims map[string]any `json:"external_claims,omitempty"`
 }
 
 // UserService provides user data operations

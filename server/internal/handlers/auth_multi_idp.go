@@ -355,6 +355,8 @@ func runMultiIdPCallback(c *gin.Context) {
 
 	// Normalize OAuth Profile → JWTClaims. Subject and Email are the two
 	// load-bearing fields; the rest is best-effort enrichment.
+	// profile.Raw (the full IdP userinfo map) is forwarded as ExternalClaims
+	// so cs-user's ApplyEnterpriseMapping can run field_map extraction on it.
 	claims := &userpkg.JWTClaims{
 		Sub:               profile.Subject,
 		Email:             profile.Email,
@@ -363,6 +365,7 @@ func runMultiIdPCallback(c *gin.Context) {
 		Picture:           profile.AvatarURL,
 		Provider:          payload.Provider,
 		ProviderUserID:    profile.Subject,
+		ExternalClaims:    profile.Raw,
 	}
 
 	// Carry the tenant slug through the upcoming cs-user writes so they
@@ -393,11 +396,9 @@ func runMultiIdPCallback(c *gin.Context) {
 	// cs-user treats repeat bindings as success.
 	_ = writer.BindIdentityToUser(ctx, created.SubjectID, claims)
 
-	if claims.Provider != "" {
-		if err := writer.ApplyEnterpriseMapping(ctx, created.SubjectID, claims.Provider); err != nil {
-			logger.Warn("[multi-idp-callback] ApplyEnterpriseMapping failed: %v", err)
-		}
-	}
+	// Enterprise mapping is auto-triggered inside cs-user's GetOrCreateUser
+	// (using claims.ExternalClaims harvested from profile.Raw above). No
+	// explicit server-side call needed — it would be a downgrade (no claims).
 
 	cookieToken := tokenResp.AccessToken
 	if h.JWTSignMode != "" && h.JWTSignMode != config.JWTSignModeOff {

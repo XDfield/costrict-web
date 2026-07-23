@@ -537,18 +537,11 @@ func AuthCallback(c *gin.Context) {
 			if created, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
 			} else if created != nil {
-				// Phase A4b: refresh the user's employment_identities snapshot
-				// via cs-user. Best-effort — employment mapping is a bonus
-				// feature and must never block login. Skipped when
-				// claims.Provider is empty (no provider to map) or when
-				// GetOrCreateUser returned no user (nil-safety). The local
-				// UserService stub is a no-op; RPCWriter + DualWriter forward
-				// the actual write to cs-user.
-				if claims.Provider != "" {
-					if err := UserModule.Writer.ApplyEnterpriseMapping(c.Request.Context(), created.SubjectID, claims.Provider); err != nil {
-						fmt.Printf("[WARN] ApplyEnterpriseMapping failed during auth callback: %v\n", err)
-					}
-				}
+				// Phase A4b/Slice 2: enterprise mapping is auto-triggered
+				// inside cs-user's GetOrCreateUser using claims.ExternalClaims
+				// (which the multi-idp callback harvests from profile.Raw).
+				// Best-effort — employment mapping is a bonus feature and must
+				// never block login.
 				// Phase A8: when mode is dual or single, ask cs-user to mint
 				// a fresh JWT carrying enterprise claims. Best-effort: on any
 				// failure (transport, ErrSelfSignUnavailable from local-mode
