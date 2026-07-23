@@ -43,7 +43,7 @@ type IdPSourcesAPI struct {
 // @Produce json
 // @Param request body idp.CreateParams true "IdP source creation parameters"
 // @Success 200 {object} idp.IdPSourceView
-// @Failure 400 {object}ErrorResponse
+// @Failure 400 {object} object{error=string}
 // @Router /api/idp-sources [post]
 func (h *IdPSourcesAPI) CreateIdPSource(c *gin.Context) {
 	var req idp.CreateParams
@@ -70,7 +70,7 @@ func (h *IdPSourcesAPI) CreateIdPSource(c *gin.Context) {
 // @Param tenant_id path string true "Tenant identifier"
 // @Param provider path string true "Provider name"
 // @Success 200 {object} idp.IdPSourceView
-// @Failure 404 {object}ErrorResponse
+// @Failure 404 {object} object{error=string}
 // @Router /api/idp-sources/{tenant_id}/{provider} [get]
 func (h *IdPSourcesAPI) GetIdPSource(c *gin.Context) {
 	tenantID := c.Param("tenant_id")
@@ -120,8 +120,8 @@ func (h *IdPSourcesAPI) ListIdPSources(c *gin.Context) {
 // @Param provider path string true "Provider name"
 // @Param request body idp.UpdateParams true "IdP source update parameters"
 // @Success 200 {object} idp.IdPSourceView
-// @Failure 400 {object}ErrorResponse
-// @Failure 404 {object}ErrorResponse
+// @Failure 400 {object} object{error=string}
+// @Failure 404 {object} object{error=string}
 // @Router /api/idp-sources/{tenant_id}/{provider} [put]
 func (h *IdPSourcesAPI) UpdateIdPSource(c *gin.Context) {
 	tenantID := c.Param("tenant_id")
@@ -155,8 +155,8 @@ func (h *IdPSourcesAPI) UpdateIdPSource(c *gin.Context) {
 // @Param tenant_id path string true "Tenant identifier"
 // @Param provider path string true "Provider name"
 // @Success 204
-// @Failure 400 {object}ErrorResponse
-// @Failure 404 {object}ErrorResponse
+// @Failure 400 {object} object{error=string}
+// @Failure 404 {object} object{error=string}
 // @Router /api/idp-sources/{tenant_id}/{provider} [delete]
 func (h *IdPSourcesAPI) DeleteIdPSource(c *gin.Context) {
 	tenantID := c.Param("tenant_id")
@@ -223,7 +223,7 @@ func (h *IdPSourcesAPI) GetTenantIdPsInternal(c *gin.Context) {
 // @Param tenant_id path string true "Tenant identifier"
 // @Param provider path string true "Provider name"
 // @Success 200 {object} idp.InternalIdPSourceView
-// @Failure 404 {object} ErrorResponse
+// @Failure 404 {object} object{error=string}
 // @Router /api/internal/idp-sources/{tenant_id}/{provider} [get]
 func (h *IdPSourcesAPI) GetIdPSourceInternal(c *gin.Context) {
 	if h.InternalSvc == nil {
