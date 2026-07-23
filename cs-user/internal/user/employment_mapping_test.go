@@ -769,6 +769,209 @@ func TestApplyEnterpriseMapping_FieldMapRefreshesExistingRow(t *testing.T) {
 	}
 }
 
+// --- Slice 2: GetOrCreateUser auto-triggers enterprise mapping ---
+
+// TestGetOrCreateUser_TriggersEnterpriseMapping verifies the end-to-end
+// Slice 2 contract: a normal OAuth login (GetOrCreateUser) with an enabled
+// provider + populated ExternalClaims + configured field_map writes an
+// employment_identities row whose enterprise fields come from claims.
+//
+// This is the canonical "login flows enterprise mapping" path — no explicit
+// ApplyEnterpriseMapping call from the handler; the service does it as a
+// post-login best-effort hook.
+func TestGetOrCreateUser_TriggersEnterpriseMapping(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      employee_number: "JobNumber"
+      cost_center: "Department"
+      hire_date: "JoinTime"
+`)
+
+	claims := &models.JWTClaims{
+		Sub:               "wx_alice_sub",
+		UniversalID:       "wx_alice_uID",
+		Name:              "alice",
+		PreferredUsername: "alice",
+		Email:             "alice@example.com",
+		Provider:          "wxwork",
+		ProviderUserID:    "wx_alice_sub",
+		ExternalClaims: map[string]any{
+			"UserId":    "wx_alice_001",
+			"JobNumber": "E-10042",
+			"Department": "R&D",
+			"JoinTime":  "2020-03-15T08:00:00Z",
+		},
+	}
+	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", user.SubjectID).Take(&got).Error; err != nil {
+		t.Fatalf("employment_identity missing: %v", err)
+	}
+	if got.Provider != "wxwork" {
+		t.Errorf("Provider: got %q, want wxwork", got.Provider)
+	}
+	wantStr := func(field string, got *string, want string) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Errorf("%s: got %v, want %q", field, got, want)
+		}
+	}
+	wantStr("EnterpriseUID", got.EnterpriseUID, "wx_alice_001")
+	wantStr("EmployeeNumber", got.EmployeeNumber, "E-10042")
+	wantStr("CostCenter", got.CostCenter, "R&D")
+	if got.HireDate == nil {
+		t.Errorf("HireDate: got nil, want 2020-03-15")
+	}
+}
+
+// TestGetOrCreateUser_EnterpriseMappingBestEffortDoesNotBlockLogin verifies
+// that even when ApplyEnterpriseMapping WOULD fail (no tenant_configs row →
+// ErrEnterpriseMappingDisabled), GetOrCreateUser itself succeeds and the
+// user row is written. Enterprise mapping is a bonus feature; login flow
+// must never depend on it.
+func TestGetOrCreateUser_EnterpriseMappingBestEffortDoesNotBlockLogin(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	// No seedTenantConfig — feature disabled.
+
+	claims := &models.JWTClaims{
+		Sub:               "wx_alice_sub",
+		UniversalID:       "wx_alice_uID",
+		Name:              "alice",
+		PreferredUsername: "alice",
+		Email:             "alice@example.com",
+		Provider:          "wxwork",
+		ProviderUserID:    "wx_alice_sub",
+		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
+	}
+	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser should succeed with mapping disabled, got: %v", err)
+	}
+	if user == nil || user.SubjectID == "" {
+		t.Fatalf("user row missing: %+v", user)
+	}
+
+	// No employment_identities row should exist.
+	var count int64
+	svc.db.Model(&models.EmploymentIdentity{}).Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 employment_identities rows when feature disabled, got %d", count)
+	}
+}
+
+// TestGetOrCreateUser_NoExternalClaimsStillWritesStubRow verifies the
+// downgrade contract: provider is enabled but ExternalClaims is empty (e.g.
+// legacy server path that hasn't been upgraded). The hook still fires and
+// writes a stub employment_identities row (enterprise fields NULL).
+func TestGetOrCreateUser_NoExternalClaimsStillWritesStubRow(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default",
+		"employment_providers:\n  enabled: [wxwork]\n")
+
+	claims := &models.JWTClaims{
+		Sub:               "wx_alice_sub",
+		UniversalID:       "wx_alice_uID",
+		Name:              "alice",
+		PreferredUsername: "alice",
+		Email:             "alice@example.com",
+		Provider:          "wxwork",
+		ProviderUserID:    "wx_alice_sub",
+		// ExternalClaims intentionally nil.
+	}
+	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	if err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", user.SubjectID).Take(&got).Error; err != nil {
+		t.Fatalf("stub employment_identity missing: %v", err)
+	}
+	if got.Provider != "wxwork" {
+		t.Errorf("Provider: got %q, want wxwork", got.Provider)
+	}
+	if got.EnterpriseUID != nil {
+		t.Errorf("EnterpriseUID: got %v, want nil without ExternalClaims", *got.EnterpriseUID)
+	}
+}
+
+// TestGetOrCreateUser_LegacyCasdoorProviderSkipsMapping verifies that a
+// claims.Provider="" (legacy Casdoor path without provider routing) does NOT
+// trigger ApplyEnterpriseMapping. The hook's nil/empty-provider guard short-
+// circuits before the DB lookup, so no row is written and no tenant_configs
+// query fires.
+func TestGetOrCreateUser_LegacyCasdoorProviderSkipsMapping(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default",
+		"employment_providers:\n  enabled: [wxwork]\n")
+
+	claims := &models.JWTClaims{
+		Sub:               "casdoor_sub",
+		UniversalID:       "casdoor_uID",
+		Name:              "alice",
+		PreferredUsername: "alice",
+		Email:             "alice@example.com",
+		Provider:          "", // legacy Casdoor path
+		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
+	}
+	if _, err := svc.GetOrCreateUser(t.Context(), claims); err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+
+	var count int64
+	svc.db.Model(&models.EmploymentIdentity{}).Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 rows when Provider empty, got %d", count)
+	}
+}
+
+// TestGetOrCreateUser_EnterpriseMapping_MalformedConfigDoesNotBlockLogin
+// verifies the swallow-all-errors invariant: a malformed tenant_configs YAML
+// would normally surface as a parse error from ApplyEnterpriseMapping, but
+// the post-login hook must swallow it so login still succeeds. Operator
+// config bugs surface in monitoring, not in user-facing login failures.
+func TestGetOrCreateUser_EnterpriseMapping_MalformedConfigDoesNotBlockLogin(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", "employment_providers:\n  enabled: [unclosed")
+
+	claims := &models.JWTClaims{
+		Sub:               "wx_alice_sub",
+		UniversalID:       "wx_alice_uID",
+		Name:              "alice",
+		PreferredUsername: "alice",
+		Email:             "alice@example.com",
+		Provider:          "wxwork",
+		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
+	}
+	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	if err != nil {
+		t.Fatalf("malformed YAML must not block login, got: %v", err)
+	}
+	if user == nil || user.SubjectID == "" {
+		t.Fatalf("user row missing despite config error: %+v", user)
+	}
+
+	// No employment_identities row written (parsing failed before write).
+	var count int64
+	svc.db.Model(&models.EmploymentIdentity{}).Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 rows on parse failure, got %d", count)
+	}
+}
+
 // --- A7: GetEmploymentIdentity reader ---
 
 // TestGetEmploymentIdentity_HappyPath verifies a known row is returned with

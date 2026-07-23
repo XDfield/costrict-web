@@ -142,6 +142,42 @@ type EmploymentMappingParams struct {
 - 同 tenant 内同 `enterprise_uid` 拒绝写入
 - 跨 tenant 同 `enterprise_uid` 允许（per-tenant 隔离正确）
 
+### 2.3 Slice 2（OAuth callback 串通 + ExternalClaims 数据源）落地范围
+
+**目标**：让 field_map 真正在登录时跑起来 — 不再需要 Slice 2 之外的手动触发。Multi-IdP OAuth callback 拿到的 IdP userinfo 自动流到 cs-user 的 `ApplyEnterpriseMapping`，按 tenant 的 field_map 写 employment_identities。
+
+**链路**（4 处改动）：
+
+1. **server `user.JWTClaims`** + **cs-user `models.JWTClaims`** 同步加 `ExternalClaims map[string]any` 字段（`json:"external_claims,omitempty"`）。两边的 wire contract 由 `cs-user/internal/models/jwt_claims_test.go` 的 round-trip test 锁定。
+
+2. **server `auth_multi_idp.go` callback**（`runMultiIdPCallback`）：构造 JWTClaims 时把 `profile.Raw`（OAuth client 已经 hold 的完整 IdP userinfo map）塞进 `ExternalClaims`。无需新增 IdP client — `generic_client.go:63` 的 `Raw` 字段早就 hold 了这个数据，只是之前没传出去。
+
+3. **cs-user `Service.GetOrCreateUser`**：两个 success path（新建用户 + 更新已有用户）return 之前自动调 `applyEnterpriseMappingOnLogin(ctx, subjectID, claims)` helper。helper 是 best-effort swallow：所有错误（feature 未启用、tenant_configs 缺失、YAML malformed、DB 错误）都不阻塞登录 — 企业身份映射是 bonus feature。`claims.Provider == ""` 短路（legacy Casdoor path 不触发）。
+
+4. **server callback 显式调用 `writer.ApplyEnterpriseMapping` 删除**（`auth_multi_idp.go` + `handlers.go`）：之前 Phase A4b 在 server 端显式调一次，但没传 ExternalClaims（只传 subjectID+provider），是降级 stub。Slice 2 后 cs-user 内部 GetOrCreateUser 自动触发完整版，server 那次冗余 RPC 删除。`UserWriter.ApplyEnterpriseMapping` 接口保留供未来运维手动触发。
+
+**端到端示例**（wxwork 登录）：
+```
+用户 → Casdoor (wxwork provider) → server callback
+  ↓
+FetchUserInfo → profile.Raw = {"UserId":"wx_001","JobNumber":"E-42","Department":"R&D",...}
+  ↓
+JWTClaims{Provider:"wxwork", ExternalClaims: profile.Raw, ...}
+  ↓ RPC POST /api/internal/users/get-or-create
+cs-user GetOrCreateUser
+  ↓ 创建/更新 users 行
+  ↓ applyEnterpriseMappingOnLogin:
+  ↓   loadEmploymentProvidersConfig → enabled=[wxwork], field_map set
+  ↓   applyFieldMap(claims.ExternalClaims) → {enterprise_uid:"wx_001", employee_number:"E-42", ...}
+  ↓   upsert employment_identities row（映射字段写入）
+  ↓ return user
+```
+
+**Slice 2 不做的事**（留给 Slice 3+）：
+- A5 扩展 JWT claims 直接带 enterprise 字段（让 access_token 自带企业身份，不必每次回查 employment_identities）
+- `interval` / `on_login: refresh_if_stale` 配置建模（避免每次登录都跑映射，按 TTL 短路）
+- 多 IdP `external_claims` 字段名冲突的 tenant 级配置（当前假设各 provider 的 IdP 字段名 tenant 全局通用）
+
 ---
 
 ## 3. 终态架构（一图概览）

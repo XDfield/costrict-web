@@ -281,6 +281,12 @@ var ErrEmptySubjectID = errors.New("subject_id must not be empty")
 //
 // Idempotent: a second call with the same claim inside syncInterval skips
 // the update query.
+//
+// Slice 2 (2026-07-23): both success paths trigger ApplyEnterpriseMapping
+// as a best-effort post-login hook, harvesting claims.ExternalClaims via
+// the tenant's employment_providers.field_map config. Failures are silently
+// swallowed — enterprise mapping is a bonus feature and must not block
+// login (a future refresh-on-relogin will retry).
 func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
@@ -496,6 +502,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 				return nil, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
+		s.applyEnterpriseMappingOnLogin(ctx, user.SubjectID, claims)
 		return &user, nil
 	}
 
@@ -561,10 +568,34 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		_ = s.eventBus.PublishUserCreated(ctx, &user)
 	}
 
+	s.applyEnterpriseMappingOnLogin(ctx, user.SubjectID, claims)
+
 	if refreshed, err := s.GetUserByID(ctx, user.SubjectID); err == nil {
 		return refreshed, nil
 	}
 	return &user, nil
+}
+
+// applyEnterpriseMappingOnLogin is the best-effort post-login hook that
+// refreshes the user's employment_identities snapshot from the OAuth claims.
+// All errors are swallowed: enterprise mapping is a bonus feature and must
+// not block login — malformed tenant config, missing tenant_configs row, or
+// a transient DB error all leave the user row intact and let the next login
+// retry. TenantID is read from ctx (multi-tenant); empty falls through to
+// ApplyEnterpriseMapping's "default" fallback for Phase A single-tenant mode.
+//
+// claims.Provider empty (legacy Casdoor path without provider routing) skips
+// the call — ApplyEnterpriseMapping would return a validation error anyway.
+func (s *Service) applyEnterpriseMappingOnLogin(ctx context.Context, userSubjectID string, claims *models.JWTClaims) {
+	if claims == nil || claims.Provider == "" {
+		return
+	}
+	_ = s.ApplyEnterpriseMapping(ctx, EmploymentMappingParams{
+		TenantID:       tenant.IDFromContext(ctx),
+		UserSubjectID:  userSubjectID,
+		Provider:       claims.Provider,
+		ExternalClaims: claims.ExternalClaims,
+	})
 }
 
 // ErrIdentityAlreadyBound signals a bind refused because the identity row
