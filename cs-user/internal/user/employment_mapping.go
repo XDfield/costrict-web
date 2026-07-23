@@ -110,6 +110,7 @@ type FieldMapConfig map[string]string
 // JSON blob).
 var allowedEmploymentColumns = map[string]struct{}{
 	"enterprise_uid":              {},
+	"display_name":                {},
 	"employee_number":             {},
 	"cost_center":                 {},
 	"org_path":                    {},
@@ -375,6 +376,10 @@ func applyMappedToRow(row *models.EmploymentIdentity, mapped map[string]any) {
 		case "enterprise_uid":
 			if s, ok := val.(string); ok {
 				row.EnterpriseUID = stringPtr(s)
+			}
+		case "display_name":
+			if s, ok := val.(string); ok {
+				row.DisplayName = stringPtr(s)
 			}
 		case "employee_number":
 			if s, ok := val.(string); ok {

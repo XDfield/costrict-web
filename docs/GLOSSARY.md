@@ -32,12 +32,18 @@
 | 字段名 | 格式 | 出现位置 | 说明 |
 |---|---|---|---|
 | `user_id` | `u_[a-f0-9]{12}`（cs-user 内部 12 hex） | cs-user API / webhook payload `subject` / 业务表 `created_by` FK | 业务侧主键 |
-| `universal_id` | 同 `user_id` | JWT claim（costrict 历史字段） | cs-cloud 主用，零侵入兼容 |
-| `sub` | 同 `user_id` | JWT claim（OIDC 标准） | 通用兼容 |
-| `user.id`（嵌套） | 同 `user_id` | JWT claim `user` Map 的 `id` 字段 | 完整用户快照字段 |
+| `universal_id` | Casdoor JWT 内的 `universal_id`（brokered IdP），缺失时 fallback 到 `sub` | JWT claim（costrict 历史字段） | cs-cloud / quota-manager 主用，零侵入兼容；保留 Casdoor 原值用于跨系统对齐 |
+| `sub` | `usr_<uuid>`（cs-user 内部 Subject） | JWT claim（OIDC 标准） | 通用兼容，cs-user 内部主键 |
+| `user.id`（嵌套） | 同 `sub`（Phase B 才发出） | JWT claim `user` Map 的 `id` 字段 | 完整用户快照字段 |
 | `jwt_user_id` | — | gin context key（middleware 注入） | SDK 取值优先级：`universal_id` → `sub` → `user.id` |
 
-> **同值约定**：cs-user 签发 JWT 时，上述 4 个字段全部填同一个 `user_id` 值。下游业务侧通过 SDK 统一读 `jwt_user_id`，不直接读 JWT claim 字段名。
+> **取值约定（2026-07-23 修订）**：原"四字段同值约定"（`user_id` ≡ `universal_id` ≡ `sub` ≡ `user.id`）已废弃。当前规则：
+> - `sub` 始终是 cs-user 内部 Subject（`usr_<uuid>`）
+> - `universal_id` 优先取 Casdoor 原始 JWT 的 `universal_id`（brokered IdP 场景下与 Casdoor 生态对齐），缺失时 fallback 到 `sub`
+> - `user.id` 嵌套快照与 `sub` 同值（Phase B 才发出）
+> - 下游业务侧仍通过 SDK 统一读 `jwt_user_id`，SDK fallback 顺序 `universal_id` → `sub` → `user.id` 不变
+>
+> 详见 [MULTI_TENANCY_DESIGN §12.7](./identity-tenant/MULTI_TENANCY_DESIGN.md) "universal_id 取值约定"。
 
 ### 2.2 团队 / 租户标识
 

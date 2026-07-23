@@ -53,8 +53,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if cfg.HTTP.Port != "8081" {
-		t.Errorf("HTTP.Port default = %q, want 8081", cfg.HTTP.Port)
+	if cfg.HTTP.Port != "8082" {
+		t.Errorf("HTTP.Port default = %q, want 8082", cfg.HTTP.Port)
 	}
 	if cfg.HTTP.Mode != "debug" {
 		t.Errorf("HTTP.Mode default = %q, want debug", cfg.HTTP.Mode)

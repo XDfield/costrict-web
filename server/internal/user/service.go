@@ -18,22 +18,20 @@ import (
 
 // JWTClaims represents the parsed JWT token claims from Casdoor
 type JWTClaims struct {
-	ID                string
-	Sub               string
-	UniversalID       string
-	Name              string
-	PreferredUsername string
-	Email             string
-	Picture           string
-	Owner             string
-	Provider          string
-	ProviderUserID    string
-	Phone             string
+	ID                string `json:"id,omitempty"`
+	Sub               string `json:"sub,omitempty"`
+	UniversalID       string `json:"universal_id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Email             string `json:"email,omitempty"`
+	Picture           string `json:"picture,omitempty"`
+	Owner             string `json:"owner,omitempty"`
+	Provider          string `json:"provider,omitempty"`
+	ProviderUserID    string `json:"provider_user_id,omitempty"`
+	Phone             string `json:"phone,omitempty"`
 	// ExternalClaims carries the raw IdP userinfo map (Profile.Raw from the
 	// Casdoor OAuth callback) so cs-user can run field_map extraction on the
-	// tenant's employment_providers config. json tag is explicit so the wire
-	// key matches cs-user's models.JWTClaims.ExternalClaims tag ("external_claims")
-	// without relying on encoding/json's case-insensitive fallback.
+	// tenant's employment_providers config.
 	ExternalClaims map[string]any `json:"external_claims,omitempty"`
 }
 
@@ -979,7 +977,14 @@ func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	if merged.Sub == "" {
 		merged.Sub = override.Sub
 	}
-	if merged.UniversalID == "" {
+	// UniversalID: prefer override (raw Casdoor JWT) when present — the
+	// signed JWT is the authoritative source for the user's stable id;
+	// /api/getUserInfo (base) is best-effort and may omit or mismatch
+	// universal_id for OAuth-brokered users (idtrust etc.). Downstream
+	// (cs-user) treats universal_id as a hard dependency per MULTI_TENANCY
+	// §12.1 — letting the JWT value win avoids the API path silently
+	// dropping it.
+	if override.UniversalID != "" {
 		merged.UniversalID = override.UniversalID
 	}
 	if merged.Owner == "" {
@@ -1006,6 +1011,24 @@ func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	}
 	if override.Picture != "" {
 		merged.Picture = override.Picture
+	}
+
+	// ExternalClaims is the raw token-payload bag (properties.oauth_Custom_*,
+	// signupApplication, ...). Always prefer override's when present — base
+	// is the manually-constructed claims struct from AuthCallback and never
+	// carries ExternalClaims itself. Shallow-assign on nil-base is enough;
+	// deep-merge when both sides have entries so a future caller that
+	// pre-populates ExternalClaims (e.g. trusted upstream) keeps its keys.
+	if override.ExternalClaims != nil {
+		if merged.ExternalClaims == nil {
+			merged.ExternalClaims = override.ExternalClaims
+		} else {
+			for k, v := range override.ExternalClaims {
+				if _, present := merged.ExternalClaims[k]; !present {
+					merged.ExternalClaims[k] = v
+				}
+			}
+		}
 	}
 
 	return normalizeJWTClaims(&merged)
