@@ -178,9 +178,9 @@ func (s *Service) SyncTeam(ctx context.Context, tenantID, teamID string) (*SyncR
 	}
 
 	// Resolve the tenant's Git server endpoint + admin_token, then build a
-	// transient Client scoped to it. Constructing a Client is cheap;
-	// caching is YAGNI for admin-triggered sync (RPCResolver already caches
-	// the resolved config for 5 min).
+	// transient Client scoped to it. Constructing a Client is cheap; caching
+	// is YAGNI for admin-triggered sync (LocalResolver hits the local DB
+	// directly, so each Resolve is one indexed row read on server.git_servers).
 	serverCfg, err := s.gitResolver.Resolve(ctx, tenantID)
 	if err != nil {
 		s.logger.Warn("gitsync.SyncTeam: resolve git server failed",

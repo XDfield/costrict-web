@@ -916,7 +916,7 @@ func (s *Service) syncMembers(ctx context.Context, tenantID, teamID, orgName str
 			desired := make(map[string]struct{}, len(addRefs))
 			for _, r := range addRefs {
 				if u, err := s.userRef.Resolve(ctx, r); err == nil {
-					desired[u.GiteaUsername] = struct{}{}
+					desired[u.GitUsername] = struct{}{}
 				}
 			}
 			for _, m := range current {
@@ -947,9 +947,9 @@ func (s *Service) syncMembers(ctx context.Context, tenantID, teamID, orgName str
 				})
 				continue
 			}
-			if err := s.gitsync.RemoveOrgMember(ctx, tenantID, orgName, u.GiteaUsername); err != nil {
+			if err := s.gitsync.RemoveOrgMember(ctx, tenantID, orgName, u.GitUsername); err != nil {
 				s.logger.Warn("teamns.syncMembers: remove member failed",
-					zap.String("username", u.GiteaUsername),
+					zap.String("username", u.GitUsername),
 					zap.Error(err))
 				continue
 			}
@@ -972,9 +972,9 @@ func (s *Service) applyAdds(ctx context.Context, tenantID, orgName string, refs 
 			})
 			continue
 		}
-		if err := s.gitsync.AddOrgMember(ctx, tenantID, orgName, u.GiteaUsername); err != nil {
+		if err := s.gitsync.AddOrgMember(ctx, tenantID, orgName, u.GitUsername); err != nil {
 			s.logger.Warn("teamns.applyAdds: add member failed",
-				zap.String("username", u.GiteaUsername),
+				zap.String("username", u.GitUsername),
 				zap.Error(err))
 			unresolved = append(unresolved, UnresolvedMember{
 				UserID: r.UserID, EmployeeNumber: r.EmployeeNumber,

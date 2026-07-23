@@ -47,15 +47,13 @@ var ErrLastIdentity = errors.New("cannot unbind last identity")
 // caller (RPCWriter) can distinguish "skipped" from "succeeded".
 var ErrExplicitlyUnbound = errors.New("identity explicitly unbound; requires force_rebind")
 
-// GiteaProvisioner is the per-user Gitea auto-provisioning surface
-// (Phase E3a.1). Declared here in the user package so the user.Service
-// hook can depend on it without importing giteasync (which would create
-// an import cycle: giteasync → models → user would close a loop).
+// EventPublisher is the outbox writer surface (Git Ownership Refactor
+// Phase 2). Declared here so user.Service can fire user.created events
+// without importing eventbus (avoids an import cycle).
 //
-// Production wires *giteasync.Service; tests inject a capturing stub.
-// nil means "feature disabled" — Provision is a no-op skip.
-type GiteaProvisioner interface {
-	Provision(ctx context.Context, user *models.User) error
+// nil means "feature disabled" — Publish is a no-op skip.
+type EventPublisher interface {
+	PublishUserCreated(ctx context.Context, user *models.User) error
 }
 
 // Service exposes the read-side operations costrict-web needs.
@@ -65,11 +63,9 @@ type GiteaProvisioner interface {
 type Service struct {
 	db *gorm.DB
 
-	// giteaSync is the optional Gitea auto-provisioner (Phase E3a.1).
-	// nil = feature disabled (CS_USER_GITEA_BASE_URL / ADMIN_TOKEN unset).
-	// Set via SetGiteaSync after construction so the existing NewService(db)
-	// signature stays stable across the 30+ existing call sites.
-	giteaSync GiteaProvisioner
+	// eventBus is the optional outbox writer (Phase 2). nil = feature
+	// disabled. Set via SetEventPublisher after construction.
+	eventBus EventPublisher
 }
 
 // NewService returns a Service bound to the supplied gorm pool. Callers own
@@ -78,15 +74,13 @@ func NewService(db *gorm.DB) *Service {
 	return &Service{db: db}
 }
 
-// SetGiteaSync wires the optional Gitea auto-provisioner (Phase E3a.1).
-// Pass nil to disable (default — feature off unless boot wiring constructs
-// a real *giteasync.Service). Idempotent: calling twice with non-nil
-// replaces; calling with nil re-disables.
-func (s *Service) SetGiteaSync(p GiteaProvisioner) {
+// SetEventPublisher wires the optional outbox publisher (Phase 2). Pass
+// nil to disable. Idempotent.
+func (s *Service) SetEventPublisher(p EventPublisher) {
 	if s == nil {
 		return
 	}
-	s.giteaSync = p
+	s.eventBus = p
 }
 
 // GetUserByID returns the user with the given subject_id, or
@@ -559,42 +553,18 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		return nil, fmt.Errorf("failed to bind identity for new user: %w", err)
 	}
 
-	// Phase E3a.1: fire Gitea auto-provisioning for the freshly created
-	// user. Best-effort — a Gitea outage must never fail signup (the users
-	// row is already committed; the binding row stays pending/error for
-	// the reconciliation cron, E3a.2). Skip entirely when no provisioner
-	// is wired (feature disabled).
-	if s.giteaSync != nil {
-		_ = s.giteaSync.Provision(ctx, &user)
+	// Phase 2: enqueue a user.created event into the outbox so server can
+	// take over Gitea provisioning asynchronously. Best-effort — failures
+	// are logged by the publisher, not surfaced to the signup path. The
+	// reconciliation cron (Phase 5) backfills rows that miss here.
+	if s.eventBus != nil {
+		_ = s.eventBus.PublishUserCreated(ctx, &user)
 	}
 
 	if refreshed, err := s.GetUserByID(ctx, user.SubjectID); err == nil {
 		return refreshed, nil
 	}
 	return &user, nil
-}
-
-// GetGiteaBinding returns the user's Gitea binding row (Phase E3a.1), or
-// gorm.ErrRecordNotFound when no binding exists. The handler at
-// GET /api/internal/users/:subject_id/gitea-binding consumes this for
-// ops visibility + future fork JWT middleware lookups.
-//
-// B5: applies tenant.Scope(ctx).
-func (s *Service) GetGiteaBinding(ctx context.Context, subjectID string) (*models.UserGiteaBinding, error) {
-	if s == nil || s.db == nil {
-		return nil, errors.New("user.Service: nil db")
-	}
-	if subjectID == "" {
-		return nil, ErrEmptySubjectID
-	}
-	var binding models.UserGiteaBinding
-	if err := s.db.WithContext(ctx).
-		Scopes(tenant.Scope(ctx)).
-		Where("user_subject_id = ?", subjectID).
-		Take(&binding).Error; err != nil {
-		return nil, err
-	}
-	return &binding, nil
 }
 
 // ErrIdentityAlreadyBound signals a bind refused because the identity row

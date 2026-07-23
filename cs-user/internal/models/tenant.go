@@ -31,7 +31,6 @@ type Tenant struct {
 	Features            string     `gorm:"type:text;not null;default:'{}'" json:"features"`
 	Limits              string     `gorm:"type:text;not null;default:'{}'" json:"limits"`
 	Settings            string     `gorm:"type:text;not null;default:'{}'" json:"settings"`
-	GitServerID         *string    `gorm:"type:varchar(64)" json:"git_server_id,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletion_requested_at,omitempty"`
 	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`

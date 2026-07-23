@@ -13,7 +13,6 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
-	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
 	"github.com/costrict/costrict-web/cs-user/internal/handlers"
 	"github.com/costrict/costrict-web/cs-user/internal/idp"
 	"github.com/costrict/costrict-web/cs-user/internal/logger"
@@ -76,11 +75,6 @@ type Deps struct {
 	// the same sqlite/gorm DB; production wires one bound to the Postgres
 	// pool.
 	AuditLog *auditlog.Service
-	// GitServerResolver is the per-tenant Git server lookup (Phase E3b.1.1).
-	// Drives GET /api/internal/tenants/:tenant_id/git-server (consumed by
-	// @server gitsync). When nil, that endpoint returns 503 so the swagger
-	// spec stays consistent.
-	GitServerResolver handlers.TenantGitServerResolver
 	// IdPSources is the per-tenant IdP source CRUD surface (Phase E2).
 	// Drives /api/idp-sources/* endpoints (create / get / list / update / delete).
 	// When nil, those endpoints return 503 so the swagger spec stays consistent.
@@ -143,7 +137,6 @@ func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
 	registerPlatformTenantRoutes(internal, deps)
 	registerTenantConfigRoutes(internal, deps)
 	registerTenantProviderMappingRoutes(internal, deps)
-	registerTenantGitServerRoutes(internal, deps)
 	registerPlatformAuditLogRoutes(internal, deps)
 	registerTenantAuditLogRoutes(internal, deps)
 	registerInternalIdPRoutes(internal, deps)
@@ -196,11 +189,6 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// Admin status transition — admin-user-migration slice. Returns before/
 	// after status for audit; 409 on self-lock, 404 on unknown subject_id.
 	users.POST("/:subject_id/status", usersAPI.SetUserStatus)
-
-	// Phase E3a.1: Gitea binding status (read-only). Returns 404 when the
-	// user has no binding (provisioning not yet run). The route lives under
-	// /users/:subject_id/ to mirror the auth-identities pattern.
-	users.GET("/:subject_id/gitea-binding", usersAPI.GetGiteaBinding)
 
 	// Phase A4b: enterprise-mapping refresh hook fired by the server's OAuth
 	// callback after GetOrCreateUser. Lives outside the :subject_id path
@@ -365,9 +353,6 @@ func (unavailableUserService) UnbindIdentityByProvider(_ context.Context, _, _ s
 func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.EmploymentMappingParams) error {
 	return errServiceUnavailable
 }
-func (unavailableUserService) GetGiteaBinding(_ context.Context, _ string) (*models.UserGiteaBinding, error) {
-	return nil, errServiceUnavailable
-}
 
 // ListUsers surfaces the admin user-management error in the same shape as
 // the production path — 503 via errServiceUnavailable.
@@ -459,27 +444,6 @@ func registerTenantProviderMappingRoutes(rg *gin.RouterGroup, deps Deps) {
 	g := rg.Group("/tenant/provider-mapping")
 	g.GET("", api.GetProviderMapping)
 	g.PUT("", api.UpdateProviderMapping)
-}
-
-// registerTenantGitServerRoutes wires the per-tenant git-server lookup RPC
-// (Phase E3b.1.1). When deps.GitServerResolver is nil (e.g. unit tests),
-// routes resolve to a 503 stub so the swagger spec stays consistent.
-func registerTenantGitServerRoutes(rg *gin.RouterGroup, deps Deps) {
-	var svc handlers.TenantGitServerResolver
-	if deps.GitServerResolver == nil {
-		svc = unavailableTenantGitServerResolver{}
-	} else {
-		svc = deps.GitServerResolver
-	}
-	api := handlers.TenantGitServerAPI{Svc: svc}
-	rg.GET("/tenants/:tenant_id/git-server", api.GetTenantGitServer)
-}
-
-// unavailableTenantGitServerResolver is the 503 fallback.
-type unavailableTenantGitServerResolver struct{}
-
-func (unavailableTenantGitServerResolver) Resolve(_ context.Context, _ string) (*gitserver.Config, error) {
-	return nil, errServiceUnavailable
 }
 
 // unavailableTenantProviderMappingService is the typed-edit fallback. Pairs

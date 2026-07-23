@@ -128,7 +128,8 @@ func newGiteaBackedGitsync(t *testing.T, giteaURL, adminToken string) *gitsync.S
 }
 
 // staticResolver returns the same cfg regardless of tenantID. Production
-// wiring goes through RPCResolver; e2e uses this stub to skip the RPC layer.
+// wiring uses gitsync.LocalResolver (server.git_servers local DB); e2e uses
+// this stub to skip the DB.
 type staticResolver struct{ cfg *gitsync.GitServerConfig }
 
 func (s *staticResolver) Resolve(ctx context.Context, tenantID string) (*gitsync.GitServerConfig, error) {

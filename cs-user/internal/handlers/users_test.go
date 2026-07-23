@@ -32,7 +32,6 @@ type stubUserService struct {
 	transfer               func(context.Context, string, string, string) error
 	unbind                 func(context.Context, string, string) error
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
-	getGiteaBinding        func(context.Context, string) (*models.UserGiteaBinding, error)
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
 	listOrganizations      func(context.Context) ([]user.OrganizationCount, error)
@@ -92,12 +91,6 @@ func (s stubUserService) ApplyEnterpriseMapping(ctx context.Context, params user
 	}
 	return s.applyEnterpriseMapping(ctx, params)
 }
-func (s stubUserService) GetGiteaBinding(ctx context.Context, subjectID string) (*models.UserGiteaBinding, error) {
-	if s.getGiteaBinding == nil {
-		panic("stubUserService.getGiteaBinding not wired")
-	}
-	return s.getGiteaBinding(ctx, subjectID)
-}
 func (s stubUserService) ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
 	if s.listUsers == nil {
 		panic("stubUserService.listUsers not wired")
@@ -133,8 +126,6 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.DELETE("/api/internal/users/:subject_id/identities/:provider", api.UnbindIdentity)
 	// Phase A4b route.
 	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
-	// Phase E3a.1 route.
-	r.GET("/api/internal/users/:subject_id/gitea-binding", api.GetGiteaBinding)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
 	r.GET("/api/internal/users/organizations", api.ListOrganizations)
