@@ -32,7 +32,7 @@
 #     with $CS_USER_INTERNAL_TOKEN set.
 #   * server API running on $SERVER_BASE_URL (default localhost:8080)
 #     with $INTERNAL_SECRET set.
-#   * Gitea running on $GITEA_ENDPOINT (default http://127.0.0.1:3000)
+#   * Gitea running on $GITEA_ENDPOINT (default http://127.0.0.1:3001)
 #     with an admin token available.
 #
 # Required env vars (copy-paste block — run before invoking this script):
@@ -49,6 +49,17 @@
 #     export CS_USER_BASE_URL="http://localhost:8081"
 #     # server reachable URL (default http://localhost:8080)
 #     export SERVER_BASE_URL="http://localhost:8080"
+#
+#     # Gitea reachable URL (default http://127.0.0.1:3001)
+#     export GITEA_ENDPOINT="http://127.0.0.1:3001"
+#
+#     # default_tenant identity — most dev envs leave these at defaults.
+#     # Override only if you want a different bootstrap tenant slug / display
+#     # / edition. The slug doubles as the key into tenant_configs.config_yaml.
+#     export DEFAULT_TENANT_SLUG="default"
+#     export DEFAULT_TENANT_DISPLAY="Default Tenant"
+#     # free | team | enterprise | on_premise — enterprise needed for IdP mapping
+#     export DEFAULT_TENANT_EDITION="enterprise"
 #
 #     # CS_USER_INTERNAL_TOKEN / INTERNAL_SECRET are picked up by the
 #     # `source` lines above; they MUST byte-match the values each service
@@ -67,11 +78,15 @@
 # Flags
 # =====================================================================
 #
-#   --tenant                default tenant slug (default: "default")
-#   --tenant-display        display name (default: "Default Tenant")
+#   --tenant                default tenant slug (default: "default", env:
+#                           DEFAULT_TENANT_SLUG)
+#   --tenant-display        display name (default: "Default Tenant", env:
+#                           DEFAULT_TENANT_DISPLAY)
 #   --tenant-edition        free | team | enterprise | on_premise
-#                           (default: enterprise — needed for IdP mapping)
-#   --gitea-endpoint        Gitea base URL (default: http://127.0.0.1:3000)
+#                           (default: enterprise — needed for IdP mapping;
+#                           env: DEFAULT_TENANT_EDITION)
+#   --gitea-endpoint        Gitea base URL (default: http://127.0.0.1:3001,
+#                           overridable via $GITEA_ENDPOINT env var)
 #   --gitea-display         display name (default: "Local Gitea (dev)")
 #   --employment-yaml       path to employment mapping YAML (default:
 #                           scripts/examples/idtrust-employment-dev.yaml)
@@ -88,6 +103,14 @@
 # Optional env (sane defaults if unset):
 #   CS_USER_BASE_URL        — defaults to http://localhost:8081
 #   SERVER_BASE_URL         — defaults to http://localhost:8080
+#   DEFAULT_TENANT_SLUG     — default-tenant identity slug (defaults to
+#                             "default"). Conceptually the "default_tenant"
+#                             bootstrap row — most dev envs leave this as-is.
+#   DEFAULT_TENANT_DISPLAY  — display name (defaults to "Default Tenant")
+#   DEFAULT_TENANT_EDITION  — free | team | enterprise | on_premise
+#                             (defaults to "enterprise" — needed for IdP
+#                             mapping to engage)
+#   GITEA_ENDPOINT          — defaults to http://127.0.0.1:3001
 #
 # =====================================================================
 
@@ -98,10 +121,10 @@ CS_USER_SCRIPTS="$REPO_ROOT/cs-user/scripts"
 SERVER_SCRIPTS="$REPO_ROOT/server/scripts"
 
 # ---- defaults -------------------------------------------------------------
-TENANT_SLUG="default"
-TENANT_DISPLAY="Default Tenant"
-TENANT_EDITION="enterprise"
-GITEA_ENDPOINT="http://127.0.0.1:3000"
+TENANT_SLUG="${DEFAULT_TENANT_SLUG:-default}"
+TENANT_DISPLAY="${DEFAULT_TENANT_DISPLAY:-Default Tenant}"
+TENANT_EDITION="${DEFAULT_TENANT_EDITION:-enterprise}"
+GITEA_ENDPOINT="${GITEA_ENDPOINT:-http://127.0.0.1:3001}"
 GITEA_DISPLAY="Local Gitea (dev)"
 EMPLOYMENT_YAML="$REPO_ROOT/scripts/examples/idtrust-employment-dev.yaml"
 SKIP_GIT_SERVER=0
