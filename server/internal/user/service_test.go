@@ -454,6 +454,55 @@ func TestParseJWTClaimsFromAccessTokenIDTrustUsesProperties(t *testing.T) {
 	}
 }
 
+// TestParseJWTClaimsFromAccessToken_PassesRawClaimsAsExternal verifies the
+// Casdoor-brokered login path forwards the raw token payload (properties,
+// signupApplication, ...) as ExternalClaims so cs-user's field_map can
+// extract per-provider enterprise fields via dotted-path references like
+// "properties.oauth_Custom.id". This is the file-config counterpart to
+// server's legacy authidentity hardcoded idtrust handling.
+func TestParseJWTClaimsFromAccessToken_PassesRawClaimsAsExternal(t *testing.T) {
+	tokenString := signUserTestJWT(t, jwt.MapClaims{
+		"id":                "idtrust-001",
+		"sub":               "sub-001",
+		"universal_id":      "uuid-001",
+		"name":              "alice",
+		"provider":          "idtrust",
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom": map[string]any{
+				"id":       "sangfor-001",
+				"jobTitle": "Staff Engineer",
+			},
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	claims, err := ParseJWTClaimsFromAccessToken(tokenString)
+	if err != nil {
+		t.Fatalf("ParseJWTClaimsFromAccessToken error: %v", err)
+	}
+	if claims.ExternalClaims == nil {
+		t.Fatalf("ExternalClaims is nil — Casdoor-brokered IdPs cannot be field_map-configured")
+	}
+	if got := claims.ExternalClaims["signupApplication"]; got != "idtrust" {
+		t.Errorf("ExternalClaims.signupApplication: got %v, want idtrust", got)
+	}
+	props, ok := claims.ExternalClaims["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("ExternalClaims.properties missing or wrong type: %T", claims.ExternalClaims["properties"])
+	}
+	custom, ok := props["oauth_Custom"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties.oauth_Custom missing or wrong type: %T", props["oauth_Custom"])
+	}
+	if custom["id"] != "sangfor-001" {
+		t.Errorf("properties.oauth_Custom.id: got %v, want sangfor-001", custom["id"])
+	}
+	if custom["jobTitle"] != "Staff Engineer" {
+		t.Errorf("properties.oauth_Custom.jobTitle: got %v, want 'Staff Engineer'", custom["jobTitle"])
+	}
+}
+
 func TestCachedUserServiceGetUsersByIDs(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewCachedUserService(NewUserService(db))

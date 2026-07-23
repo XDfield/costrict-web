@@ -945,6 +945,19 @@ func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
 		return nil, fmt.Errorf("no user identifiers found in access token")
 	}
 
+	// Surface the raw Casdoor token payload (properties, signupApplication,
+	// user, ...) as ExternalClaims so cs-user's employment_providers.field_map
+	// can extract per-provider enterprise fields without server hard-coding
+	// each IdP's property namespace. This is the Casdoor-brokered counterpart
+	// to multi-idp's profile.Raw injection — it lets field_map configs like
+	//   properties.oauth_Custom.id → enterprise_uid
+	// work for IdPs routed through Casdoor (idtrust, custom OAuth apps, ...).
+	// We pass the whole raw map rather than cherry-picking keys so future
+	// field_map configs can reach any token field without another server-side
+	// change. cs-user's applyFieldMap walks dotted paths to get inside nested
+	// sub-maps.
+	result.ExternalClaims = rawClaims
+
 	return result, nil
 }
 
