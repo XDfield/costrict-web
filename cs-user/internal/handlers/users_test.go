@@ -35,6 +35,10 @@ type stubUserService struct {
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
 	listOrganizations      func(context.Context) ([]user.OrganizationCount, error)
+	// R2 (REGISTRATION_PROFILE_DESIGN).
+	completeRegistration func(context.Context, string, string, string) (*models.User, error)
+	updateProfile        func(context.Context, string, string) (*models.User, error)
+	isUsernameAvailable  func(context.Context, string, string) (bool, error)
 }
 
 func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -91,6 +95,24 @@ func (s stubUserService) ApplyEnterpriseMapping(ctx context.Context, params user
 	}
 	return s.applyEnterpriseMapping(ctx, params)
 }
+func (s stubUserService) CompleteRegistration(ctx context.Context, subjectID, username, displayName string) (*models.User, error) {
+	if s.completeRegistration == nil {
+		panic("stubUserService.completeRegistration not wired")
+	}
+	return s.completeRegistration(ctx, subjectID, username, displayName)
+}
+func (s stubUserService) UpdateProfile(ctx context.Context, subjectID, displayName string) (*models.User, error) {
+	if s.updateProfile == nil {
+		panic("stubUserService.updateProfile not wired")
+	}
+	return s.updateProfile(ctx, subjectID, displayName)
+}
+func (s stubUserService) IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error) {
+	if s.isUsernameAvailable == nil {
+		panic("stubUserService.isUsernameAvailable not wired")
+	}
+	return s.isUsernameAvailable(ctx, username, excludeSubjectID)
+}
 func (s stubUserService) ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
 	if s.listUsers == nil {
 		panic("stubUserService.listUsers not wired")
@@ -131,6 +153,10 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.GET("/api/internal/users/organizations", api.ListOrganizations)
 	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
 	r.GET("/api/internal/users/:subject_id/profile", api.GetUserProfile)
+	// R2 routes.
+	r.GET("/api/internal/users/username-available", api.UsernameAvailable)
+	r.POST("/api/internal/users/:subject_id/complete-registration", api.CompleteRegistration)
+	r.POST("/api/internal/users/:subject_id/profile", api.UpdateProfile)
 	return api, r
 }
 
@@ -1299,5 +1325,199 @@ func TestGetUserProfile_InternalErrorReturns500(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "conn lost") {
 		t.Errorf("internal error must not leak: %s", w.Body.String())
+	}
+}
+
+// --- R2: CompleteRegistration ---
+
+// TestCompleteRegistration_HappyPath verifies the wire format on success:
+// service returns the updated user with profile_completed_at set, handler
+// wraps it in {"user": ...}.
+func TestCompleteRegistration_HappyPath(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	_, r := newUsersAPI(stubUserService{
+		completeRegistration: func(_ context.Context, subjectID, username, displayName string) (*models.User, error) {
+			if subjectID != "usr_alice" {
+				t.Fatalf("subjectID: want usr_alice, got %s", subjectID)
+			}
+			if username != "alice" {
+				t.Fatalf("username: want alice, got %s", username)
+			}
+			if displayName != "Alice Wonderland" {
+				t.Fatalf("displayName: want Alice Wonderland, got %s", displayName)
+			}
+			return &models.User{SubjectID: subjectID, Username: username, ProfileCompletedAt: &now}, nil
+		},
+	})
+	body := map[string]string{"username": "alice", "display_name": "Alice Wonderland"}
+	rec := doJSON(t, r, http.MethodPost, "/api/internal/users/usr_alice/complete-registration", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		User struct {
+			SubjectID string `json:"subject_id"`
+			Username  string `json:"username"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.User.Username != "alice" {
+		t.Errorf("username: want alice, got %s", env.User.Username)
+	}
+}
+
+// TestCompleteRegistration_TakenMaps409 verifies that ErrUsernameTaken
+// surfaces as 409 with the username_taken token, so server's RPCWriter
+// handler can branch on err.Error().
+func TestCompleteRegistration_TakenMaps409(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		completeRegistration: func(_ context.Context, _, _, _ string) (*models.User, error) {
+			return nil, user.ErrUsernameTaken
+		},
+	})
+	rec := doJSON(t, r, http.MethodPost, "/api/internal/users/usr_bob/complete-registration", map[string]string{"username": "bob"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "username_taken") {
+		t.Errorf("expected username_taken token, got %s", rec.Body.String())
+	}
+}
+
+// TestCompleteRegistration_InvalidMaps400 verifies ErrUsernameInvalid → 400.
+func TestCompleteRegistration_InvalidMaps400(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		completeRegistration: func(_ context.Context, _, _, _ string) (*models.User, error) {
+			return nil, user.ErrUsernameInvalid
+		},
+	})
+	rec := doJSON(t, r, http.MethodPost, "/api/internal/users/usr_bob/complete-registration", map[string]string{"username": "x"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCompleteRegistration_AlreadyCompleteMaps409 verifies the one-shot
+// semantics: a second call against an already-completed user returns 409
+// with registration_already_complete.
+func TestCompleteRegistration_AlreadyCompleteMaps409(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		completeRegistration: func(_ context.Context, _, _, _ string) (*models.User, error) {
+			return nil, user.ErrRegistrationAlreadyComplete
+		},
+	})
+	rec := doJSON(t, r, http.MethodPost, "/api/internal/users/usr_bob/complete-registration", map[string]string{"username": "bob"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "registration_already_complete") {
+		t.Errorf("expected registration_already_complete token, got %s", rec.Body.String())
+	}
+}
+
+// --- R2: UsernameAvailable ---
+
+// TestUsernameAvailable_FreeMaps200AvailableTrue verifies the happy path.
+func TestUsernameAvailable_FreeMaps200AvailableTrue(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		isUsernameAvailable: func(_ context.Context, username, exclude string) (bool, error) {
+			if username != "alice" {
+				t.Fatalf("username: want alice, got %s", username)
+			}
+			if exclude != "usr_self" {
+				t.Fatalf("exclude: want usr_self, got %s", exclude)
+			}
+			return true, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/username-available?username=alice&exclude_subject_id=usr_self", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"available":true`) {
+		t.Errorf("expected available=true, got %s", w.Body.String())
+	}
+}
+
+// TestUsernameAvailable_TakenMaps200FalseTaken verifies the taken reason.
+func TestUsernameAvailable_TakenMaps200FalseTaken(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		isUsernameAvailable: func(_ context.Context, _, _ string) (bool, error) {
+			return false, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/username-available?username=alice", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"available":false`) || !strings.Contains(w.Body.String(), "taken") {
+		t.Errorf("expected available=false reason=taken, got %s", w.Body.String())
+	}
+}
+
+// TestUsernameAvailable_InvalidMaps200FalseInvalidFormat verifies the
+// invalid_format reason surfaces as 200 (not 400) so the frontend can read
+// the reason without distinguishing error shapes.
+func TestUsernameAvailable_InvalidMaps200FalseInvalidFormat(t *testing.T) {
+	t.Parallel()
+	_, r := newUsersAPI(stubUserService{
+		isUsernameAvailable: func(_ context.Context, _, _ string) (bool, error) {
+			return false, user.ErrUsernameInvalid
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/username-available?username=ab", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid_format") {
+		t.Errorf("expected invalid_format, got %s", w.Body.String())
+	}
+}
+
+// --- R2: UpdateProfile ---
+
+// TestUpdateProfile_HappyPath verifies the wire format on success.
+func TestUpdateProfile_HappyPath(t *testing.T) {
+	t.Parallel()
+	dn := "New Display"
+	_, r := newUsersAPI(stubUserService{
+		updateProfile: func(_ context.Context, subjectID, displayName string) (*models.User, error) {
+			if subjectID != "usr_alice" {
+				t.Fatalf("subjectID: want usr_alice, got %s", subjectID)
+			}
+			if displayName != dn {
+				t.Fatalf("displayName: want %q, got %q", dn, displayName)
+			}
+			return &models.User{SubjectID: subjectID, DisplayName: &dn}, nil
+		},
+	})
+	rec := doJSON(t, r, http.MethodPost, "/api/internal/users/usr_alice/profile", map[string]string{"display_name": dn})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		User struct {
+			DisplayName *string `json:"display_name"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.User.DisplayName == nil || *env.User.DisplayName != dn {
+		t.Errorf("display_name: want %q, got %v", dn, env.User.DisplayName)
 	}
 }
