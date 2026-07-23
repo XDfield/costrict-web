@@ -15,6 +15,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/migration"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/team"
 	migrations "github.com/costrict/costrict-web/server/migrations"
 	"github.com/google/uuid"
@@ -309,12 +310,26 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) err
 		}
 	}
 
+	var storageBackend storage.Backend
+	if !dryRun {
+		storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
+		if storagePath == "" {
+			storagePath = "./data/artifacts"
+		}
+		backend, storageErr := storage.NewLocalBackend(storagePath)
+		if storageErr != nil {
+			return fmt.Errorf("initialize catalog asset storage: %w", storageErr)
+		}
+		storageBackend = backend
+	}
+
 	svc := &services.CatalogIngestService{
 		DB:             db,
 		Parser:         &services.ParserService{},
 		TagSvc:         &services.TagService{DB: db},
 		CategorySvc:    &services.CategoryService{DB: db},
 		ScanJobService: &services.ScanJobService{DB: db},
+		Storage:        storageBackend,
 	}
 
 	src := services.IngestSource{}

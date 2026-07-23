@@ -181,6 +181,7 @@ func main() {
 		TagSvc:         tagSvc,
 		CategorySvc:    categorySvc,
 		ScanJobService: scanJobSvc,
+		Storage:        storageBackend,
 	}
 	adminImportModule := adminimport.New(db, catalogIngestSvc, storageBackend)
 	importRunner := adminImportModule.Runner()

@@ -31,6 +31,8 @@
 //     a new SecurityScan row if upstream's security block has updated.
 //   - Entries with differing sha or missing in DB → full parse + upsert,
 //     bump capability_versions revision, enqueue scan job.
+//   - Assets are reconciled independently on every pass because a script or
+//     reference can change without changing the primary file.
 //   - DB items whose source_path no longer appears upstream → soft archive
 //     (status='archived', deleted_at=NOW). We do NOT physically delete so
 //     favorites/scan history remain intact.
@@ -57,9 +59,11 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
 	"gorm.io/datatypes"
@@ -90,6 +94,7 @@ type CatalogIngestService struct {
 	TagSvc         *TagService
 	CategorySvc    *CategoryService
 	ScanJobService *ScanJobService
+	Storage        storage.Backend
 }
 
 // IngestSource carries exactly one of URL / Tarball / Dir. The other two
@@ -374,17 +379,44 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			}
 		}
 		isNew := len(relatedItems) == 0
+		entryWriteFailed := false
 
 		if isNew || anyContentChanged {
-			added, updated, failed, errs := s.applyChangedEntry(ctx, bundleDir, paths, fileBytes, fileSHA, entry, relatedItems, itemsBySlug, opts.DryRun, triggerUser)
+			added, updated, failed, errs := s.applyChangedEntry(paths, fileBytes, fileSHA, entry, relatedItems, itemsBySlug, opts.DryRun, triggerUser)
 			result.Added += added
 			result.Updated += updated
 			classifyAndAccumulate(result, failed, errs)
+			entryWriteFailed = failed > 0
 		} else {
 			updated, skipped, failed, errs := s.applyMetadataOnly(entry, relatedItems, paths.SourcePath, paths.EntryDir, opts.DryRun)
 			result.MetadataUpdated += updated
 			result.Skipped += skipped
 			classifyAndAccumulate(result, failed, errs)
+			entryWriteFailed = failed > 0
+		}
+
+		// Assets have their own hashes and can change while the primary file
+		// stays byte-for-byte identical. Reconcile them on every successful
+		// entry pass so subscriptions and distributions always expose the
+		// complete directory, including updates and removals.
+		if !opts.DryRun && !entryWriteFailed && entry.Type == "skill" {
+			var currentItems []models.CapabilityItem
+			if err := s.DB.Select("id").
+				Where(
+					"registry_id = ? AND catalog_entry_dir = ? AND source_type NOT IN ? AND status = ?",
+					PublicRegistryID, paths.EntryDir, []string{"archive", "fork"}, "active",
+				).
+				Find(&currentItems).Error; err != nil {
+				result.Failed++
+				result.Errors = append(result.Errors, fmt.Sprintf("entry %s: load items for asset sync: %v", entry.ID, err))
+				continue
+			}
+			for _, item := range currentItems {
+				if err := s.syncAssetsForItem(ctx, bundleDir, paths.SourcePath, item.ID); err != nil {
+					result.Failed++
+					result.Errors = append(result.Errors, fmt.Sprintf("entry %s: %v", entry.ID, err))
+				}
+			}
 		}
 	}
 
@@ -499,8 +531,6 @@ func classifyAndAccumulate(result *IngestResult, entryFailed int, errs []string)
 // security side-channel update so a single ingest pass leaves the row
 // fully aligned with upstream.
 func (s *CatalogIngestService) applyChangedEntry(
-	ctx context.Context,
-	bundleDir string,
 	paths entryPaths,
 	fileBytes []byte,
 	fileSHA string,
@@ -641,7 +671,6 @@ func (s *CatalogIngestService) applyChangedEntry(
 			// NULL until a future ingest cycle re-classifies it as
 			// metadata-only.
 			itemsForScan = append(itemsForScan, newItem)
-			s.syncAssetsForItem(bundleDir, paths.SourcePath, newItem.ID, &errs)
 			added++
 		}
 	}
@@ -1236,20 +1265,205 @@ func (s *CatalogIngestService) applySecurityScan(item *models.CapabilityItem, en
 	}
 }
 
-// syncAssetsForItem brings non-primary files in the same entry directory
-// into capability_assets, mirroring SyncService.syncAssets semantics.
-// Implementation deferred — for the initial cut, mcp/plugin/prompt/rule
-// entries are single-file (no assets), and skill assets (references/,
-// scripts/) are nice-to-have but not blocking for the data link.
-func (s *CatalogIngestService) syncAssetsForItem(bundleDir, primaryPath, itemID string, errs *[]string) {
-	// TODO(catalog-ingest): port SyncService.syncAssets to read from a
-	// plain dir instead of GitService. The current data link tests don't
-	// depend on assets so leaving as a no-op is safe — assets will appear
-	// the next time a real sync runs through SyncService.
-	_ = bundleDir
-	_ = primaryPath
-	_ = itemID
-	_ = errs
+// syncAssetsForItem reconciles every non-primary regular file in a catalog
+// entry directory into capability_assets. Text stays in Postgres; binary
+// content uses the configured storage backend.
+func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir, primaryPath, itemID string) error {
+	entryDir := filepath.Join(bundleDir, "catalog-download", filepath.FromSlash(filepath.Dir(primaryPath)))
+	entryDir = existingNormalizedPath(entryDir)
+	primaryRelPath := filepath.ToSlash(filepath.Base(primaryPath))
+
+	var existingAssets []models.CapabilityAsset
+	if err := s.DB.Where("item_id = ?", itemID).Find(&existingAssets).Error; err != nil {
+		return fmt.Errorf("load assets for %s: %w", itemID, err)
+	}
+	existingByPath := make(map[string]models.CapabilityAsset, len(existingAssets))
+	for _, asset := range existingAssets {
+		existingByPath[asset.RelPath] = asset
+	}
+
+	desired := make(map[string]models.CapabilityAsset)
+	uploadedKeys := make([]string, 0)
+	if err := filepath.WalkDir(entryDir, func(absPath string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(entryDir, absPath)
+		if err != nil {
+			return err
+		}
+		relPath = norm.NFC.String(filepath.ToSlash(relPath))
+		if relPath == primaryRelPath {
+			return nil
+		}
+
+		content, err := readBundleFile(absPath)
+		if err != nil {
+			return fmt.Errorf("read asset %s: %w", relPath, err)
+		}
+
+		contentSHA := sha256Hex(content)
+		record := models.CapabilityAsset{
+			ItemID:         itemID,
+			RelPath:        relPath,
+			StorageBackend: "local",
+			MimeType:       InferMimeType(relPath),
+			FileSize:       int64(len(content)),
+			ContentSHA:     contentSHA,
+		}
+		binary := isBinary(content) || !utf8.Valid(content)
+		if !binary {
+			text := string(content)
+			record.TextContent = &text
+		} else {
+			if current, ok := existingByPath[relPath]; ok &&
+				current.ContentSHA == contentSHA && current.StorageKey != "" {
+				if current.StorageBackend != "" {
+					record.StorageBackend = current.StorageBackend
+				}
+				record.StorageKey = current.StorageKey
+			} else {
+				if s.Storage == nil {
+					return fmt.Errorf("store binary asset %s: storage backend is not configured", relPath)
+				}
+				storageKey := filepath.ToSlash(filepath.Join(
+					"catalog", itemID, "assets", contentSHA, relPath,
+				))
+				if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(content), int64(len(content))); err != nil {
+					return fmt.Errorf("store binary asset %s: %w", relPath, err)
+				}
+				uploadedKeys = append(uploadedKeys, storageKey)
+				record.StorageBackend = "local"
+				record.StorageKey = storageKey
+			}
+		}
+		desired[relPath] = record
+		return nil
+	}); err != nil {
+		s.deleteCatalogStorageKeys(context.Background(), uploadedKeys)
+		return fmt.Errorf("scan assets for %s: %w", itemID, err)
+	}
+
+	if catalogAssetsEqual(existingByPath, desired) {
+		return nil
+	}
+
+	staleStorageKeys := make([]string, 0)
+	err := s.DB.Transaction(func(tx *gorm.DB) error {
+		for relPath, record := range desired {
+			if current, ok := existingByPath[relPath]; ok {
+				record.ID = current.ID
+				if catalogAssetEqual(current, record) {
+					continue
+				}
+				if current.StorageKey != "" && current.StorageKey != record.StorageKey {
+					staleStorageKeys = append(staleStorageKeys, current.StorageKey)
+				}
+				if err := tx.Model(&models.CapabilityAsset{}).
+					Where("id = ?", current.ID).
+					Updates(map[string]any{
+						"text_content":    record.TextContent,
+						"storage_backend": record.StorageBackend,
+						"storage_key":     record.StorageKey,
+						"mime_type":       record.MimeType,
+						"file_size":       record.FileSize,
+						"content_sha":     record.ContentSHA,
+					}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+
+			record.ID = uuid.New().String()
+			if err := tx.Create(&record).Error; err != nil {
+				return err
+			}
+		}
+
+		for relPath, current := range existingByPath {
+			if _, ok := desired[relPath]; ok {
+				continue
+			}
+			if current.StorageKey != "" {
+				staleStorageKeys = append(staleStorageKeys, current.StorageKey)
+			}
+			if err := tx.Delete(&models.CapabilityAsset{}, "id = ?", current.ID).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		s.deleteCatalogStorageKeys(context.Background(), uploadedKeys)
+		return fmt.Errorf("persist assets for %s: %w", itemID, err)
+	}
+
+	s.deleteCatalogStorageKeys(context.Background(), staleStorageKeys)
+	return nil
+}
+
+func catalogAssetsEqual(existing, desired map[string]models.CapabilityAsset) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+	for relPath, desiredAsset := range desired {
+		existingAsset, ok := existing[relPath]
+		if !ok || !catalogAssetEqual(existingAsset, desiredAsset) {
+			return false
+		}
+	}
+	return true
+}
+
+func catalogAssetEqual(current, desired models.CapabilityAsset) bool {
+	sameText := current.TextContent == nil && desired.TextContent == nil
+	if current.TextContent != nil && desired.TextContent != nil {
+		sameText = *current.TextContent == *desired.TextContent
+	}
+	return current.ContentSHA == desired.ContentSHA &&
+		current.StorageBackend == desired.StorageBackend &&
+		current.StorageKey == desired.StorageKey &&
+		current.MimeType == desired.MimeType &&
+		current.FileSize == desired.FileSize &&
+		sameText
+}
+
+func (s *CatalogIngestService) deleteCatalogStorageKeys(ctx context.Context, keys []string) {
+	if s.Storage == nil {
+		return
+	}
+	for _, key := range keys {
+		if err := s.Storage.Delete(ctx, key); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("catalog-ingest: delete stale asset %s: %v", key, err)
+		}
+	}
+}
+
+func existingNormalizedPath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	if alt := norm.NFD.String(path); alt != path {
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+	if alt := norm.NFC.String(path); alt != path {
+		if _, err := os.Stat(alt); err == nil {
+			return alt
+		}
+	}
+	return path
 }
 
 // ensurePublicRegistry copies the row creation logic from migrate so this
