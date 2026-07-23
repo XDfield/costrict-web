@@ -1,23 +1,73 @@
 # Dev-profile employment_providers + provider_mapping for idtrust.
-# Mirrors cs-user/scripts/examples/idtrust-employment.yaml but trimmed
-# for the local-dev bootstrap (same Plan B detection rule).
 #
 # Consumed by scripts/bootstrap-dev-env.sh via
-# cs-user/scripts/configure-employment-mapping.sh.
+# cs-user/scripts/configure-employment-mapping.sh — uploads this YAML to
+# cs-user's tenant_configs.config_yaml for the bootstrapped tenant.
+#
+# Casdoor is the only OAuth entry point. Per-provider OAuth credentials
+# (idtrust client_id/secret, endpoints) live INSIDE Casdoor — this file
+# contains NO secrets, only:
+#   * provider_detection — how cs-user recognizes idtrust from the Casdoor
+#     JWT (Plan B: by signupApplication value).
+#   * field_map          — how cs-user extracts enterprise columns from the
+#     Casdoor JWT properties (the raw idtrust userinfo payload, brokered
+#     through Casdoor's Custom OAuth adapter and surfaced under
+#     `properties.oauth_Custom.*`).
+#   * provider_mapping   — multi-identity rank/sync hints.
+#
+# === provider_detection ===========================================
+# signup_application must match the Casdoor Application `name` that
+# users land on when they sign in via idtrust. Casdoor writes this value
+# into the JWT claim `signupApplication`. server/internal/authidentity/
+# normalize.go also has a hard-coded fallback for `signupApplication ==
+# "idtrust"`, so this default keeps both layers aligned without code edits.
+#
+# If your Casdoor Application has a different name (e.g. "app-costrict"),
+# change signup_application below AND update the server's normalize.go
+# fallback or rely on this config-driven detection alone.
+#
+# === field_map ====================================================
+# idtrust returns its userinfo via Casdoor's Custom OAuth provider. Casdoor
+# flattens the response into JWT `properties` under two interchangeable
+# shapes (cs-user's dotted-path resolver handles both):
+#
+#   flat:    properties.oauth_Custom_id          = "alice"
+#   nested:  properties.oauth_Custom.id          = "alice"
+#
+# Below uses the nested form because it mirrors the raw idtrust schema
+# (sub-keys are the idtrust OIDC claim names). Commented entries mark
+# fields idtrust typically does NOT return — uncomment + adjust if your
+# idtrust tenant exposes them.
 
 employment_providers:
   enabled:
     - idtrust
 
   provider_detection:
-    - signup_application: "application_v94pr3"
+    - signup_application: "idtrust"
       provider: idtrust
 
   field_map:
     idtrust:
-      enterprise_uid:  "properties.oauth_Custom_id"
-      job_title:       "properties.oauth_Custom_username"
-      employee_number: "properties.no"
+      # Identity
+      enterprise_uid:              "properties.oauth_Custom.id"
+      employee_number:             "properties.oauth_Custom.employeeNumber"
+
+      # Organization
+      job_title:                   "properties.oauth_Custom.jobTitle"
+      job_level:                   "properties.oauth_Custom.jobLevel"
+      cost_center:                 "properties.oauth_Custom.costCenter"
+      org_path:                    "properties.oauth_Custom.department"
+      employment_type:             "properties.oauth_Custom.employmentType"
+      work_location:               "properties.oauth_Custom.workPlace"
+
+      # Manager (often unavailable — uncomment when idtrust exposes them)
+      # direct_manager_subject_id:   "properties.oauth_Custom.managerId"
+      # direct_manager_external_ref: "properties.oauth_Custom.managerEmail"
+
+      # Dates (idtrust usually returns ISO-8601 strings; cs-user parses)
+      hire_date:                   "properties.oauth_Custom.hireDate"
+      regular_date:                "properties.oauth_Custom.regularDate"
 
 provider_mapping:
   idtrust:
