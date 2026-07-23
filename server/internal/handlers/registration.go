@@ -1,11 +1,12 @@
-// Package handlers — user-facing registration + profile endpoints (R2 of
-// REGISTRATION_PROFILE_DESIGN). Three handlers, all behind RequireAuth:
+// Package handlers — user-facing registration + profile endpoints (R2/R4 of
+// REGISTRATION_PROFILE_DESIGN). Four handlers, all behind RequireAuth:
 //
 //	GET   /api/users/me/username-available
 //	POST  /api/users/me/complete-registration
 //	PATCH /api/users/me/profile
+//	POST  /api/users/me/suggest-profile       (R4 — provider-derived hint)
 //
-// All three route through UserModule.Writer so the request honours the
+// All four route through UserModule.Writer so the request honours the
 // configured backend (local / rpc / dual-write). The handler layer is thin:
 // it validates input shape, delegates to the writer, and maps the service's
 // sentinel errors to HTTP 4xx bodies with stable tokens the frontend can
@@ -193,4 +194,52 @@ func UpdateMyProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": buildMeUserDTO(user)})
+}
+
+// SuggestProfile godoc
+// @Summary      Suggest registration profile from IdP claims
+// @Description  Pure-function hint from the Casdoor-brokered JWT claims (R4). Frontend uses this to pre-fill the registration form. Returns empty strings when the backend has no mapping logic (local) or the provider is unrecognised; caller should treat that as "user must type it in".
+// @Tags         me
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{username=string,display_name=string}
+// @Failure      401  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /users/me/suggest-profile [post]
+func SuggestProfile(c *gin.Context) {
+	if UserModule == nil || UserModule.Writer == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "User service unavailable"})
+		return
+	}
+	claims := buildJWTClaimsFromContext(c)
+	username, displayName, err := UserModule.Writer.SuggestProfile(c.Request.Context(), claims)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to suggest profile"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"username":     username,
+		"display_name": displayName,
+	})
+}
+
+// buildJWTClaimsFromContext reconstructs a *userpkg.JWTClaims from the
+// auth-claims context value. The middleware stores AuthClaims (the verified
+// view); cs-user's provider mapping expects the same shape it would have
+// received via GetOrCreateUser, so we mirror the fields here.
+func buildJWTClaimsFromContext(c *gin.Context) *userpkg.JWTClaims {
+	claims := &userpkg.JWTClaims{}
+	if v, ok := c.Get(middleware.AuthClaimsKey); ok {
+		if ac, ok := v.(middleware.AuthClaims); ok {
+			claims.Sub = ac.Sub
+			claims.UniversalID = ac.UniversalID
+			claims.Name = ac.Name
+			claims.PreferredUsername = ac.PreferredUsername
+			claims.Email = ac.Email
+			claims.Provider = ac.Provider
+			claims.ProviderUserID = ac.ProviderUserID
+			claims.Phone = ac.Phone
+		}
+	}
+	return claims
 }
