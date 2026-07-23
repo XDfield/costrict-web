@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
@@ -392,6 +393,13 @@ var dateEmploymentColumns = map[string]struct{}{
 // values at parse time), so externalField is always a string here. The parser
 // already validates KEYS against allowedEmploymentColumns at config load
 // time, so we don't re-validate here.
+//
+// externalField supports dotted-path traversal of nested claim maps, e.g.
+// "properties.oauth_Custom.id" walks claims["properties"]["oauth_Custom"]["id"].
+// This lets field_map reach into Casdoor-brokered IdP payloads where the
+// per-provider data sits under a `properties.<oauth_prefix>.<field>` namespace.
+// A path component that is missing or non-map short-circuits to "column
+// skipped" (stays NULL) — same soft-fail semantic as a missing top-level key.
 func applyFieldMap(fieldMap FieldMapConfig, claims map[string]any) map[string]any {
 	out := make(map[string]any, len(fieldMap))
 	if len(fieldMap) == 0 || len(claims) == 0 {
@@ -401,7 +409,7 @@ func applyFieldMap(fieldMap FieldMapConfig, claims map[string]any) map[string]an
 		if externalField == "" {
 			continue
 		}
-		raw, present := claims[externalField]
+		raw, present := lookupClaimPath(claims, externalField)
 		if !present || raw == nil {
 			continue
 		}
@@ -416,6 +424,30 @@ func applyFieldMap(fieldMap FieldMapConfig, claims map[string]any) map[string]an
 		out[internalCol] = fmt.Sprint(raw)
 	}
 	return out
+}
+
+// lookupClaimPath resolves a (possibly dotted) external field reference
+// against the claims map. Single-component names do a direct map lookup
+// (backward compat). Multi-component names walk nested map[string]any layers;
+// any missing key or non-map intermediate returns (nil, false).
+func lookupClaimPath(claims map[string]any, field string) (any, bool) {
+	if !strings.Contains(field, ".") {
+		v, ok := claims[field]
+		return v, ok
+	}
+	var cursor any = claims
+	for _, seg := range strings.Split(field, ".") {
+		m, ok := cursor.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		v, present := m[seg]
+		if !present {
+			return nil, false
+		}
+		cursor = v
+	}
+	return cursor, true
 }
 
 // parseClaimDate accepts the common date shapes an IdP might emit (RFC 3339

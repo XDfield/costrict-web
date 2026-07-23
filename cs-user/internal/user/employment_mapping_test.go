@@ -556,6 +556,63 @@ func TestApplyFieldMap_HappyPath(t *testing.T) {
 	}
 }
 
+// TestApplyFieldMap_DottedPath verifies that external field references with
+// "." walk nested claim maps. This is what lets a Casdoor-brokered IdP
+// (idtrust, custom OAuth apps) be configured via field_map without server
+// hard-coding the per-provider property namespace:
+//
+//	employment_providers.field_map.idtrust.enterprise_uid: "properties.oauth_Custom.id"
+//
+// Mirror of server's legacy authidentity strategy, but driven entirely by
+// tenant config.
+func TestApplyFieldMap_DottedPath(t *testing.T) {
+	t.Parallel()
+
+	// Simulates the shape of a Casdoor JWT for an idtrust login: per-provider
+	// fields nested under properties.<oauth_prefix>.<field>.
+	claims := map[string]any{
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom": map[string]any{
+				"id":       "sangfor-001",
+				"username": "alice",
+				"jobTitle": "Staff Engineer",
+			},
+			"oauth_GitHub": map[string]any{
+				"id": "should-not-leak-through-this-prefix",
+			},
+		},
+	}
+
+	fm := FieldMapConfig{
+		"enterprise_uid": "properties.oauth_Custom.id",
+		"job_title":      "properties.oauth_Custom.jobTitle",
+		// Path that genuinely doesn't exist — must soft-skip, not panic.
+		"cost_center": "properties.oauth_Nonexistent.id",
+		// Path walks past a non-map leaf — must soft-skip, not panic.
+		"org_path": "properties.oauth_Custom.id.bogus",
+		// Top-level still works alongside dotted paths.
+		"employment_type": "signupApplication",
+	}
+
+	got := applyFieldMap(fm, claims)
+	if got["enterprise_uid"] != "sangfor-001" {
+		t.Errorf("enterprise_uid: got %v, want sangfor-001", got["enterprise_uid"])
+	}
+	if got["job_title"] != "Staff Engineer" {
+		t.Errorf("job_title: got %v, want 'Staff Engineer'", got["job_title"])
+	}
+	if _, present := got["cost_center"]; present {
+		t.Errorf("cost_center should be absent (no such path), got %v", got["cost_center"])
+	}
+	if _, present := got["org_path"]; present {
+		t.Errorf("org_path should be absent (path walked past a string leaf), got %v", got["org_path"])
+	}
+	if got["employment_type"] != "idtrust" {
+		t.Errorf("employment_type: got %v, want idtrust", got["employment_type"])
+	}
+}
+
 // TestApplyFieldMap_EmptyInputs confirms the stub-write-path invariant: with
 // no field_map or no claims, the output is an empty map (no columns mapped),
 // so callers that haven't wired ExternalClaims yet behave identically to the
