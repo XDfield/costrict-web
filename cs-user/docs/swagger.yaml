@@ -41,6 +41,105 @@ definitions:
           $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWK'
         type: array
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_idp.CreateParams:
+    properties:
+      config:
+        additionalProperties: true
+        description: required, provider-specific config
+        type: object
+      createdBy:
+        description: optional
+        type: string
+      enabled:
+        description: optional, defaults to true
+        type: boolean
+      priority:
+        description: optional, defaults to 0
+        type: integer
+      provider:
+        description: required, must match provider_mapping key
+        type: string
+      scope:
+        description: optional, defaults to "tenant-specific"
+        type: string
+      tenantID:
+        description: required
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView:
+    properties:
+      config:
+        additionalProperties: true
+        type: object
+      created_at:
+        type: string
+      created_by:
+        type: string
+      enabled:
+        type: boolean
+      priority:
+        type: integer
+      provider:
+        type: string
+      scope:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView:
+    properties:
+      config:
+        additionalProperties: true
+        description: RAW — includes secrets
+        type: object
+      created_at:
+        type: string
+      created_by:
+        type: string
+      enabled:
+        type: boolean
+      priority:
+        type: integer
+      provider:
+        type: string
+      scope:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_idp.UpdateParams:
+    properties:
+      config:
+        additionalProperties: true
+        description: optional, full replace
+        type: object
+      enabled:
+        description: optional
+        type: boolean
+      priority:
+        description: optional
+        type: integer
+      provider:
+        description: required
+        type: string
+      scope:
+        description: optional
+        type: string
+      tenantID:
+        description: required
+        type: string
+      updatedBy:
+        description: optional
+        type: string
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_models.AuditLog:
     properties:
       action:
@@ -115,8 +214,6 @@ definitions:
       email_domains:
         type: string
       features:
-        type: string
-      git_server_id:
         type: string
       limits:
         type: string
@@ -267,12 +364,23 @@ definitions:
         additionalProperties:
           $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider'
         type: object
+      version:
+        type: string
     type: object
   github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount:
     properties:
       memberCount:
         type: integer
       organization:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary:
+    properties:
+      display_name:
+        type: string
+      role:
+        type: string
+      team_id:
         type: string
     type: object
   internal_handlers.adminUserListItem:
@@ -483,17 +591,6 @@ definitions:
     required:
     - config_yaml
     type: object
-  internal_handlers.tenantGitServerResponse:
-    properties:
-      admin_token:
-        type: string
-      endpoint:
-        type: string
-      kind:
-        type: string
-      server_id:
-        type: string
-    type: object
   internal_handlers.transferIdentityRequest:
     properties:
       external_key:
@@ -541,6 +638,250 @@ paths:
       summary: JWKS endpoint
       tags:
       - jwks
+  /api/idp-sources:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new identity provider source configuration for a tenant
+      parameters:
+      - description: IdP source creation parameters
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.CreateParams'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create an IdP source for a tenant
+      tags:
+      - idp-sources
+  /api/idp-sources/{tenant_id}:
+    get:
+      consumes:
+      - application/json
+      description: Retrieves all IdP source configurations for a tenant
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView'
+            type: array
+      summary: List all IdP sources for a tenant
+      tags:
+      - idp-sources
+  /api/idp-sources/{tenant_id}/{provider}:
+    delete:
+      consumes:
+      - application/json
+      description: Removes an IdP source configuration
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      - description: Provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete an IdP source
+      tags:
+      - idp-sources
+    get:
+      consumes:
+      - application/json
+      description: Retrieves a specific IdP source by tenant and provider
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      - description: Provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get an IdP source
+      tags:
+      - idp-sources
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing IdP source configuration
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      - description: Provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      - description: IdP source update parameters
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.UpdateParams'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update an IdP source
+      tags:
+      - idp-sources
+  /api/idp-sources/{tenant_id}/enabled:
+    get:
+      consumes:
+      - application/json
+      description: Returns all enabled IdP sources for a tenant, filtered by provider_mapping
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView'
+            type: array
+      summary: Get enabled IdP sources for login
+      tags:
+      - idp-sources
+  /api/internal/idp-sources/{tenant_id}/{provider}:
+    get:
+      description: Server-to-server endpoint. Returns raw config including client_secret.
+        Must be behind X-Internal-Token gate.
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      - description: Provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Get single IdP source WITH secrets (internal only)
+      tags:
+      - idp-sources-internal
+  /api/internal/idp-sources/{tenant_id}/enabled:
+    get:
+      description: Server-to-server endpoint. Returns raw config including client_secret,
+        bind_password, etc. Must be behind X-Internal-Token gate.
+      parameters:
+      - description: Tenant identifier
+        in: path
+        name: tenant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView'
+            type: array
+      summary: Get enabled IdP sources WITH secrets (internal only)
+      tags:
+      - idp-sources-internal
   /api/internal/ping:
     get:
       description: Returns pong. Used by costrict-web to verify the X-Internal-Token
@@ -1109,56 +1450,6 @@ paths:
       summary: Update provider_mapping (tenant admin)
       tags:
       - tenant-provider-mapping
-  /api/internal/tenants/{tenant_id}/git-server:
-    get:
-      description: Returns the endpoint + admin_token bound to the supplied tenant.
-        Internal-token gated; consumed by @server gitsync.
-      parameters:
-      - description: Tenant ID
-        in: path
-        name: tenant_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_handlers.tenantGitServerResponse'
-        "400":
-          description: Bad Request
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "503":
-          description: Service Unavailable
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-      security:
-      - InternalToken: []
-      summary: Read a tenant's Git server config (internal RPC)
-      tags:
-      - tenant-git-server
   /api/internal/tenants/audit-logs:
     get:
       description: 'Returns paginated audit-log entries scoped to the request''s tenant
@@ -1417,50 +1708,6 @@ paths:
       summary: Bind an identity to a user
       tags:
       - users
-  /api/internal/users/{subject_id}/gitea-binding:
-    get:
-      description: Returns the user_gitea_binding row for the given subject_id. 404
-        when the user has no binding (Gitea provisioning not yet run). Drives ops
-        visibility + future fork JWT middleware (E3a.3).
-      parameters:
-      - description: User subject_id
-        in: path
-        name: subject_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: object
-        "400":
-          description: Bad Request
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-      security:
-      - InternalToken: []
-      summary: Get a user's Gitea binding
-      tags:
-      - users
   /api/internal/users/{subject_id}/identities/{provider}:
     delete:
       description: Soft-deletes every identity matching the provider on the user and
@@ -1631,6 +1878,51 @@ paths:
       tags:
       - users
       - admin
+  /api/internal/users/{subject_id}/teams:
+    get:
+      description: Returns the teams the user belongs to, in the tenant resolved by
+        X-Tenant-Id. Currently returns 503 ORG_TEAM_SERVICE_UNAVAILABLE until org-team-service
+        integration lands.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              teams:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List teams for a user (kb/ensure backing)
+      tags:
+      - users
+      - teams
   /api/internal/users/apply-enterprise-mapping:
     post:
       consumes:
@@ -1907,13 +2199,22 @@ paths:
   /api/internal/users/search:
     get:
       description: Returns active users whose username / display_name / email match
-        the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200.
+        the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass `employee_number`
+        to short-circuit the keyword path and look up users via employment_identities
+        (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). `keyword`
+        and `employee_number` are mutually exclusive — supplying both yields 400.
       parameters:
       - description: Search keyword (matched against username / display_name / email)
         in: query
         name: keyword
         type: string
-      - description: Max results (default 50, max 200)
+      - description: Employee number (工号) — short-circuits keyword path; goes through
+          employment_identities JOIN users
+        in: query
+        name: employee_number
+        type: string
+      - description: Max results (default 50 for keyword / 1 for employee_number,
+          max 200)
         in: query
         name: limit
         type: integer

@@ -46,6 +46,374 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/idp-sources": {
+            "post": {
+                "description": "Creates a new identity provider source configuration for a tenant",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "Create an IdP source for a tenant",
+                "parameters": [
+                    {
+                        "description": "IdP source creation parameters",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.CreateParams"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/idp-sources/{tenant_id}": {
+            "get": {
+                "description": "Retrieves all IdP source configurations for a tenant",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "List all IdP sources for a tenant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/idp-sources/{tenant_id}/enabled": {
+            "get": {
+                "description": "Returns all enabled IdP sources for a tenant, filtered by provider_mapping",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "Get enabled IdP sources for login",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/idp-sources/{tenant_id}/{provider}": {
+            "get": {
+                "description": "Retrieves a specific IdP source by tenant and provider",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "Get an IdP source",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Updates an existing IdP source configuration",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "Update an IdP source",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "IdP source update parameters",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.UpdateParams"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Removes an IdP source configuration",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources"
+                ],
+                "summary": "Delete an IdP source",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/idp-sources/{tenant_id}/enabled": {
+            "get": {
+                "description": "Server-to-server endpoint. Returns raw config including client_secret, bind_password, etc. Must be behind X-Internal-Token gate.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources-internal"
+                ],
+                "summary": "Get enabled IdP sources WITH secrets (internal only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/idp-sources/{tenant_id}/{provider}": {
+            "get": {
+                "description": "Server-to-server endpoint. Returns raw config including client_secret. Must be behind X-Internal-Token gate.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "idp-sources-internal"
+                ],
+                "summary": "Get single IdP source WITH secrets (internal only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant identifier",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/ping": {
             "get": {
                 "security": [
@@ -1092,84 +1460,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/internal/tenants/{tenant_id}/git-server": {
-            "get": {
-                "security": [
-                    {
-                        "InternalToken": []
-                    }
-                ],
-                "description": "Returns the endpoint + admin_token bound to the supplied tenant. Internal-token gated; consumed by @server gitsync.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tenant-git-server"
-                ],
-                "summary": "Read a tenant's Git server config (internal RPC)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Tenant ID",
-                        "name": "tenant_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.tenantGitServerResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/api/internal/users/apply-enterprise-mapping": {
             "post": {
                 "security": [
@@ -1575,7 +1865,7 @@ const docTemplate = `{
                         "InternalToken": []
                     }
                 ],
-                "description": "Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200.",
+                "description": "Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass ` + "`" + `employee_number` + "`" + ` to short-circuit the keyword path and look up users via employment_identities (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). ` + "`" + `keyword` + "`" + ` and ` + "`" + `employee_number` + "`" + ` are mutually exclusive — supplying both yields 400.",
                 "produces": [
                     "application/json"
                 ],
@@ -1591,8 +1881,14 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Employee number (工号) — short-circuits keyword path; goes through employment_identities JOIN users",
+                        "name": "employee_number",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
-                        "description": "Max results (default 50, max 200)",
+                        "description": "Max results (default 50 for keyword / 1 for employee_number, max 200)",
                         "name": "limit",
                         "in": "query"
                     }
@@ -1913,73 +2209,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/internal/users/{subject_id}/gitea-binding": {
-            "get": {
-                "security": [
-                    {
-                        "InternalToken": []
-                    }
-                ],
-                "description": "Returns the user_gitea_binding row for the given subject_id. 404 when the user has no binding (Gitea provisioning not yet run). Drives ops visibility + future fork JWT middleware (E3a.3).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "users"
-                ],
-                "summary": "Get a user's Gitea binding",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "User subject_id",
-                        "name": "subject_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/api/internal/users/{subject_id}/identities/{provider}": {
             "delete": {
                 "security": [
@@ -2229,6 +2458,74 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/{subject_id}/teams": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Returns the teams the user belongs to, in the tenant resolved by X-Tenant-Id. Currently returns 503 ORG_TEAM_SERVICE_UNAVAILABLE until org-team-service integration lands.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "teams"
+                ],
+                "summary": "List teams for a user (kb/ensure backing)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "teams": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/healthz": {
             "get": {
                 "description": "Always returns 200 once the process is up. Unauthenticated — safe for K8s livenessProbe.",
@@ -2355,6 +2652,147 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_idp.CreateParams": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "required, provider-specific config",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "createdBy": {
+                    "description": "optional",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "optional, defaults to true",
+                    "type": "boolean"
+                },
+                "priority": {
+                    "description": "optional, defaults to 0",
+                    "type": "integer"
+                },
+                "provider": {
+                    "description": "required, must match provider_mapping key",
+                    "type": "string"
+                },
+                "scope": {
+                    "description": "optional, defaults to \"tenant-specific\"",
+                    "type": "string"
+                },
+                "tenantID": {
+                    "description": "required",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_idp.IdPSourceView": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_idp.InternalIdPSourceView": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "RAW — includes secrets",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "priority": {
+                    "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_idp.UpdateParams": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "optional, full replace",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "enabled": {
+                    "description": "optional",
+                    "type": "boolean"
+                },
+                "priority": {
+                    "description": "optional",
+                    "type": "integer"
+                },
+                "provider": {
+                    "description": "required",
+                    "type": "string"
+                },
+                "scope": {
+                    "description": "optional",
+                    "type": "string"
+                },
+                "tenantID": {
+                    "description": "required",
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "description": "optional",
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_models.AuditLog": {
             "type": "object",
             "properties": {
@@ -2467,9 +2905,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "features": {
-                    "type": "string"
-                },
-                "git_server_id": {
                     "type": "string"
                 },
                 "limits": {
@@ -2698,6 +3133,9 @@ const docTemplate = `{
                     "additionalProperties": {
                         "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider"
                     }
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },
@@ -2708,6 +3146,20 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "organization": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "team_id": {
                     "type": "string"
                 }
             }
@@ -3004,23 +3456,6 @@ const docTemplate = `{
             ],
             "properties": {
                 "config_yaml": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.tenantGitServerResponse": {
-            "type": "object",
-            "properties": {
-                "admin_token": {
-                    "type": "string"
-                },
-                "endpoint": {
-                    "type": "string"
-                },
-                "kind": {
-                    "type": "string"
-                },
-                "server_id": {
                     "type": "string"
                 }
             }
