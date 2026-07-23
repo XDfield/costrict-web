@@ -442,6 +442,35 @@ func (w *RPCWriter) IsUsernameAvailable(ctx context.Context, username, excludeSu
 	return false, w.mapWriteError(status, respBody, "username-available")
 }
 
+// SuggestProfile calls POST /api/internal/users/suggest-profile (R4).
+// Forwards the JWTClaims as the body; cs-user's pure-function
+// MapProviderToProfile returns {username, display_name}. Empty strings on
+// the response are valid (no suggestion) — errors are transport / 5xx only.
+func (w *RPCWriter) SuggestProfile(ctx context.Context, claims *JWTClaims) (string, string, error) {
+	if !w.Configured() {
+		return "", "", ErrNotConfigured
+	}
+	body, err := json.Marshal(claims)
+	if err != nil {
+		return "", "", fmt.Errorf("user rpc writer: marshal suggest-profile: %w", err)
+	}
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/suggest-profile", body)
+	if transportErr != nil {
+		return "", "", transportErr
+	}
+	if status >= 200 && status < 300 {
+		var env struct {
+			Username    string `json:"username"`
+			DisplayName string `json:"display_name"`
+		}
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return "", "", fmt.Errorf("user rpc writer: decode suggest-profile: %w", err)
+		}
+		return env.Username, env.DisplayName, nil
+	}
+	return "", "", w.mapWriteError(status, respBody, "suggest-profile")
+}
+
 // doCapture issues an authenticated request and returns (status, body,
 // transportError). Unlike RPCClient.do, it does NOT decode the body into a
 // model — callers handle decoding on success — and does NOT collapse non-2xx

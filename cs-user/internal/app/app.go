@@ -189,6 +189,8 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	users.GET("/username-available", usersAPI.UsernameAvailable)
 	users.POST("/:subject_id/complete-registration", usersAPI.CompleteRegistration)
 	users.POST("/:subject_id/profile", usersAPI.UpdateProfile)
+	// R4: provider → suggestion (pure function, no DB).
+	users.POST("/suggest-profile", usersAPI.SuggestProfile)
 
 	// KB ensure backing: list teams for a user. Called by @server's
 	// POST /api/kb/ensure to resolve the caller's team list. Currently

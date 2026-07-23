@@ -65,6 +65,11 @@ type UserWriter interface {
 	CompleteRegistration(ctx context.Context, userSubjectID, username, displayName string) (*models.User, error)
 	UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error)
 	IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error)
+	// SuggestProfile (R4) is a pure provider → {username, display_name}
+	// hint. Local backend has no provider-mapping logic — it returns an
+	// empty suggestion; only RPCWriter (Backend=rpc) actually consults
+	// cs-user's MapProviderToProfile.
+	SuggestProfile(ctx context.Context, claims *JWTClaims) (username, displayName string, err error)
 }
 
 // DualWriter is the canary posture selected by USER_SERVICE_BACKEND=rpc with
@@ -252,4 +257,16 @@ func (d *DualWriter) UpdateMyProfile(ctx context.Context, userSubjectID, display
 // cs-user's tenant scope via X-Tenant-Id.
 func (d *DualWriter) IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error) {
 	return d.Primary.IsUsernameAvailable(ctx, username, excludeSubjectID)
+}
+
+// SuggestProfile (R4) routes to Secondary (cs-user's pure generator). The
+// local Primary has no provider-mapping logic; forwarding to it would
+// always return an empty suggestion and mask Secondary's result. Mirrors
+// ReissueToken's pattern. Errors propagate so the handler can fall back
+// to an empty suggestion on RPC failure.
+func (d *DualWriter) SuggestProfile(ctx context.Context, claims *JWTClaims) (string, string, error) {
+	if d.Secondary == nil {
+		return "", "", nil
+	}
+	return d.Secondary.SuggestProfile(ctx, claims)
 }

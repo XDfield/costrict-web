@@ -445,6 +445,12 @@ func (r *recordingWriter) IsUsernameAvailable(_ context.Context, _, _ string) (b
 	}
 	return true, nil
 }
+func (r *recordingWriter) SuggestProfile(_ context.Context, _ *JWTClaims) (string, string, error) {
+	if r.primaryError != nil {
+		return "", "", r.primaryError
+	}
+	return "", "", nil
+}
 
 func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
 	t.Parallel()
