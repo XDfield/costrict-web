@@ -29,15 +29,15 @@ export CS_USER_AUTO_MIGRATE=1
 go run ./cmd/api
 
 # 3. Health check (unauthenticated)
-curl http://localhost:8081/healthz
-curl http://localhost:8081/readyz
+curl http://localhost:8082/healthz
+curl http://localhost:8082/readyz
 
 # 4. Internal route (requires shared secret)
-curl -H "X-Internal-Token: dev-shared-secret-change-me" http://localhost:8081/api/internal/ping
+curl -H "X-Internal-Token: dev-shared-secret-change-me" http://localhost:8082/api/internal/ping
 
 # 5. Swagger UI (regenerate first — see "API documentation" below)
 make swagger
-# then open http://localhost:8081/swagger/index.html
+# then open http://localhost:8082/swagger/index.html
 ```
 
 ## Configuration
@@ -72,7 +72,7 @@ make swagger
 make swagger-check
 ```
 
-When you run the service, the Swagger UI is served at `http://localhost:8081/swagger/index.html`. The blank import `_ "github.com/costrict/costrict-web/cs-user/docs"` in `cmd/api/main.go` triggers `swag.Register` at process start — without it the UI loads but shows an empty spec.
+When you run the service, the Swagger UI is served at `http://localhost:8082/swagger/index.html`. The blank import `_ "github.com/costrict/costrict-web/cs-user/docs"` in `cmd/api/main.go` triggers `swag.Register` at process start — without it the UI loads but shows an empty spec.
 
 Annotation convention (matches `server/`):
 

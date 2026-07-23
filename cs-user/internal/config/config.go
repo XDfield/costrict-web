@@ -142,7 +142,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		HTTP: HTTPConfig{
-			Port: envDefault("CS_USER_HTTP_PORT", "8081"),
+			Port: envDefault("CS_USER_HTTP_PORT", "8082"),
 			Mode: envDefault("CS_USER_HTTP_MODE", "debug"),
 		},
 		Postgres: PostgresConfig{

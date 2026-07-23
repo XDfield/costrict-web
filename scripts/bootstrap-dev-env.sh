@@ -28,7 +28,7 @@
 # Prerequisites (run BEFORE this script):
 # =====================================================================
 #
-#   * cs-user API running on $CS_USER_BASE_URL (default localhost:8081)
+#   * cs-user API running on $CS_USER_BASE_URL (default localhost:8082)
 #     with $CS_USER_INTERNAL_TOKEN set.
 #   * server API running on $SERVER_BASE_URL (default localhost:8080)
 #     with $INTERNAL_SECRET set.
@@ -45,8 +45,8 @@
 #     source server/.env
 #     set +a
 #
-#     # cs-user reachable URL (default http://localhost:8081)
-#     export CS_USER_BASE_URL="http://localhost:8081"
+#     # cs-user reachable URL (default http://localhost:8082)
+#     export CS_USER_BASE_URL="http://localhost:8082"
 #     # server reachable URL (default http://localhost:8080)
 #     export SERVER_BASE_URL="http://localhost:8080"
 #
@@ -101,7 +101,7 @@
 #   DEFAULT_GITEA_ADMIN_TOKEN — Gitea admin token (generate via Gitea UI)
 #
 # Optional env (sane defaults if unset):
-#   CS_USER_BASE_URL        — defaults to http://localhost:8081
+#   CS_USER_BASE_URL        — defaults to http://localhost:8082
 #   SERVER_BASE_URL         — defaults to http://localhost:8080
 #   DEFAULT_TENANT_SLUG     — default-tenant identity slug (defaults to
 #                             "default"). Conceptually the "default_tenant"

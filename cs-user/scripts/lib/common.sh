@@ -9,7 +9,7 @@
 #   CS_USER_INTERNAL_TOKEN   — value sent as X-Internal-Token (matches the
 #                              token the cs-user API expects; usually
 #                              shared with @server's INTERNAL_SECRET).
-#   CS_USER_BASE_URL         — defaults to http://localhost:8081
+#   CS_USER_BASE_URL         — defaults to http://localhost:8082
 #   CS_USER_TENANT_ID        — default tenant for scripts that don't take
 #                              an explicit --tenant flag.
 #
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-: "${CS_USER_BASE_URL:=http://localhost:8081}"
+: "${CS_USER_BASE_URL:=http://localhost:8082}"
 
 command -v curl >/dev/null 2>&1 || { echo '[cs-user-ops] curl not found in PATH' >&2; exit 2; }
 command -v jq   >/dev/null 2>&1 || { echo '[cs-user-ops] jq not found in PATH' >&2; exit 2; }

@@ -2,7 +2,7 @@
 //	@version		1.0
 //	@description	User identity service for the costrict-cloud platform (Phase 1: user CRUD + read-through RPC).
 
-//	@host		localhost:8081
+//	@host		localhost:8082
 //	@BasePath	/
 
 //	@securityDefinitions.apikey	InternalToken
