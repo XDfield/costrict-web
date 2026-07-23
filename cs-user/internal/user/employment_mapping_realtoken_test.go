@@ -69,8 +69,11 @@ func loadTestJWTPayload(t *testing.T, name string) map[string]any {
 //   - provider: "IDTrust - Sangfor"   (server normalizes to "idtrust")
 //   - signupApplication: "application_v94pr3"
 //   - properties.oauth_Custom_id: "42766"
-//   - properties.oauth_Custom_username: "陈烜"
-//   - properties.oauth_Custom_email: "42766@sangfor.com"
+//   - properties.oauth_Custom_username: "TestUser"
+//   - properties.oauth_Custom_email: "test-idtrust-42766@example.com"
+//
+// Tokens are anonymized fixtures (see testdata/jwt.pem for the test signing
+// key) — no real PII, but structurally identical to a production Casdoor JWT.
 func TestApplyEnterpriseMapping_RealIDTrustToken(t *testing.T) {
 	t.Parallel()
 	payload := loadTestJWTPayload(t, "idtrust_jwt_token.txt")
@@ -105,8 +108,8 @@ func TestApplyEnterpriseMapping_RealIDTrustToken(t *testing.T) {
 	if row.EnterpriseUID == nil || *row.EnterpriseUID != "42766" {
 		t.Errorf("EnterpriseUID: got %v, want 42766", row.EnterpriseUID)
 	}
-	if row.JobTitle == nil || *row.JobTitle != "陈烜" {
-		t.Errorf("JobTitle: got %v, want 陈烜", row.JobTitle)
+	if row.JobTitle == nil || *row.JobTitle != "TestUser" {
+		t.Errorf("JobTitle: got %v, want TestUser", row.JobTitle)
 	}
 	// signupApplication value as employment_type — proves top-level key
 	// lookup still works alongside flat-keyed property paths.
@@ -126,8 +129,8 @@ func TestApplyEnterpriseMapping_RealIDTrustToken(t *testing.T) {
 //   - signupApplication: "application_v94pr3"
 //   - github: "18633160"
 //   - properties.oauth_GitHub_id: "18633160"
-//   - properties.oauth_GitHub_email: "chenxuan958864951@qq.com"
-//   - properties.oauth_GitHub_displayName: "DoSun"
+//   - properties.oauth_GitHub_email: "test-github-user@example.com"
+//   - properties.oauth_GitHub_displayName: "TestUser"
 func TestApplyEnterpriseMapping_RealGithubToken(t *testing.T) {
 	t.Parallel()
 	payload := loadTestJWTPayload(t, "github_jwt_token.txt")
@@ -160,11 +163,11 @@ func TestApplyEnterpriseMapping_RealGithubToken(t *testing.T) {
 	if row.EnterpriseUID == nil || *row.EnterpriseUID != "18633160" {
 		t.Errorf("EnterpriseUID: got %v, want 18633160", row.EnterpriseUID)
 	}
-	if row.CostCenter == nil || *row.CostCenter != "chenxuan958864951@qq.com" {
-		t.Errorf("CostCenter: got %v, want chenxuan958864951@qq.com", row.CostCenter)
+	if row.CostCenter == nil || *row.CostCenter != "test-github-user@example.com" {
+		t.Errorf("CostCenter: got %v, want test-github-user@example.com", row.CostCenter)
 	}
-	if row.JobTitle == nil || *row.JobTitle != "DoSun" {
-		t.Errorf("JobTitle: got %v, want DoSun", row.JobTitle)
+	if row.JobTitle == nil || *row.JobTitle != "TestUser" {
+		t.Errorf("JobTitle: got %v, want TestUser", row.JobTitle)
 	}
 }
 
