@@ -73,11 +73,14 @@ func TestRPCWriter_GetOrCreateUser_HappyPath(t *testing.T) {
 			t.Errorf("unexpected call: %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(models.User{SubjectID: "usr_test-1", Username: "alice"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"user":        models.User{SubjectID: "usr_test-1", Username: "alice"},
+			"is_new_user": true,
+		})
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	u, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1", Name: "alice"})
+	u, _, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1", Name: "alice"})
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -108,7 +111,7 @@ func TestRPCWriter_GetOrCreateUser_5xxMapsToErrRPCUnavailable(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
+	_, _, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -122,7 +125,7 @@ func TestRPCWriter_GetOrCreateUser_4xxSurfacesServerMessage(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{})
+	_, _, err := w.GetOrCreateUser(context.Background(), &JWTClaims{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -138,7 +141,7 @@ func TestRPCWriter_GetOrCreateUser_NilClaimsRejected(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, err := w.GetOrCreateUser(context.Background(), nil)
+	_, _, err := w.GetOrCreateUser(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "nil JWT claims") {
 		t.Fatalf("expected nil JWT claims error, got %v", err)
 	}
@@ -347,7 +350,7 @@ func TestRPCWriter_NotConfiguredReturnsErrNotConfigured(t *testing.T) {
 	w := NewRPCWriter(config.UserServiceConfig{Backend: config.UserServiceBackendRPC}) // no URL/token
 	for name, fn := range map[string]func() error{
 		"get-or-create": func() error {
-			_, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "x"})
+			_, _, err := w.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "x"})
 			return err
 		},
 		"sync":     func() error { _, err := w.SyncUser(context.Background(), &JWTClaims{UniversalID: "x"}); return err },
@@ -382,12 +385,12 @@ type recordingWriter struct {
 	primaryError           error // forces a non-nil return from all methods when set
 }
 
-func (r *recordingWriter) GetOrCreateUser(_ context.Context, _ *JWTClaims) (*models.User, error) {
+func (r *recordingWriter) GetOrCreateUser(_ context.Context, _ *JWTClaims) (*models.User, bool, error) {
 	r.getOrCreate++
 	if r.primaryError != nil {
-		return nil, r.primaryError
+		return nil, false, r.primaryError
 	}
-	return &models.User{SubjectID: "usr_recording"}, nil
+	return &models.User{SubjectID: "usr_recording"}, r.getOrCreate == 1, nil
 }
 func (r *recordingWriter) SyncUser(_ context.Context, _ *JWTClaims) (*models.User, error) {
 	r.sync++
@@ -429,7 +432,7 @@ func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if _, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
 	if primary.getOrCreate != 1 || secondary.getOrCreate != 1 {
@@ -444,7 +447,7 @@ func TestDualWriter_PrimaryFailureSkipsSecondary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err == nil || !errors.Is(err, primaryErr) {
+	if _, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err == nil || !errors.Is(err, primaryErr) {
 		t.Fatalf("expected primary error to propagate, got %v", err)
 	}
 	if secondary.getOrCreate != 0 {
@@ -460,7 +463,7 @@ func TestDualWriter_SecondaryFailureDoesNotFailRequest(t *testing.T) {
 
 	// Primary succeeds → request succeeds even though secondary fails.
 	// Secondary failure is logged but not surfaced.
-	if _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
+	if _, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"}); err != nil {
 		t.Fatalf("secondary failure must not fail the request, got %v", err)
 	}
 	if secondary.getOrCreate != 1 {

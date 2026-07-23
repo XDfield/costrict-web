@@ -284,6 +284,7 @@ func setupTestDB(t *testing.T) func() {
 			organization TEXT,
 			is_active INTEGER DEFAULT 1,
 			status TEXT NOT NULL DEFAULT 'active',
+			profile_completed_at DATETIME,
 			last_login_at DATETIME,
 			last_sync_at DATETIME,
 			created_at DATETIME,

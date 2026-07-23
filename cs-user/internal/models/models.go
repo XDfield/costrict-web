@@ -34,6 +34,14 @@ type User struct {
 	Organization       *string        `gorm:"index:idx_user_organization;size:191" json:"organization"`
 	IsActive           bool           `gorm:"not null;default:true" json:"is_active"`
 	Status             string         `gorm:"size:32;not null;default:'active';index" json:"status"`
+	// ProfileCompletedAt is NULL until the user finishes the first-time
+	// registration flow (custom username + display_name per
+	// REGISTRATION_PROFILE_DESIGN). The server's RequireProfileComplete
+	// middleware consults this column (via cs-user RPC) to gate API access.
+	// Existing rows are backfilled to created_at by the migration that
+	// introduces the column, so only users created post-migration can be
+	// gated.
+	ProfileCompletedAt *time.Time     `json:"profile_completed_at"`
 	LastLoginAt        *time.Time     `json:"last_login_at"`
 	LastSyncAt         *time.Time     `json:"last_sync_at"`
 	CreatedAt          time.Time      `json:"created_at"`

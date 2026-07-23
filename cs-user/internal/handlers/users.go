@@ -44,7 +44,7 @@ type UserService interface {
 	// to ctx's tenant. Missing employee_number → empty slice (server maps to 404).
 	SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error)
 	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
-	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error)
+	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error)
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
 	TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error
 	UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error
@@ -230,7 +230,7 @@ func (a *UsersAPI) GetOrCreate(c *gin.Context) {
 		return
 	}
 
-	u, err := a.Svc.GetOrCreateUser(c.Request.Context(), &req.JWTClaims)
+	u, isNew, err := a.Svc.GetOrCreateUser(c.Request.Context(), &req.JWTClaims)
 	if err != nil {
 		// GetOrCreateUser returns plain fmt.Errorf for arg validation; the
 		// only way to distinguish 400 vs 500 is sniffing for the known
@@ -244,7 +244,11 @@ func (a *UsersAPI) GetOrCreate(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, u)
+	// is_new_user lets the server's OAuth callback distinguish first-time
+	// registration (show profile-complete form) from re-login. Embedded in
+	// the response envelope so we don't change the bare-User shape callers
+	// already parse.
+	c.JSON(http.StatusOK, gin.H{"user": u, "is_new_user": isNew})
 }
 
 // bindIdentityRequest is the body shape for POST /api/internal/users/:subject_id/bind-identity.

@@ -480,6 +480,12 @@ func AuthCallback(c *gin.Context) {
 	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
 	// (Phase A8) is intentionally non-blocking.
 	cookieToken := tokenResp.AccessToken
+	// isNewUser is set when GetOrCreateUser creates the user row for the
+	// first time. Surfaced to the frontend via the short-lived reg_pending
+	// cookie so app-ai-native can bounce to /register/complete. The
+	// server-side RequireProfileComplete gate is the actual source of
+	// truth — this cookie is only a hint for the very first redirect.
+	isNewUser := false
 	if UserModule != nil {
 		if userInfo, userErr := getUserInfoFunc(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
 			claims := &userpkg.JWTClaims{
@@ -534,9 +540,10 @@ func AuthCallback(c *gin.Context) {
 					}
 				}
 			}
-			if created, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
+			if created, isNew, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
 			} else if created != nil {
+				isNewUser = isNew
 				// Phase A4b/Slice 2: enterprise mapping is auto-triggered
 				// inside cs-user's GetOrCreateUser using claims.ExternalClaims
 				// (which the Casdoor callback harvests from profile.Raw).
@@ -564,6 +571,15 @@ func AuthCallback(c *gin.Context) {
 
 	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
 	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
+
+	// Surface the is_new_user signal from GetOrCreateUser to the frontend so
+	// app-ai-native's registration gate can decide whether to bounce to
+	// /register/complete. Short-lived (5 min) — once the form is submitted,
+	// RequireProfileComplete (server-side gate) consults profile_completed_at
+	// directly and this cookie becomes irrelevant. See REGISTRATION_PROFILE_DESIGN §7.1.
+	if isNewUser {
+		c.SetCookie("reg_pending", "1", 300, "/", "", cookieSecure, false)
+	}
 
 	// Determine where to send the user after login.
 	// Validate the redirect target against the allowed origins whitelist.
@@ -652,7 +668,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
 		return
 	}
-	currentUser, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), currentClaims)
+	currentUser, _, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), currentClaims)
 	if err != nil || currentUser == nil || currentUser.SubjectID != state.UserSubjectID {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid binding session"})
 		return

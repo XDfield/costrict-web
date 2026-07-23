@@ -31,7 +31,7 @@ func TestGetOrCreateUser_NewUserCreatesRowAndPrimaryIdentity(t *testing.T) {
 		Provider:          "github",
 		ProviderUserID:    "gh-1",
 	}
-	user, err := svc.GetOrCreateUser(context.Background(), claims)
+	user, _, err := svc.GetOrCreateUser(context.Background(), claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestGetOrCreateUser_IdempotentWithinSyncInterval(t *testing.T) {
 		PreferredUsername: "alice",
 		Provider:          "github",
 	}
-	first, err := svc.GetOrCreateUser(context.Background(), claims)
+	first, _, err := svc.GetOrCreateUser(context.Background(), claims)
 	if err != nil {
 		t.Fatalf("first GetOrCreateUser: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestGetOrCreateUser_IdempotentWithinSyncInterval(t *testing.T) {
 		t.Fatalf("seed updated_at: %v", err)
 	}
 
-	if _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
 		t.Fatalf("second GetOrCreateUser: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestGetOrCreateUser_ResyncsAfterInterval(t *testing.T) {
 		PreferredUsername: "alice",
 		Provider:          "github",
 	}
-	first, err := svc.GetOrCreateUser(context.Background(), claims)
+	first, _, err := svc.GetOrCreateUser(context.Background(), claims)
 	if err != nil {
 		t.Fatalf("first GetOrCreateUser: %v", err)
 	}
@@ -132,9 +132,11 @@ func TestGetOrCreateUser_ResyncsAfterInterval(t *testing.T) {
 		t.Fatalf("seed last_sync_at: %v", err)
 	}
 
-	// Change the claim's email to force a real update.
+	// Change the claim's email. After REGISTRATION_PROFILE_DESIGN the
+	// re-login refresh path no longer touches user-owned profile fields, so
+	// the second GetOrCreateUser must NOT clobber the (empty) email.
 	claims.Email = "alice-new@example.com"
-	if _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
 		t.Fatalf("second GetOrCreateUser: %v", err)
 	}
 
@@ -142,8 +144,8 @@ func TestGetOrCreateUser_ResyncsAfterInterval(t *testing.T) {
 	if err := svc.db.Where("subject_id = ?", first.SubjectID).Take(&reloaded).Error; err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if reloaded.Email == nil || *reloaded.Email != "alice-new@example.com" {
-		t.Errorf("Email should have been resynced: got %v", reloaded.Email)
+	if reloaded.Email != nil {
+		t.Errorf("Email must NOT be auto-synced from JWT (user-owned field): got %v", *reloaded.Email)
 	}
 }
 
@@ -170,7 +172,7 @@ func TestGetOrCreateUser_FoundByLegacyExternalKey(t *testing.T) {
 		Name:        "legacy-user",
 		Provider:    "github",
 	}
-	got, err := svc.GetOrCreateUser(context.Background(), claims)
+	got, _, err := svc.GetOrCreateUser(context.Background(), claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -183,7 +185,7 @@ func TestGetOrCreateUser_FoundByLegacyExternalKey(t *testing.T) {
 // TestGetOrCreateUser_NilClaimsRejected verifies the nil-claim guard.
 func TestGetOrCreateUser_NilClaimsRejected(t *testing.T) {
 	svc := newTestService(t)
-	if _, err := svc.GetOrCreateUser(context.Background(), nil); err == nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), nil); err == nil {
 		t.Fatal("nil claims should be rejected")
 	}
 }
@@ -193,7 +195,7 @@ func TestGetOrCreateUser_NilClaimsRejected(t *testing.T) {
 func TestGetOrCreateUser_NoIdentifierRejected(t *testing.T) {
 	svc := newTestService(t)
 	claims := &models.JWTClaims{Name: "name-only"}
-	if _, err := svc.GetOrCreateUser(context.Background(), claims); err == nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), claims); err == nil {
 		t.Fatal("expected error for claim with no identifier")
 	}
 }
@@ -615,7 +617,7 @@ func TestService_NilDBGuards_WriteMethods(t *testing.T) {
 	ctx := context.Background()
 	claims := &models.JWTClaims{UniversalID: "uuid-x", Provider: "github"}
 
-	if _, err := svc.GetOrCreateUser(ctx, claims); err == nil {
+	if _, _, err := svc.GetOrCreateUser(ctx, claims); err == nil {
 		t.Error("GetOrCreateUser on nil db should error")
 	}
 	if err := svc.BindIdentityToUser(ctx, "subj-x", claims); err == nil {

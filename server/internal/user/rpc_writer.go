@@ -88,32 +88,40 @@ func (w *RPCWriter) Configured() bool {
 }
 
 // GetOrCreateUser calls POST /api/internal/users/get-or-create with the bare
-// JWTClaims as the body. cs-user's response is the upserted user; the
+// JWTClaims as the body. cs-user's response is `{user, is_new_user}` —
+// is_new_user lets the server's OAuth callback distinguish first-time
+// registration (must show profile-complete form) from re-login. The
 // post-login hook fires in the caller (UserService or DualWriter), never
 // here — RPCWriter is purely a transport.
-func (w *RPCWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+func (w *RPCWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error) {
 	if claims == nil {
-		return nil, errors.New("nil JWT claims")
+		return nil, false, errors.New("nil JWT claims")
 	}
 	if !w.Configured() {
-		return nil, ErrNotConfigured
+		return nil, false, ErrNotConfigured
 	}
 	body, err := json.Marshal(claims)
 	if err != nil {
-		return nil, fmt.Errorf("user rpc writer: marshal get-or-create request: %w", err)
+		return nil, false, fmt.Errorf("user rpc writer: marshal get-or-create request: %w", err)
 	}
 	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/get-or-create", body)
 	if transportErr != nil {
-		return nil, transportErr
+		return nil, false, transportErr
 	}
 	if status >= 200 && status < 300 {
-		var u models.User
-		if err := json.Unmarshal(respBody, &u); err != nil {
-			return nil, fmt.Errorf("user rpc writer: decode get-or-create response: %w", err)
+		// cs-user wraps the user in an envelope to surface is_new_user without
+		// changing the bare-User shape other callers (server internal tests,
+		// grep tools) expect.
+		var env struct {
+			User      models.User `json:"user"`
+			IsNewUser bool        `json:"is_new_user"`
 		}
-		return &u, nil
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return nil, false, fmt.Errorf("user rpc writer: decode get-or-create response: %w", err)
+		}
+		return &env.User, env.IsNewUser, nil
 	}
-	return nil, w.mapWriteError(status, respBody, "get-or-create")
+	return nil, false, w.mapWriteError(status, respBody, "get-or-create")
 }
 
 // SyncUser calls the same endpoint as GetOrCreateUser. cs-user has a single
@@ -123,7 +131,8 @@ func (w *RPCWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*mo
 // firing the hook — so this method is literally GetOrCreateUser minus the
 // caller-side hook trigger.
 func (w *RPCWriter) SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
-	return w.GetOrCreateUser(ctx, claims)
+	u, _, err := w.GetOrCreateUser(ctx, claims)
+	return u, err
 }
 
 // BindIdentityToUser calls POST /api/internal/users/:subject_id/bind-identity

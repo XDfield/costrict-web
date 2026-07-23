@@ -27,7 +27,7 @@ type stubUserService struct {
 	getByIDs               func(context.Context, []string) (map[string]*models.User, error)
 	searchUsers            func(context.Context, string, int) ([]*models.User, error)
 	searchUsersByEmpNo     func(context.Context, string, int) ([]*models.User, error)
-	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, error)
+	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, bool, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
 	transfer               func(context.Context, string, string, string) error
 	unbind                 func(context.Context, string, string) error
@@ -61,7 +61,7 @@ func (s stubUserService) SearchUsersByEmployeeNumber(ctx context.Context, empNo 
 	}
 	return s.searchUsersByEmpNo(ctx, empNo, lim)
 }
-func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
+func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error) {
 	if s.getOrCreate == nil {
 		panic("stubUserService.getOrCreate not wired")
 	}
@@ -375,9 +375,9 @@ func TestSearchUsers_RejectsKeywordAndEmployeeNumberBoth(t *testing.T) {
 func TestGetOrCreate_HappyPath(t *testing.T) {
 	var capturedClaims *models.JWTClaims
 	_, r := newUsersAPI(stubUserService{
-		getOrCreate: func(_ context.Context, got *models.JWTClaims) (*models.User, error) {
+		getOrCreate: func(_ context.Context, got *models.JWTClaims) (*models.User, bool, error) {
 			capturedClaims = got
-			return &models.User{SubjectID: "usr-new", Username: "alice"}, nil
+			return &models.User{SubjectID: "usr-new", Username: "alice"}, true, nil
 		},
 	})
 
@@ -395,19 +395,27 @@ func TestGetOrCreate_HappyPath(t *testing.T) {
 	if capturedClaims == nil || capturedClaims.UniversalID != "uuid-1" {
 		t.Errorf("claims not propagated: %+v", capturedClaims)
 	}
-	var resp models.User
+	// Response is wrapped in {user, is_new_user} envelope so the server's
+	// OAuth callback can decide whether to bounce to /register/complete.
+	var resp struct {
+		User      models.User `json:"user"`
+		IsNewUser bool        `json:"is_new_user"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.SubjectID != "usr-new" {
-		t.Errorf("SubjectID: got %q, want usr-new", resp.SubjectID)
+	if resp.User.SubjectID != "usr-new" {
+		t.Errorf("SubjectID: got %q, want usr-new", resp.User.SubjectID)
+	}
+	if !resp.IsNewUser {
+		t.Errorf("IsNewUser: got false, want true")
 	}
 }
 
 func TestGetOrCreate_NilClaimsRejected(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
-			return nil, errors.New("nil JWT claims")
+		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+			return nil, false, errors.New("nil JWT claims")
 		},
 	})
 
@@ -420,8 +428,8 @@ func TestGetOrCreate_NilClaimsRejected(t *testing.T) {
 
 func TestGetOrCreate_NoIdentifierRejected(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
-			return nil, errors.New("no valid user identifier in JWT claims")
+		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+			return nil, false, errors.New("no valid user identifier in JWT claims")
 		},
 	})
 
@@ -433,8 +441,8 @@ func TestGetOrCreate_NoIdentifierRejected(t *testing.T) {
 
 func TestGetOrCreate_ServiceError(t *testing.T) {
 	_, r := newUsersAPI(stubUserService{
-		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
-			return nil, errors.New("db dead")
+		getOrCreate: func(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+			return nil, false, errors.New("db dead")
 		},
 	})
 

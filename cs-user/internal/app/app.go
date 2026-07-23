@@ -326,8 +326,8 @@ func (unavailableUserService) SearchUsers(_ context.Context, _ string, _ int) ([
 func (unavailableUserService) SearchUsersByEmployeeNumber(_ context.Context, _ string, _ int) ([]*models.User, error) {
 	return nil, errServiceUnavailable
 }
-func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, error) {
-	return nil, errServiceUnavailable
+func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+	return nil, false, errServiceUnavailable
 }
 func (unavailableUserService) BindIdentityToUser(_ context.Context, _ string, _ *models.JWTClaims, _ ...models.BindIdentityOptions) error {
 	return errServiceUnavailable

@@ -287,12 +287,12 @@ var ErrEmptySubjectID = errors.New("subject_id must not be empty")
 // the tenant's employment_providers.field_map config. Failures are silently
 // swallowed — enterprise mapping is a bonus feature and must not block
 // login (a future refresh-on-relogin will retry).
-func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, error) {
+func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error) {
 	if s == nil || s.db == nil {
-		return nil, errors.New("user.Service: nil db")
+		return nil, false, errors.New("user.Service: nil db")
 	}
 	if claims == nil {
-		return nil, fmt.Errorf("nil JWT claims")
+		return nil, false, fmt.Errorf("nil JWT claims")
 	}
 	claims = normalizeJWTClaims(claims)
 
@@ -301,7 +301,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
-		return nil, fmt.Errorf("no valid user identifier in JWT claims")
+		return nil, false, fmt.Errorf("no valid user identifier in JWT claims")
 	}
 
 	// B5 write scoping: capture the tenant scope once. Applied per-query
@@ -332,7 +332,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 				found = true
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
+			return nil, false, fmt.Errorf("failed to query identity by external_key: %w", err)
 		}
 	}
 	if !found {
@@ -344,7 +344,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			if err == nil {
 				found = true
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+				return nil, false, fmt.Errorf("failed to query user by external_key: %w", err)
 			}
 		}
 	}
@@ -353,7 +353,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("failed to query user by universal_id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by universal_id: %w", err)
 		}
 	}
 	if !found && claims.ID != "" {
@@ -361,7 +361,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("failed to query user by id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by id: %w", err)
 		}
 	}
 	if !found && claims.Sub != "" {
@@ -369,7 +369,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("failed to query user by sub: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by sub: %w", err)
 		}
 	}
 	if !found && claims.Name != "" {
@@ -377,31 +377,21 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		if err == nil {
 			found = true
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("failed to query user by username: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
 		}
 	}
 
 	now := time.Now()
 
 	if found {
-		// User exists; only update if it's been more than syncInterval since
-		// last sync. Reduces DB writes on every page view.
+		// Existing-user login refresh (REGISTRATION_PROFILE_DESIGN §1 / §7).
+		// Only sync provider-tracking + Casdoor-linking fields. User-facing
+		// profile (DisplayName / Email / Phone / AvatarURL / Organization /
+		// Username) is user-owned — auto-clobbering on every re-login would
+		// race the upcoming self-edit and registration-complete flows.
 		shouldUpdate := false
 		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > syncInterval {
 			shouldUpdate = true
-		}
-
-		// Determine the best provider rank from existing identities so a
-		// lower-ranked login provider can't clobber a name set by a
-		// higher-ranked one. Computed before any mutation.
-		bestExistingRank := 0
-		var existingIdentities []models.UserAuthIdentity
-		if err := db.Scopes(tenant.Scope(ctx)).Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
-			for _, id := range existingIdentities {
-				if r := providerRank(id.Provider); r > bestExistingRank {
-					bestExistingRank = r
-				}
-			}
 		}
 
 		if user.SubjectID == "" {
@@ -436,74 +426,15 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			user.CasdoorSub = &claims.Sub
 			shouldUpdate = true
 		}
-		if claims.Owner != "" && (user.Organization == nil || *user.Organization != claims.Owner) {
-			user.Organization = &claims.Owner
-			shouldUpdate = true
-		}
-		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
-			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= bestExistingRank {
-				user.DisplayName = &claims.PreferredUsername
-				shouldUpdate = true
-			}
-		}
-		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
-			user.Email = &claims.Email
-			shouldUpdate = true
-		}
-		if claims.Phone != "" && (user.Phone == nil || *user.Phone != claims.Phone) {
-			user.Phone = &claims.Phone
-			shouldUpdate = true
-		}
-		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
-			user.AvatarURL = &claims.Picture
-			shouldUpdate = true
-		}
-
-		// Calibrate display fields against the best existing identity to
-		// fix historical dirty data caused by the previous
-		// AuthProvider-based protection bug. Server:736-768.
-		if len(existingIdentities) > 0 {
-			var existingPtrs []*models.UserAuthIdentity
-			for idx := range existingIdentities {
-				existingPtrs = append(existingPtrs, &existingIdentities[idx])
-			}
-			bestIdentity := selectBestPrimary(existingPtrs)
-			if bestIdentity != nil {
-				if bestDN := ptrString(bestIdentity.DisplayName); bestDN != "" {
-					if providerRank(claims.Provider) < bestExistingRank && (user.DisplayName == nil || *user.DisplayName != bestDN) {
-						user.DisplayName = &bestDN
-						shouldUpdate = true
-					}
-				}
-				if bestEmail := ptrString(bestIdentity.Email); bestEmail != "" && strings.Contains(bestEmail, "@") {
-					if user.Email == nil || *user.Email != bestEmail {
-						user.Email = &bestEmail
-						shouldUpdate = true
-					}
-				}
-				if bestPhone := ptrString(bestIdentity.Phone); bestPhone != "" {
-					if user.Phone == nil || *user.Phone != bestPhone {
-						user.Phone = &bestPhone
-						shouldUpdate = true
-					}
-				}
-				if bestAvatar := ptrString(bestIdentity.AvatarURL); bestAvatar != "" {
-					if user.AvatarURL == nil || *user.AvatarURL != bestAvatar {
-						user.AvatarURL = &bestAvatar
-						shouldUpdate = true
-					}
-				}
-			}
-		}
 
 		if shouldUpdate {
 			user.LastSyncAt = &now
 			if err := db.Omit("subject_id").Save(&user).Error; err != nil {
-				return nil, fmt.Errorf("failed to update user: %w", err)
+				return nil, false, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
 		s.applyEnterpriseMappingOnLogin(ctx, user.SubjectID, claims)
-		return &user, nil
+		return &user, false, nil
 	}
 
 	// 3. User doesn't exist, create new user.
@@ -548,16 +479,16 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			Or("casdoor_id = ?", claims.ID).
 			Or("casdoor_sub = ?", claims.Sub)
 		if err := query.Take(&existing).Error; err == nil {
-			return &existing, nil
+			return &existing, false, nil
 		}
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, false, fmt.Errorf("failed to create user: %w", err)
 	}
 
 	// Bind identity for newly created user.
 	if err := s.BindIdentityToUser(ctx, user.SubjectID, claims); err != nil && !errors.Is(err, ErrIdentityAlreadyBound) {
 		// Don't fail user creation if identity binding fails — the user row
 		// exists and is usable; the next login will retry the bind.
-		return nil, fmt.Errorf("failed to bind identity for new user: %w", err)
+		return nil, false, fmt.Errorf("failed to bind identity for new user: %w", err)
 	}
 
 	// Phase 2: enqueue a user.created event into the outbox so server can
@@ -571,9 +502,9 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	s.applyEnterpriseMappingOnLogin(ctx, user.SubjectID, claims)
 
 	if refreshed, err := s.GetUserByID(ctx, user.SubjectID); err == nil {
-		return refreshed, nil
+		return refreshed, true, nil
 	}
-	return &user, nil
+	return &user, true, nil
 }
 
 // applyEnterpriseMappingOnLogin is the best-effort post-login hook that
