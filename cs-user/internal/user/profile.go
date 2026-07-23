@@ -178,6 +178,95 @@ func (s *Service) IsUsernameAvailable(ctx context.Context, username, excludeSubj
 	return count == 0, nil
 }
 
+// AdminUpdateProfile is the admin-side override (R5 of
+// REGISTRATION_PROFILE_DESIGN). Unlike UpdateProfile (user-self,
+// display_name only), admin may mutate BOTH username and display_name, and
+// the call works regardless of profile_completed_at (so admins can fix up
+// users who never finished registration, or rename someone post-registration).
+//
+// username: when non-empty, validated + tenant-scoped uniqueness checked
+// inside the tx. Empty string preserves the existing username.
+// displayName: when nil, preserved as-is; when non-nil, applied verbatim
+// (empty string clears back to NULL).
+//
+// operatorID is the admin's subject_id, recorded on the audit row. The
+// self-rename guard is intentionally NOT applied here — admins renaming
+// themselves is a valid escape hatch (e.g. fixing a typo made during
+// bootstrap), and cs-user's SetUserStatus already covers the destructive
+// self-lock case where it actually matters.
+func (s *Service) AdminUpdateProfile(ctx context.Context, subjectID, username string, displayName *string, operatorID string) (*models.User, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" {
+		return nil, errors.New("subject_id is required")
+	}
+	if username == "" && displayName == nil {
+		return nil, errors.New("no fields to update")
+	}
+	var newUsername string
+	if username != "" {
+		if err := ValidateUsername(username); err != nil {
+			return nil, err
+		}
+		newUsername = username
+	}
+	if displayName != nil {
+		if len(*displayName) > DisplayNameMaxLen {
+			return nil, errors.New("invalid_display_name")
+		}
+	}
+
+	scope := tenant.Scope(ctx)
+	var updated models.User
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		ttx := tx.WithContext(ctx)
+		if err := ttx.Scopes(scope).Where("subject_id = ?", subjectID).Take(&updated).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("user_not_found")
+			}
+			return err
+		}
+		// Tenant-scoped uniqueness check only when username is changing.
+		if newUsername != "" && newUsername != updated.Username {
+			var collision int64
+			if err := ttx.Model(&models.User{}).Scopes(scope).
+				Where("username = ? AND subject_id <> ?", newUsername, subjectID).
+				Count(&collision).Error; err != nil {
+				return err
+			}
+			if collision > 0 {
+				return ErrUsernameTaken
+			}
+		}
+
+		patches := map[string]any{
+			"updated_at": time.Now(),
+		}
+		if newUsername != "" {
+			patches["username"] = newUsername
+		}
+		if displayName != nil {
+			if dn := strings.TrimSpace(*displayName); dn != "" {
+				patches["display_name"] = dn
+			} else {
+				patches["display_name"] = nil
+			}
+		}
+		if err := ttx.Model(&models.User{}).Scopes(scope).
+			Where("subject_id = ?", subjectID).
+			Updates(patches).Error; err != nil {
+			return err
+		}
+		return ttx.Scopes(scope).Where("subject_id = ?", subjectID).Take(&updated).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
 // ErrRegistrationAlreadyComplete flags a complete-registration call against
 // a user that already finished the gate. Surfaces as HTTP 409.
 var ErrRegistrationAlreadyComplete = errors.New("registration_already_complete")

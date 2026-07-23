@@ -44,6 +44,12 @@ const (
 	// @server's admin_audit_logs (action user.status_change) when admin
 	// user management moved to cs-user as the single source of truth.
 	ActionUserStatusChanged = "user.status_changed"
+	// ActionUserProfileOverridden — platform_admin / tenant_admin overrides
+	// a user's username and/or display_name via the admin profile endpoint
+	// (R5 of REGISTRATION_PROFILE_DESIGN). Target: user:<subject_id>. Payload
+	// records operator + new username/display_name (admin may mutate username,
+	// unlike the user-self path).
+	ActionUserProfileOverridden = "user.profile_overridden"
 )
 
 // Target type constants — pair with target_id to identify the audit row's

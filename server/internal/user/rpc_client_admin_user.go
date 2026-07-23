@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
 )
@@ -113,6 +114,10 @@ var (
 	ErrAdminUserRPCInvalidStatus   = errors.New("admin user rpc: invalid status")
 	ErrAdminUserRPCNotFound        = errors.New("admin user rpc: not found")
 	ErrAdminUserRPCCannotChangeOwn = errors.New("admin user rpc: cannot change own status")
+	// R5 — admin profile override. cs-user emits 400 on invalid username /
+	// reserved / display_name issues / empty patch; 409 on username_taken.
+	ErrAdminUserRPCInvalidProfile = errors.New("admin user rpc: invalid profile input")
+	ErrAdminUserRPCUsernameTaken  = errors.New("admin user rpc: username taken")
 )
 
 const (
@@ -255,6 +260,55 @@ func (c *RPCClient) GetUserProfile(ctx context.Context, subjectID string) (*Admi
 	return &out, nil
 }
 
+// AdminUpdateProfileArgs carries the optional patches for the admin profile
+// override. Mirrors cs-user's adminUpdateProfileRequest — nil fields are
+// omitted from the JSON body so cs-user preserves them as-is.
+type AdminUpdateProfileArgs struct {
+	Username    string  // "" preserves existing.
+	DisplayName *string // nil preserves existing; non-nil empty clears to NULL.
+	OperatorID  string  // admin's subject_id (audit attribution).
+}
+
+// AdminUpdateProfile proxies PUT /api/internal/users/:subject_id/profile.
+// Unlike the user-self POST (display_name only), this path may mutate both
+// username and display_name and bypasses the profile_completed_at gate.
+// R5 of REGISTRATION_PROFILE_DESIGN.
+func (c *RPCClient) AdminUpdateProfile(ctx context.Context, subjectID string, args AdminUpdateProfileArgs) (*AdminUserProfile, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+
+	payload := map[string]any{}
+	if args.Username != "" {
+		payload["username"] = args.Username
+	}
+	if args.DisplayName != nil {
+		payload["display_name"] = *args.DisplayName
+	}
+	if args.OperatorID != "" {
+		payload["operator_id"] = args.OperatorID
+	}
+	bodyJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("user rpc client: marshal admin-profile body: %w", err)
+	}
+	path := fmt.Sprintf("/api/internal/users/%s/profile", url.PathEscape(subjectID))
+
+	statusCode, body, err := c.adminUserDo(ctx, http.MethodPut, path, bodyJSON)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode >= 400 {
+		return nil, mapAdminUserHTTPError(statusCode, string(body))
+	}
+
+	var out AdminUserProfile
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("user rpc client: decode admin-profile-override response: %w", err)
+	}
+	return &out, nil
+}
+
 // adminUserDo is the shared HTTP executor for admin-user RPCs. Centralised
 // here so all four methods share the same header plumbing (X-Internal-Token,
 // X-Tenant-Id forwarding, actor-meta headers, timeout) and error mapping.
@@ -310,7 +364,11 @@ func mapAdminUserHTTPError(status int, body string) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %s", ErrAdminUserRPCNotFound, truncate(body, 200))
 	case http.StatusConflict:
-		// cs-user emits "user: cannot change own status" for the self-lock.
+		// cs-user emits "user: cannot change own status" for the self-lock
+		// (SetUserStatus) or "username_taken" for the admin profile override.
+		if strings.Contains(body, "username_taken") {
+			return fmt.Errorf("%w: %s", ErrAdminUserRPCUsernameTaken, truncate(body, 200))
+		}
 		return fmt.Errorf("%w: %s", ErrAdminUserRPCCannotChangeOwn, truncate(body, 200))
 	default:
 		if status >= 500 || status == http.StatusServiceUnavailable {

@@ -189,6 +189,10 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	users.GET("/username-available", usersAPI.UsernameAvailable)
 	users.POST("/:subject_id/complete-registration", usersAPI.CompleteRegistration)
 	users.POST("/:subject_id/profile", usersAPI.UpdateProfile)
+	// R5: admin override — mutates username and/or display_name. Distinct
+	// method (PUT) from the user-self POST so gin's radix tree accepts both
+	// without conflict.
+	users.PUT("/:subject_id/profile", usersAPI.AdminUpdateProfile)
 	// R4: provider → suggestion (pure function, no DB).
 	users.POST("/suggest-profile", usersAPI.SuggestProfile)
 
@@ -360,6 +364,10 @@ func (unavailableUserService) UpdateProfile(_ context.Context, _, _ string) (*mo
 }
 func (unavailableUserService) IsUsernameAvailable(_ context.Context, _, _ string) (bool, error) {
 	return false, errServiceUnavailable
+}
+// R5 — admin override.
+func (unavailableUserService) AdminUpdateProfile(_ context.Context, _ string, _ string, _ *string, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
 }
 
 // ListUsers surfaces the admin user-management error in the same shape as
