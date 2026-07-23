@@ -59,7 +59,7 @@
 | JWT claims（`sub` / `universal_id` / `provider` / `email` / `phone`） | 🟡 部分 | `server/internal/middleware/auth.go:27-37`、`server/internal/user/service.go:19-31` |
 | `tenants` 表 / `tenant_id` 列 | ❌ 未开始 | grep 无任何 `tenant_id` 列 |
 | `tenant_configs` 表 + provider mapping yaml | ❌ 未开始 | — |
-| `employment_identities` 表 / `employment_providers` | ❌ 未开始 | — |
+| `employment_identities` 表 / `employment_providers` | ✅ Slice 1 + 1.5 完成（2026-07-23） | `cs-user/migrations/20260716150000_create_employment_identities.sql` + `20260722400000_add_employment_enterprise_uid.sql`；模型 `cs-user/internal/models/employment_identity.go`；门控 + 字段映射 + 运行时消费 `cs-user/internal/user/employment_mapping.go`（详见 §2.1 / §2.2） |
 | RLS（PostgreSQL Row Security Policy） | ❌ 未开始 | — |
 | 三级权限（platform / tenant_admin / member） | ❌ 未开始 | — |
 | `primary_provider` claim / 雇佣上下文 JWT claim | ❌ 未开始 | — |
@@ -71,6 +71,76 @@
 | Gitea `team_user` 同步（GitServerAdapter） | ❌ 未开始 | 归属 @server（`server/internal/gitsync/`）；见 `TEAM_ORG_UNIFICATION.md` ADR-3 v3 |
 
 **核心判断**：当前代码停在「**多 IdP 单租户**」阶段，距离「多租户 + 雇佣上下文 + 服务抽离」的终态大约还有 70% 工作量。
+
+### 2.1 Slice 1（field_map 建模 + enterprise_uid 索引）落地范围
+
+**目标**：让"配置指定身份来源作为企业身份 + 字段映射"这条线进入可配置阶段，为 Slice 2 接入真实 provider client 铺路。
+
+**配置 schema**（`tenant_configs.config_yaml` 内）：
+```yaml
+employment_providers:
+  enabled: [wxwork]                # 哪些 provider 视为"企业身份来源"
+  field_map:                       # Slice 1 新增
+    wxwork:
+      enterprise_uid: "UserId"     # internal column ← external IdP field
+      employee_number: "JobNumber"
+      cost_center: "Department"
+      org_path: "FullPath"
+      hire_date: "JoinTime"
+```
+
+**Go 类型**（`cs-user/internal/user/employment_mapping.go`）：
+```go
+type employmentProvidersConfig struct {
+    Enabled  []string                  `yaml:"enabled"`
+    FieldMap map[string]FieldMapConfig `yaml:"field_map,omitempty"`
+}
+type FieldMapConfig map[string]string  // YAML key=internal column, value=external field
+```
+
+**Whitelist 校验**：`allowedEmploymentColumns` 锁定 12 个允许的 internal column（`enterprise_uid` / `employee_number` / `cost_center` / `org_path` / `direct_manager_subject_id` / `direct_manager_external_ref` / `job_title` / `job_level` / `employment_type` / `hire_date` / `regular_date` / `work_location`）。配置时 unknown internal column 立即报 parse error，避免运行时静默 no-op。
+
+**Migration**（`cs-user/migrations/20260722400000_add_employment_enterprise_uid.sql`）：
+- `ALTER TABLE employment_identities ADD COLUMN enterprise_uid VARCHAR(191)`
+- `CREATE UNIQUE INDEX uq_employment_identities_tenant_enterprise_uid ON employment_identities (tenant_id, enterprise_uid) WHERE enterprise_uid IS NOT NULL` —— partial unique，stub write path 阶段 enterprise_uid 为 NULL，多行可共存；Slice 2 填字段后自动启用 per-tenant 唯一性。
+
+**Slice 1 不做的事**（留给 Slice 2）：
+- 真实 provider client（idtrust API / Azure AD Graph / 企微）接入
+- OAuth callback 里 `ApplyEnterpriseMapping` 的实际触发串通
+- A5 扩展 JWT claims 直接带 enterprise 字段
+
+### 2.2 Slice 1.5（field_map 运行时消费）落地范围
+
+**目标**：让 field_map 真正驱动 employment_identities 写入，不必等 Slice 2 的真实 provider client。OAuth callback 解码 IdP userinfo 后，把外部 claims 作为 `map[string]any` 传进来即可生效。
+
+**API 扩展**（`cs-user/internal/user/employment_mapping.go`）：
+```go
+type EmploymentMappingParams struct {
+    TenantID       string
+    UserSubjectID  string
+    Provider       string
+    ExternalClaims map[string]any  // Slice 1.5 新增：caller 负责填充
+}
+```
+
+**运行时映射**：`applyFieldMap(fieldMap, claims) map[string]any` 按 field_map 把 external claims 转成 internal_column → typed value：
+- 日期列（`hire_date` / `regular_date`）走 `parseClaimDate`，支持 RFC 3339 字符串、int64/int/float64 Unix 秒、`time.Time`；解析失败静默跳过（不 500 登录）
+- 字符串列走 `fmt.Sprint`（数字/布尔自动 stringify）
+- 缺失 / nil 的 external field → 该列保持 NULL
+
+**Write path 串通**：
+- Create 路径：`applyMappedToRow` 把 mapped map 按 column-name 分派到 EmploymentIdentity 字段
+- Update 路径：mapped 合并进 `Updates` map，刷新存量行时同步覆盖 enterprise 字段
+
+**Slice 1.5 不做的事**（仍留给 Slice 2）：
+- 真实 IdP API 调用（OAuth callback 仍未串通 ApplyEnterpriseMapping）
+- field_map 内 `interval` / `on_login: refresh_if_stale` 配置建模（slice 2 配合真实 provider client 落地）
+- A5 扩展 JWT claims 直接带 enterprise 字段
+
+**Partial unique index 验证**（2026-07-23）：手工 probe（SQLite 支持 partial index，与 PG 同语义）确认：
+- `enterprise_uid` NULL 多行可共存（stub 阶段安全）
+- 同 tenant 内同 `enterprise_uid` 拒绝写入
+- 跨 tenant 同 `enterprise_uid` 允许（per-tenant 隔离正确）
 
 ---
 
