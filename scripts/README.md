@@ -39,7 +39,7 @@ wrapper around a per-service script (idempotent — re-running is safe).
 |---|---|
 | Casdoor | Running and fully configured (idtrust provider attached to your Casdoor Application, redirect URI pointing at server). |
 | server | API up on `$SERVER_BASE_URL` (default localhost:8080), `INTERNAL_SECRET` set. |
-| cs-user | API up on `$CS_USER_BASE_URL` (default localhost:8081), `CS_USER_INTERNAL_TOKEN` set. |
+| cs-user | API up on `$CS_USER_BASE_URL` (default localhost:8082), `CS_USER_INTERNAL_TOKEN` set. |
 | Gitea | Up on `$DEFAULT_GITEA_ENDPOINT` (default http://127.0.0.1:3001), admin token available. |
 
 Required env (source both `.env` files first):
@@ -55,9 +55,9 @@ source cs-user/.env
 source server/.env
 set +a
 
-# cs-user reachable URL. Default http://localhost:8081 — override only if
+# cs-user reachable URL. Default http://localhost:8082 — override only if
 # you run cs-user on a different port/host.
-export CS_USER_BASE_URL="http://localhost:8081"
+export CS_USER_BASE_URL="http://localhost:8082"
 
 # server reachable URL. Default http://localhost:8080.
 export SERVER_BASE_URL="http://localhost:8080"
@@ -96,7 +96,7 @@ export DEFAULT_GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
 | `CS_USER_INTERNAL_TOKEN` | yes | `cs-user/.env` | — | Sent as `X-Internal-Token`. 401 on mismatch. |
 | `INTERNAL_SECRET` | yes | `server/.env` | — | Sent as `X-Internal-Secret`. 401 on mismatch. |
 | `DEFAULT_GITEA_ADMIN_TOKEN` | yes | Gitea UI | — | Persisted into `git_servers.config.admin_token`. |
-| `CS_USER_BASE_URL` | no | — | `http://localhost:8081` | Override on non-default port. |
+| `CS_USER_BASE_URL` | no | — | `http://localhost:8082` | Override on non-default port. |
 | `SERVER_BASE_URL` | no | — | `http://localhost:8080` | Override on non-default port. |
 | `DEFAULT_GITEA_ENDPOINT` | no | — | `http://127.0.0.1:3001` | Override for remote/non-default Gitea. |
 | `DEFAULT_TENANT_SLUG` | no | — | `default` | Bootstrap tenant identity slug. |

@@ -518,7 +518,7 @@ definitions:
     - external_key
     - target_user_subject_id
     type: object
-host: localhost:8081
+host: localhost:8082
 info:
   contact: {}
   description: 'User identity service for the costrict-cloud platform (Phase 1: user
