@@ -78,9 +78,11 @@ func (c *RPCClient) GetUserByID(ctx context.Context, userID string) (*models.Use
 	if !c.Configured() {
 		return nil, ErrNotConfigured
 	}
+	logger.Info("[auth-debug] GetUserByID calling cs-user with userID=%q", userID)
 	path := "/api/internal/users/" + url.PathEscape(userID)
 	var user models.User
 	if err := c.do(ctx, http.MethodGet, path, nil, &user, decodeBareUser); err != nil {
+		logger.Warn("[auth-debug] GetUserByID userID=%q err=%v", userID, err)
 		return nil, err
 	}
 	return &user, nil

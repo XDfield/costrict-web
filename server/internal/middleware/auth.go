@@ -27,6 +27,11 @@ type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsernam
 type AuthClaims struct {
 	ID                string
 	Sub               string
+	// Issuer mirrors CasdoorUserInfo.Issuer — the JWT `iss` claim.
+	// Consumed by setAuthContext to skip the legacy subjectResolver for
+	// cs-user-issued JWTs (their `sub` is already canonical). See
+	// CasdoorUserInfo.Issuer for the full rationale.
+	Issuer            string
 	UniversalID       string
 	Name              string
 	PreferredUsername string
@@ -320,6 +325,15 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 type CasdoorUserInfo struct {
 	ID                string `json:"id"`
 	Sub               string `json:"sub"`
+	// Issuer carries the JWT's `iss` claim. Used by setAuthContext to
+	// decide whether the local users-table resolver should run: cs-user
+	// JWTs (iss="cs-user") already carry the canonical subject_id in
+	// `sub`, so resolver lookup is unnecessary AND can return a stale
+	// local subject_id from the pre-cs-user era (when users.subject_id
+	// was set to Casdoor's universal_id). For Casdoor JWTs (iss=anything
+	// else, typically the Casdoor issuer URL), the resolver is the only
+	// way to bridge universal_id → local subject_id.
+	Issuer            string `json:"iss,omitempty"`
 	UniversalID       string `json:"universal_id"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
@@ -363,6 +377,11 @@ type casdoorUserinfoResponse struct {
 	Email       string `json:"email"`
 }
 
+// csUserIssuer is the iss claim value cs-user stamps on its JWTs. Sourced
+// here as a string rather than imported from the cs-user module (separate
+// go.mod) to keep middleware's dependency surface minimal.
+const csUserIssuer = "cs-user"
+
 // parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
 // If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
 func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
@@ -390,13 +409,36 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	}
 
 	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
-	sub := normalized.UniversalID
-	if sub == "" {
+
+	// Subject resolution diverges by issuer:
+	//   - cs-user JWT (iss="cs-user"): `sub` is the canonical cs-user
+	//     subject_id (usr_<uuid>). `universal_id` carries Casdoor's
+	//     original universal_id (a separate identifier kept for cross-
+	//     system alignment per MULTI_TENANCY §12.1 — they are no longer
+	//     guaranteed equal). Use `sub` directly.
+	//   - Casdoor JWT (legacy fallback path / pre-cutover tokens):
+	//     `universal_id` is Casdoor's stable user PK; `sub` may be empty
+	//     or unstable for some IdPs. Prefer `universal_id`.
+	// Issuer check happens on the raw claims map (NormalizeClaimsMap does
+	// not surface `iss`).
+	iss, _ := claims["iss"].(string)
+	var sub string
+	if iss == csUserIssuer {
 		sub = normalized.Sub
+		if sub == "" {
+			sub = normalized.UniversalID
+		}
+	} else {
+		sub = normalized.UniversalID
+		if sub == "" {
+			sub = normalized.Sub
+		}
 	}
 	if sub == "" {
 		sub = normalized.ID
 	}
+	logger.Info("[auth-debug] parseJWTToken iss=%q sub=%q universal_id=%q id=%q resolved_sub=%q provider=%q",
+		iss, normalized.Sub, normalized.UniversalID, normalized.ID, sub, normalized.Provider)
 	if sub == "" {
 		return nil, fmt.Errorf("no id, sub or universal_id in token")
 	}
@@ -435,6 +477,7 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
 		Sub:               sub,
+		Issuer:            iss,
 		UniversalID:       normalized.UniversalID,
 		Name:              normalized.Name,
 		PreferredUsername: normalized.PreferredUsername,
@@ -516,6 +559,7 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	authClaims := AuthClaims{
 		ID:                userInfo.ID,
 		Sub:               userInfo.Sub,
+		Issuer:            userInfo.Issuer,
 		UniversalID:       userInfo.UniversalID,
 		Name:              userInfo.Name,
 		PreferredUsername: userInfo.PreferredUsername,
@@ -529,8 +573,19 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 		PlatformScope:     userInfo.PlatformScope,
 		TenantRoles:       userInfo.TenantRoles,
 	}
-	if subjectResolver != nil {
+	// cs-user JWTs already carry the canonical subject_id in `sub` —
+	// skip the local users-table resolver entirely. The resolver exists
+	// to bridge Casdoor JWTs (which lack a local subject_id) to the
+	// local table; running it on cs-user JWTs can return stale local
+	// rows whose subject_id predates cs-user (e.g. legacy rows where
+	// users.subject_id was set to Casdoor's universal_id), which then
+	// 404 against cs-user's GET /api/internal/users/:subject_id.
+	if userInfo.Issuer == csUserIssuer {
+		logger.Info("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly (resolver skipped)", userID)
+	} else if subjectResolver != nil {
 		resolvedID, resolvedName, err := subjectResolver(authClaims)
+		logger.Info("[auth-debug] setAuthContext resolver in: id=%q sub=%q universal_id=%q provider=%q",
+			authClaims.ID, authClaims.Sub, authClaims.UniversalID, authClaims.Provider)
 		if err == nil {
 			if resolvedID != "" {
 				userID = resolvedID
@@ -538,7 +593,10 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 			if resolvedName != "" {
 				userName = resolvedName
 			}
+		} else {
+			logger.Warn("[auth-debug] setAuthContext resolver err=%v", err)
 		}
+		logger.Info("[auth-debug] setAuthContext resolver out: resolved_id=%q resolved_name=%q final_userID=%q", resolvedID, resolvedName, userID)
 	}
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)

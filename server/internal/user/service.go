@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/authidentity"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
@@ -153,14 +154,21 @@ func (s *UserService) GetUsersByUniversalIDs(universalIDs []string) (map[string]
 // ResolveSubjectID resolves JWT/Casdoor claims to the stable local subject_id.
 // This is a read-only lookup and does NOT trigger user creation or identity binding.
 func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error) {
+	if claims != nil {
+		logger.Info("[auth-debug] ResolveSubjectID in: id=%q sub=%q universal_id=%q name=%q provider=%q",
+			claims.ID, claims.Sub, claims.UniversalID, claims.Name, claims.Provider)
+	}
 	user, err := s.FindUserByClaims(claims)
 	if err != nil {
+		logger.Warn("[auth-debug] ResolveSubjectID FindUserByClaims err=%v", err)
 		return "", "", err
 	}
 	name := user.Username
 	if user.DisplayName != nil && *user.DisplayName != "" {
 		name = *user.DisplayName
 	}
+	logger.Info("[auth-debug] ResolveSubjectID out: subject_id=%q username=%q display_name=%q external_key=%q casdoor_universal_id=%q",
+		user.SubjectID, user.Username, name, user.ExternalKey, user.CasdoorUniversalID)
 	return user.SubjectID, name, nil
 }
 

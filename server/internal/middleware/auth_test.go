@@ -1089,9 +1089,12 @@ func TestParseJWTToken_EnterpriseClaimsRoundTrip(t *testing.T) {
 		t.Fatalf("parseJWTToken: %v", err)
 	}
 
-	// Standard + OIDC
-	if info.Sub != "u-alice-001" {
-		t.Errorf("Sub = %q, want u-alice-001 (Sub falls back to universal_id when present)", info.Sub)
+	// Standard + OIDC. cs-user JWT (iss="cs-user") → Sub is the canonical
+	// cs-user subject_id (usr_<uuid>); universal_id carries Casdoor's
+	// original value separately — they are no longer required to match.
+	// parseJWTToken now branches on iss to honor this contract.
+	if info.Sub != "user-base" {
+		t.Errorf("Sub = %q, want user-base (cs-user JWT uses sub as canonical subject_id)", info.Sub)
 	}
 	if info.UniversalID != "u-alice-001" {
 		t.Errorf("UniversalID = %q, want u-alice-001 (silent drift from cs-user JSON tag 'universal_id')", info.UniversalID)
