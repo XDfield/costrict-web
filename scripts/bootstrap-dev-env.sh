@@ -2,18 +2,22 @@
 # bootstrap-dev-env.sh — one-shot dev environment bootstrap.
 #
 # Wires up a runnable local stack with the four pieces every developer
-# needs before they can log in via enterprise IdP and push to a per-user
-# Gitea account:
+# needs before they can log in via Casdoor (with enterprise IdP brokered
+# behind it) and push to a per-user Gitea account:
 #
 #   1. Default tenant row in cs-user.tenants.
 #   2. git_server row in server.git_servers + tenant_git_server_binding
 #      tying the default tenant to a local Gitea instance.
-#   3. idtrust IdP source registered against cs-user.idp_sources.
-#   4. idtrust employment_providers config_yaml written to cs-user
-#      .tenant_configs (Plan B detection + field_map).
-#   5. Sanity check that server's Casdoor env is populated (Casdoor is
+#   3. idtrust employment_providers config_yaml written to cs-user
+#      .tenantConfigs (Plan B detection + field_map — claim mapping,
+#      NOT OAuth credentials).
+#   4. Sanity check that server's Casdoor env is populated (Casdoor is
 #      configured via static env, NOT a runtime API — this step only
 #      warns if CASDOOR_* vars are missing in server/.env).
+#
+# OAuth is brokered exclusively by Casdoor. Per-provider OAuth creds
+# (idtrust client_id/secret, ...) live inside Casdoor — this script
+# deliberately does NOT collect or upload any provider credentials.
 #
 # This is a thin orchestration layer. The actual work is delegated to
 # the per-service scripts (cs-user/scripts/*, server/scripts/*) which
@@ -30,9 +34,6 @@
 #     with $INTERNAL_SECRET set.
 #   * Gitea running on $GITEA_ENDPOINT (default http://127.0.0.1:3000)
 #     with an admin token available.
-#   * IDTrust IdP running on whatever endpoint your dev profile points
-#     at (scripts/examples/idtrust-idp-dev.json defaults to
-#     http://127.0.0.1:8443).
 #
 # Source both cs-user/.env and server/.env before invoking. Easiest:
 #
@@ -41,7 +42,6 @@
 #     source server/.env
 #     set +a
 #     export GITEA_ADMIN_TOKEN=...
-#     export IDTRUST_CLIENT_SECRET=...
 #     ./scripts/bootstrap-dev-env.sh
 #
 # =====================================================================
@@ -54,21 +54,17 @@
 #                           (default: enterprise — needed for IdP mapping)
 #   --gitea-endpoint        Gitea base URL (default: http://127.0.0.1:3000)
 #   --gitea-display         display name (default: "Local Gitea (dev)")
-#   --idp-config-json       path to idtrust IdP JSON (default:
-#                           scripts/examples/idtrust-idp-dev.json)
 #   --employment-yaml       path to employment mapping YAML (default:
 #                           scripts/examples/idtrust-employment-dev.yaml)
 #   --skip-git-server       skip the server-side git_server step (e.g.
 #                           when running before server is up)
-#   --skip-idtrust          skip IdP source + employment mapping steps
+#   --skip-idtrust          skip the employment mapping step
 #   --dry-run               print what would run without invoking sub-scripts
 #
 # Required env (sourced from .env files):
 #   CS_USER_INTERNAL_TOKEN  — cs-user X-Internal-Token
 #   INTERNAL_SECRET         — server X-Internal-Secret
 #   GITEA_ADMIN_TOKEN       — Gitea admin token (used as git_server.config.admin_token)
-#   IDTRUST_CLIENT_SECRET   — replaces REPLACE_WITH_IDTRUST_CLIENT_SECRET
-#                             in --idp-config-json at runtime
 #
 # =====================================================================
 
@@ -84,7 +80,6 @@ TENANT_DISPLAY="Default Tenant"
 TENANT_EDITION="enterprise"
 GITEA_ENDPOINT="http://127.0.0.1:3000"
 GITEA_DISPLAY="Local Gitea (dev)"
-IDP_CONFIG_JSON="$REPO_ROOT/scripts/examples/idtrust-idp-dev.json"
 EMPLOYMENT_YAML="$REPO_ROOT/scripts/examples/idtrust-employment-dev.yaml"
 SKIP_GIT_SERVER=0
 SKIP_IDTRUST=0
@@ -97,7 +92,6 @@ while [[ $# -gt 0 ]]; do
         --tenant-edition)    TENANT_EDITION="$2"; shift 2 ;;
         --gitea-endpoint)    GITEA_ENDPOINT="$2"; shift 2 ;;
         --gitea-display)     GITEA_DISPLAY="$2"; shift 2 ;;
-        --idp-config-json)   IDP_CONFIG_JSON="$2"; shift 2 ;;
         --employment-yaml)   EMPLOYMENT_YAML="$2"; shift 2 ;;
         --skip-git-server)   SKIP_GIT_SERVER=1; shift ;;
         --skip-idtrust)      SKIP_IDTRUST=1; shift ;;
@@ -118,7 +112,6 @@ die()  { printf '[bootstrap-dev-env] ERROR: %s\n' "$*" >&2; exit 1; }
 [[ -n "${CS_USER_INTERNAL_TOKEN:-}" ]] || die "CS_USER_INTERNAL_TOKEN not set — source cs-user/.env"
 [[ -f "$CS_USER_SCRIPTS/bootstrap-tenant.sh" ]] || die "missing $CS_USER_SCRIPTS/bootstrap-tenant.sh"
 [[ -f "$CS_USER_SCRIPTS/configure-employment-mapping.sh" ]] || die "missing configure-employment-mapping.sh"
-[[ -f "$CS_USER_SCRIPTS/configure-idp-source.sh" ]] || die "missing configure-idp-source.sh"
 
 if [[ $SKIP_GIT_SERVER -eq 0 ]]; then
     [[ -n "${INTERNAL_SECRET:-}" ]] || die "INTERNAL_SECRET not set — source server/.env"
@@ -127,8 +120,6 @@ if [[ $SKIP_GIT_SERVER -eq 0 ]]; then
 fi
 
 if [[ $SKIP_IDTRUST -eq 0 ]]; then
-    [[ -n "${IDTRUST_CLIENT_SECRET:-}" ]] || die "IDTRUST_CLIENT_SECRET not set"
-    [[ -f "$IDP_CONFIG_JSON" ]] || die "idp config not found: $IDP_CONFIG_JSON"
     [[ -f "$EMPLOYMENT_YAML" ]] || die "employment yaml not found: $EMPLOYMENT_YAML"
 fi
 
@@ -144,7 +135,7 @@ run() {
 # ===========================================================================
 # Step 1 — Default tenant
 # ===========================================================================
-log "step 1/5: create tenant slug=$TENANT_SLUG edition=$TENANT_EDITION"
+log "step 1/4: create tenant slug=$TENANT_SLUG edition=$TENANT_EDITION"
 run "$CS_USER_SCRIPTS/bootstrap-tenant.sh" \
     --slug "$TENANT_SLUG" \
     --display-name "$TENANT_DISPLAY" \
@@ -154,9 +145,9 @@ run "$CS_USER_SCRIPTS/bootstrap-tenant.sh" \
 # Step 2 — git_server + tenant binding (server side)
 # ===========================================================================
 if [[ $SKIP_GIT_SERVER -eq 1 ]]; then
-    log "step 2/5: SKIPPED (--skip-git-server)"
+    log "step 2/4: SKIPPED (--skip-git-server)"
 else
-    log "step 2/5: upsert git_server endpoint=$GITEA_ENDPOINT + bind tenant=$TENANT_SLUG"
+    log "step 2/4: upsert git_server endpoint=$GITEA_ENDPOINT + bind tenant=$TENANT_SLUG"
     run "$SERVER_SCRIPTS/bootstrap-git-server.sh" \
         --endpoint "$GITEA_ENDPOINT" \
         --display-name "$GITEA_DISPLAY" \
@@ -168,46 +159,18 @@ fi
 # Step 3 — idtrust employment_providers + provider_mapping YAML
 # ===========================================================================
 if [[ $SKIP_IDTRUST -eq 1 ]]; then
-    log "step 3/5: SKIPPED (--skip-idtrust)"
+    log "step 3/4: SKIPPED (--skip-idtrust)"
 else
-    log "step 3/5: upload employment mapping yaml=$EMPLOYMENT_YAML"
+    log "step 3/4: upload employment mapping yaml=$EMPLOYMENT_YAML"
     run "$CS_USER_SCRIPTS/configure-employment-mapping.sh" \
         --tenant "$TENANT_SLUG" \
         --yaml "$EMPLOYMENT_YAML"
 fi
 
 # ===========================================================================
-# Step 4 — idtrust IdP source (cs-user.idp_sources upsert)
+# Step 4 — Casdoor env sanity check (server/.env)
 # ===========================================================================
-if [[ $SKIP_IDTRUST -eq 1 ]]; then
-    log "step 4/5: SKIPPED (--skip-idtrust)"
-elif [[ $DRY_RUN -eq 1 ]]; then
-    log "step 4/5: upsert idp source provider=idtrust (config from $IDP_CONFIG_JSON with secret injected)"
-    run "$CS_USER_SCRIPTS/configure-idp-source.sh" \
-        --tenant "$TENANT_SLUG" \
-        --provider idtrust \
-        --config-json "<temp file: $IDP_CONFIG_JSON with IDTRUST_CLIENT_SECRET injected>"
-else
-    # Materialize the IdP config into a temp file with the secret injected,
-    # so we never write the real secret to disk under scripts/examples.
-    TMP_IDP_JSON="$(mktemp -t cs-dev-idp.XXXXXX.json)"
-    trap 'rm -f "$TMP_IDP_JSON"' EXIT
-    jq --arg secret "$IDTRUST_CLIENT_SECRET" \
-       '.client_secret = $secret' \
-       "$IDP_CONFIG_JSON" > "$TMP_IDP_JSON"
-
-    log "step 4/5: upsert idp source provider=idtrust (config from $IDP_CONFIG_JSON with secret injected)"
-    "$CS_USER_SCRIPTS/configure-idp-source.sh" \
-        --tenant "$TENANT_SLUG" \
-        --provider idtrust \
-        --config-json "$TMP_IDP_JSON"
-    rm -f "$TMP_IDP_JSON" && trap - EXIT
-fi
-
-# ===========================================================================
-# Step 5 — Casdoor env sanity check (server/.env)
-# ===========================================================================
-log "step 5/5: verify Casdoor env in server/.env"
+log "step 4/4: verify Casdoor env in server/.env"
 SERVER_ENV="$REPO_ROOT/server/.env"
 if [[ ! -f "$SERVER_ENV" ]]; then
     warn "server/.env not found at $SERVER_ENV — skipping Casdoor check"
