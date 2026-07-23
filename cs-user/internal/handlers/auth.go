@@ -227,6 +227,6 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 
 	c.JSON(http.StatusOK, reissueTokenResponse{
 		Token:     signed,
-		ExpiresAt: *claims.Expiry,
+		ExpiresAt: claims.Expiry.Time,
 	})
 }
