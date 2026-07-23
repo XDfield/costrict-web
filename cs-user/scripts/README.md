@@ -61,17 +61,37 @@ set -a; source ../.env; set +a
 ./configure-employment-mapping.sh \
     --tenant acme-corp \
     --yaml examples/idtrust-employment.yaml
-
-# 4. (server side) Configure Casdoor as the OAuth entry point.
-#    Per-provider OAuth creds live in Casdoor, not here. See server/.env
-#    for CASDOOR_* fields.
 ```
+
+**For local dev-env bootstrap, prefer the orchestrator**:
+[`scripts/bootstrap-dev-env.sh`](../../scripts/bootstrap-dev-env.sh) at the
+repo root runs all three steps in order with sane defaults, plus a Casdoor
+env sanity check. It uploads the trimmed
+[`scripts/examples/idtrust-employment-dev.yaml`](../../scripts/examples/idtrust-employment-dev.yaml).
+
+## How idtrust identification works (data flow)
+
+cs-user does NOT call idtrust directly — Casdoor brokers the OAuth. After
+login, the Casdoor JWT reaches cs-user with these load-bearing fields:
+
+| Field | Where it comes from | What cs-user does with it |
+|---|---|---|
+| `signupApplication` | Casdoor Application `name` the user signed in through | Matched against `employment_providers.provider_detection[].signup_application` (case-insensitive) to pick the provider |
+| `properties.oauth_Custom.*` | idtrust userinfo, brokered through Casdoor's Custom OAuth adapter | Walked by dotted path via `employment_providers.field_map.<provider>` to extract enterprise columns |
+
+If the upstream JWT already sets `provider` explicitly (e.g. on a future
+Casdoor build), `provider_detection` is bypassed in favour of that value.
+
+server/internal/authidentity/normalize.go also has a hard-coded fallback
+for `signupApplication == "idtrust"`, so the default
+`signup_application: "idtrust"` value keeps both layers aligned without
+code edits.
 
 ## Examples
 
 The `examples/` directory contains template YAML files:
 
-- `idtrust-employment.yaml` — `tenant_config.config_yaml` with
+- `idtrust-employment.yaml` — `tenant_configs.config_yaml` with
   employment_providers (field_map + Plan B detection) and provider_mapping
 
 This is claim-mapping config (no secrets). Copy out of the repo before
