@@ -221,11 +221,11 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	if user.SubjectID != "legacy-u1" {
 		t.Fatalf("existing local subject_id should remain unchanged: %+v", user)
 	}
-	if user.DisplayName == nil || *user.DisplayName != "Alice New" {
-		t.Fatalf("display name not updated: %+v", user)
+	if user.DisplayName == nil || *user.DisplayName != oldName {
+		t.Fatalf("display name should NOT be overwritten on re-login (user-owned): got %+v", user.DisplayName)
 	}
-	if user.Email == nil || *user.Email != "new@example.com" {
-		t.Fatalf("email not updated: %+v", user)
+	if user.Email == nil || *user.Email != oldEmail {
+		t.Fatalf("email should NOT be overwritten on re-login (user-owned): got %+v", user.Email)
 	}
 	if !user.IsActive {
 		t.Fatal("expected user to be active")
@@ -239,8 +239,8 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
 		t.Fatalf("casdoor_sub not backfilled: %+v", user)
 	}
-	if user.Organization == nil || *user.Organization != "org" {
-		t.Fatalf("organization not backfilled: %+v", user)
+	if user.Organization != nil {
+		t.Fatalf("organization should NOT be overwritten on re-login (user-owned): got %+v", user.Organization)
 	}
 	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:uuid-u1" {
 		t.Fatalf("external_key not backfilled: %+v", user)
@@ -679,8 +679,8 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 	}
 
 	refreshed, _ := svc.GetUserByID(context.Background(), ghUser.SubjectID)
-	if refreshed.Phone == nil || *refreshed.Phone != "15500000001" {
-		t.Fatalf("expected phone to be merged into user profile, got %+v", refreshed)
+	if refreshed.Phone != nil {
+		t.Fatalf("user.Phone must NOT be auto-merged from a newly-bound identity (user-owned field); got %+v", refreshed.Phone)
 	}
 }
 
