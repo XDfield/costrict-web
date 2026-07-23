@@ -32,7 +32,7 @@
 #     with $CS_USER_INTERNAL_TOKEN set.
 #   * server API running on $SERVER_BASE_URL (default localhost:8080)
 #     with $INTERNAL_SECRET set.
-#   * Gitea running on $GITEA_ENDPOINT (default http://127.0.0.1:3001)
+#   * Gitea running on $DEFAULT_GITEA_ENDPOINT (default http://127.0.0.1:3001)
 #     with an admin token available.
 #
 # Required env vars (copy-paste block — run before invoking this script):
@@ -51,7 +51,7 @@
 #     export SERVER_BASE_URL="http://localhost:8080"
 #
 #     # Gitea reachable URL (default http://127.0.0.1:3001)
-#     export GITEA_ENDPOINT="http://127.0.0.1:3001"
+#     export DEFAULT_GITEA_ENDPOINT="http://127.0.0.1:3001"
 #
 #     # default_tenant identity — most dev envs leave these at defaults.
 #     # Override only if you want a different bootstrap tenant slug / display
@@ -69,7 +69,7 @@
 #
 #     # Gitea admin token — NOT in any .env file; generate one in Gitea UI
 #     # (Profile → Settings → Applications → Generate New Token).
-#     export GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
+#     export DEFAULT_GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
 #     # --- END dev-env bootstrap env ---
 #
 #     ./scripts/bootstrap-dev-env.sh
@@ -86,7 +86,7 @@
 #                           (default: enterprise — needed for IdP mapping;
 #                           env: DEFAULT_TENANT_EDITION)
 #   --gitea-endpoint        Gitea base URL (default: http://127.0.0.1:3001,
-#                           overridable via $GITEA_ENDPOINT env var)
+#                           overridable via $DEFAULT_GITEA_ENDPOINT env var)
 #   --gitea-display         display name (default: "Local Gitea (dev)")
 #   --employment-yaml       path to employment mapping YAML (default:
 #                           scripts/examples/idtrust-employment-dev.yaml)
@@ -96,9 +96,9 @@
 #   --dry-run               print what would run without invoking sub-scripts
 #
 # Required env:
-#   CS_USER_INTERNAL_TOKEN  — cs-user X-Internal-Token (from cs-user/.env)
-#   INTERNAL_SECRET         — server X-Internal-Secret (from server/.env)
-#   GITEA_ADMIN_TOKEN       — Gitea admin token (generate via Gitea UI)
+#   CS_USER_INTERNAL_TOKEN    — cs-user X-Internal-Token (from cs-user/.env)
+#   INTERNAL_SECRET           — server X-Internal-Secret (from server/.env)
+#   DEFAULT_GITEA_ADMIN_TOKEN — Gitea admin token (generate via Gitea UI)
 #
 # Optional env (sane defaults if unset):
 #   CS_USER_BASE_URL        — defaults to http://localhost:8081
@@ -110,7 +110,7 @@
 #   DEFAULT_TENANT_EDITION  — free | team | enterprise | on_premise
 #                             (defaults to "enterprise" — needed for IdP
 #                             mapping to engage)
-#   GITEA_ENDPOINT          — defaults to http://127.0.0.1:3001
+#   DEFAULT_GITEA_ENDPOINT  — defaults to http://127.0.0.1:3001
 #
 # =====================================================================
 
@@ -124,7 +124,7 @@ SERVER_SCRIPTS="$REPO_ROOT/server/scripts"
 TENANT_SLUG="${DEFAULT_TENANT_SLUG:-default}"
 TENANT_DISPLAY="${DEFAULT_TENANT_DISPLAY:-Default Tenant}"
 TENANT_EDITION="${DEFAULT_TENANT_EDITION:-enterprise}"
-GITEA_ENDPOINT="${GITEA_ENDPOINT:-http://127.0.0.1:3001}"
+DEFAULT_GITEA_ENDPOINT="${DEFAULT_GITEA_ENDPOINT:-http://127.0.0.1:3001}"
 GITEA_DISPLAY="Local Gitea (dev)"
 EMPLOYMENT_YAML="$REPO_ROOT/scripts/examples/idtrust-employment-dev.yaml"
 SKIP_GIT_SERVER=0
@@ -136,7 +136,7 @@ while [[ $# -gt 0 ]]; do
         --tenant)            TENANT_SLUG="$2"; shift 2 ;;
         --tenant-display)    TENANT_DISPLAY="$2"; shift 2 ;;
         --tenant-edition)    TENANT_EDITION="$2"; shift 2 ;;
-        --gitea-endpoint)    GITEA_ENDPOINT="$2"; shift 2 ;;
+        --gitea-endpoint)    DEFAULT_GITEA_ENDPOINT="$2"; shift 2 ;;
         --gitea-display)     GITEA_DISPLAY="$2"; shift 2 ;;
         --employment-yaml)   EMPLOYMENT_YAML="$2"; shift 2 ;;
         --skip-git-server)   SKIP_GIT_SERVER=1; shift ;;
@@ -161,7 +161,7 @@ die()  { printf '[bootstrap-dev-env] ERROR: %s\n' "$*" >&2; exit 1; }
 
 if [[ $SKIP_GIT_SERVER -eq 0 ]]; then
     [[ -n "${INTERNAL_SECRET:-}" ]] || die "INTERNAL_SECRET not set — source server/.env"
-    [[ -n "${GITEA_ADMIN_TOKEN:-}" ]] || die "GITEA_ADMIN_TOKEN not set"
+    [[ -n "${DEFAULT_GITEA_ADMIN_TOKEN:-}" ]] || die "DEFAULT_GITEA_ADMIN_TOKEN not set"
     [[ -f "$SERVER_SCRIPTS/bootstrap-git-server.sh" ]] || die "missing server/scripts/bootstrap-git-server.sh"
 fi
 
@@ -193,11 +193,11 @@ run "$CS_USER_SCRIPTS/bootstrap-tenant.sh" \
 if [[ $SKIP_GIT_SERVER -eq 1 ]]; then
     log "step 2/4: SKIPPED (--skip-git-server)"
 else
-    log "step 2/4: upsert git_server endpoint=$GITEA_ENDPOINT + bind tenant=$TENANT_SLUG"
+    log "step 2/4: upsert git_server endpoint=$DEFAULT_GITEA_ENDPOINT + bind tenant=$TENANT_SLUG"
     run "$SERVER_SCRIPTS/bootstrap-git-server.sh" \
-        --endpoint "$GITEA_ENDPOINT" \
+        --endpoint "$DEFAULT_GITEA_ENDPOINT" \
         --display-name "$GITEA_DISPLAY" \
-        --admin-token "$GITEA_ADMIN_TOKEN" \
+        --admin-token "$DEFAULT_GITEA_ADMIN_TOKEN" \
         --tenant "$TENANT_SLUG"
 fi
 
