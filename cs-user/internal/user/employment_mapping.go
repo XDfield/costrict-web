@@ -58,10 +58,31 @@ type EmploymentMappingParams struct {
 // section in tenant_configs.config_yaml. Slice 1 of the field_map feature
 // (2026-07-23) added FieldMap; per-provider interval / on_login config still
 // ships with real provider clients in slice 2 — yaml.v3 silently ignores
-// those fields until we model them.
+// those fields until we model them. Plan B (2026-07-23) added
+// ProviderDetection so new Casdoor-brokered IdPs can be recognized without
+// a server-side code change.
 type employmentProvidersConfig struct {
-	Enabled  []string                  `yaml:"enabled"`
-	FieldMap map[string]FieldMapConfig `yaml:"field_map,omitempty"`
+	Enabled           []string                  `yaml:"enabled"`
+	FieldMap          map[string]FieldMapConfig `yaml:"field_map,omitempty"`
+	ProviderDetection []ProviderDetectionRule   `yaml:"provider_detection,omitempty"`
+}
+
+// ProviderDetectionRule maps an IdP-recognition signal (e.g. Casdoor JWT's
+// `signupApplication` value) to a provider name in the `enabled` list. Used
+// when the upstream JWT does not set `provider` explicitly — historically
+// server's authidentity/normalize.go hardcoded this switch case-by-case;
+// moving it here makes adding a new Casdoor-brokered IdP a config-only
+// change.
+//
+// YAML shape:
+//
+//	- signup_application: "idtrust"   # matcher (case-insensitive equality)
+//	  provider: idtrust               # must be in employment_providers.enabled
+//	- signup_application: "mycorp-sso"
+//	  provider: mycorp_sso
+type ProviderDetectionRule struct {
+	SignupApplication string `yaml:"signup_application"`
+	Provider          string `yaml:"provider"`
 }
 
 // FieldMapConfig maps internal employment_identities columns (the YAML keys,
@@ -133,15 +154,25 @@ var ErrEnterpriseMappingDisabled = errors.New("enterprise mapping disabled for p
 // Missing tenant_configs row is treated as disabled (ErrEnterpriseMappingDisabled),
 // not an error — enterprise mapping is a bonus feature and must not block
 // login. Malformed YAML is a real error (operator config bug worth surfacing).
+//
+// Provider resolution order:
+//  1. params.Provider is used directly if it's in the tenant's enabled list.
+//  2. Otherwise, provider_detection rules are evaluated against
+//     params.ExternalClaims (e.g. signup_application matcher against
+//     ExternalClaims["signupApplication"]). First match wins; the resolved
+//     provider must itself be in the enabled list.
+//  3. No resolution → ErrEnterpriseMappingDisabled (login still succeeds;
+//     the hook is best-effort).
+//
+// This lets new Casdoor-brokered IdPs be added via tenant config alone —
+// server no longer needs a hardcoded case in authidentity/normalize.go for
+// each new IdP's signupApplication value.
 func (s *Service) ApplyEnterpriseMapping(ctx context.Context, params EmploymentMappingParams) error {
 	if s == nil || s.db == nil {
 		return errors.New("user.Service: nil db")
 	}
 	if params.UserSubjectID == "" {
 		return errors.New("ApplyEnterpriseMapping: empty UserSubjectID")
-	}
-	if params.Provider == "" {
-		return errors.New("ApplyEnterpriseMapping: empty Provider")
 	}
 	if params.TenantID == "" {
 		params.TenantID = defaultTenantID
@@ -151,11 +182,53 @@ func (s *Service) ApplyEnterpriseMapping(ctx context.Context, params EmploymentM
 	if err != nil {
 		return fmt.Errorf("load employment_providers config: %w", err)
 	}
-	if !containsString(cfg.Enabled, params.Provider) {
+
+	provider := params.Provider
+	if provider == "" || !containsString(cfg.Enabled, provider) {
+		// Server didn't recognize the IdP (or no provider hint at all). Try
+		// the tenant's detection rules before giving up.
+		if detected := detectProvider(cfg.ProviderDetection, params.ExternalClaims); detected != "" && containsString(cfg.Enabled, detected) {
+			provider = detected
+		}
+	}
+	// No provider resolved (empty params.Provider + no/failing detection, or
+	// unknown explicit Provider) → treat as "feature not applicable for this
+	// login" rather than a caller bug. Enterprise mapping is a bonus hook and
+	// must never block login.
+	if provider == "" || !containsString(cfg.Enabled, provider) {
 		return ErrEnterpriseMappingDisabled
 	}
+	params.Provider = provider
 
-	return s.upsertEmploymentIdentity(ctx, params, cfg.FieldMap[params.Provider])
+	return s.upsertEmploymentIdentity(ctx, params, cfg.FieldMap[provider])
+}
+
+// detectProvider evaluates the tenant's detection rules in order against the
+// raw external claims. First match wins; returns "" when nothing matches.
+// The signup_application matcher does case-insensitive equality against the
+// ExternalClaims["signupApplication"] value (the key Casdoor uses to tag
+// which application a user signed up through).
+func detectProvider(rules []ProviderDetectionRule, external map[string]any) string {
+	if len(rules) == 0 || len(external) == 0 {
+		return ""
+	}
+	raw, ok := external["signupApplication"]
+	if !ok || raw == nil {
+		return ""
+	}
+	signupApp := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+	if signupApp == "" {
+		return ""
+	}
+	for _, rule := range rules {
+		if rule.SignupApplication == "" || rule.Provider == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(rule.SignupApplication), signupApp) {
+			return rule.Provider
+		}
+	}
+	return ""
 }
 
 // loadEmploymentProvidersConfig reads tenant_configs.config_yaml and parses
@@ -208,6 +281,31 @@ func (s *Service) loadEmploymentProvidersConfig(ctx context.Context, tenantID st
 				)
 			}
 		}
+	}
+
+	// Detection rules must resolve to an enabled provider; otherwise the rule
+	// is dead config that silently never fires. Catch typos at config load.
+	seenMatchers := make(map[string]string) // lower(signup_application) → provider
+	for _, rule := range parsed.EmploymentProviders.ProviderDetection {
+		if strings.TrimSpace(rule.SignupApplication) == "" || strings.TrimSpace(rule.Provider) == "" {
+			return cfg, fmt.Errorf(
+				"employment_providers.provider_detection: signup_application and provider are both required",
+			)
+		}
+		if !containsString(parsed.EmploymentProviders.Enabled, rule.Provider) {
+			return cfg, fmt.Errorf(
+				"employment_providers.provider_detection[signup_application=%s]: provider %q is not in employment_providers.enabled",
+				rule.SignupApplication, rule.Provider,
+			)
+		}
+		key := strings.ToLower(strings.TrimSpace(rule.SignupApplication))
+		if _, dup := seenMatchers[key]; dup {
+			return cfg, fmt.Errorf(
+				"employment_providers.provider_detection: duplicate signup_application matcher %q",
+				rule.SignupApplication,
+			)
+		}
+		seenMatchers[key] = rule.Provider
 	}
 
 	return parsed.EmploymentProviders, nil

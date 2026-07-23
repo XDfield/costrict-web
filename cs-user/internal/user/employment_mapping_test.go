@@ -259,8 +259,12 @@ func TestApplyEnterpriseMapping_DefaultTenantID(t *testing.T) {
 }
 
 // TestApplyEnterpriseMapping_ValidationErrors verifies the input validation
-// guards: empty UserSubjectID and empty Provider return errors before any
-// DB access.
+// guards: empty UserSubjectID returns an error before any DB access.
+//
+// (Plan B removed the empty-Provider sentinel — an empty Provider is now a
+// legitimate signal to attempt provider_detection, and a failed detection
+// short-circuits to ErrEnterpriseMappingDisabled. See
+// TestApplyEnterpriseMapping_ProviderDetection case 3 for that contract.)
 func TestApplyEnterpriseMapping_ValidationErrors(t *testing.T) {
 	t.Parallel()
 	svc := newEmploymentMappingService(t)
@@ -272,7 +276,6 @@ func TestApplyEnterpriseMapping_ValidationErrors(t *testing.T) {
 		params EmploymentMappingParams
 	}{
 		{"empty UserSubjectID", EmploymentMappingParams{Provider: "idtrust"}},
-		{"empty Provider", EmploymentMappingParams{UserSubjectID: "usr_alice"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -478,6 +481,219 @@ func TestApplyEnterpriseMapping_FieldMapRejectsBadColumnOnUnenabledProvider(t *t
 	}
 	if !strings.Contains(err.Error(), "azure_ad") {
 		t.Fatalf("error should name the offending provider, got: %v", err)
+	}
+}
+
+// TestApplyEnterpriseMapping_ProviderDetection verifies Plan B's config-driven
+// provider resolution: when the upstream Provider is empty (server didn't
+// recognize the IdP) or unknown, ApplyEnterpriseMapping falls back to the
+// tenant's provider_detection rules matching ExternalClaims.signupApplication.
+//
+// This is what lets a new Casdoor-brokered IdP be added via tenant config
+// alone — no Go code change in server's authidentity/normalize.go.
+func TestApplyEnterpriseMapping_ProviderDetection(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [idtrust, mycorp_sso]
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+    - signup_application: "mycorp-sso"
+      provider: mycorp_sso
+  field_map:
+    idtrust:
+      enterprise_uid: "properties.oauth_Custom.id"
+    mycorp_sso:
+      enterprise_uid: "properties.oauth_Custom.id"
+`)
+
+	// Case 1: server set Provider="" (unrecognized signupApplication),
+	// detection resolves it to idtrust, field_map.idtrust applies.
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "", // server couldn't recognize
+		ExternalClaims: map[string]any{
+			"signupApplication": "idtrust",
+			"properties": map[string]any{
+				"oauth_Custom": map[string]any{"id": "sangfor-001"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("detection-resolved idtrust mapping failed: %v", err)
+	}
+	row, err := svc.GetEmploymentIdentity(t.Context(), "usr_alice")
+	if err != nil {
+		t.Fatalf("GetEmploymentIdentity: %v", err)
+	}
+	if row.Provider != "idtrust" {
+		t.Errorf("row.Provider: got %q, want idtrust", row.Provider)
+	}
+	if row.EnterpriseUID == nil || *row.EnterpriseUID != "sangfor-001" {
+		t.Errorf("EnterpriseUID: got %v, want sangfor-001", row.EnterpriseUID)
+	}
+
+	// Case 2: detection picks a different provider for the same caller code
+	// path just by changing signupApplication.
+	err = svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_bob",
+		Provider:      "",
+		ExternalClaims: map[string]any{
+			"signupApplication": "mycorp-sso",
+			"properties": map[string]any{
+				"oauth_Custom": map[string]any{"id": "mycorp-002"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("detection-resolved mycorp_sso mapping failed: %v", err)
+	}
+	row2, _ := svc.GetEmploymentIdentity(t.Context(), "usr_bob")
+	if row2.Provider != "mycorp_sso" {
+		t.Errorf("row.Provider: got %q, want mycorp_sso", row2.Provider)
+	}
+
+	// Case 3: signupApplication doesn't match any rule → disabled (best-effort).
+	err = svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_charlie",
+		Provider:      "",
+		ExternalClaims: map[string]any{
+			"signupApplication": "unknown-app",
+		},
+	})
+	if !errors.Is(err, ErrEnterpriseMappingDisabled) {
+		t.Fatalf("unknown signupApplication: got err=%v, want ErrEnterpriseMappingDisabled", err)
+	}
+}
+
+// TestApplyEnterpriseMapping_ProviderDetection_CaseInsensitive confirms the
+// signup_application matcher is case-insensitive (Casdoor app names sometimes
+// come capitalized).
+func TestApplyEnterpriseMapping_ProviderDetection_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [idtrust]
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+`)
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID:  "usr_alice",
+		Provider:       "",
+		ExternalClaims: map[string]any{"signupApplication": "IDTRUST"},
+	})
+	if err != nil {
+		t.Fatalf("case-insensitive match failed: %v", err)
+	}
+}
+
+// TestApplyEnterpriseMapping_ProviderDetection_ExplicitProviderWins confirms
+// that when params.Provider is already set AND in the enabled list, detection
+// rules are NOT consulted — direct provider wins. This preserves Slice 1.5's
+// contract for callers (multi-idp path) that already know the provider.
+func TestApplyEnterpriseMapping_ProviderDetection_ExplicitProviderWins(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [idtrust, wxwork]
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+  field_map:
+    idtrust:
+      enterprise_uid: "properties.oauth_Custom.id"
+    wxwork:
+      enterprise_uid: "UserId"
+`)
+
+	// Caller passes wxwork directly even though signupApplication says idtrust
+	// — explicit Provider wins, no detection.
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+		ExternalClaims: map[string]any{
+			"signupApplication": "idtrust",
+			"UserId":            "wx_alice_001",
+		},
+	})
+	if err != nil {
+		t.Fatalf("explicit wxwork mapping failed: %v", err)
+	}
+	row, _ := svc.GetEmploymentIdentity(t.Context(), "usr_alice")
+	if row.Provider != "wxwork" {
+		t.Errorf("explicit provider should win: row.Provider=%q, want wxwork", row.Provider)
+	}
+	if row.EnterpriseUID == nil || *row.EnterpriseUID != "wx_alice_001" {
+		t.Errorf("EnterpriseUID should come from wxwork field_map: got %v, want wx_alice_001", row.EnterpriseUID)
+	}
+}
+
+// TestProviderDetection_ConfigValidation covers the load-time guards: rules
+// must reference enabled providers, both fields are required, no duplicate
+// matchers. A bad config fails fast at ApplyEnterpriseMapping time rather
+// than silently producing empty rows.
+func TestProviderDetection_ConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "rule points to disabled provider",
+			yaml: `employment_providers:
+  enabled: [idtrust]
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+    - signup_application: "mycorp"
+      provider: mycorp_sso   # not in enabled
+`,
+			wantErr: "not in employment_providers.enabled",
+		},
+		{
+			name: "missing provider field",
+			yaml: `employment_providers:
+  enabled: [idtrust]
+  provider_detection:
+    - signup_application: "idtrust"   # no provider: line
+`,
+			wantErr: "signup_application and provider are both required",
+		},
+		{
+			name: "duplicate matcher",
+			yaml: `employment_providers:
+  enabled: [idtrust]
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+    - signup_application: "IDTRUST"   # case-insensitive duplicate
+      provider: idtrust
+`,
+			wantErr: "duplicate signup_application matcher",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			svc := newEmploymentMappingService(t)
+			seedTenantConfig(t, svc, "default", c.yaml)
+			err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+				UserSubjectID: "usr_alice",
+				Provider:      "idtrust",
+			})
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", c.wantErr)
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("error should contain %q, got: %v", c.wantErr, err)
+			}
+		})
 	}
 }
 
