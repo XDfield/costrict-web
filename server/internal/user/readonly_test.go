@@ -53,7 +53,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeLocal,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-local"))
+				_, _, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-local"))
 				return err
 			},
 			wantBlocked: false,
@@ -63,7 +63,7 @@ func TestWriteGate_ReadonlyBlocksAllWrites(t *testing.T) {
 			writeMode: WriteModeReadonly,
 			arrange:   func(t *testing.T, db *gorm.DB) *models.User { return nil },
 			act: func(t *testing.T, svc *UserService, _ *models.User) error {
-				_, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-ro"))
+				_, _, err := svc.GetOrCreateUser(context.Background(), baseClaims("github", "sub-goc-ro"))
 				return err
 			},
 			wantBlocked: true,

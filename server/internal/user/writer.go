@@ -35,7 +35,7 @@ var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (ser
 // is best-effort and mid-write aborts leave cs-user in whatever state the
 // partial request produced.
 type UserWriter interface {
-	GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error)
+	GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error)
 	SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error)
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error
 	TransferIdentityToUser(ctx context.Context, targetUserSubjectID string, externalKey string, sourceUserSubjectID string) error
@@ -83,19 +83,19 @@ type DualWriter struct {
 }
 
 // GetOrCreateUser delegates to Primary (which fires the post-login hook) and
-// best-effort replicates to Secondary. Returns Primary's user; Secondary
-// divergence is logged only.
-func (d *DualWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
-	u, err := d.Primary.GetOrCreateUser(ctx, claims)
+// best-effort replicates to Secondary. Returns Primary's user + is_new_user
+// flag; Secondary divergence is logged only.
+func (d *DualWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error) {
+	u, isNew, err := d.Primary.GetOrCreateUser(ctx, claims)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if d.Secondary != nil {
-		if _, secErr := d.Secondary.GetOrCreateUser(ctx, claims); secErr != nil {
+		if _, _, secErr := d.Secondary.GetOrCreateUser(ctx, claims); secErr != nil {
 			logger.Warn("[user-dual-write] secondary GetOrCreateUser failed: %v", secErr)
 		}
 	}
-	return u, nil
+	return u, isNew, nil
 }
 
 // SyncUser delegates to Primary and best-effort replicates to Secondary.

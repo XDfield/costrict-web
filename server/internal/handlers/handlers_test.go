@@ -266,7 +266,7 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestBindCallbackSuccess(t *testing.T) {
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
@@ -385,11 +385,11 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
-	otherUser, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
+	otherUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed other user: %v", err)
 	}
