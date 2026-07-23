@@ -23,7 +23,8 @@ func (s *UserService) SyncUser(ctx context.Context, claims *JWTClaims) (*models.
 		return nil, ErrWriteBlocked
 	}
 	_ = ctx // local writer ignores ctx — kept for interface compat (B3b.2b)
-	return s.getOrCreateUser(claims)
+	u, _, err := s.getOrCreateUser(claims)
+	return u, err
 }
 
 // RoleGranter is the minimal surface the bootstrap granter needs from the

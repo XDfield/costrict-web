@@ -232,12 +232,12 @@ func TestGetOrCreateUser_FiresPostLoginHook(t *testing.T) {
 	}
 
 	// First login: create path.
-	created, err := svc.GetOrCreateUser(context.Background(), claims)
+	created, _, err := svc.GetOrCreateUser(context.Background(), claims)
 	if err != nil {
 		t.Fatalf("first GetOrCreateUser: %v", err)
 	}
 	// Second login: existing-user path.
-	if _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
 		t.Fatalf("second GetOrCreateUser: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestSyncUser_DoesNotFireHook(t *testing.T) {
 
 	// The genuine login path on the same user DOES fire the hook, confirming the
 	// only difference between the two entry points is the hook.
-	if _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
+	if _, _, err := svc.GetOrCreateUser(context.Background(), claims); err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
 	if hookCalls != 1 {
@@ -312,7 +312,7 @@ func TestGetOrCreateUser_NoHookByDefault(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewUserService(db)
 
-	_, err := svc.GetOrCreateUser(context.Background(), &JWTClaims{
+	_, _, err := svc.GetOrCreateUser(context.Background(), &JWTClaims{
 		ID:    "u1",
 		Sub:   "org/alice",
 		Name:  "alice",

@@ -1081,7 +1081,7 @@ func TestGetOrCreateUser_TriggersEnterpriseMapping(t *testing.T) {
 			"JoinTime":  "2020-03-15T08:00:00Z",
 		},
 	}
-	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	user, _, err := svc.GetOrCreateUser(t.Context(), claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -1127,7 +1127,7 @@ func TestGetOrCreateUser_EnterpriseMappingBestEffortDoesNotBlockLogin(t *testing
 		ProviderUserID:    "wx_alice_sub",
 		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
 	}
-	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	user, _, err := svc.GetOrCreateUser(t.Context(), claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser should succeed with mapping disabled, got: %v", err)
 	}
@@ -1163,7 +1163,7 @@ func TestGetOrCreateUser_NoExternalClaimsStillWritesStubRow(t *testing.T) {
 		ProviderUserID:    "wx_alice_sub",
 		// ExternalClaims intentionally nil.
 	}
-	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	user, _, err := svc.GetOrCreateUser(t.Context(), claims)
 	if err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
@@ -1200,7 +1200,7 @@ func TestGetOrCreateUser_LegacyCasdoorProviderSkipsMapping(t *testing.T) {
 		Provider:          "", // legacy Casdoor path
 		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
 	}
-	if _, err := svc.GetOrCreateUser(t.Context(), claims); err != nil {
+	if _, _, err := svc.GetOrCreateUser(t.Context(), claims); err != nil {
 		t.Fatalf("GetOrCreateUser: %v", err)
 	}
 
@@ -1230,7 +1230,7 @@ func TestGetOrCreateUser_EnterpriseMapping_MalformedConfigDoesNotBlockLogin(t *t
 		Provider:          "wxwork",
 		ExternalClaims:    map[string]any{"UserId": "wx_alice_001"},
 	}
-	user, err := svc.GetOrCreateUser(t.Context(), claims)
+	user, _, err := svc.GetOrCreateUser(t.Context(), claims)
 	if err != nil {
 		t.Fatalf("malformed YAML must not block login, got: %v", err)
 	}

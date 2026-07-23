@@ -566,21 +566,21 @@ func (s *UserService) SearchUsers(ctx context.Context, keyword string, limit int
 // For read-only reconciliation (e.g. user-search backfill, where the caller is
 // not the user being synced) use SyncUser instead, which performs the same upsert
 // without firing the hook.
-func (s *UserService) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+func (s *UserService) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error) {
 	if s.writeMode == WriteModeReadonly {
-		return nil, ErrWriteBlocked
+		return nil, false, ErrWriteBlocked
 	}
-	u, err := s.getOrCreateUser(claims)
+	u, isNew, err := s.getOrCreateUser(claims)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.runPostLoginHook(u)
-	return u, nil
+	return u, isNew, nil
 }
 
-func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
+func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, error) {
 	if claims == nil {
-		return nil, fmt.Errorf("nil JWT claims")
+		return nil, false, fmt.Errorf("nil JWT claims")
 	}
 	claims = normalizeJWTClaims(claims)
 
@@ -589,7 +589,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
-		return nil, fmt.Errorf("no valid user identifier in JWT claims")
+		return nil, false, fmt.Errorf("no valid user identifier in JWT claims")
 	}
 
 	// 2. Try to get existing user by external identities first.
@@ -611,7 +611,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				found = true
 			}
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
+			return nil, false, fmt.Errorf("failed to query identity by external_key: %w", err)
 		}
 	}
 	if !found {
@@ -623,7 +623,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			if err == nil {
 				found = true
 			} else if err != gorm.ErrRecordNotFound {
-				return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+				return nil, false, fmt.Errorf("failed to query user by external_key: %w", err)
 			}
 		}
 	}
@@ -632,7 +632,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by universal_id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by universal_id: %w", err)
 		}
 	}
 	if !found && claims.ID != "" {
@@ -640,7 +640,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by id: %w", err)
 		}
 	}
 	if !found && claims.Sub != "" {
@@ -648,7 +648,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by sub: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by sub: %w", err)
 		}
 	}
 	if !found && claims.Name != "" {
@@ -656,7 +656,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by username: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
 		}
 	}
 
@@ -714,15 +714,15 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 					var reloaded models.User
 					if reloadErr := s.db.Where("id = ?", user.ID).Take(&reloaded).Error; reloadErr == nil {
 						s.notifyUserUpdated(reloaded.SubjectID)
-						return &reloaded, nil
+						return &reloaded, false, nil
 					}
 				}
-				return nil, fmt.Errorf("failed to update user: %w", err)
+				return nil, false, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
 
 		s.notifyUserUpdated(user.SubjectID)
-		return &user, nil
+		return &user, false, nil
 	}
 
 	// 3. User doesn't exist, create new user
@@ -764,10 +764,10 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			err := query.Take(&existing).Error
 			if err == nil {
 				s.notifyUserUpdated(existing.SubjectID)
-				return &existing, nil
+				return &existing, true, nil
 			}
 		}
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, false, fmt.Errorf("failed to create user: %w", err)
 	}
 		if err := s.db.Create(&user).Error; err != nil {
 			if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
@@ -788,10 +788,10 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				err := query.Take(&existing).Error
 				if err == nil {
 					s.notifyUserUpdated(existing.SubjectID)
-					return &existing, nil
+					return &existing, true, nil
 				}
 			}
-			return nil, fmt.Errorf("failed to create user: %w", err)
+			return nil, false, fmt.Errorf("failed to create user: %w", err)
 		}
 		// Bind identity for newly created user
 		if err := s.BindIdentityToUser(context.Background(), user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
@@ -800,10 +800,10 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		}
 		s.notifyUserUpdated(user.SubjectID)
 		if refreshed, err := s.GetUserByID(context.Background(), user.SubjectID); err == nil {
-			return refreshed, nil
+			return refreshed, true, nil
 		}
 
-		return &user, nil
+		return &user, false, nil
 	}
 
 // ParseJWTClaimsFromMiddleware extracts JWT claims from gin.Context
