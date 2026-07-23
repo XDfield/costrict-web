@@ -27,7 +27,7 @@ inside the cs-user container (the Dockerfile installs `curl` + `jq`).
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `CS_USER_INTERNAL_TOKEN` | yes | — | Sent as `X-Internal-Token`. Must match the value cs-user was started with. |
-| `CS_USER_BASE_URL` | no | `http://localhost:8081` | cs-user API origin. |
+| `CS_USER_BASE_URL` | no | `http://localhost:8082` | cs-user API origin. |
 | `CS_USER_TENANT_ID` | no | — | Default tenant for scripts that don't take `--tenant`. |
 
 Source your `.env` before running:
