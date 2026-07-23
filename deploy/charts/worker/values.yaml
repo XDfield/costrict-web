@@ -60,6 +60,29 @@ redis:
   existingSecret: ""
   existingSecretKey: password
 
+# Non-text artifact storage used by sync workers.
+artifactStorage:
+  backend: local
+  local:
+    # Workers that process binary assets must share the API chart's RWX claim.
+    # The default matches an API Helm release named "api". Override this when
+    # the API release name or its persistence.existingClaim is different.
+    existingClaim: api-artifacts
+    mountPath: /app/data/artifacts
+  s3:
+    endpoint: ""
+    bucket: ""
+    region: ""
+    forcePathStyle: true
+    existingSecret: ""
+    accessKeySecretKey: access-key
+    secretKeySecretKey: secret-key
+    sessionTokenSecretKey: ""
+    ca:
+      existingSecret: ""
+      key: ca.crt
+      mountPath: /etc/costrict/object-storage
+
 env: []
 envFrom: []
 

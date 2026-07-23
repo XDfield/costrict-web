@@ -1,7 +1,13 @@
 # Archive Upload for Item Creation
 
 **Date:** 2026-03-20  
-**Updated:** 2026-03-23 — 扩展支持 `.tar.gz` / `.tgz` 格式（重命名 `ZipService` → `ArchiveService`）；slug 唯一性改为 `(repo_id, item_type, slug)` 复合唯一（详见 [SLUG_UNIQUENESS_REDESIGN](proposals/SLUG_UNIQUENESS_REDESIGN.md)）
+**Updated:** 2026-03-23 — 扩展支持 `.tar.gz` / `.tgz` 格式（重命名 `ZipService` → `ArchiveService`）；slug 唯一性改为 `(repo_id, item_type, slug)` 复合唯一（详见 [SLUG_UNIQUENESS_REDESIGN](./SLUG_UNIQUENESS_REDESIGN.md)）
+
+> **现行存储契约：** 本文关于 `Delete`、失败后 best-effort 对象清理和扫描对象存储
+> GC 的早期设计已被
+> [Local / 受限 S3 非文本存储适配（二期）](./RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md)
+> 取代。当前非文本存储只支持精确 Put/Get，PostgreSQL 是对象映射的唯一索引，
+> 删除只维护 DB 引用；以下历史正文不据此重写。
 
 ## Context
 
@@ -63,7 +69,7 @@
 ### 本期关键设计调整
 
 1. **预分配 item ID**：handler 在任何对象存储写入前先生成 `itemID`，所有 storage key 都基于该 ID 计算，避免“先上传文件、后生成 item ID”的顺序冲突。
-2. **Slug 唯一性改为复合约束**：slug 的唯一性已从全局唯一改为 `(repo_id, item_type, slug)` 复合唯一（详见 [SLUG_UNIQUENESS_REDESIGN](proposals/SLUG_UNIQUENESS_REDESIGN.md)）。下载路由已更新为 `/registry/{repo}/{itemType}/{slug}/*file`。
+2. **Slug 唯一性改为复合约束**：slug 的唯一性已从全局唯一改为 `(repo_id, item_type, slug)` 复合唯一（详见 [SLUG_UNIQUENESS_REDESIGN](./SLUG_UNIQUENESS_REDESIGN.md)）。下载路由已更新为 `/registry/{repo}/{itemType}/{slug}/*file`。
 3. **补齐 asset 读取闭环**：上传压缩包时写入的 `CapabilityAsset` 必须能被 registry 下载接口读取；必要时同步更新 index.json 的 `files` 列表。
 4. **收窄压缩包上传支持范围**：multipart 压缩包创建仅支持 `skill`、`mcp`；`hook`、`subagent` 与 `command` 在 handler 入口直接返回 400。
 5. **明确 MCP 元数据必须规范化落库**：`POST /api/items` 一次只创建一个 item，因此 mcp 压缩包仅允许解析为单个 MCP item；`.mcp.json` 的结构化元数据必须先转换成当前 registry 读取侧可直接消费的规范形态后，再写入 `CapabilityItem.Metadata`，不能把 parser 的原始输出或整份 JSON 直接当成 metadata 落库。
@@ -153,7 +159,7 @@ func persistNewItem(
 
 ### Slug 冲突策略
 
-Slug 的唯一性约束已从全局唯一改为 `(repo_id, item_type, slug)` 复合唯一。详细设计参见 [SLUG_UNIQUENESS_REDESIGN](proposals/SLUG_UNIQUENESS_REDESIGN.md)。
+Slug 的唯一性约束已从全局唯一改为 `(repo_id, item_type, slug)` 复合唯一。详细设计参见 [SLUG_UNIQUENESS_REDESIGN](./SLUG_UNIQUENESS_REDESIGN.md)。
 
 摘要：
 

@@ -19,6 +19,19 @@ GET /cloud-api/api/items/{itemId}/download
 - 成功时直接返回文件内容，不返回 JSON。
 - SKILL 的下载文件名固定为 `SKILL.md`。
 
+### 存储透明性
+
+调用方不需要知道非文本文件保存在 Local 还是 S3：
+
+- manifest 和下载路径不返回 `storage_backend`、`storage_key`、S3 endpoint 或凭据。
+- UTF-8 文本 asset 由 PostgreSQL 返回。
+- 非文本 asset 由 costrict-web 按数据库映射从当前 backend 读取并代理返回。
+- CSC 继续使用同一套 manifest/download API，并按 size 和 SHA-256 校验文件。
+
+部署模式和最小 Put/Get 契约见
+[非文本制品存储部署](./deployment/artifact-storage-local-s3.md) 与
+[Local / 受限 S3 非文本存储适配（二期）](./proposals/RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md)。
+
 ## 1. 按 itemId 下载 SKILL.md
 
 这是最简单、推荐使用的下载接口。
@@ -282,3 +295,22 @@ GET /cloud-api/api/items/{itemId}/assets
 - 不要在日志或 URL Query 中传递 access token。
 - 下载主文件会记录一次 install 行为，因此不要用下载接口做高频健康检查。
 - 公开接口当前有请求频率限制，调用方遇到 `429` 时应根据响应头退避重试。
+
+## 7. 验证矩阵
+
+下表区分服务端真实对象存储验证、CSC 自身测试和跨仓真实下发，不能将它们视为
+同一个 E2E：
+
+| 链路 | 环境 | 状态 | 已验证内容 |
+|---|---|---|---|
+| S3 backend -> 对象存储 | 本地启动的真实 MinIO server | 已通过 | 使用受限账号真实 PutObject/GetObject；ListBucket 为 `AccessDenied`；未使用 CRC32、Head、Delete 或 multipart |
+| catalog ingest -> DB manifest -> 服务端下载 | 真实 MinIO + 服务端 handler | 已通过 | 文本进 DB、PNG 写 MinIO、manifest 由 DB 生成、下载读回 PNG，并校验 size、SHA-256 和原始字节 |
+| 数据库与部署环境 | SQLite 测试 DB，无 Kubernetes | 局部覆盖 | handler 链路已通过；真实 PostgreSQL/Kubernetes 尚未执行 |
+| CSC `skillBundle` / favorites sync | CSC mock/unit 测试 | 已通过 | 客户端 manifest 解析、逐文件下载/校验和原子目录替换；服务端响应为 mock，不是真实 costrict-web/S3 |
+| costrict-web distribution -> CSC subscription/install | 真实 costrict-web + 真实 CSC | **未执行** | 尚未完成真实下发、订阅和安装的跨仓 E2E |
+| 目标对象存储 endpoint | 实际 S3 endpoint | **未执行** | 尚未完成实际凭据、CA、path-style、固定 `x-id` 和 CRC32 兼容性 smoke |
+
+截至 2026-07-23，本地 runner 已通过，尚无远端 GitHub Actions run 记录；是否
+CI 通过以对应 run 为准。因此当前可以确认真实 S3 协议下的服务端写入和读取
+已通过；不能据此声称真实 PostgreSQL/Kubernetes、真实 CSC 下发/订阅链路或
+目标对象存储 endpoint 已验收。

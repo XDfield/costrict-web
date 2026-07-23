@@ -1283,7 +1283,6 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 	}
 
 	desired := make(map[string]models.CapabilityAsset)
-	uploadedKeys := make([]string, 0)
 	if err := filepath.WalkDir(entryDir, func(absPath string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1314,23 +1313,22 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 
 		contentSHA := sha256Hex(content)
 		record := models.CapabilityAsset{
-			ItemID:         itemID,
-			RelPath:        relPath,
-			StorageBackend: "local",
-			MimeType:       InferMimeType(relPath),
-			FileSize:       int64(len(content)),
-			ContentSHA:     contentSHA,
+			ItemID:     itemID,
+			RelPath:    relPath,
+			MimeType:   InferMimeType(relPath),
+			FileSize:   int64(len(content)),
+			ContentSHA: contentSHA,
 		}
 		binary := isBinary(content) || !utf8.Valid(content)
 		if !binary {
 			text := string(content)
 			record.TextContent = &text
 		} else {
-			if current, ok := existingByPath[relPath]; ok &&
-				current.ContentSHA == contentSHA && current.StorageKey != "" {
-				if current.StorageBackend != "" {
-					record.StorageBackend = current.StorageBackend
-				}
+			if current, ok := existingByPath[relPath]; s.Storage != nil && ok &&
+				current.ContentSHA == contentSHA &&
+				current.StorageBackend == storage.KindOf(s.Storage) &&
+				current.StorageKey != "" {
+				record.StorageBackend = current.StorageBackend
 				record.StorageKey = current.StorageKey
 			} else {
 				if s.Storage == nil {
@@ -1342,15 +1340,13 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 				if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(content), int64(len(content))); err != nil {
 					return fmt.Errorf("store binary asset %s: %w", relPath, err)
 				}
-				uploadedKeys = append(uploadedKeys, storageKey)
-				record.StorageBackend = "local"
+				record.StorageBackend = storage.KindOf(s.Storage)
 				record.StorageKey = storageKey
 			}
 		}
 		desired[relPath] = record
 		return nil
 	}); err != nil {
-		s.deleteCatalogStorageKeys(context.Background(), uploadedKeys)
 		return fmt.Errorf("scan assets for %s: %w", itemID, err)
 	}
 
@@ -1358,16 +1354,12 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 		return nil
 	}
 
-	staleStorageKeys := make([]string, 0)
 	err := s.DB.Transaction(func(tx *gorm.DB) error {
 		for relPath, record := range desired {
 			if current, ok := existingByPath[relPath]; ok {
 				record.ID = current.ID
 				if catalogAssetEqual(current, record) {
 					continue
-				}
-				if current.StorageKey != "" && current.StorageKey != record.StorageKey {
-					staleStorageKeys = append(staleStorageKeys, current.StorageKey)
 				}
 				if err := tx.Model(&models.CapabilityAsset{}).
 					Where("id = ?", current.ID).
@@ -1394,9 +1386,6 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 			if _, ok := desired[relPath]; ok {
 				continue
 			}
-			if current.StorageKey != "" {
-				staleStorageKeys = append(staleStorageKeys, current.StorageKey)
-			}
 			if err := tx.Delete(&models.CapabilityAsset{}, "id = ?", current.ID).Error; err != nil {
 				return err
 			}
@@ -1404,11 +1393,9 @@ func (s *CatalogIngestService) syncAssetsForItem(ctx context.Context, bundleDir,
 		return nil
 	})
 	if err != nil {
-		s.deleteCatalogStorageKeys(context.Background(), uploadedKeys)
 		return fmt.Errorf("persist assets for %s: %w", itemID, err)
 	}
 
-	s.deleteCatalogStorageKeys(context.Background(), staleStorageKeys)
 	return nil
 }
 
@@ -1436,17 +1423,6 @@ func catalogAssetEqual(current, desired models.CapabilityAsset) bool {
 		current.MimeType == desired.MimeType &&
 		current.FileSize == desired.FileSize &&
 		sameText
-}
-
-func (s *CatalogIngestService) deleteCatalogStorageKeys(ctx context.Context, keys []string) {
-	if s.Storage == nil {
-		return
-	}
-	for _, key := range keys {
-		if err := s.Storage.Delete(ctx, key); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logger.Warn("catalog-ingest: delete stale asset %s: %v", key, err)
-		}
-	}
 }
 
 func existingNormalizedPath(path string) string {

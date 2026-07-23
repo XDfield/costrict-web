@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -401,6 +402,10 @@ func DownloadRegistryFile(c *gin.Context) {
 	}
 	if StorageBackend == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
+		return
+	}
+	if err := storage.ValidateRecordedBackend(asset.StorageBackend, StorageBackend); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Stored file is unavailable with the configured storage backend"})
 		return
 	}
 

@@ -22,6 +22,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -1174,7 +1175,7 @@ func GetItem(c *gin.Context) {
 
 // ListItemAssets godoc
 // @Summary      List item assets
-// @Description  Get current text assets of a skill item for on-demand editor loading
+// @Description  Get the DB-backed manifest for current text and binary assets of an item
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -1594,46 +1595,40 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	itemID := item.ID
 
 	// Upload new binary assets to storage.
-	uploadedKeys := make([]string, 0, len(result.Assets)+1)
 	assetStorageKeys := make(map[string]string, len(result.Assets))
 
 	for _, asset := range result.Assets {
 		if !asset.Binary {
 			continue
 		}
-		storageKey := fmt.Sprintf("%s/assets/%s", itemID, asset.Path)
+		storageKey := archiveAssetStorageKey(itemID, newRevision, asset)
 		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
-			cleanupStorageKeys(uploadedKeys)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
 			return
 		}
-		uploadedKeys = append(uploadedKeys, storageKey)
 		assetStorageKeys[asset.Path] = storageKey
 	}
 
 	// Upload the archive file itself.
 	seeker, ok := file.(io.Seeker)
 	if !ok {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
 		return
 	}
 	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rewind uploaded file"})
 		return
 	}
 
 	uploadedFilename := filepath.Base(header.Filename)
-	zipKey := fmt.Sprintf("%s/%s", itemID, uploadedFilename)
+	artifactID := uuid.New().String()
+	zipKey := fmt.Sprintf("%s/artifacts/r%d/%s/%s", itemID, newRevision, artifactID, uploadedFilename)
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
 		return
 	}
-	uploadedKeys = append(uploadedKeys, zipKey)
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	// Build new asset records.
@@ -1642,7 +1637,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		if asset.Binary {
 			assetRecords = append(assetRecords, models.CapabilityAsset{
 				RelPath:        asset.Path,
-				StorageBackend: "local",
+				StorageBackend: storage.KindOf(StorageBackend),
 				StorageKey:     assetStorageKeys[asset.Path],
 				MimeType:       asset.MimeType,
 				FileSize:       asset.Size,
@@ -1658,16 +1653,6 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 			FileSize:    asset.Size,
 			ContentSHA:  asset.ContentSHA,
 		})
-	}
-
-	// Collect old asset storage keys for cleanup after successful transaction.
-	var oldAssets []models.CapabilityAsset
-	db.Where("item_id = ?", itemID).Find(&oldAssets)
-	oldStorageKeys := make([]string, 0)
-	for _, a := range oldAssets {
-		if a.StorageKey != "" {
-			oldStorageKeys = append(oldStorageKeys, a.StorageKey)
-		}
 	}
 
 	// Single transaction: update item, replace assets, create version + artifact.
@@ -1701,13 +1686,13 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		// Mark old artifacts as non-latest, create new one.
 		tx.Model(&models.CapabilityArtifact{}).Where("item_id = ? AND is_latest = ?", itemID, true).Update("is_latest", false)
 		artifact := models.CapabilityArtifact{
-			ID:              uuid.New().String(),
+			ID:              artifactID,
 			ItemID:          itemID,
 			Filename:        uploadedFilename,
 			FileSize:        header.Size,
 			ChecksumSHA256:  checksum,
 			MimeType:        services.ArchiveMimeType(header.Filename),
-			StorageBackend:  "local",
+			StorageBackend:  storage.KindOf(StorageBackend),
 			StorageKey:      zipKey,
 			ArtifactVersion: newVersion,
 			IsLatest:        true,
@@ -1749,15 +1734,9 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return nil
 	})
 	if txErr != nil {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 		return
 	}
-
-	// Cleanup old storage keys only after successful commit. Binary assets keep
-	// stable storage keys across replacement, so do not delete keys reused by the
-	// new asset records.
-	cleanupStorageKeys(staleStorageKeys(oldStorageKeys, assetRecords))
 
 	// Reconcile bundled sub-skills (create/update/archive) for plugin updates.
 	if item.ItemType == "plugin" {
@@ -2399,7 +2378,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Source      string             `json:"source"`
 		Assets      []itemAssetPayload `json:"assets"`
 		// CreatedBy removed: always derived from authenticated user
-		Tags        []string           `json:"tags"`
+		Tags []string `json:"tags"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2408,10 +2387,10 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	}
 
 	uid := c.GetString(middleware.UserIDKey)
-		if uid == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-			return
-		}
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
 
 	registryID := req.RegistryID
 	if registryID == "" {
@@ -2812,17 +2791,6 @@ func (h *ItemHandler) forkPluginChildren(srcPluginID, newPluginID, userID string
 	}
 }
 
-// cleanupStorageKeys deletes uploaded objects after a later step fails.
-func cleanupStorageKeys(keys []string) {
-	if StorageBackend == nil {
-		return
-	}
-	ctx := context.Background()
-	for _, key := range keys {
-		_ = StorageBackend.Delete(ctx, key)
-	}
-}
-
 // pluginChildAsset is a skill or MCP item extracted from a plugin archive and
 // promoted into a normal capability_items row.
 type pluginChildAsset struct {
@@ -3146,16 +3114,15 @@ func archiveAssetContentSHA(asset services.ArchiveAsset) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func archiveAssetStorageKey(itemID string, revision int, asset services.ArchiveAsset) string {
+	return fmt.Sprintf("%s/assets/r%d/%s/%s", itemID, revision, archiveAssetContentSHA(asset), asset.Path)
+}
+
 // buildSubSkillAssetRecords uploads the child's binary assets under a
-// revision-scoped key prefix. The prefix is what makes the UPDATE path safe:
-// keys never collide with the previous revision's live objects, so a Put
-// failure can neither truncate them (LocalBackend.Put = os.Create) nor can the
-// failure-path cleanupStorageKeys(uploadedKeys) delete objects still
-// referenced by the current asset rows. Old-revision objects are removed only
-// on the success path via staleStorageKeys.
-func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset) ([]models.CapabilityAsset, []string, error) {
+// revision-scoped key prefix. Keys never collide with objects referenced by a
+// previous revision; unreferenced objects are retained for offline GC.
+func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset) ([]models.CapabilityAsset, error) {
 	records := make([]models.CapabilityAsset, 0, len(ss.Assets))
-	uploadedKeys := make([]string, 0)
 	for _, asset := range ss.Assets {
 		relPath := strings.TrimSpace(asset.Path)
 		if relPath == "" || relPath == "SKILL.md" || strings.Contains(relPath, "..") {
@@ -3175,14 +3142,16 @@ func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset
 		}
 		if asset.Binary {
 			if StorageBackend == nil {
-				return records, uploadedKeys, fmt.Errorf("storage backend is not configured")
+				return records, fmt.Errorf("storage backend is not configured")
 			}
-			storageKey := fmt.Sprintf("%s/assets/r%d/%s", childID, revision, relPath)
-			if err := StorageBackend.Put(context.Background(), storageKey, bytes.NewReader(asset.Content), record.FileSize); err != nil {
-				return records, uploadedKeys, err
+			storageKey := archiveAssetStorageKey(childID, revision, asset)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), record.FileSize)
+			cancel()
+			if err != nil {
+				return records, err
 			}
-			uploadedKeys = append(uploadedKeys, storageKey)
-			record.StorageBackend = "local"
+			record.StorageBackend = storage.KindOf(StorageBackend)
 			record.StorageKey = storageKey
 		} else {
 			text := string(asset.Content)
@@ -3190,7 +3159,7 @@ func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset
 		}
 		records = append(records, record)
 	}
-	return records, uploadedKeys, nil
+	return records, nil
 }
 
 func subSkillAssetsMatch(db *gorm.DB, childID string, expected []services.ArchiveAsset) bool {
@@ -3238,34 +3207,6 @@ func replaceSubSkillAssets(tx *gorm.DB, childID string, records []models.Capabil
 	return nil
 }
 
-func existingAssetStorageKeys(db *gorm.DB, childID string) []string {
-	var assets []models.CapabilityAsset
-	db.Select("storage_key").Where("item_id = ? AND storage_key <> ''", childID).Find(&assets)
-	keys := make([]string, 0, len(assets))
-	for _, asset := range assets {
-		if asset.StorageKey != "" {
-			keys = append(keys, asset.StorageKey)
-		}
-	}
-	return keys
-}
-
-func staleStorageKeys(oldKeys []string, records []models.CapabilityAsset) []string {
-	current := make(map[string]struct{}, len(records))
-	for _, record := range records {
-		if record.StorageKey != "" {
-			current[record.StorageKey] = struct{}{}
-		}
-	}
-	stale := make([]string, 0, len(oldKeys))
-	for _, key := range oldKeys {
-		if _, ok := current[key]; !ok {
-			stale = append(stale, key)
-		}
-	}
-	return stale
-}
-
 func reconcileExistingPluginSubSkill(h *ItemHandler, pluginItem *models.CapabilityItem, child models.CapabilityItem, ss pluginChildAsset, contentMD5 string, createdBy string) (*models.CapabilityItem, bool) {
 	parentID := pluginItem.ID
 	updates := map[string]any{}
@@ -3302,16 +3243,11 @@ func reconcileExistingPluginSubSkill(h *ItemHandler, pluginItem *models.Capabili
 		return nil, false
 	}
 
-	oldStorageKeys := existingAssetStorageKeys(h.db, child.ID)
 	var records []models.CapabilityAsset
-	var uploadedKeys []string
 	if contentChanged || assetsChanged {
 		var err error
-		// Revision-scoped keys: failure cleanup below only ever touches the
-		// new revision's objects, never the live ones (see buildSubSkillAssetRecords).
-		records, uploadedKeys, err = buildSubSkillAssetRecords(child.ID, newRevision, ss)
+		records, err = buildSubSkillAssetRecords(child.ID, newRevision, ss)
 		if err != nil {
-			cleanupStorageKeys(uploadedKeys)
 			log.Printf("sub-skill reconcile: asset build failed for %s: %v", child.ID, err)
 			return nil, false
 		}
@@ -3351,12 +3287,10 @@ func reconcileExistingPluginSubSkill(h *ItemHandler, pluginItem *models.Capabili
 		}
 		return nil
 	}); err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		log.Printf("sub-skill reconcile: update failed for %s: %v", child.ID, err)
 		return nil, false
 	}
 	if contentChanged || assetsChanged {
-		cleanupStorageKeys(staleStorageKeys(oldStorageKeys, records))
 		enqueueScanAsync(child.ID, newRevision, "update")
 	}
 
@@ -3487,9 +3421,8 @@ func reconcilePluginSubSkills(h *ItemHandler, pluginItem *models.CapabilityItem,
 				slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
 			}
 			childID := uuid.New().String()
-			assetRecords, uploadedKeys, assetErr := buildSubSkillAssetRecords(childID, 1, ss)
+			assetRecords, assetErr := buildSubSkillAssetRecords(childID, 1, ss)
 			if assetErr != nil {
-				cleanupStorageKeys(uploadedKeys)
 				persistErr = assetErr
 				log.Printf("sub-skill promote: asset build failed for %q of plugin %s: %v", ss.Name, pluginItem.ID, assetErr)
 				break
@@ -3515,7 +3448,6 @@ func reconcilePluginSubSkills(h *ItemHandler, pluginItem *models.CapabilityItem,
 				enqueueScanAsync(childItem.ID, 1, "create")
 				break
 			}
-			cleanupStorageKeys(uploadedKeys)
 			if errors.Is(persistErr, ErrSlugConflict) {
 				// Own-child adoption first: the slot holder being THIS plugin's
 				// child (any status, any source_path) means we raced another
@@ -3722,46 +3654,40 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	itemID := uuid.New().String()
-	ctx := context.Background()
-	uploadedKeys := make([]string, 0, len(result.Assets)+1)
+	ctx := c.Request.Context()
 	assetStorageKeys := make(map[string]string, len(result.Assets))
 
 	for _, asset := range result.Assets {
 		if !asset.Binary {
 			continue
 		}
-		storageKey := fmt.Sprintf("%s/assets/%s", itemID, asset.Path)
+		storageKey := archiveAssetStorageKey(itemID, 1, asset)
 		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
-			cleanupStorageKeys(uploadedKeys)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
 			return
 		}
-		uploadedKeys = append(uploadedKeys, storageKey)
 		assetStorageKeys[asset.Path] = storageKey
 	}
 
 	seeker, ok := file.(io.Seeker)
 	if !ok {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Uploaded file is not seekable"})
 		return
 	}
 	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rewind uploaded file"})
 		return
 	}
 
 	uploadedFilename := filepath.Base(header.Filename)
-	zipKey := fmt.Sprintf("%s/%s", itemID, uploadedFilename)
+	artifactID := uuid.New().String()
+	zipKey := fmt.Sprintf("%s/artifacts/r1/%s/%s", itemID, artifactID, uploadedFilename)
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
 		return
 	}
-	uploadedKeys = append(uploadedKeys, zipKey)
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	assetRecords := make([]models.CapabilityAsset, 0, len(result.Assets))
@@ -3769,7 +3695,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		if asset.Binary {
 			assetRecords = append(assetRecords, models.CapabilityAsset{
 				RelPath:        asset.Path,
-				StorageBackend: "local",
+				StorageBackend: storage.KindOf(StorageBackend),
 				StorageKey:     assetStorageKeys[asset.Path],
 				MimeType:       asset.MimeType,
 				FileSize:       asset.Size,
@@ -3807,11 +3733,12 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}, createItemAssets{
 		Records: assetRecords,
 		Artifact: &models.CapabilityArtifact{
+			ID:              artifactID,
 			Filename:        uploadedFilename,
 			FileSize:        header.Size,
 			ChecksumSHA256:  checksum,
 			MimeType:        services.ArchiveMimeType(header.Filename),
-			StorageBackend:  "local",
+			StorageBackend:  storage.KindOf(StorageBackend),
 			StorageKey:      zipKey,
 			ArtifactVersion: version,
 			IsLatest:        true,
@@ -3821,7 +3748,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		},
 	})
 	if err != nil {
-		cleanupStorageKeys(uploadedKeys)
 		if errors.Is(err, ErrSlugConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": "An item with this slug already exists", "slug": slug})
 			return

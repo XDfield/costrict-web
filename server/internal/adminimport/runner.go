@@ -180,6 +180,9 @@ func (r *ImportRunner) materialize(ctx context.Context, job *models.CapabilityIm
 	case sourceKindURL:
 		return services.IngestSource{URL: job.SourceURL}, noop, nil
 	case sourceKindUpload:
+		if err := storage.ValidateRecordedBackend(job.StorageBackend, r.storage); err != nil {
+			return services.IngestSource{}, noop, fmt.Errorf("validate uploaded bundle storage: %w", err)
+		}
 		rc, _, err := r.storage.Get(ctx, job.StorageKey)
 		if err != nil {
 			return services.IngestSource{}, noop, err
@@ -233,7 +236,6 @@ func (r *ImportRunner) finalize(job *models.CapabilityImportJob, result *service
 			updates["error_message"] = "疑似进程中断或导入错误，请人工核对 DB 后重新发起：" + err.Error()
 		}
 		r.db.Model(&models.CapabilityImportJob{}).Where("id = ?", job.ID).Updates(updates)
-		r.cleanupBundle(job)
 		if !job.DryRun {
 			audit.Record(job.TriggerUser, audit.ActionBundleImport, audit.TargetImportJob, job.ID, map[string]any{
 				"status": "failed",
@@ -277,7 +279,6 @@ func (r *ImportRunner) finalize(job *models.CapabilityImportJob, result *service
 	}
 	updates["status"] = statusFinal
 	r.db.Model(&models.CapabilityImportJob{}).Where("id = ?", job.ID).Updates(updates)
-	r.cleanupBundle(job)
 	audit.Record(job.TriggerUser, audit.ActionBundleImport, audit.TargetImportJob, job.ID, map[string]any{
 		"status":     statusFinal,
 		"filename":   job.Filename,
@@ -288,13 +289,6 @@ func (r *ImportRunner) finalize(job *models.CapabilityImportJob, result *service
 		"failed":     imp.Failed,
 	})
 	logger.Info("import finished jobID=%s status=%s added=%d updated=%d deleted=%d failed=%d", job.ID, statusFinal, imp.Added, imp.Updated, imp.Deleted, imp.Failed)
-}
-
-// cleanupBundle removes an uploaded bundle's stored object once the job is done.
-func (r *ImportRunner) cleanupBundle(job *models.CapabilityImportJob) {
-	if job.SourceKind == sourceKindUpload && job.StorageKey != "" {
-		_ = r.storage.Delete(context.Background(), job.StorageKey)
-	}
 }
 
 // reap recovers jobs stuck in running past ReaperAfter (leader crash/restart mid
@@ -336,14 +330,14 @@ func (r *ImportRunner) reap() {
 				"finished_at":   time.Now(),
 				"error_message": "疑似进程中断，请人工核对 DB 后重新发起",
 			})
-			r.cleanupBundle(job)
 			logger.Warn("reaped stuck real import job=%s → failed", job.ID)
 		}
 	}
 }
 
-// expireStale transitions previewed jobs past their TTL to expired and clears
-// their stored bundle (mirrors Service.maybeExpire but proactively under leader).
+// expireStale transitions previewed jobs past their TTL to expired (mirrors
+// Service.maybeExpire but proactively under leader). Object mappings remain in
+// DB for audit and future offline GC.
 func (r *ImportRunner) expireStale() {
 	cutoff := time.Now().Add(-previewTTL)
 	var stale []models.CapabilityImportJob
@@ -352,15 +346,9 @@ func (r *ImportRunner) expireStale() {
 	}
 	for i := range stale {
 		job := &stale[i]
-		// CAS the status FIRST; only delete the bundle if this call actually won
-		// the previewed→expired transition. A concurrent ConfirmJob may have
-		// already flipped previewed→pending (bundle still needed for the real
-		// import) — in that case the guarded update affects 0 rows and we must
-		// NOT delete the bundle.
 		res := r.db.Model(&models.CapabilityImportJob{}).Where("id = ? AND status = ?", job.ID, statusPreviewed).Update("status", statusExpired)
 		if res.Error != nil || res.RowsAffected == 0 {
 			continue
 		}
-		r.cleanupBundle(job)
 	}
 }

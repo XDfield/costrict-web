@@ -63,7 +63,7 @@ func newIngestTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE capability_assets (
 			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, rel_path TEXT NOT NULL,
-			text_content TEXT, storage_backend TEXT DEFAULT 'local',
+			text_content TEXT, storage_backend TEXT DEFAULT '',
 			storage_key TEXT, mime_type TEXT, file_size INTEGER DEFAULT 0,
 			content_sha TEXT, created_at DATETIME, updated_at DATETIME
 		)`,

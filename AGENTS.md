@@ -85,3 +85,5 @@ cs cloud
 ### 文档索引
 
 - [HTTP 隧道设计提案](./docs/proposals/HTTP_TUNNEL_DESIGN.md) - 网关层网络分层架构说明
+- [Local / 受限 S3 非文本存储适配提案](./docs/proposals/RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md) - 最小 Put/Get 契约、数据映射和验收边界
+- [非文本制品存储部署](./docs/deployment/artifact-storage-local-s3.md) - Local / S3 Helm 配置、迁移与回滚

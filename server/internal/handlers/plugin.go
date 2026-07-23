@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -243,6 +244,15 @@ func DownloadPluginZip(c *gin.Context) {
 	if err := db.Where("item_id = ?", item.ID).Find(&assets).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	for _, asset := range assets {
+		if asset.TextContent != nil || asset.StorageKey == "" {
+			continue
+		}
+		if err := storage.ValidateRecordedBackend(asset.StorageBackend, StorageBackend); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Stored file is unavailable with the configured storage backend"})
+			return
+		}
 	}
 
 	c.Header("Content-Type", "application/zip")

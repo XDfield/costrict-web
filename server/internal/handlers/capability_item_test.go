@@ -20,6 +20,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 )
@@ -98,28 +99,17 @@ func (m *memoryBackend) Get(ctx context.Context, key string) (io.ReadCloser, int
 	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 }
 
-func (m *memoryBackend) Delete(ctx context.Context, key string) error {
-	m.mu.Lock()
-	delete(m.data, key)
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *memoryBackend) PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	return "", nil
-}
-
-func (m *memoryBackend) Exists(ctx context.Context, key string) (bool, error) {
-	m.mu.Lock()
-	_, ok := m.data[key]
-	m.mu.Unlock()
-	return ok, nil
-}
-
 func (m *memoryBackend) Len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.data)
+}
+
+func (m *memoryBackend) Has(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.data[key]
+	return ok
 }
 
 func TestIsUniqueConstraintError(t *testing.T) {
@@ -218,10 +208,14 @@ func createPublicRegistry(t *testing.T) {
 }
 
 func setMemoryStorageBackend(t *testing.T) *memoryBackend {
+	return setMemoryStorageBackendKind(t, storage.KindLocal)
+}
+
+func setMemoryStorageBackendKind(t *testing.T, kind string) *memoryBackend {
 	t.Helper()
 	oldBackend := StorageBackend
 	backend := newMemoryBackend()
-	StorageBackend = backend
+	StorageBackend = &storage.ConfiguredBackend{Kind: kind, Backend: backend}
 	t.Cleanup(func() { StorageBackend = oldBackend })
 	return backend
 }
@@ -2092,7 +2086,7 @@ func TestCreateItemDirect_AnonymousCreatedBy(t *testing.T) {
 func TestCreateItemDirect_ZipSkill_Success(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
-	backend := setMemoryStorageBackend(t)
+	backend := setMemoryStorageBackendKind(t, storage.KindS3)
 
 	skillContent := "---\nname: My Skill\ndescription: A test skill\nversion: 2.0.0\n---\n# My Skill\nContent here"
 	zipBytes := createTestZip(map[string][]byte{
@@ -2153,6 +2147,12 @@ func TestCreateItemDirect_ZipSkill_Success(t *testing.T) {
 	}
 	if artifact.StorageKey == "" {
 		t.Fatal("expected artifact storage key")
+	}
+	if artifact.StorageBackend != storage.KindS3 {
+		t.Fatalf("artifact storage backend = %q, want %q", artifact.StorageBackend, storage.KindS3)
+	}
+	if !strings.Contains(artifact.StorageKey, "/"+artifact.ID+"/") {
+		t.Fatalf("artifact key %q is not scoped by artifact id %q", artifact.StorageKey, artifact.ID)
 	}
 	backend.mu.Lock()
 	_, ok := backend.data[artifact.StorageKey]
@@ -2332,9 +2332,10 @@ func TestCreateItemDirect_Zip_SlugConflict(t *testing.T) {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Storage must be fully cleaned up — no orphaned zip or asset files.
-	if n := backend.Len(); n != 0 {
-		t.Errorf("expected 0 storage keys after slug conflict, got %d", n)
+	// Put/Get-only storage deliberately leaves failed-upload objects for
+	// offline garbage collection.
+	if n := backend.Len(); n == 0 {
+		t.Error("expected an unreferenced storage key after slug conflict")
 	}
 }
 
@@ -2470,6 +2471,7 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	initZip := createTestZip(map[string][]byte{
 		"SKILL.md":         []byte(initContent),
 		"scripts/setup.sh": []byte("#!/bin/bash\necho init"),
+		"assets/icon.png":  {0x89, 'P', 'N', 'G', 0x00, 0x01},
 	})
 	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
 		"itemType": "skill",
@@ -2485,12 +2487,17 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	if created["sourceType"] != "archive" {
 		t.Fatalf("expected sourceType=archive after zip create, got %v", created["sourceType"])
 	}
+	var oldBinary models.CapabilityAsset
+	if err := database.DB.Where("item_id = ? AND rel_path = ?", itemID, "assets/icon.png").First(&oldBinary).Error; err != nil {
+		t.Fatalf("load initial binary asset: %v", err)
+	}
 
 	// Now update via archive.
 	updatedContent := "---\nname: Updated Skill\ndescription: Updated\nversion: 2.0.0\n---\n# Updated"
 	updatedZip := createTestZip(map[string][]byte{
 		"SKILL.md":          []byte(updatedContent),
 		"scripts/deploy.sh": []byte("#!/bin/bash\necho deploy"),
+		"assets/icon.png":   {0x89, 'P', 'N', 'G', 0x00, 0x02},
 	})
 	w = putMultipart(newItemRouter("u1"), "/api/items/"+itemID, map[string]string{
 		"commitMsg": "update to v2",
@@ -2515,11 +2522,23 @@ func TestUpdateItem_Archive_Success(t *testing.T) {
 	// Assets should be replaced — old setup.sh gone, new deploy.sh present.
 	var assets []models.CapabilityAsset
 	database.DB.Where("item_id = ?", itemID).Find(&assets)
-	if len(assets) != 1 {
-		t.Fatalf("expected 1 asset after update, got %d", len(assets))
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets after update, got %d", len(assets))
 	}
-	if assets[0].RelPath != "scripts/deploy.sh" {
-		t.Fatalf("expected asset scripts/deploy.sh, got %s", assets[0].RelPath)
+	var newBinary models.CapabilityAsset
+	for _, asset := range assets {
+		if asset.RelPath == "assets/icon.png" {
+			newBinary = asset
+		}
+	}
+	if newBinary.StorageKey == "" || !strings.Contains(newBinary.StorageKey, "/r2/"+newBinary.ContentSHA+"/") {
+		t.Fatalf("binary asset key is not revision/content addressed: %+v", newBinary)
+	}
+	if newBinary.StorageKey == oldBinary.StorageKey {
+		t.Fatalf("updated binary reused old key %q", newBinary.StorageKey)
+	}
+	if !backend.Has(oldBinary.StorageKey) || !backend.Has(newBinary.StorageKey) {
+		t.Fatal("old and new immutable binary objects should both remain available")
 	}
 
 	// Should have 2 versions now.

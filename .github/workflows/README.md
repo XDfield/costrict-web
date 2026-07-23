@@ -18,6 +18,26 @@
 | worker  | costrict-web-worker  | server/Dockerfile.worker       |
 | portal  | costrict-web-portal  | portal/packages/app/Dockerfile |
 
+## storage-e2e.yaml
+
+使用固定版本的真实 MinIO server 验证非文本 S3 存储链路。测试账号仅有
+`s3:PutObject` 和 `s3:GetObject` 权限，并先验证 ListBucket 返回
+`AccessDenied`。
+
+测试覆盖 catalog ingest、DB asset 映射、服务端 manifest/download、对象字节、
+size、SHA-256 和请求约束。handler E2E 使用 SQLite 测试 DB，不覆盖真实
+PostgreSQL 或 Kubernetes，也不包含真实 CSC 进程，不代表目标对象存储 endpoint 已验收。
+
+本地和 workflow 使用同一个入口：
+
+```bash
+bash server/test/storage-e2e/run.sh
+```
+
+截至 2026-07-23，本地 runner 已通过，尚无远端 GitHub Actions run 记录；是否
+CI 通过以对应 run 为准。详细部署方式和验收边界见
+[`docs/deployment/artifact-storage-local-s3.md`](../../docs/deployment/artifact-storage-local-s3.md)。
+
 ## Portal 服务环境变量配置
 
 Portal 前端采用**运行时注入**机制，环境变量在容器启动时通过 `docker-entrypoint.sh` 注入到 `index.html`，**无需重新构建镜像**即可修改配置。

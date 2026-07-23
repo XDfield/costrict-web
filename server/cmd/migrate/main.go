@@ -312,11 +312,7 @@ func ingestUpstreamCatalog(db *gorm.DB, source string, dryRun, reparse bool) err
 
 	var storageBackend storage.Backend
 	if !dryRun {
-		storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
-		if storagePath == "" {
-			storagePath = "./data/artifacts"
-		}
-		backend, storageErr := storage.NewLocalBackend(storagePath)
+		backend, storageErr := storage.NewFromEnv(context.Background())
 		if storageErr != nil {
 			return fmt.Errorf("initialize catalog asset storage: %w", storageErr)
 		}

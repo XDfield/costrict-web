@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -114,7 +115,7 @@ func TestCatalogIngestStoresBinarySkillAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create storage backend: %v", err)
 	}
-	svc.Storage = backend
+	svc.Storage = &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: backend}
 
 	entry := catalogEntry{ID: "binary-asset", Type: "skill", Description: "binary"}
 	body := "---\nname: Binary Asset\ndescription: binary\n---\n# Binary Asset\n"
@@ -135,6 +136,12 @@ func TestCatalogIngestStoresBinarySkillAssets(t *testing.T) {
 	if asset.TextContent != nil || asset.StorageKey == "" {
 		t.Fatalf("binary asset was not stored externally: %+v", asset)
 	}
+	if asset.StorageBackend != storage.KindS3 {
+		t.Fatalf("binary asset backend = %q, want %q", asset.StorageBackend, storage.KindS3)
+	}
+	if !strings.Contains(asset.StorageKey, "/"+asset.ContentSHA+"/") {
+		t.Fatalf("binary asset key %q is not content addressed by %q", asset.StorageKey, asset.ContentSHA)
+	}
 	reader, _, err := backend.Get(context.Background(), asset.StorageKey)
 	if err != nil {
 		t.Fatalf("read stored binary: %v", err)
@@ -151,5 +158,87 @@ func TestCatalogIngestStoresBinarySkillAssets(t *testing.T) {
 		if stored[i] != png[i] {
 			t.Fatalf("stored binary differs at byte %d: got %v want %v", i, stored, png)
 		}
+	}
+}
+
+func TestCatalogIngestRewritesBinaryWhenBackendChanges(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+	localBackend, err := storage.NewLocalBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Storage = &storage.ConfiguredBackend{Kind: storage.KindLocal, Backend: localBackend}
+
+	entry := catalogEntry{ID: "backend-change", Type: "skill", Description: "backend change"}
+	body := "---\nname: Backend Change\ndescription: backend change\n---\n# Backend Change\n"
+	dir := writeSkillBundle(t, entry, body)
+	png := []byte{0x89, 'P', 'N', 'G', 0x00, 0x01, 0x02}
+	writeCatalogAsset(t, dir, entry.ID, "assets/icon.png", png)
+
+	if result, err := svc.Ingest(context.Background(), IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"}); err != nil || result.Failed != 0 {
+		t.Fatalf("local ingest: result=%+v err=%v", result, err)
+	}
+	item := loadItemBySlug(t, db, entry.ID)
+	first := loadCatalogAssets(t, svc, item.ID)["assets/icon.png"]
+	if first.StorageBackend != storage.KindLocal {
+		t.Fatalf("first backend = %q, want local", first.StorageBackend)
+	}
+
+	s3Objects, err := storage.NewLocalBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Storage = &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: s3Objects}
+	if result, err := svc.Ingest(context.Background(), IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"}); err != nil || result.Failed != 0 {
+		t.Fatalf("s3 ingest: result=%+v err=%v", result, err)
+	}
+
+	rewritten := loadCatalogAssets(t, svc, item.ID)["assets/icon.png"]
+	if rewritten.StorageBackend != storage.KindS3 {
+		t.Fatalf("rewritten backend = %q, want s3", rewritten.StorageBackend)
+	}
+	reader, _, err := s3Objects.Get(context.Background(), rewritten.StorageKey)
+	if err != nil {
+		t.Fatalf("binary was not written to the new backend: %v", err)
+	}
+	defer reader.Close()
+	stored, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(png) {
+		t.Fatalf("rewritten binary = %v, want %v", stored, png)
+	}
+}
+
+func TestCatalogIngestDoesNotReuseBinaryWithoutConfiguredBackend(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+	localBackend, err := storage.NewLocalBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Storage = &storage.ConfiguredBackend{Kind: storage.KindLocal, Backend: localBackend}
+
+	entry := catalogEntry{ID: "missing-backend", Type: "skill", Description: "missing backend"}
+	body := "---\nname: Missing Backend\ndescription: missing backend\n---\n# Missing Backend\n"
+	dir := writeSkillBundle(t, entry, body)
+	writeCatalogAsset(t, dir, entry.ID, "assets/icon.png", []byte{0x89, 'P', 'N', 'G', 0x00})
+
+	if result, err := svc.Ingest(context.Background(), IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"}); err != nil || result.Failed != 0 {
+		t.Fatalf("initial ingest: result=%+v err=%v", result, err)
+	}
+
+	svc.Storage = nil
+	result, err := svc.Ingest(context.Background(), IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	if result.Failed == 0 {
+		t.Fatalf("expected missing backend to reject binary reuse, got result=%+v", result)
+	}
+	if !strings.Contains(strings.Join(result.Errors, "\n"), "storage backend is not configured") {
+		t.Fatalf("expected missing backend error, got %v", result.Errors)
 	}
 }
