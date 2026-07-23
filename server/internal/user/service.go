@@ -663,26 +663,12 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	now := time.Now()
 
 	if found {
-		// User exists, check if we need to update
-		// Only update if it's been more than syncInterval since last sync to reduce DB writes
+		// Existing user login refresh. Only sync provider-tracking and
+		// Casdoor-linking fields — user-facing profile (DisplayName, Email,
+		// Phone, AvatarURL, Organization) is user-owned now and must not be
+		// clobbered by re-login or by binding additional identities. Initial
+		// values for those fields are populated at CREATE time below.
 		shouldUpdate := false
-		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > s.syncInterval {
-			shouldUpdate = true
-		}
-
-
-		// Check if any critical fields need updating
-		// Determine the best provider rank from existing identities for DisplayName protection.
-		// This must be computed before any field mutations so the baseline is stable.
-		bestExistingRank := 0
-		var existingIdentities []models.UserAuthIdentity
-		if err := s.db.Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
-			for _, id := range existingIdentities {
-				if r := providerRank(id.Provider); r > bestExistingRank {
-					bestExistingRank = r
-				}
-			}
-		}
 
 		if user.SubjectID == "" {
 			user.SubjectID = subjectID
@@ -715,68 +701,6 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if claims.Sub != "" && (user.CasdoorSub == nil || *user.CasdoorSub != claims.Sub) {
 			user.CasdoorSub = &claims.Sub
 			shouldUpdate = true
-		}
-		if claims.Owner != "" && (user.Organization == nil || *user.Organization != claims.Owner) {
-			user.Organization = &claims.Owner
-			shouldUpdate = true
-		}
-		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
-			// Only overwrite DisplayName if no value exists yet, or the current
-			// login provider ranks >= the best existing identity. This prevents a
-			// lower-ranked provider (e.g. phone) from clobbering a name set by
-			// a higher-ranked one (e.g. IDTrust).
-			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= bestExistingRank {
-				user.DisplayName = &claims.PreferredUsername
-				shouldUpdate = true
-			}
-		}
-		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
-			user.Email = &claims.Email
-			shouldUpdate = true
-		}
-		if claims.Phone != "" && (user.Phone == nil || *user.Phone != claims.Phone) {
-			user.Phone = &claims.Phone
-			shouldUpdate = true
-		}
-		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
-			user.AvatarURL = &claims.Picture
-			shouldUpdate = true
-		}
-
-		// Calibrate display fields against the best existing identity to fix
-		// historical dirty data caused by the previous AuthProvider-based protection bug.
-		if len(existingIdentities) > 0 {
-			var existingPtrs []*models.UserAuthIdentity
-			for idx := range existingIdentities {
-				existingPtrs = append(existingPtrs, &existingIdentities[idx])
-			}
-			bestIdentity := selectBestPrimary(existingPtrs)
-			if bestIdentity != nil {
-				if bestDN := ptrString(bestIdentity.DisplayName); bestDN != "" {
-					if providerRank(claims.Provider) < bestExistingRank && (user.DisplayName == nil || *user.DisplayName != bestDN) {
-						user.DisplayName = &bestDN
-						shouldUpdate = true
-					}
-				}
-				if bestEmail := ptrString(bestIdentity.Email); bestEmail != "" && strings.Contains(bestEmail, "@") {
-					if user.Email == nil || *user.Email != bestEmail {
-						user.Email = &bestEmail
-						shouldUpdate = true
-					}
-				}
-				if bestPhone := ptrString(bestIdentity.Phone); bestPhone != "" {
-					if user.Phone == nil || *user.Phone != bestPhone {
-						user.Phone = &bestPhone
-						shouldUpdate = true
-					}
-				}
-				if bestAvatar := ptrString(bestIdentity.AvatarURL); bestAvatar != "" {
-					if user.AvatarURL == nil || *user.AvatarURL != bestAvatar {
-						user.AvatarURL = &bestAvatar
-						shouldUpdate = true
-					}
-				}
-			}
 		}
 
 		if shouldUpdate {
@@ -1218,30 +1142,20 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 		}
 	}
 
-	// Compute new values from primary identity
+	// Refresh only provider-tracking fields to mirror the current primary
+	// identity. User-facing profile fields (DisplayName, AvatarURL, Email,
+	// Phone, Organization, Username) are intentionally NOT synced from
+	// identity data — those are now considered user-owned, with enterprise
+	// identity info living separately (cs-user employment_identities). The
+	// follow-up plan is to let users self-edit display_name; auto-clobbering
+	// it on every bind would race that flow.
 	newAuthProvider := stringPtr(primary.Provider)
 	newExternalKey := stringPtr(primary.ExternalKey)
 	newProviderUserID := primary.ProviderUserID
-	newDisplayName := firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
-	newAvatarURL := firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
-	newEmail := validEmailPtr(primary.Email, identities)
-	newPhone := preferredPhonePtr(primary, identities)
-	newOrganization := firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
-	var newUsername string
-	if primaryUsername := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); primaryUsername != "" {
-		newUsername = primaryUsername
-	}
 
-	// Check if any field actually changed before writing
 	changed := !equalStringPtr(user.AuthProvider, newAuthProvider) ||
 		!equalStringPtr(user.ExternalKey, newExternalKey) ||
-		!equalStringPtr(user.ProviderUserID, newProviderUserID) ||
-		!equalStringPtr(user.DisplayName, newDisplayName) ||
-		!equalStringPtr(user.AvatarURL, newAvatarURL) ||
-		!equalStringPtr(user.Email, newEmail) ||
-		!equalStringPtr(user.Phone, newPhone) ||
-		!equalStringPtr(user.Organization, newOrganization) ||
-		(newUsername != "" && user.Username != newUsername)
+		!equalStringPtr(user.ProviderUserID, newProviderUserID)
 
 	if !changed {
 		return nil
@@ -1250,14 +1164,6 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 	user.AuthProvider = newAuthProvider
 	user.ExternalKey = newExternalKey
 	user.ProviderUserID = newProviderUserID
-	user.DisplayName = newDisplayName
-	user.AvatarURL = newAvatarURL
-	user.Email = newEmail
-	user.Phone = newPhone
-	user.Organization = newOrganization
-	if newUsername != "" {
-		user.Username = newUsername
-	}
 	now := time.Now()
 	user.LastSyncAt = &now
 	// Omit columns with UNIQUE constraints (immutable after creation)
@@ -1292,72 +1198,6 @@ func ptrString(v *string) string {
 	}
 	return strings.TrimSpace(*v)
 }
-
-func firstNonNilStringPtr(values ...*string) *string {
-	for _, v := range values {
-		if v != nil && strings.TrimSpace(*v) != "" {
-			trimmed := strings.TrimSpace(*v)
-			return &trimmed
-		}
-	}
-	return nil
-}
-
-func bestIdentityString(identities []*models.UserAuthIdentity, getter func(*models.UserAuthIdentity) *string) *string {
-	var best *models.UserAuthIdentity
-	for _, identity := range identities {
-		candidate := getter(identity)
-		if candidate == nil || strings.TrimSpace(*candidate) == "" {
-			continue
-		}
-		if best == nil || providerRank(identity.Provider) > providerRank(best.Provider) {
-			best = identity
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return getter(best)
-}
-
-func githubAvatar(identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "github") && identity.AvatarURL != nil && strings.TrimSpace(*identity.AvatarURL) != "" {
-			return identity.AvatarURL
-		}
-	}
-	return nil
-}
-
-func validEmailPtr(primary *string, identities []*models.UserAuthIdentity) *string {
-	if primary != nil && strings.Contains(strings.TrimSpace(*primary), "@") {
-		return firstNonNilStringPtr(primary)
-	}
-	for _, identity := range identities {
-		if identity.Email != nil && strings.Contains(strings.TrimSpace(*identity.Email), "@") {
-			return firstNonNilStringPtr(identity.Email)
-		}
-	}
-	return nil
-}
-
-func preferredPhonePtr(primary *models.UserAuthIdentity, identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "phone") && identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
-	}
-	if primary != nil && primary.Phone != nil && strings.TrimSpace(*primary.Phone) != "" {
-		return firstNonNilStringPtr(primary.Phone)
-	}
-	for _, identity := range identities {
-		if identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
-	}
-	return nil
-}
-
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
 func stringPtr(s string) *string {
