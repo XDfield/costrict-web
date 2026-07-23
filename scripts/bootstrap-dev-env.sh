@@ -35,13 +35,32 @@
 #   * Gitea running on $GITEA_ENDPOINT (default http://127.0.0.1:3000)
 #     with an admin token available.
 #
-# Source both cs-user/.env and server/.env before invoking. Easiest:
+# Required env vars (copy-paste block — run before invoking this script):
 #
+#     # --- BEGIN dev-env bootstrap env ---
+#     # Source per-service .env files so CS_USER_INTERNAL_TOKEN /
+#     # INTERNAL_SECRET / CASDOOR_* etc. flow through unchanged.
 #     set -a
 #     source cs-user/.env
 #     source server/.env
 #     set +a
-#     export GITEA_ADMIN_TOKEN=...
+#
+#     # cs-user reachable URL (default http://localhost:8081)
+#     export CS_USER_BASE_URL="http://localhost:8081"
+#     # server reachable URL (default http://localhost:8080)
+#     export SERVER_BASE_URL="http://localhost:8080"
+#
+#     # CS_USER_INTERNAL_TOKEN / INTERNAL_SECRET are picked up by the
+#     # `source` lines above; they MUST byte-match the values each service
+#     # was started with. Re-declare here only if you want to override:
+#     # export CS_USER_INTERNAL_TOKEN="dev-internal-secret-change-me"
+#     # export INTERNAL_SECRET="dev-internal-secret-change-me"
+#
+#     # Gitea admin token — NOT in any .env file; generate one in Gitea UI
+#     # (Profile → Settings → Applications → Generate New Token).
+#     export GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
+#     # --- END dev-env bootstrap env ---
+#
 #     ./scripts/bootstrap-dev-env.sh
 #
 # =====================================================================
@@ -61,10 +80,14 @@
 #   --skip-idtrust          skip the employment mapping step
 #   --dry-run               print what would run without invoking sub-scripts
 #
-# Required env (sourced from .env files):
-#   CS_USER_INTERNAL_TOKEN  — cs-user X-Internal-Token
-#   INTERNAL_SECRET         — server X-Internal-Secret
-#   GITEA_ADMIN_TOKEN       — Gitea admin token (used as git_server.config.admin_token)
+# Required env:
+#   CS_USER_INTERNAL_TOKEN  — cs-user X-Internal-Token (from cs-user/.env)
+#   INTERNAL_SECRET         — server X-Internal-Secret (from server/.env)
+#   GITEA_ADMIN_TOKEN       — Gitea admin token (generate via Gitea UI)
+#
+# Optional env (sane defaults if unset):
+#   CS_USER_BASE_URL        — defaults to http://localhost:8081
+#   SERVER_BASE_URL         — defaults to http://localhost:8080
 #
 # =====================================================================
 

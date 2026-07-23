@@ -45,12 +45,48 @@ wrapper around a per-service script (idempotent — re-running is safe).
 Required env (source both `.env` files first):
 
 ```bash
+# --- Copy-paste block: dev-env bootstrap env vars ---
+
+# Pull secrets/endpoints already defined in the per-service .env files
+# (CS_USER_INTERNAL_TOKEN, INTERNAL_SECRET, CASDOOR_*, etc.) so we don't
+# duplicate them here. set -a makes every sourced var exported.
 set -a
 source cs-user/.env
 source server/.env
 set +a
-export GITEA_ADMIN_TOKEN=...   # Gitea admin token
+
+# cs-user reachable URL. Default http://localhost:8081 — override only if
+# you run cs-user on a different port/host.
+export CS_USER_BASE_URL="http://localhost:8081"
+
+# server reachable URL. Default http://localhost:8080.
+export SERVER_BASE_URL="http://localhost:8080"
+
+# cs-user X-Internal-Token. MUST match cs-user/.env's CS_USER_INTERNAL_TOKEN
+# byte-for-byte — sent as `X-Internal-Token` header on every RPC call.
+# (Picked up by the `source cs-user/.env` above; this line is a no-op
+# reminder. Re-declare here only if you want to override.)
+# export CS_USER_INTERNAL_TOKEN="dev-internal-secret-change-me"
+
+# server X-Internal-Secret. MUST match server/.env's INTERNAL_SECRET
+# byte-for-byte — sent as `X-Internal-Secret` header.
+# (Picked up by the `source server/.env` above.)
+# export INTERNAL_SECRET="dev-internal-secret-change-me"
+
+# Gitea admin token. NOT in any .env file — generate one via Gitea UI
+# (Profile → Settings → Applications → Generate New Token) and paste below.
+export GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
+
+# --- End copy-paste block ---
 ```
+
+| Variable | Required | Source | Notes |
+|---|---|---|---|
+| `CS_USER_INTERNAL_TOKEN` | yes | `cs-user/.env` | Sent as `X-Internal-Token`. 401 on mismatch. |
+| `INTERNAL_SECRET` | yes | `server/.env` | Sent as `X-Internal-Secret`. 401 on mismatch. |
+| `GITEA_ADMIN_TOKEN` | yes | Gitea UI | Persisted into `git_servers.config.admin_token`. |
+| `CS_USER_BASE_URL` | no | default `http://localhost:8081` | Override only on non-default port. |
+| `SERVER_BASE_URL` | no | default `http://localhost:8080` | Override only on non-default port. |
 
 ## Usage
 
