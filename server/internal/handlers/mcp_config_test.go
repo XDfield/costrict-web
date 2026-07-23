@@ -225,6 +225,7 @@ func TestBuildMCPConfigStatus(t *testing.T) {
 
 func TestUpsertMCPUserConfig_ContractAndResolve(t *testing.T) {
 	defer setupTestDB(t)()
+	createPublicRegistry(t)
 	seedMCPItem("fb-1", "facebook-ads", "mcp", fbAdsContent)
 	seedMCPItem("sk-1", "a-skill", "skill", "plain content")
 

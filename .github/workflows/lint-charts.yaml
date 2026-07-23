@@ -53,6 +53,10 @@ jobs:
         if: matrix.chart == 'worker'
         run: bash deploy/charts/worker/tests/storage_mode_test.sh
 
+      - name: Validate API and worker storage contract
+        if: matrix.chart == 'worker'
+        run: bash deploy/charts/tests/storage_contract_test.sh
+
       - name: Show rendered manifest
         run: |
           echo "### Rendered manifest for ${{ matrix.chart }}" >> $GITHUB_STEP_SUMMARY

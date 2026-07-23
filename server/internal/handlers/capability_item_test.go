@@ -60,6 +60,15 @@ func newItemRouter(userID string) *gin.Engine {
 	return r
 }
 
+func createTestRepository(t *testing.T, id, visibility string) {
+	t.Helper()
+	if err := database.DB.Create(&models.Repository{
+		ID: id, Name: id, OwnerID: "u1", Visibility: visibility,
+	}).Error; err != nil {
+		t.Fatalf("create repository %s: %v", id, err)
+	}
+}
+
 func postJSON(r *gin.Engine, path string, body interface{}) *httptest.ResponseRecorder {
 	b, _ := json.Marshal(body)
 	w := httptest.NewRecorder()
@@ -884,6 +893,7 @@ func TestCreateItem_MissingRequired(t *testing.T) {
 
 func TestGetItem_Found(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gi1", Name: "gi-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -957,8 +967,11 @@ func TestGetItem_PrivateRepoVisibilityField(t *testing.T) {
 		ID: "item-gi-priv", RegistryID: "reg-gi-priv", RepoID: "repo-gi-priv", Slug: "priv-item", ItemType: "skill",
 		Name: "Priv Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
+	database.DB.Create(&models.RepoMember{
+		ID: "member-gi-priv", RepoID: "repo-gi-priv", UserID: "viewer-1", Role: "member",
+	})
 
-	w := get(newItemRouter(""), "/api/items/item-gi-priv")
+	w := get(newItemRouter("viewer-1"), "/api/items/item-gi-priv")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
@@ -971,6 +984,7 @@ func TestGetItem_PrivateRepoVisibilityField(t *testing.T) {
 
 func TestGetItem_FavoritedForCurrentUser(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gi-fav", Name: "gi-fav-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -998,6 +1012,7 @@ func TestGetItem_FavoritedForCurrentUser(t *testing.T) {
 
 func TestGetItem_NotFavoritedForAnonymousUser(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gi-anon", Name: "gi-anon-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1581,6 +1596,7 @@ func TestListItemVersions(t *testing.T) {
 
 func TestGetItem_ExcludesVersionsAndAssets(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gi-slim", Name: "gi-slim-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1616,6 +1632,7 @@ func TestGetItem_ExcludesVersionsAndAssets(t *testing.T) {
 
 func TestListItemAssets(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-lia1", Name: "lia-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1645,6 +1662,53 @@ func TestListItemAssets(t *testing.T) {
 	}
 	if first["textContent"] != assetText {
 		t.Fatalf("unexpected textContent: %#v", first["textContent"])
+	}
+}
+
+func TestItemReadAccessByRepositoryVisibility(t *testing.T) {
+	endpoints := []struct {
+		name string
+		path string
+	}{
+		{name: "item detail", path: "/api/items/item-access"},
+		{name: "asset manifest", path: "/api/items/item-access/assets"},
+	}
+	scenarios := []struct {
+		name       string
+		visibility string
+		userID     string
+		member     bool
+		wantStatus int
+	}{
+		{name: "public anonymous", visibility: "public", wantStatus: http.StatusOK},
+		{name: "private anonymous", visibility: "private", wantStatus: http.StatusForbidden},
+		{name: "private member", visibility: "private", userID: "viewer-1", member: true, wantStatus: http.StatusOK},
+	}
+
+	for _, endpoint := range endpoints {
+		for _, scenario := range scenarios {
+			t.Run(endpoint.name+"/"+scenario.name, func(t *testing.T) {
+				defer setupTestDB(t)()
+				createTestRepository(t, "repo-access", scenario.visibility)
+				database.DB.Create(&models.CapabilityRegistry{
+					ID: "reg-access", Name: "access-reg", SourceType: "internal", RepoID: "repo-access", OwnerID: "u1",
+				})
+				database.DB.Create(&models.CapabilityItem{
+					ID: "item-access", RegistryID: "reg-access", RepoID: "repo-access", Slug: "access-item", ItemType: "skill",
+					Name: "Access Item", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
+				})
+				if scenario.member {
+					database.DB.Create(&models.RepoMember{
+						ID: "member-access", RepoID: "repo-access", UserID: scenario.userID, Role: "member",
+					})
+				}
+
+				w := get(newItemRouter(scenario.userID), endpoint.path)
+				if w.Code != scenario.wantStatus {
+					t.Fatalf("expected %d, got %d: %s", scenario.wantStatus, w.Code, w.Body.String())
+				}
+			})
+		}
 	}
 }
 

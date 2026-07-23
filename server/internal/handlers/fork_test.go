@@ -75,6 +75,7 @@ func forkReq(r *gin.Engine, itemID string) *httptest.ResponseRecorder {
 
 func TestForkItem_SuccessAndDuplicate(t *testing.T) {
 	defer setupTestDB(t)()
+	createPublicRegistry(t)
 	seedForkSourceItem("src-1", "my-skill", "alice", "direct", "public")
 
 	bobRouter := newForkRouter("bob")

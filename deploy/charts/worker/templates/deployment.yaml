@@ -4,11 +4,16 @@
 {{- end -}}
 {{- if eq $artifactBackend "local" -}}
 {{- $_ := required "artifactStorage.local.existingClaim is required when artifactStorage.backend=local" .Values.artifactStorage.local.existingClaim -}}
+{{- $_ := required "artifactStorage.local.mountPath is required when artifactStorage.backend=local" .Values.artifactStorage.local.mountPath -}}
 {{- else -}}
 {{- $_ := required "artifactStorage.s3.endpoint is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.endpoint -}}
 {{- $_ := required "artifactStorage.s3.bucket is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.bucket -}}
 {{- $_ := required "artifactStorage.s3.region is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.region -}}
 {{- $_ := required "artifactStorage.s3.existingSecret is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.existingSecret -}}
+{{- if .Values.artifactStorage.s3.ca.existingSecret -}}
+{{- $_ := required "artifactStorage.s3.ca.key is required when artifactStorage.s3.ca.existingSecret is set" .Values.artifactStorage.s3.ca.key -}}
+{{- $_ := required "artifactStorage.s3.ca.mountPath is required when artifactStorage.s3.ca.existingSecret is set" .Values.artifactStorage.s3.ca.mountPath -}}
+{{- end -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment

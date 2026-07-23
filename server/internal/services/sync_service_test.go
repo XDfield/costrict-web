@@ -180,3 +180,64 @@ func TestSyncAssetsCountsPutFailure(t *testing.T) {
 		t.Fatalf("failed sync must not advance last_sync_sha: %v", updates)
 	}
 }
+
+func TestSyncAssetsDeletesStaleRowsAfterSuccessfulSync(t *testing.T) {
+	db := newIngestTestDB(t)
+	repoDir := t.TempDir()
+	itemDir := filepath.Join(repoDir, "skills", "cleanup-skill")
+	if err := os.MkdirAll(itemDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, "SKILL.md"), []byte("# Cleanup skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, "current.md"), []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staleText := "stale"
+	for _, asset := range []*models.CapabilityAsset{
+		{
+			ID:          "current-asset",
+			ItemID:      "item-1",
+			RelPath:     "current.md",
+			TextContent: &staleText,
+			ContentSHA:  "outdated",
+		},
+		{
+			ID:          "stale-asset",
+			ItemID:      "item-1",
+			RelPath:     "removed.md",
+			TextContent: &staleText,
+			ContentSHA:  sha256Hex([]byte(staleText)),
+		},
+	} {
+		if err := db.Create(asset).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := &SyncService{DB: db, Git: &GitService{}}
+	var syncErrors []string
+	failures := svc.syncAssets(
+		context.Background(),
+		repoDir,
+		"skills/cleanup-skill/SKILL.md",
+		"item-1",
+		&syncErrors,
+	)
+	if failures != 0 || len(syncErrors) != 0 {
+		t.Fatalf("sync asset failures=%d errors=%v", failures, syncErrors)
+	}
+
+	var assets []models.CapabilityAsset
+	if err := db.Where("item_id = ?", "item-1").Find(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || assets[0].RelPath != "current.md" {
+		t.Fatalf("stale asset row was not removed: %+v", assets)
+	}
+	if assets[0].TextContent == nil || *assets[0].TextContent != "current" {
+		t.Fatalf("current asset was not refreshed: %+v", assets[0])
+	}
+}

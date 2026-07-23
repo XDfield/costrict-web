@@ -1154,11 +1154,12 @@ func CreateItem(c *gin.Context) {
 
 // GetItem godoc
 // @Summary      Get item
-// @Description  Get skill item by ID with registry, artifacts, repo visibility, and populated tags
+// @Description  Get skill item by ID with registry, artifacts, repo visibility, and populated tags. Access is determined by the parent repository's visibility.
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
 // @Success      200  {object}  ItemResponse
+// @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Router       /items/{id} [get]
 func GetItem(c *gin.Context) {
@@ -1170,16 +1171,22 @@ func GetItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
+	userID := c.GetString(middleware.UserIDKey)
+	if !canAccessItem(&item, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return
+	}
+	c.JSON(http.StatusOK, buildItemResponse(c, db, item, userID))
 }
 
 // ListItemAssets godoc
 // @Summary      List item assets
-// @Description  Get the DB-backed manifest for current text and binary assets of an item
+// @Description  Get the DB-backed manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility.
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
 // @Success      200  {object}  ItemAssetsResponse
+// @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/assets [get]
@@ -1188,8 +1195,12 @@ func ListItemAssets(c *gin.Context) {
 	db := database.GetDB()
 
 	var item models.CapabilityItem
-	if err := db.Select("id").First(&item, "id = ?", id).Error; err != nil {
+	if err := db.Preload("Registry").First(&item, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
 		return
 	}
 

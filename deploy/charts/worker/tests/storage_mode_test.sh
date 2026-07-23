@@ -50,6 +50,13 @@ if helm template incomplete-local "$CHART_DIR" \
 fi
 assert_contains "$TEST_DIR/incomplete-local.out" "artifactStorage.local.existingClaim is required"
 
+if helm template incomplete-local-path "$CHART_DIR" \
+  --set artifactStorage.local.mountPath= > "$TEST_DIR/incomplete-local-path.out" 2>&1; then
+  echo "expected local storage without a mount path to fail rendering" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/incomplete-local-path.out" "artifactStorage.local.mountPath is required"
+
 helm template s3-storage "$CHART_DIR" \
   --set artifactStorage.backend=s3 \
   --set artifactStorage.s3.endpoint=https://object-storage.example.internal \
@@ -66,6 +73,7 @@ assert_contains "$TEST_DIR/s3.yaml" 'value: "s3"'
 assert_contains "$TEST_DIR/s3.yaml" "name: S3_ENDPOINT"
 assert_contains "$TEST_DIR/s3.yaml" "name: AWS_ACCESS_KEY_ID"
 assert_contains "$TEST_DIR/s3.yaml" "name: AWS_REQUEST_CHECKSUM_CALCULATION"
+assert_contains "$TEST_DIR/s3.yaml" "name: AWS_RESPONSE_CHECKSUM_VALIDATION"
 assert_contains "$TEST_DIR/s3.yaml" 'value: "when_required"'
 assert_contains "$TEST_DIR/s3.yaml" "name: S3_CA_FILE"
 assert_contains "$TEST_DIR/s3.yaml" "secretName: costrict-s3-ca"
@@ -84,5 +92,21 @@ if helm template incomplete-s3 "$CHART_DIR" \
   exit 1
 fi
 assert_contains "$TEST_DIR/incomplete.out" "artifactStorage.s3.endpoint is required"
+
+for ca_field in key mountPath; do
+  if helm template incomplete-s3-ca "$CHART_DIR" \
+    --set artifactStorage.backend=s3 \
+    --set artifactStorage.s3.endpoint=https://object-storage.example.internal \
+    --set artifactStorage.s3.bucket=costrict-artifacts \
+    --set artifactStorage.s3.region=internal \
+    --set artifactStorage.s3.existingSecret=costrict-s3 \
+    --set artifactStorage.s3.ca.existingSecret=costrict-s3-ca \
+    --set "artifactStorage.s3.ca.${ca_field}=" > "$TEST_DIR/incomplete-ca-${ca_field}.out" 2>&1; then
+    echo "expected S3 CA configuration without ca.${ca_field} to fail rendering" >&2
+    exit 1
+  fi
+  assert_contains "$TEST_DIR/incomplete-ca-${ca_field}.out" \
+    "artifactStorage.s3.ca.${ca_field} is required"
+done
 
 echo "worker storage mode render tests passed"

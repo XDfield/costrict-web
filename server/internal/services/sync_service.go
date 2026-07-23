@@ -566,13 +566,26 @@ func (s *SyncService) syncAssets(ctx context.Context, localPath, relPath, itemID
 	for i := range existingAssets {
 		assetByPath[existingAssets[i].RelPath] = &existingAssets[i]
 	}
+	seenAssetPaths := make(map[string]struct{}, len(allFiles))
 
 	for _, f := range allFiles {
 		if strings.ToUpper(filepath.Base(f)) == primaryBase {
 			continue
 		}
-		assetRelPath, _ := filepath.Rel(dir, f)
+		assetRelPath, err := filepath.Rel(dir, f)
+		if err != nil {
+			*errs = append(*errs, fmt.Sprintf("asset path %s: %v", f, err))
+			failures++
+			continue
+		}
 		assetRelPath = filepath.ToSlash(assetRelPath)
+		if assetRelPath == "." || assetRelPath == ".." ||
+			strings.HasPrefix(assetRelPath, "../") || filepath.IsAbs(assetRelPath) {
+			*errs = append(*errs, fmt.Sprintf("asset path %s escapes item directory", f))
+			failures++
+			continue
+		}
+		seenAssetPaths[assetRelPath] = struct{}{}
 
 		content, err := s.Git.ReadFile(localPath, f)
 		if err != nil {
@@ -654,6 +667,20 @@ func (s *SyncService) syncAssets(ctx context.Context, localPath, relPath, itemID
 			}
 			if err := s.DB.Create(asset).Error; err != nil {
 				*errs = append(*errs, fmt.Sprintf("asset create %s: %v", f, err))
+				failures++
+			}
+		}
+	}
+
+	// Keep the previous manifest intact on a partial sync. Once every desired
+	// asset has been read and persisted, rows absent upstream can be removed.
+	if failures == 0 {
+		for _, existing := range existingAssets {
+			if _, ok := seenAssetPaths[existing.RelPath]; ok {
+				continue
+			}
+			if err := s.DB.Delete(&models.CapabilityAsset{}, "id = ?", existing.ID).Error; err != nil {
+				*errs = append(*errs, fmt.Sprintf("asset delete %s: %v", existing.RelPath, err))
 				failures++
 			}
 		}
