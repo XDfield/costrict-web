@@ -1,13 +1,14 @@
 # cs-user ops scripts
 
-Operational scripts for tenant onboarding and IdP configuration. All
-scripts are bash + curl wrappers around the cs-user internal API
+Operational scripts for tenant onboarding and employment-mapping upload.
+All scripts are bash + curl wrappers around the cs-user internal API
 (`X-Internal-Token`-gated).
 
-**Note**: git-server configuration lives on the `@server` side (the
-`git_servers` + `tenant_git_server_binding` tables and their HTTP API are
-owned by `server`). For git-server bootstrap see `server/scripts/`, not
-here.
+**Note**: OAuth / IdP configuration is brokered exclusively by Casdoor.
+cs-user does NOT store per-provider OAuth credentials — provider-specific
+claim mapping is configured via `employment_providers` (Plan B detection
++ `field_map`) under tenant_configs. For git-server bootstrap (server-side
+concern) see `server/scripts/`.
 
 ## Prerequisites
 
@@ -40,10 +41,7 @@ set -a; source ../.env; set +a
 | Script | Purpose | Wraps |
 |---|---|---|
 | `bootstrap-tenant.sh` | Create a new tenant | `POST /api/internal/platform/tenants` |
-| `configure-idp-source.sh` | Upsert an IdP source | `PUT` then `POST /api/idp-sources` |
-| `list-idps.sh` | List IdPs (all / enabled-only) | `GET /api/idp-sources/{tenant}` |
-| `delete-idp.sh` | Remove an IdP source (interactive confirm) | `DELETE /api/idp-sources/{tenant}/{provider}` |
-| `configure-employment-mapping.sh` | Replace `tenant_configs.config_yaml` | `PUT /api/internal/tenant/config` |
+| `configure-employment-mapping.sh` | Replace `tenant_configs.config_yaml` (employment_providers + provider_mapping) | `PUT /api/internal/tenant/config` |
 
 ## Typical onboarding sequence
 
@@ -59,27 +57,22 @@ set -a; source ../.env; set +a
 #    See server/scripts/bootstrap-git-server.sh for this step.
 
 # 3. Upload employment_providers config (field_map + Plan B detection).
+#    This is how cs-user learns to map idtrust claims from a Casdoor JWT.
 ./configure-employment-mapping.sh \
     --tenant acme-corp \
     --yaml examples/idtrust-employment.yaml
 
-# 4. Register the IdP source (client credentials, endpoints).
-./configure-idp-source.sh \
-    --tenant acme-corp \
-    --provider idtrust \
-    --config-json examples/idtrust-idp.json
-
-# 5. Verify.
-./list-idps.sh --tenant acme-corp
+# 4. (server side) Configure Casdoor as the OAuth entry point.
+#    Per-provider OAuth creds live in Casdoor, not here. See server/.env
+#    for CASDOOR_* fields.
 ```
 
 ## Examples
 
-The `examples/` directory contains template JSON / YAML files:
+The `examples/` directory contains template YAML files:
 
-- `idtrust-idp.json` — IdP source config for an idtrust OAuth deployment
-- `github-idp.json` — IdP source config for GitHub OAuth
 - `idtrust-employment.yaml` — `tenant_config.config_yaml` with
   employment_providers (field_map + Plan B detection) and provider_mapping
 
-Copy them out of the repo before filling in real secrets.
+This is claim-mapping config (no secrets). Copy out of the repo before
+editing for your deployment.

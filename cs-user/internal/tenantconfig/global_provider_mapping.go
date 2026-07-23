@@ -11,7 +11,8 @@
 //   - Platform admin may manage global defaults via a special tenant_configs
 //     row (tenant_id='global') instead of code; this only changes the
 //     loadGlobalProviderMapping implementation, not the merge contract.
-//   - idp_sources table (E2) will reference provider names defined here.
+//   - Provider names defined here are referenced by employment_providers
+//     (claim-mapping rules) and Casdoor JWT Plan B detection.
 
 package tenantconfig
 
