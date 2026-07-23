@@ -183,6 +183,13 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// subtree so it doesn't collide with the routes above.
 	users.POST("/apply-enterprise-mapping", usersAPI.ApplyEnterpriseMapping)
 
+	// R2 (REGISTRATION_PROFILE_DESIGN): first-time registration +
+	// profile self-edit. username-available is a static literal path so it
+	// wins over the :subject_id wildcard in gin's radix tree.
+	users.GET("/username-available", usersAPI.UsernameAvailable)
+	users.POST("/:subject_id/complete-registration", usersAPI.CompleteRegistration)
+	users.POST("/:subject_id/profile", usersAPI.UpdateProfile)
+
 	// KB ensure backing: list teams for a user. Called by @server's
 	// POST /api/kb/ensure to resolve the caller's team list. Currently
 	// returns 503 ORG_TEAM_SERVICE_UNAVAILABLE — contract is fixed so
@@ -340,6 +347,17 @@ func (unavailableUserService) UnbindIdentityByProvider(_ context.Context, _, _ s
 }
 func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.EmploymentMappingParams) error {
 	return errServiceUnavailable
+}
+
+// R2 (REGISTRATION_PROFILE_DESIGN) — registration/profile stubs.
+func (unavailableUserService) CompleteRegistration(_ context.Context, _, _, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) UpdateProfile(_ context.Context, _, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) IsUsernameAvailable(_ context.Context, _, _ string) (bool, error) {
+	return false, errServiceUnavailable
 }
 
 // ListUsers surfaces the admin user-management error in the same shape as

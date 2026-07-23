@@ -53,6 +53,12 @@ type UserService interface {
 	// employment_identities (server has no such table); ApplyEnterpriseMapping
 	// is the single write path.
 	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
+	// R2 (REGISTRATION_PROFILE_DESIGN): first-time registration + profile
+	// self-edit. Backed by user.Service profile.go. Username uniqueness is
+	// tenant-scoped via tenant.Scope(ctx).
+	CompleteRegistration(ctx context.Context, subjectID, username, displayName string) (*models.User, error)
+	UpdateProfile(ctx context.Context, subjectID, displayName string) (*models.User, error)
+	IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error)
 	// Admin user-management (admin-user-migration slice). Powers
 	// @server's /api/admin/users/* surface, migrated to cs-user as the
 	// single source of truth for user identity + status.
@@ -472,4 +478,161 @@ func isEnterpriseMappingArgError(err error) bool {
 	msg := err.Error()
 	return msg == "ApplyEnterpriseMapping: empty UserSubjectID" ||
 		msg == "ApplyEnterpriseMapping: empty Provider"
+}
+
+// completeRegistrationRequest is the body shape for
+// POST /api/internal/users/:subject_id/complete-registration
+// (REGISTRATION_PROFILE_DESIGN §6.2).
+type completeRegistrationRequest struct {
+	Username    string `json:"username" binding:"required"`
+	DisplayName string `json:"display_name"`
+}
+
+// CompleteRegistration godoc
+//
+//	@Summary		Finish first-time registration
+//	@Description	Sets username + display_name and marks profile_completed_at = NOW. One-shot — calling again returns 409. Username is tenant-scoped unique.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string						true	"Target user subject_id"
+//	@Param			body		body		completeRegistrationRequest	true	"Username (required) + display_name (optional)"
+//	@Success		200			{object}	object{user=models.User}
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/complete-registration [post]
+func (a *UsersAPI) CompleteRegistration(c *gin.Context) {
+	subjectID := c.Param("subject_id")
+	if subjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	var req completeRegistrationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	u, err := a.Svc.CompleteRegistration(c.Request.Context(), subjectID, req.Username, req.DisplayName)
+	if err != nil {
+		switch {
+		case errors.Is(err, user.ErrUsernameInvalid),
+			errors.Is(err, user.ErrUsernameReserved),
+			err.Error() == "invalid_display_name",
+			err.Error() == "subject_id is required":
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, user.ErrUsernameTaken):
+			c.JSON(http.StatusConflict, gin.H{"error": "username_taken"})
+		case errors.Is(err, user.ErrRegistrationAlreadyComplete):
+			c.JSON(http.StatusConflict, gin.H{"error": "registration_already_complete"})
+		case err.Error() == "user_not_found":
+			c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": u})
+}
+
+// updateProfileRequest is the body shape for
+// POST /api/internal/users/:subject_id/profile (REGISTRATION_PROFILE_DESIGN §6.3/6.4).
+// Used for both user self-edit (display_name only) and admin override
+// (display_name + optional username — R5).
+type updateProfileRequest struct {
+	Username    *string `json:"username,omitempty"`
+	DisplayName *string `json:"display_name,omitempty"`
+}
+
+// UpdateProfile godoc
+//
+//	@Summary		Update user profile (display_name self-edit or admin override)
+//	@Description	User self-edit accepts display_name only. Admin override (R5) may additionally set username. username validation + tenant-scoped uniqueness enforced.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string				true	"Target user subject_id"
+//	@Param			body		body		updateProfileRequest	true	"Patches to apply"
+//	@Success		200			{object}	object{user=models.User}
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/profile [post]
+func (a *UsersAPI) UpdateProfile(c *gin.Context) {
+	subjectID := c.Param("subject_id")
+	if subjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	var req updateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	u, err := a.Svc.UpdateProfile(c.Request.Context(), subjectID, valueOrEmpty(req.DisplayName))
+	if err != nil {
+		switch {
+		case err.Error() == "invalid_display_name",
+			err.Error() == "subject_id is required":
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case err.Error() == "user_not_found":
+			c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": u})
+}
+
+// UsernameAvailable godoc
+//
+//	@Summary		Check username availability
+//	@Description	Tenant-scoped uniqueness check + format/reserved-word validation. exclude_subject_id lets callers omit the current user.
+//	@Tags			users
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			username			query		string	true	"Candidate username"
+//	@Param			exclude_subject_id	query		string	false	"Subject ID to exclude from collision check"
+//	@Success		200					{object}	object{available=bool}
+//	@Failure		400					{object}	object{error=string}
+//	@Failure		500					{object}	object{error=string}
+//	@Router			/api/internal/users/username-available [get]
+func (a *UsersAPI) UsernameAvailable(c *gin.Context) {
+	username := strings.TrimSpace(c.Query("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username query param is required"})
+		return
+	}
+	excludeSubjectID := strings.TrimSpace(c.Query("exclude_subject_id"))
+	available, err := a.Svc.IsUsernameAvailable(c.Request.Context(), username, excludeSubjectID)
+	if err != nil {
+		switch {
+		case errors.Is(err, user.ErrUsernameInvalid):
+			c.JSON(http.StatusOK, gin.H{"available": false, "reason": "invalid_format"})
+		case errors.Is(err, user.ErrUsernameReserved):
+			c.JSON(http.StatusOK, gin.H{"available": false, "reason": "reserved"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	if !available {
+		c.JSON(http.StatusOK, gin.H{"available": false, "reason": "taken"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true})
+}
+
+// valueOrEmpty dereferences a *string safely — nil → "". Keeps the
+// updateProfileRequest's optional fields easy to pass to the service layer.
+func valueOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

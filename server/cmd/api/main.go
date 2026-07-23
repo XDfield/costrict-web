@@ -540,6 +540,16 @@ func main() {
 			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
 
+			// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration +
+			// profile self-edit. Mounted under /api/users/me/* so the
+			// gate middleware (R3) can whitelist them cleanly.
+			usersMe := authed.Group("/users/me")
+			{
+				usersMe.GET("/username-available", handlers.UsernameAvailable)
+				usersMe.POST("/complete-registration", handlers.CompleteRegistration)
+				usersMe.PATCH("/profile", handlers.UpdateMyProfile)
+			}
+
 			repos := authed.Group("/repositories")
 			{
 				repos.GET("", handlers.ListRepositories)

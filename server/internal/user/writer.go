@@ -58,6 +58,13 @@ type UserWriter interface {
 	// token, when it succeeds the cookie gets the cs-user token.
 	// Added in Phase A7b.
 	ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
+	// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration + profile
+	// self-edit. Username uniqueness is tenant-scoped under the rpc backend
+	// (cs-user) and global under the local backend (server has no tenant_id
+	// column on users). complete-registration also stamps profile_completed_at.
+	CompleteRegistration(ctx context.Context, userSubjectID, username, displayName string) (*models.User, error)
+	UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error)
+	IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error)
 }
 
 // DualWriter is the canary posture selected by USER_SERVICE_BACKEND=rpc with
@@ -204,4 +211,45 @@ func (d *DualWriter) ReissueToken(ctx context.Context, userSubjectID string, cla
 		return "", time.Time{}, err
 	}
 	return token, exp, nil
+}
+
+// CompleteRegistration (R2) is dual-write: cs-user is the eventual authority,
+// but server's local mirror must stay consistent so handlers see the new
+// username immediately. Primary-first for atomic read-back; Secondary failure
+// is logged but does NOT unwind Primary — the caller has already shown the
+// user a success page, and a retry path will reconcile cs-user.
+func (d *DualWriter) CompleteRegistration(ctx context.Context, userSubjectID, username, displayName string) (*models.User, error) {
+	u, err := d.Primary.CompleteRegistration(ctx, userSubjectID, username, displayName)
+	if err != nil {
+		return nil, err
+	}
+	if d.Secondary != nil {
+		if _, secErr := d.Secondary.CompleteRegistration(ctx, userSubjectID, username, displayName); secErr != nil {
+			logger.Warn("[user-dual-write] secondary CompleteRegistration failed: %v", secErr)
+		}
+	}
+	return u, nil
+}
+
+// UpdateMyProfile (R2) dual-writes the display_name change. username is not
+// in scope for user-self edits (admin override uses a separate admin RPC).
+func (d *DualWriter) UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error) {
+	u, err := d.Primary.UpdateMyProfile(ctx, userSubjectID, displayName)
+	if err != nil {
+		return nil, err
+	}
+	if d.Secondary != nil {
+		if _, secErr := d.Secondary.UpdateMyProfile(ctx, userSubjectID, displayName); secErr != nil {
+			logger.Warn("[user-dual-write] secondary UpdateMyProfile failed: %v", secErr)
+		}
+	}
+	return u, nil
+}
+
+// IsUsernameAvailable (R2) consults Primary (the local mirror). The local
+// table has no tenant_id, so uniqueness is global under the local backend;
+// under rpc-only deployments the call is served by RPCWriter and respects
+// cs-user's tenant scope via X-Tenant-Id.
+func (d *DualWriter) IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error) {
+	return d.Primary.IsUsernameAvailable(ctx, username, excludeSubjectID)
 }
