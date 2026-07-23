@@ -338,6 +338,437 @@ func TestApplyEnterpriseMapping_PerProviderConfigIgnored(t *testing.T) {
 	}
 }
 
+// TestApplyEnterpriseMapping_FieldMapAccepted verifies that the top-level
+// field_map key parses cleanly. When ExternalClaims is NOT supplied the
+// write path stays in stub mode — every enterprise column remains NULL even
+// though field_map is configured. Tests in the "Slice 1.5 runtime" block
+// below cover the populated-from-claims contract.
+func TestApplyEnterpriseMapping_FieldMapAccepted(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      employee_number: "JobNumber"
+      cost_center: "Department"
+      org_path: "FullPath"
+      hire_date: "JoinTime"
+`)
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+		// ExternalClaims intentionally omitted — stub write path.
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping with field_map: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", "usr_alice").Take(&got).Error; err != nil {
+		t.Fatalf("row missing: %v", err)
+	}
+	// Stub-path invariant: no ExternalClaims → every mapped column stays NULL
+	// (applyFieldMap returns empty when claims is empty). Populated-from-claims
+	// behavior is pinned by TestApplyEnterpriseMapping_PopulatesFromClaims below.
+	if got.EnterpriseUID != nil {
+		t.Errorf("EnterpriseUID: got %v, want nil without ExternalClaims", *got.EnterpriseUID)
+	}
+}
+
+// TestApplyEnterpriseMapping_FieldMapRejectsUnknownColumn verifies that a
+// typo in field_map (internal column not in allowedEmploymentColumns)
+// surfaces as a parse-time error rather than silently no-op'ing at runtime.
+func TestApplyEnterpriseMapping_FieldMapRejectsUnknownColumn(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      manager_email: "leader@email"   # not in allowedEmploymentColumns
+`)
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown internal column, got nil")
+	}
+	if errors.Is(err, ErrEnterpriseMappingDisabled) {
+		t.Fatalf("field_map typo must surface as config error, not silent disable: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown internal column") {
+		t.Fatalf("error should mention unknown internal column, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "manager_email") {
+		t.Fatalf("error should name the offending column, got: %v", err)
+	}
+
+	// No row should be written when config parse fails.
+	var count int64
+	svc.db.Model(&models.EmploymentIdentity{}).Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 rows on config error, got %d", count)
+	}
+}
+
+// TestApplyEnterpriseMapping_FieldMapValidatesUnenabledProviders verifies
+// that field_map validation is fail-fast: every entry in field_map is
+// validated against allowedEmploymentColumns regardless of whether the
+// provider is in the enabled list. This catches operator typos in pre-staged
+// config before a future "enable this provider" flip silently no-ops.
+//
+// Consequence: if you want to stage a draft mapping with intentionally
+// non-canonical field names, comment the block out or omit it entirely —
+// do NOT leave it under field_map expecting it to be ignored.
+func TestApplyEnterpriseMapping_FieldMapValidatesUnenabledProviders(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+    azure_ad:                          # not in enabled, but VALID columns
+      enterprise_uid: "oid"
+      employee_number: "empId"
+`)
+
+	// Valid columns on an unenabled provider → parse OK (apply proceeds for wxwork).
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+}
+
+// TestApplyEnterpriseMapping_FieldMapRejectsBadColumnOnUnenabledProvider
+// pins the fail-fast contract: a typo'd internal column on a provider NOT in
+// enabled still surfaces as a parse error. Operators get the error at the
+// first ApplyEnterpriseMapping call, not at a future "enable" flip.
+func TestApplyEnterpriseMapping_FieldMapRejectsBadColumnOnUnenabledProvider(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+    azure_ad:                          # not in enabled, but typo'd column
+      enterprise_uid: "oid"
+      manager_email: "leader@email"    # not in allowedEmploymentColumns
+`)
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",         // enabled provider with VALID mapping
+	})
+	if err == nil {
+		t.Fatal("expected parse error from bad column on unenabled provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown internal column") {
+		t.Fatalf("error should mention unknown internal column, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "azure_ad") {
+		t.Fatalf("error should name the offending provider, got: %v", err)
+	}
+}
+
+// TestAllowedEmploymentColumns pins the whitelist so a model field rename or
+// removal doesn't silently shrink the operator's mapping vocabulary.
+func TestAllowedEmploymentColumns(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"enterprise_uid",
+		"employee_number",
+		"cost_center",
+		"org_path",
+		"direct_manager_subject_id",
+		"direct_manager_external_ref",
+		"job_title",
+		"job_level",
+		"employment_type",
+		"hire_date",
+		"regular_date",
+		"work_location",
+	}
+	if len(allowedEmploymentColumns) != len(want) {
+		t.Errorf("allowedEmploymentColumns size: got %d, want %d", len(allowedEmploymentColumns), len(want))
+	}
+	for _, col := range want {
+		if _, ok := allowedEmploymentColumns[col]; !ok {
+			t.Errorf("allowedEmploymentColumns missing %q", col)
+		}
+	}
+}
+
+// --- Slice 1.5: runtime field_map consumption ---
+
+// TestApplyFieldMap_HappyPath unit-tests the mapping function directly with a
+// mix of string + date columns. Exercises:
+//   - string coercion via fmt.Sprint (numeric claim → string)
+//   - date coercion from RFC 3339 string
+//   - missing external field key → column skipped (not zero-valued)
+//   - field_map column not in claims → silently absent from output
+func TestApplyFieldMap_HappyPath(t *testing.T) {
+	t.Parallel()
+	fm := FieldMapConfig{
+		"enterprise_uid":  "UserId",
+		"employee_number": "JobNumber",
+		"cost_center":     "Department",
+		"hire_date":       "JoinTime",
+		"job_level":       "Rank", // not present in claims → skipped
+	}
+	claims := map[string]any{
+		"UserId":     "wx_alice_001",
+		"JobNumber":  10042, // int → stringified
+		"Department": "R&D",
+		"JoinTime":   "2020-03-15T08:00:00Z",
+	}
+
+	got := applyFieldMap(fm, claims)
+	if got["enterprise_uid"] != "wx_alice_001" {
+		t.Errorf("enterprise_uid: got %v, want wx_alice_001", got["enterprise_uid"])
+	}
+	if got["employee_number"] != "10042" {
+		t.Errorf("employee_number: got %v, want 10042 (int → stringified)", got["employee_number"])
+	}
+	if got["cost_center"] != "R&D" {
+		t.Errorf("cost_center: got %v, want R&D", got["cost_center"])
+	}
+	hire, ok := got["hire_date"].(time.Time)
+	if !ok {
+		t.Fatalf("hire_date: expected time.Time, got %T", got["hire_date"])
+	}
+	wantHire := time.Date(2020, 3, 15, 8, 0, 0, 0, time.UTC)
+	if !hire.Equal(wantHire) {
+		t.Errorf("hire_date: got %v, want %v", hire, wantHire)
+	}
+	if _, present := got["job_level"]; present {
+		t.Errorf("job_level should be absent (Rank missing from claims), got %v", got["job_level"])
+	}
+}
+
+// TestApplyFieldMap_EmptyInputs confirms the stub-write-path invariant: with
+// no field_map or no claims, the output is an empty map (no columns mapped),
+// so callers that haven't wired ExternalClaims yet behave identically to the
+// Slice 1 stub.
+func TestApplyFieldMap_EmptyInputs(t *testing.T) {
+	t.Parallel()
+	if out := applyFieldMap(FieldMapConfig{}, map[string]any{"x": "y"}); len(out) != 0 {
+		t.Errorf("empty field_map should yield empty map, got %v", out)
+	}
+	if out := applyFieldMap(FieldMapConfig{"enterprise_uid": "x"}, nil); len(out) != 0 {
+		t.Errorf("nil claims should yield empty map, got %v", out)
+	}
+	if out := applyFieldMap(FieldMapConfig{"enterprise_uid": "x"}, map[string]any{}); len(out) != 0 {
+		t.Errorf("empty claims should yield empty map, got %v", out)
+	}
+}
+
+// TestApplyFieldMap_DateCoercion covers each numeric shape an IdP might emit
+// for a date claim: RFC 3339 string, int64 Unix seconds, float64 (JWT
+// NumericDate through encoding/json), and time.Time (already-parsed).
+// Unparseable values silently skip the column rather than failing the login.
+func TestApplyFieldMap_DateCoercion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  any
+		want time.Time
+	}{
+		{"rfc3339", "2021-01-31T00:00:00Z", time.Date(2021, 1, 31, 0, 0, 0, 0, time.UTC)},
+		{"int64_seconds", int64(1612051200), time.Date(2021, 1, 31, 0, 0, 0, 0, time.UTC)},
+		{"float64_seconds", float64(1612051200), time.Date(2021, 1, 31, 0, 0, 0, 0, time.UTC)},
+		{"time_Time", time.Date(2021, 1, 31, 0, 0, 0, 0, time.UTC), time.Date(2021, 1, 31, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fm := FieldMapConfig{"hire_date": "JoinTime"}
+			claims := map[string]any{"JoinTime": tc.raw}
+			got := applyFieldMap(fm, claims)
+			hire, ok := got["hire_date"].(time.Time)
+			if !ok {
+				t.Fatalf("hire_date not coerced to time.Time: got %T (%v)", got["hire_date"], got["hire_date"])
+			}
+			if !hire.Equal(tc.want) {
+				t.Errorf("hire_date: got %v, want %v", hire, tc.want)
+			}
+		})
+	}
+
+	// Unparseable string silently skips the column.
+	fm := FieldMapConfig{"hire_date": "JoinTime"}
+	got := applyFieldMap(fm, map[string]any{"JoinTime": "not-a-date"})
+	if _, present := got["hire_date"]; present {
+		t.Errorf("unparseable date should be skipped, got %v", got["hire_date"])
+	}
+}
+
+// TestApplyEnterpriseMapping_PopulatesFromClaims end-to-end: with field_map
+// configured AND ExternalClaims populated, the freshly-created row should
+// carry the mapped values on both string and date columns. This is the
+// canonical Slice 1.5 contract that field_map actually drives writes.
+func TestApplyEnterpriseMapping_PopulatesFromClaims(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      employee_number: "JobNumber"
+      cost_center: "Department"
+      org_path: "FullPath"
+      hire_date: "JoinTime"
+      job_title: "Title"
+`)
+	claims := map[string]any{
+		"UserId":     "wx_alice_001",
+		"JobNumber":  "E-10042",
+		"Department": "R&D",
+		"FullPath":   "/Corp/RD/Platform",
+		"JoinTime":   "2020-03-15T08:00:00Z",
+		"Title":      "Staff Engineer",
+	}
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID:  "usr_alice",
+		Provider:       "wxwork",
+		ExternalClaims: claims,
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", "usr_alice").Take(&got).Error; err != nil {
+		t.Fatalf("row missing: %v", err)
+	}
+	wantStr := func(field string, got *string, want string) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Errorf("%s: got %v, want %q", field, got, want)
+		}
+	}
+	wantStr("EnterpriseUID", got.EnterpriseUID, "wx_alice_001")
+	wantStr("EmployeeNumber", got.EmployeeNumber, "E-10042")
+	wantStr("CostCenter", got.CostCenter, "R&D")
+	wantStr("OrgPath", got.OrgPath, "/Corp/RD/Platform")
+	wantStr("JobTitle", got.JobTitle, "Staff Engineer")
+	if got.HireDate == nil {
+		t.Errorf("HireDate: got nil, want 2020-03-15")
+	} else {
+		wantDay := time.Date(2020, 3, 15, 0, 0, 0, 0, time.UTC)
+		// gorm serializes date columns as date-only (no time), so compare Y/M/D.
+		gotY, gotM, gotD := got.HireDate.Date()
+		wantY, wantM, wantD := wantDay.Date()
+		if gotY != wantY || gotM != wantM || gotD != wantD {
+			t.Errorf("HireDate: got %v, want Y/M/D=%v/%v/%v", got.HireDate, wantY, wantM, wantD)
+		}
+	}
+}
+
+// TestApplyEnterpriseMapping_MissingExternalClaimLeavesNull verifies the
+// soft-fail contract: a field_map entry whose external field is absent from
+// claims leaves the corresponding column NULL rather than failing the login.
+// This is what makes a partial / draft field_map safe to ship.
+func TestApplyEnterpriseMapping_MissingExternalClaimLeavesNull(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      employee_number: "JobNumber"
+`)
+	// Only UserId present; JobNumber missing entirely, also include a nil val.
+	claims := map[string]any{
+		"UserId":    "wx_alice_001",
+		"JobNumber": nil,
+	}
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID:  "usr_alice",
+		Provider:       "wxwork",
+		ExternalClaims: claims,
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", "usr_alice").Take(&got).Error; err != nil {
+		t.Fatalf("row missing: %v", err)
+	}
+	if got.EnterpriseUID == nil || *got.EnterpriseUID != "wx_alice_001" {
+		t.Errorf("EnterpriseUID: got %v, want wx_alice_001", got.EnterpriseUID)
+	}
+	if got.EmployeeNumber != nil {
+		t.Errorf("EmployeeNumber: got %v, want nil (missing/nil claim → NULL)", *got.EmployeeNumber)
+	}
+}
+
+// TestApplyEnterpriseMapping_FieldMapRefreshesExistingRow exercises the
+// update-in-place path with ExternalClaims: a pre-existing row should pick
+// up the mapped values on re-apply (not just the SyncStatus/LastSyncedAt
+// fields). Guards against a regression where applyFieldMap output is wired
+// into the create path but forgotten on the update path.
+func TestApplyEnterpriseMapping_FieldMapRefreshesExistingRow(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [wxwork]
+  field_map:
+    wxwork:
+      enterprise_uid: "UserId"
+      employee_number: "JobNumber"
+`)
+	// Seed an empty row from a previous login that had no claims.
+	stale := &models.EmploymentIdentity{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+		SyncStatus:    "stale",
+	}
+	if err := svc.db.Create(stale).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_alice",
+		Provider:      "wxwork",
+		ExternalClaims: map[string]any{
+			"UserId":    "wx_alice_001",
+			"JobNumber": "E-10042",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("user_subject_id = ?", "usr_alice").Take(&got).Error; err != nil {
+		t.Fatalf("row missing: %v", err)
+	}
+	if got.ID != stale.ID {
+		t.Errorf("ID changed: got %d, want %d (update-in-place)", got.ID, stale.ID)
+	}
+	if got.EnterpriseUID == nil || *got.EnterpriseUID != "wx_alice_001" {
+		t.Errorf("EnterpriseUID: got %v, want wx_alice_001 (refreshed via field_map)", got.EnterpriseUID)
+	}
+	if got.EmployeeNumber == nil || *got.EmployeeNumber != "E-10042" {
+		t.Errorf("EmployeeNumber: got %v, want E-10042 (refreshed via field_map)", got.EmployeeNumber)
+	}
+}
+
 // --- A7: GetEmploymentIdentity reader ---
 
 // TestGetEmploymentIdentity_HappyPath verifies a known row is returned with
