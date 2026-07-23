@@ -426,6 +426,26 @@ func (r *recordingWriter) ReissueToken(_ context.Context, userSubjectID string, 
 	return "token-from-recording", time.Now().Add(time.Hour), nil
 }
 
+// R2 stubs — kept minimal so DualWriter tests for the new methods compile.
+func (r *recordingWriter) CompleteRegistration(_ context.Context, subjectID, _, _ string) (*models.User, error) {
+	if r.primaryError != nil {
+		return nil, r.primaryError
+	}
+	return &models.User{SubjectID: subjectID}, nil
+}
+func (r *recordingWriter) UpdateMyProfile(_ context.Context, subjectID, _ string) (*models.User, error) {
+	if r.primaryError != nil {
+		return nil, r.primaryError
+	}
+	return &models.User{SubjectID: subjectID}, nil
+}
+func (r *recordingWriter) IsUsernameAvailable(_ context.Context, _, _ string) (bool, error) {
+	if r.primaryError != nil {
+		return false, r.primaryError
+	}
+	return true, nil
+}
+
 func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
 	t.Parallel()
 	primary := &recordingWriter{}

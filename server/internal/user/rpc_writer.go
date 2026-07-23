@@ -338,6 +338,110 @@ func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, clai
 	return "", time.Time{}, w.mapWriteError(status, respBody, "reissue-token")
 }
 
+// CompleteRegistration calls POST
+// /api/internal/users/:subject_id/complete-registration (R2). Forwards the
+// cs-user result (200 user envelope, 409 username_taken /
+// registration_already_complete, 400 invalid_username / reserved). The wire
+// shape is JSON {username, display_name} on the request and {user} on the
+// response — same as cs-user's handler.
+func (w *RPCWriter) CompleteRegistration(ctx context.Context, userSubjectID, username, displayName string) (*models.User, error) {
+	if !w.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if userSubjectID == "" {
+		return nil, errors.New("user rpc writer: complete-registration: empty user_subject_id")
+	}
+	body, err := json.Marshal(struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}{Username: username, DisplayName: displayName})
+	if err != nil {
+		return nil, fmt.Errorf("user rpc writer: marshal complete-registration: %w", err)
+	}
+	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/complete-registration"
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, path, body)
+	if transportErr != nil {
+		return nil, transportErr
+	}
+	if status >= 200 && status < 300 {
+		var env struct {
+			User models.User `json:"user"`
+		}
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return nil, fmt.Errorf("user rpc writer: decode complete-registration: %w", err)
+		}
+		return &env.User, nil
+	}
+	return nil, w.mapWriteError(status, respBody, "complete-registration")
+}
+
+// UpdateMyProfile calls POST /api/internal/users/:subject_id/profile (R2).
+// Surfaces cs-user's 4xx error tokens verbatim (invalid_display_name,
+// user_not_found); transport / 5xx collapses to ErrRPCUnavailable.
+func (w *RPCWriter) UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error) {
+	if !w.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if userSubjectID == "" {
+		return nil, errors.New("user rpc writer: update-profile: empty user_subject_id")
+	}
+	body, err := json.Marshal(struct {
+		DisplayName string `json:"display_name"`
+	}{DisplayName: displayName})
+	if err != nil {
+		return nil, fmt.Errorf("user rpc writer: marshal update-profile: %w", err)
+	}
+	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/profile"
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, path, body)
+	if transportErr != nil {
+		return nil, transportErr
+	}
+	if status >= 200 && status < 300 {
+		var env struct {
+			User models.User `json:"user"`
+		}
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return nil, fmt.Errorf("user rpc writer: decode update-profile: %w", err)
+		}
+		return &env.User, nil
+	}
+	return nil, w.mapWriteError(status, respBody, "update-profile")
+}
+
+// IsUsernameAvailable calls GET
+// /api/internal/users/username-available?username=...&exclude_subject_id=...
+// (R2). cs-user's response shape {available, reason} is decoded here;
+// invalid_format and reserved surface as available=false rather than as
+// errors so the handler can re-marshal the same JSON the frontend expects.
+func (w *RPCWriter) IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error) {
+	if !w.Configured() {
+		return false, ErrNotConfigured
+	}
+	q := url.Values{}
+	if username != "" {
+		q.Set("username", username)
+	}
+	if excludeSubjectID != "" {
+		q.Set("exclude_subject_id", excludeSubjectID)
+	}
+	path := "/api/internal/users/username-available?" + q.Encode()
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodGet, path, nil)
+	if transportErr != nil {
+		return false, transportErr
+	}
+	if status >= 200 && status < 300 {
+		var env struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason"`
+		}
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return false, fmt.Errorf("user rpc writer: decode username-available: %w", err)
+		}
+		return env.Available, nil
+	}
+	return false, w.mapWriteError(status, respBody, "username-available")
+}
+
 // doCapture issues an authenticated request and returns (status, body,
 // transportError). Unlike RPCClient.do, it does NOT decode the body into a
 // model — callers handle decoding on success — and does NOT collapse non-2xx
