@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -24,6 +25,10 @@ func TestJWTClaims_JSONRoundTrip(t *testing.T) {
 		Provider:          "github",
 		ProviderUserID:    "12345",
 		Phone:             "+8613800000000",
+		ExternalClaims: map[string]any{
+			"UserId":    "wx_alice_001",
+			"JobNumber": "E-10042",
+		},
 	}
 
 	raw, err := json.Marshal(in)
@@ -31,8 +36,9 @@ func TestJWTClaims_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// Spot-check the wire format uses snake_case + omitempty.
-	want := `{"id":"id-123","sub":"sub-abc","universal_id":"uuid-xyz","name":"alice","preferred_username":"alice","email":"alice@example.com","picture":"https://example.com/a.png","owner":"owner-1","provider":"github","provider_user_id":"12345","phone":"+8613800000000"}`
+	// Spot-check the wire format uses snake_case + omitempty, including the
+	// external_claims key (Slice 2).
+	want := `{"id":"id-123","sub":"sub-abc","universal_id":"uuid-xyz","name":"alice","preferred_username":"alice","email":"alice@example.com","picture":"https://example.com/a.png","owner":"owner-1","provider":"github","provider_user_id":"12345","phone":"+8613800000000","external_claims":{"JobNumber":"E-10042","UserId":"wx_alice_001"}}`
 	if string(raw) != want {
 		t.Fatalf("wire format mismatch.\n got: %s\nwant: %s", raw, want)
 	}
@@ -41,7 +47,8 @@ func TestJWTClaims_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	// Struct contains a map (ExternalClaims) so != doesn't compile; use DeepEqual.
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round-trip lost data: got %+v, want %+v", out, in)
 	}
 }

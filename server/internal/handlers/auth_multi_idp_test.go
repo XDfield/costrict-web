@@ -384,9 +384,10 @@ func TestCallbackMultiIdP_FullFlow(t *testing.T) {
 	if stub.bound == nil {
 		t.Error("BindIdentityToUser not called")
 	}
-	if stub.mapped != "github" {
-		t.Errorf("ApplyEnterpriseMapping provider: got %q", stub.mapped)
-	}
+	// Slice 2: enterprise mapping is now auto-triggered inside cs-user's
+	// GetOrCreateUser (not via a separate server-side ApplyEnterpriseMapping
+	// call), so stub.mapped is no longer set here. The ExternalClaims payload
+	// is verified separately by TestCallbackMultiIdP_ForwardsExternalClaims.
 	if stub.reissued == nil {
 		t.Error("ReissueToken not called (mode=dual should trigger it)")
 	}
@@ -398,6 +399,87 @@ func TestCallbackMultiIdP_FullFlow(t *testing.T) {
 	}
 	if strings.Contains(setCookie, "zgsmAdminToken=atok-gh") {
 		t.Errorf("cookie should NOT carry the raw OAuth token: %s", setCookie)
+	}
+}
+
+// TestCallbackMultiIdP_ForwardsExternalClaims verifies Slice 2 plumbing: the
+// raw IdP userinfo map (profile.Raw) is forwarded as JWTClaims.ExternalClaims
+// when GetOrCreateUser is called. cs-user's GetOrCreateUser auto-triggers
+// ApplyEnterpriseMapping using this payload + the tenant's field_map.
+func TestCallbackMultiIdP_ForwardsExternalClaims(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauth.TokenResponse{AccessToken: "atok-wx", TokenType: "bearer"})
+	}))
+	// wxwork-style userinfo: IdP-specific fields beyond standard OIDC.
+	userinfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"UserId":"wx_alice_001","JobNumber":"E-10042","Department":"R&D","Name":"alice","Email":"alice@wx.com"}`))
+	}))
+	defer tokenSrv.Close()
+	defer userinfoSrv.Close()
+
+	csUserHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(idp.InternalIdPSourceView{
+			Provider: "wxwork",
+			Config: map[string]interface{}{
+				"authorization_url": "https://example/authorize",
+				"token_url":         tokenSrv.URL,
+				"userinfo_url":      userinfoSrv.URL,
+				"client_id":         "cid",
+				"client_secret":     "sec",
+				"scopes":            []string{"user_info"},
+			},
+			Enabled: true,
+		})
+	}
+
+	_, _, cleanup := setupMultiIdPTest(t, csUserHandler)
+	defer cleanup()
+
+	state, err := multiIdP.encodeMultiIdPState(multiIdPStatePayload{
+		TenantID:    "acme",
+		Provider:    "wxwork",
+		RedirectTo:  "/console",
+		CallbackURL: "http://localhost:8080/api/auth/callback",
+	})
+	if err != nil {
+		t.Fatalf("encode state: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/auth/callback?code=abc&state="+state, nil)
+
+	CallbackMultiIdP(c)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	stub, ok := multiIdP.UserWriter.(*stubMultiIdPUserWriter)
+	if !ok {
+		t.Fatalf("writer not stub: %T", multiIdP.UserWriter)
+	}
+	if stub.created == nil {
+		t.Fatal("GetOrCreateUser not called")
+	}
+	if stub.created.Provider != "wxwork" {
+		t.Errorf("Provider: got %q, want wxwork", stub.created.Provider)
+	}
+	if stub.created.ExternalClaims == nil {
+		t.Fatal("ExternalClaims: got nil, want raw userinfo map")
+	}
+	// Verify each IdP-specific field survived the profile.Raw → JWTClaims hop.
+	if got := stub.created.ExternalClaims["UserId"]; got != "wx_alice_001" {
+		t.Errorf("ExternalClaims[UserId]: got %v, want wx_alice_001", got)
+	}
+	if got := stub.created.ExternalClaims["JobNumber"]; got != "E-10042" {
+		t.Errorf("ExternalClaims[JobNumber]: got %v, want E-10042", got)
+	}
+	if got := stub.created.ExternalClaims["Department"]; got != "R&D" {
+		t.Errorf("ExternalClaims[Department]: got %v, want R&D", got)
 	}
 }
 
