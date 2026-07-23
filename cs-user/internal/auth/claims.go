@@ -29,13 +29,18 @@ import (
 // EnterpriseClaims is the cs-user-issued JWT payload shape.
 type EnterpriseClaims struct {
 	// --- Standard JWT (RFC 7519) ---
-	Issuer    string     `json:"iss,omitempty"`
-	Subject   string     `json:"sub,omitempty"`
-	IssuedAt  *time.Time `json:"iat,omitempty"`
-	NotBefore *time.Time `json:"nbf,omitempty"`
-	Expiry    *time.Time `json:"exp,omitempty"`
-	Audience  []string   `json:"aud,omitempty"`
-	JTI       string     `json:"jti,omitempty"`
+	// iat/nbf/exp MUST be *jwt.NumericDate, not *time.Time — RFC 7519
+	// §2 requires NumericDate (JSON number = Unix seconds). *time.Time
+	// marshals to an RFC 3339 string, which jwt/v5 MapClaims / verifiers
+	// on the relying-party side reject ("exp claim is invalid"), causing
+	// every cs-user-signed token to fail verification.
+	Issuer    string             `json:"iss,omitempty"`
+	Subject   string             `json:"sub,omitempty"`
+	IssuedAt  *jwt.NumericDate   `json:"iat,omitempty"`
+	NotBefore *jwt.NumericDate   `json:"nbf,omitempty"`
+	Expiry    *jwt.NumericDate   `json:"exp,omitempty"`
+	Audience  []string           `json:"aud,omitempty"`
+	JTI       string             `json:"jti,omitempty"`
 
 	// --- OIDC identity (mirrors models.JWTClaims) ---
 	UniversalID       string `json:"universal_id,omitempty"`
@@ -86,21 +91,21 @@ func (c *EnterpriseClaims) GetExpirationTime() (*jwt.NumericDate, error) {
 	if c == nil || c.Expiry == nil {
 		return nil, nil
 	}
-	return jwt.NewNumericDate(*c.Expiry), nil
+	return c.Expiry, nil
 }
 
 func (c *EnterpriseClaims) GetNotBefore() (*jwt.NumericDate, error) {
 	if c == nil || c.NotBefore == nil {
 		return nil, nil
 	}
-	return jwt.NewNumericDate(*c.NotBefore), nil
+	return c.NotBefore, nil
 }
 
 func (c *EnterpriseClaims) GetIssuedAt() (*jwt.NumericDate, error) {
 	if c == nil || c.IssuedAt == nil {
 		return nil, nil
 	}
-	return jwt.NewNumericDate(*c.IssuedAt), nil
+	return c.IssuedAt, nil
 }
 
 func (c *EnterpriseClaims) GetIssuer() (string, error) {
@@ -189,18 +194,15 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 		return nil, ErrZeroTTL
 	}
 
-	// Each time pointer takes its own copy of `now` so callers can mutate one
-	// (e.g. back-date NotBefore for delayed-activation tokens) without
-	// corrupting the others via shared aliasing.
-	issuedAt := now
-	notBefore := now
-	expiry := now.Add(params.TTL)
+	// NumericDate is a value type — &jwt.NewNumericDate(t) returns a pointer
+	// to a fresh copy, so no shared aliasing risk between fields. Each call
+	// below is independent.
 	c := &EnterpriseClaims{
 		Issuer:        params.Issuer,
 		Subject:       params.Subject,
-		IssuedAt:      &issuedAt,
-		NotBefore:     &notBefore,
-		Expiry:        &expiry,
+		IssuedAt:      jwt.NewNumericDate(now),
+		NotBefore:     jwt.NewNumericDate(now),
+		Expiry:        jwt.NewNumericDate(now.Add(params.TTL)),
 		Audience:      params.Audience,
 		JTI:           params.JTI,
 		TenantID:      params.TenantID,
