@@ -1,5 +1,15 @@
 # E2E Testing — Team Namespace API + Gitea Provisioning
 
+> **⚠ Partially stale (post Git Ownership Refactor, 2026-07-23).** The seed
+> instructions below assume the pre-Phase-4 architecture where cs-user owned
+> `git_servers` and `tenants.git_server_id`. As of Phase 4, **@server is the
+> canonical owner of `git_servers`**, cs-user has no git tables, and tenant →
+> git_server binding lives on `server.team_ns.git_server_id`. The
+> `cs-user/scripts/dev-seed.sql` referenced below was deleted. Treat the seed
+> section as historical context; the new flow is to seed git_servers via
+> `POST /api/internal/git-servers` on @server. The troubleshooting and test
+> coverage sections remain accurate.
+
 End-to-end integration tests for the team-namespace API surface (Phases 1-2)
 against a real, locally-running Gitea fork (v1.27.0). These tests live in
 `server/internal/teamns/e2e_test.go` behind the `//go:build e2e` tag and are

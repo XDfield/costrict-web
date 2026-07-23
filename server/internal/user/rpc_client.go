@@ -170,37 +170,6 @@ func (c *RPCClient) SearchByEmployeeNumberN(ctx context.Context, employeeNumber 
 	return resp.Users, nil
 }
 
-// GiteaBinding mirrors the bare JSON shape returned by
-// GET /api/internal/users/:subject_id/gitea-binding on cs-user. Only the
-// fields load-bearing for the team-namespace UserRef path are decoded.
-// Lives here (not in server/internal/models) because the binding row is
-// cs-user's source of truth — server only reads it via RPC.
-type GiteaBinding struct {
-	UserSubjectID string `json:"user_subject_id"`
-	TenantID      string `json:"tenant_id"`
-	GiteaUID      *int64 `json:"gitea_uid,omitempty"`
-	GiteaUsername string `json:"gitea_username"`
-	SyncStatus    string `json:"sync_status"`
-}
-
-// GetGiteaBinding calls GET /api/internal/users/:subject_id/gitea-binding.
-// HTTP 404 → gorm.ErrRecordNotFound — caller (UserRefResolver) treats this as
-// "user has no Gitea account yet" and surfaces USER_NOT_GITEA_READY.
-func (c *RPCClient) GetGiteaBinding(ctx context.Context, userSubjectID string) (*GiteaBinding, error) {
-	if !c.Configured() {
-		return nil, ErrNotConfigured
-	}
-	if userSubjectID == "" {
-		return nil, fmt.Errorf("user rpc client: subject_id is required")
-	}
-	path := "/api/internal/users/" + url.PathEscape(userSubjectID) + "/gitea-binding"
-	var binding GiteaBinding
-	if err := c.do(ctx, http.MethodGet, path, nil, &binding, decodeBareUser); err != nil {
-		return nil, err
-	}
-	return &binding, nil
-}
-
 // ListUserIdentities calls GET /api/internal/users/:subject_id/auth-identities.
 func (c *RPCClient) ListUserIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error) {
 	if !c.Configured() {

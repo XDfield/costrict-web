@@ -31,10 +31,16 @@ import (
 // Additional sentinel errors surfaced by the bot-provisioning path. The
 // Service layer switches on these to decide retry vs operator-intervention.
 var (
-	// ErrGiteaUsernameTaken — HTTP 409 / 422 from POST /admin/users or POST
+	// ErrUsernameTaken — HTTP 409 / 422 from POST /admin/users or POST
 	// /orgs. Username / org name is globally unique inside one Gitea instance.
 	// Caller can't retry; needs operator rename or out-of-band cleanup.
-	ErrGiteaUsernameTaken = errors.New("gitsync: gitea username/org name already taken")
+	ErrUsernameTaken = errors.New("gitsync: git username/org name already taken")
+
+	// ErrGiteaUsernameTaken retained as a deprecation alias so existing
+	// call sites / tests compile during the rename window. New code should
+	// use ErrUsernameTaken; this alias will be removed once the team / bot
+	// path is also adapter-pattern refactored (separate change).
+	ErrGiteaUsernameTaken = ErrUsernameTaken
 
 	// ErrGiteaNotFound (alias of ErrGiteaTeamNotFound) — HTTP 404 on user / org
 	// / token lookups. Already declared in client.go as ErrGiteaTeamNotFound;
@@ -42,15 +48,18 @@ var (
 	// to keep call sites readable.
 )
 
-// GiteaUser is the minimal slice of Gitea's user payload ProvisionBot
-// consumes. Only ID + Login are load-bearing (Login echoes the input,
-// ID is the stable handle persisted to team_bot_credentials.gitea_user_id).
-type GiteaUser struct {
-	ID       int64  `json:"id"`
-	Login    string `json:"login"`
-	Email    string `json:"email"`
-	FullName string `json:"full_name"`
-}
+// ProviderUser is the provider-agnostic shape returned by CreateUser /
+// GetUserByName. See git_provider.go for the full GitProvider contract.
+//
+// NOTE: the struct itself is declared in git_provider.go to avoid an import
+// cycle (ProviderUser is referenced by the GitProvider interface, and
+// keeping them in one file makes the contract reviewable as a unit).
+//
+// Backwards-compat alias retained so existing GiteaUser references in
+// the bot path compile during the rename window. New code should use
+// ProviderUser directly; this alias will be removed once the bot path
+// is also adapter-pattern refactored.
+type GiteaUser = ProviderUser
 
 // CreateUserOptions is the body shape POST /admin/users expects. Email is
 // synthetic — bot+<short>@costrict.internal — to avoid clashing with any

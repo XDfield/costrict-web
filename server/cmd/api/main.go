@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -51,6 +52,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/idp"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
@@ -73,6 +75,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -171,12 +174,17 @@ func main() {
 			&tenantGitServerAdapter{rpc: rpcClient},
 			gitsync.CacheTTL,
 		)
+		// Git Ownership Refactor Phase 4: @server is now the canonical owner
+		// of git_servers data, so team-sync resolves locally. cs-user's RPC
+		// endpoint + cs-user.git_servers table were deleted in Phase 4.
+		gitResolver = gitsync.NewLocalResolver(gitserver.NewDBResolver(db))
 		teamSyncSvc := gitsync.NewService(teamProvider, gitResolver, teamResolver, logger.L())
 		handlers.InitTeamSyncService(teamSyncSvc)
 
 		// Phase E3c: team-namespace API v1.1 surface. Wires:
 		//   - AES-GCM for bot token at rest (env CS_BOT_TOKEN_KEY base64-32byte)
-		//   - UserRefResolver (cs-user RPC)
+		//   - UserRefResolver (cs-user RPC for subject → user; local DB for
+		//     user_git_binding lookups)
 		//   - teamns.Service (orchestration)
 		// Missing CS_BOT_TOKEN_KEY → feature stays disabled; handlers return 503.
 		if aesKey, err := loadBotTokenKey(); err == nil {
@@ -185,6 +193,9 @@ func main() {
 				log.Printf("teamns: AES-GCM init failed (%v); team-namespace API disabled", err)
 			} else {
 				uref := userpkg.NewUserRefResolver(rpcClient)
+				// Git Ownership Refactor Phase 4: gitea_username lookup is
+				// always local now (user_git_binding table is canonical).
+				uref.SetLocalBindingDB(db)
 				teamnsSvc := teamns.NewService(db, teamSyncSvc, uref, aes, logger.L())
 				handlers.InitTeamNSService(teamnsSvc)
 			}
@@ -198,6 +209,35 @@ func main() {
 		// lands. CSUserTeamResolver surfaces that as ErrOrgTeamServiceUnavailable
 		// so KBEnsure fails closed (KB_USER_ENSURE_API.md §2.3).
 		handlers.InitTeamResolver(&handlers.CSUserTeamResolver{Client: rpcClient})
+	}
+
+	// Git Ownership Refactor Phase 1: server-side user provisioning service.
+	// Uses the local DB resolver (no RPC back to cs-user). Wired unconditionally
+	// — the consumer (event endpoint, Phase 2) reads this; nil = feature
+	// disabled. The Phase 1 exit test exercises ProvisionUser directly via
+	// the in-process service handle.
+	localGitResolver := gitserver.NewDBResolver(db)
+	userProvisionSvc := gitsync.NewUserProvisionService(db, localGitResolver, logger.L())
+	handlers.InitUserProvisionService(userProvisionSvc)
+
+	// Operator-supplied template seed: if GIT_SERVER_TEMPLATE_ENDPOINT +
+	// GIT_SERVER_TEMPLATE_ADMIN_TOKEN are set and no template row exists yet,
+	// materialize one so tenant binds have something to point at. No-op
+	// otherwise. ErrNoTemplateInput is logged as info (feature simply not
+	// configured).
+	{
+		tplIn := gitserver.TemplateInput{
+			Endpoint:      os.Getenv("GIT_SERVER_TEMPLATE_ENDPOINT"),
+			AdminToken:    os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_TOKEN"),
+			DisplayName:   os.Getenv("GIT_SERVER_TEMPLATE_DISPLAY_NAME"),
+			AdminUser:     os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_USER"),
+			AdminPassword: os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_PASSWORD"),
+		}
+		if tplID, err := gitserver.BootstrapTemplate(context.Background(), db, tplIn); err == nil {
+			logger.L().Info("gitserver: template seeded", zap.String("server_id", tplID))
+		} else if !errors.Is(err, gitserver.ErrNoTemplateInput) {
+			logger.L().Warn("gitserver: bootstrap template failed", zap.Error(err))
+		}
 	}
 
 	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
@@ -895,6 +935,28 @@ func main() {
 	internalAPI.POST("/teams/:team_id/dissolve", handlers.DissolveTeam)
 	internalAPI.POST("/teams/:team_id/bot-token:rotate", handlers.RotateBotToken)
 	internalAPI.POST("/workflow/init", handlers.WorkflowInit)
+
+	// Git Ownership Refactor Phase 1: server-side git_servers CRUD +
+	// tenant→git_server binding. Replaces the cs-user RPC surface.
+	gitServerStore := handlers.NewGormGitServerStore(db)
+	tenantBindingStore := handlers.NewGormTenantGitServerBindingStore(db)
+	gitServerAPI := &handlers.GitServerAPI{Store: gitServerStore}
+	tenantBindingAPI := &handlers.TenantGitServerBindingAPI{Store: tenantBindingStore}
+	internalAPI.POST("/git-servers", gitServerAPI.CreateGitServer)
+	internalAPI.GET("/git-servers", gitServerAPI.ListGitServers)
+	internalAPI.GET("/git-servers/:server_id", gitServerAPI.GetGitServer)
+	internalAPI.PUT("/git-servers/:server_id", gitServerAPI.UpdateGitServer)
+	internalAPI.DELETE("/git-servers/:server_id", gitServerAPI.DeleteGitServer)
+	internalAPI.PUT("/tenants/:tenant_id/git-server", tenantBindingAPI.BindTenantGitServer)
+	internalAPI.GET("/tenants/:tenant_id/git-server", tenantBindingAPI.GetTenantGitServerBinding)
+	internalAPI.DELETE("/tenants/:tenant_id/git-server", tenantBindingAPI.UnbindTenantGitServer)
+
+	// Git Ownership Refactor Phase 3: user.created event consumer.
+	// When USER_CREATED_EVENT_PROCESSING_ENABLED is set, dispatches to
+	// UserProvisionService with idempotency tracking (user_created_event_log).
+	// When the flag is off (default), logs + 202 only.
+	userCreatedAPI := handlers.NewUserCreatedEventAPI(logger.L(), db)
+	internalAPI.POST("/users/created", userCreatedAPI.ReceiveUserCreated)
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)

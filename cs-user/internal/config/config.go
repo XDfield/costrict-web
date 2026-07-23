@@ -9,9 +9,14 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// parseInt wraps strconv.Atoi so the envInt call site stays tidy. Kept
+// unexported — envInt is the public surface.
+func parseInt(s string) (int, error) { return strconv.Atoi(s) }
 
 // Config holds all cs-user runtime configuration.
 type Config struct {
@@ -20,8 +25,23 @@ type Config struct {
 	Internal InternalConfig
 	JWT      JWTConfig
 	Tenant   TenantConfig
-	Gitea    GiteaConfig
 	IDP      IDPConfig
+	EventBus EventBusConfig
+}
+
+// EventBusConfig drives the Git Ownership Refactor Phase 2 outbox worker.
+// Empty TargetURL = feature disabled (no events published; rows still land
+// in user_events but the worker marks them as "target URL not configured"
+// with backoff). Set both fields to enable delivery.
+type EventBusConfig struct {
+	TargetURL    string
+	TargetToken  string
+	PollInterval time.Duration
+	BatchSize    int
+	MaxAttempts  int
+	BackoffBase  time.Duration
+	BackoffMax   time.Duration
+	HTTPTimeout  time.Duration
 }
 
 type HTTPConfig struct {
@@ -68,38 +88,6 @@ type InternalConfig struct {
 // dev where the host is bare localhost without subdomain.
 type TenantConfig struct {
 	ApexDomains []string
-}
-
-// GiteaConfig holds the Phase E3a.1 Gitea auto-provisioning settings.
-//
-// Both fields OPTIONAL: when either is empty, cs-user treats Gitea
-// auto-provisioning as disabled — the giteasync hook is a no-op and the
-// /api/internal/users/:subject_id/gitea-binding endpoint still responds
-// (always 404 in that case). Local dev + tests therefore need no real
-// Gitea instance to run.
-//
-// BaseURL is the Gitea root (e.g. https://gitea.example.com); the
-// trailing slash is stripped so tests/curl don't have to care.
-//
-// AdminToken is a Gitea PAT with admin scope (used for the
-// "Authorization: token <PAT>" header on POST /admin/users). Stored in
-// env / k8s secret — never logged.
-type GiteaConfig struct {
-	BaseURL    string
-	AdminToken string
-	// AdminUser / AdminPassword are OPTIONAL credentials propagated into
-	// git_servers.config as admin_user / admin_password. Required by the
-	// token-mint endpoints (POST /users/{name}/tokens) which sit behind
-	// Gitea's reqBasicOrRevProxyAuth middleware and reject admin PAT auth.
-	// When unset, bot provisioning against this Gitea cannot mint PATs.
-	AdminUser     string
-	AdminPassword string
-}
-
-// Enabled returns true when both BaseURL + AdminToken are populated. cs-user
-// uses this to decide whether to construct *giteasync.Service at boot.
-func (g GiteaConfig) Enabled() bool {
-	return g.BaseURL != "" && g.AdminToken != ""
 }
 
 // IDPConfig holds IdP source validation knobs.
@@ -179,14 +167,18 @@ func Load() (*Config, error) {
 		Tenant: TenantConfig{
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
 		},
-		Gitea: GiteaConfig{
-			BaseURL:       strings.TrimRight(os.Getenv("CS_USER_GITEA_BASE_URL"), "/"),
-			AdminToken:    os.Getenv("CS_USER_GITEA_ADMIN_TOKEN"),
-			AdminUser:     strings.TrimSpace(os.Getenv("CS_USER_GITEA_ADMIN_USER")),
-			AdminPassword: os.Getenv("CS_USER_GITEA_ADMIN_PASSWORD"),
-		},
 		IDP: IDPConfig{
 			AllowInsecure: envBool("CS_USER_IDP_ALLOW_INSECURE", false),
+		},
+		EventBus: EventBusConfig{
+			TargetURL:    strings.TrimSpace(os.Getenv("CS_USER_EVENT_TARGET_URL")),
+			TargetToken:  os.Getenv("CS_USER_EVENT_TARGET_TOKEN"),
+			PollInterval: envDuration("CS_USER_EVENT_POLL_INTERVAL", time.Second),
+			BatchSize:    envInt("CS_USER_EVENT_BATCH_SIZE", 50),
+			MaxAttempts:  envInt("CS_USER_EVENT_MAX_ATTEMPTS", 0),
+			BackoffBase:  envDuration("CS_USER_EVENT_BACKOFF_BASE", 2*time.Second),
+			BackoffMax:   envDuration("CS_USER_EVENT_BACKOFF_MAX", 5*time.Minute),
+			HTTPTimeout:  envDuration("CS_USER_EVENT_HTTP_TIMEOUT", 5*time.Second),
 		},
 	}
 
@@ -256,6 +248,33 @@ func envBool(key string, fallback bool) bool {
 		return false
 	}
 	return fallback
+}
+
+// envDuration parses a time.Duration string ("5s", "2m"). Empty or invalid
+// → fallback. Used for EventBusConfig timing knobs.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
+// envInt parses an int env var. Empty or invalid → fallback.
+func envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := parseInt(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 // requireNonEmpty returns a descriptive error if value is empty.

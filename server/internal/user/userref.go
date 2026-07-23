@@ -10,9 +10,9 @@
 //  1. UserID path:    GetUserByID(ref.UserID) → subject_id known → fetch binding.
 //  2. EmployeeNumber: SearchByEmployeeNumber(ref.EmployeeNumber) → 0/1 row →
 //     fetch binding for that subject_id. 0 rows → ErrUserNotFound (HTTP 404).
-//  3. Once we have a subject_id, GetGiteaBinding resolves the Gitea username.
-//     Missing binding (404 from cs-user) → ErrUserNotGiteaReady (HTTP 404,
-//     distinct error code so the operator knows to run the cs-user
+//  3. Once we have a subject_id, the local user_git_binding row resolves the
+//     Git username. Missing row → ErrUserNotGiteaReady (HTTP 404, distinct
+//     error code so the operator knows to run the cs-user
 //     apply-enterprise-mapping flow rather than search for a missing user).
 //
 // This file deliberately does NOT trigger cs-user's lazy Gitea provisioning
@@ -38,12 +38,12 @@ type UserRef struct {
 	EmployeeNumber string `json:"employee_number,omitempty"`
 }
 
-// ResolvedUser is what UserRefResolver.Resolve returns. GiteaUsername is
+// ResolvedUser is what UserRefResolver.Resolve returns. GitUsername is
 // load-bearing — callers (team-namespace member sync) pass it straight into
 // gitsync.Client.AddTeamMember.
 type ResolvedUser struct {
-	SubjectID     string
-	GiteaUsername string
+	SubjectID   string
+	GitUsername string
 }
 
 // ErrInvalidUserRef — neither or both of UserID / EmployeeNumber was set.
@@ -55,17 +55,35 @@ var ErrInvalidUserRef = errors.New("userref: exactly one of user_id or employee_
 // distinguish from USER_NOT_FOUND (the cs-user lookup itself missed).
 var ErrUserNotGiteaReady = errors.New("userref: user has no gitea binding; run cs-user apply-enterprise-mapping first")
 
-// UserRefResolver resolves a UserRef to a gitea_username via cs-user RPC.
+// UserRefResolver resolves a UserRef to a git_username. Subject-id
+// resolution (UserID / EmployeeNumber lookup) goes through cs-user RPC; the
+// final binding lookup is a local query against server.user_git_binding
+// (the row written by Phase 3's user.created event consumer on @server).
 // Construct with NewUserRefResolver; nil RPC yields ErrRPCUnavailable on
 // every call so handlers can return 503 cleanly.
+//
+// Phase 4 made the local binding path the only production wiring — main.go
+// always wires SetLocalBindingDB; Resolve returns ErrNotConfigured if it
+// wasn't called.
 type UserRefResolver struct {
-	rpc *RPCClient
+	rpc     *RPCClient
+	localDB *gorm.DB
 }
 
 // NewUserRefResolver builds a resolver. rpc may be nil — Resolve then returns
 // ErrRPCUnavailable so handlers degrade to 503 instead of panicking.
 func NewUserRefResolver(rpc *RPCClient) *UserRefResolver {
 	return &UserRefResolver{rpc: rpc}
+}
+
+// SetLocalBindingDB wires the local server DB used for user_git_binding
+// lookups. Call this once at startup — main.go always wires it; calling
+// with nil is a no-op.
+func (r *UserRefResolver) SetLocalBindingDB(db *gorm.DB) {
+	if r == nil {
+		return
+	}
+	r.localDB = db
 }
 
 // Resolve validates ref, dispatches to the right cs-user lookup, then fetches
@@ -93,22 +111,40 @@ func (r *UserRefResolver) Resolve(ctx context.Context, ref UserRef) (*ResolvedUs
 		return nil, err
 	}
 
-	binding, err := r.rpc.GetGiteaBinding(ctx, subjectID)
+	gitUsername, err := r.resolveGitUsername(ctx, subjectID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrUserNotGiteaReady
-		}
 		return nil, err
 	}
-	if binding == nil || strings.TrimSpace(binding.GiteaUsername) == "" {
-		// Defensive: cs-user can return a synced-status row with an empty
-		// username if provisioning was interrupted. Treat as not-ready.
+	if strings.TrimSpace(gitUsername) == "" {
+		// Defensive: a synced-status row with an empty username means
+		// provisioning was interrupted. Treat as not-ready.
 		return nil, ErrUserNotGiteaReady
 	}
 	return &ResolvedUser{
-		SubjectID:     subjectID,
-		GiteaUsername: binding.GiteaUsername,
+		SubjectID:   subjectID,
+		GitUsername: gitUsername,
 	}, nil
+}
+
+// resolveGitUsername queries the local user_git_binding row for subjectID.
+// Returns ErrUserNotGiteaReady if the row is missing — operator should run
+// the cs-user apply-enterprise-mapping flow (the user.created event will
+// provision the binding asynchronously).
+func (r *UserRefResolver) resolveGitUsername(ctx context.Context, subjectID string) (string, error) {
+	if r.localDB == nil {
+		return "", ErrNotConfigured
+	}
+	var row models.UserGitBinding
+	err := r.localDB.WithContext(ctx).
+		Where("user_subject_id = ?", subjectID).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrUserNotGiteaReady
+	}
+	if err != nil {
+		return "", err
+	}
+	return row.GitUsername, nil
 }
 
 // validateUserRef enforces the XOR constraint between UserID and EmployeeNumber.

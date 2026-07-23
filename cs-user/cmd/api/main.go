@@ -37,8 +37,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
-	"github.com/costrict/costrict-web/cs-user/internal/giteasync"
-	"github.com/costrict/costrict-web/cs-user/internal/gitserver"
+	"github.com/costrict/costrict-web/cs-user/internal/eventbus"
 	"github.com/costrict/costrict-web/cs-user/internal/idp"
 	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
@@ -83,25 +82,46 @@ func main() {
 		zap.String("host", cfg.Postgres.Host),
 		zap.String("db", cfg.Postgres.Database))
 
+	// rootCtx lives until shutdown signal arrives; background goroutines
+	// (eventbus worker, future cron) cancel against it for clean exit.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
 	// Construct the user Service bound to the pool. P0-3 wires only the
 	// read methods; write methods (bind/unbind/transfer) land in Phase A
 	// once JWT-claims plumbing is available.
 	userSvc := user.NewService(pool.Gorm)
 
-	// Phase E3a.1: wire Gitea auto-provisioning. Per Phase E3b.1.1, the
-	// service resolves the tenant's git_server endpoint on each call via
-	// the per-tenant DBResolver (replacing the broken global env-var
-	// singleton that all tenants were funnelled through). The template
-	// row must already exist (bootstrap ran above) before we construct
-	// the service.
 	auditSvc := auditlog.NewService(pool.Gorm, nil)
-	if cfg.Gitea.Enabled() {
-		giteaResolver := gitserver.NewDBResolver(pool.Gorm)
-		giteaSvc := giteasync.NewService(pool.Gorm, giteaResolver, auditSvc, nil)
-		userSvc.SetGiteaSync(giteaSvc)
-		logger.L().Info("Gitea auto-provisioning enabled (per-tenant resolver)")
+
+	// Phase 2: outbox writer. Fires user.created events to server so it can
+	// take over Gitea provisioning (cs-user still does its own provisioning
+	// in parallel until Phase 4 cleanup). Feature is enabled only when
+	// CS_USER_EVENT_TARGET_URL is set; otherwise the writer is not wired
+	// and user.Service skips the publish path entirely.
+	var eventBusPublisher *eventbus.UserPublisher
+	if cfg.EventBus.TargetURL != "" {
+		outbox := eventbus.NewOutbox(pool.Gorm, eventbus.Config{
+			TargetURL:    cfg.EventBus.TargetURL,
+			TargetToken:  cfg.EventBus.TargetToken,
+			PollInterval: cfg.EventBus.PollInterval,
+			BatchSize:    cfg.EventBus.BatchSize,
+			MaxAttempts:  cfg.EventBus.MaxAttempts,
+			BackoffBase:  cfg.EventBus.BackoffBase,
+			BackoffMax:   cfg.EventBus.BackoffMax,
+			HTTPTimeout:  cfg.EventBus.HTTPTimeout,
+		}, logger.L())
+		eventBusPublisher = eventbus.NewUserPublisher(outbox)
+		userSvc.SetEventPublisher(eventBusPublisher)
+		// Worker runs until root ctx cancels (process shutdown). Failures
+		// are logged inside; never bubble up to fatal.
+		go outbox.Run(rootCtx)
+		logger.L().Info("eventbus outbox wired",
+			zap.String("target", cfg.EventBus.TargetURL),
+			zap.Duration("poll", cfg.EventBus.PollInterval),
+		)
 	} else {
-		logger.L().Warn("Gitea auto-provisioning disabled — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
+		logger.L().Info("eventbus outbox disabled (CS_USER_EVENT_TARGET_URL empty)")
 	}
 
 	// Dev-mode auto-migrate: when CS_USER_AUTO_MIGRATE is truthy ("1"/"true"),
@@ -127,30 +147,6 @@ func main() {
 		logger.L().Info("auto-migrate applied")
 	}
 
-	// Phase E3b.1.1: bootstrap the git_servers template row from env vars.
-	// When CS_USER_GITEA_BASE_URL + CS_USER_GITEA_ADMIN_TOKEN are set and no
-	// template row exists yet, materialize one + bind any unbound tenants.
-	// Idempotent — safe on every boot. ErrNoTemplateInput means the operator
-	// hasn't configured Gitea yet; that's a soft skip (feature disabled),
-	// not a fatal condition.
-	if cfg.Gitea.Enabled() {
-		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		templateID, err := gitserver.BootstrapTemplate(bootCtx, pool.Gorm, gitserver.TemplateInput{
-			Endpoint:      cfg.Gitea.BaseURL,
-			AdminToken:    cfg.Gitea.AdminToken,
-			DisplayName:   "Gitea (env bootstrap)",
-			AdminUser:     cfg.Gitea.AdminUser,
-			AdminPassword: cfg.Gitea.AdminPassword,
-		})
-		bootCancel()
-		if err != nil {
-			logger.L().Fatal("bootstrap git_servers template", zap.Error(err))
-		}
-		logger.L().Info("git_servers template ready", zap.String("server_id", templateID))
-	} else {
-		logger.L().Warn("git_servers template bootstrap skipped — CS_USER_GITEA_BASE_URL / CS_USER_GITEA_ADMIN_TOKEN unset")
-	}
-
 	// Load the JWT signer when configured (Phase A3). When the env var is
 	// unset, signer stays nil and /.well-known/jwks returns 503 — this keeps
 	// Phase A boot optional so a deployment that hasn't cutover to JWT
@@ -170,18 +166,17 @@ func main() {
 	// Real readiness check (replaces the P0-1 stub): /readyz now reflects
 	// actual DB reachability via Ping.
 	r := app.NewRouter(cfg, app.Deps{
-		ReadyChecker:      pool,
-		Users:             userSvc,
-		AuthIdentities:    userSvc,
-		EmploymentReader:  userSvc,
-		PermissionReader:  userSvc,
-		Signer:            signer,
-		TenantResolver:    tenant.NewResolver(pool.Gorm),
-		TenantAdmin:       tenant.NewAdmin(pool.Gorm),
-		TenantConfig:      tenantconfig.New(pool.Gorm),
-		AuditLog:          auditSvc,
-		GitServerResolver: gitserver.NewDBResolver(pool.Gorm),
-		IdPSources:        newIdPService(pool.Gorm, cfg.IDP.AllowInsecure),
+		ReadyChecker:     pool,
+		Users:            userSvc,
+		AuthIdentities:   userSvc,
+		EmploymentReader: userSvc,
+		PermissionReader: userSvc,
+		Signer:           signer,
+		TenantResolver:   tenant.NewResolver(pool.Gorm),
+		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
+		TenantConfig:     tenantconfig.New(pool.Gorm),
+		AuditLog:         auditSvc,
+		IdPSources:       newIdPService(pool.Gorm, cfg.IDP.AllowInsecure),
 	})
 
 	srv := &http.Server{
@@ -201,6 +196,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logger.L().Info("shutdown signal received")
+	rootCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
