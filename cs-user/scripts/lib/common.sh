@@ -21,6 +21,9 @@ set -euo pipefail
 
 : "${CS_USER_BASE_URL:=http://localhost:8081}"
 
+command -v curl >/dev/null 2>&1 || { echo '[cs-user-ops] curl not found in PATH' >&2; exit 2; }
+command -v jq   >/dev/null 2>&1 || { echo '[cs-user-ops] jq not found in PATH' >&2; exit 2; }
+
 # Log to stderr so JSON on stdout stays parseable.
 csu_log() {
     printf '[cs-user-ops] %s\n' "$*" >&2
@@ -65,6 +68,7 @@ csu_get() {
 
 # Authenticated POST/PUT/DELETE with JSON body.
 # Usage: csu_json_request <METHOD> <path> [json-body-or-empty]
+# Prints "<body>\n<http_code>" — call csu_body / csu_status to split.
 csu_json_request() {
     local method="$1"
     local path="$2"
@@ -76,6 +80,7 @@ csu_json_request() {
         -H "X-Internal-Token: ${CS_USER_INTERNAL_TOKEN}"
         -H 'Content-Type: application/json'
         -H 'Accept: application/json'
+        -w '\n%{http_code}'
     )
     if [[ -n "$body" ]]; then
         curl_args+=(--data "$body")
@@ -83,16 +88,20 @@ csu_json_request() {
     curl "${curl_args[@]}"
 }
 
-# Run JSON through python -m json.tool if python is on PATH; otherwise cat.
-# Keeps responses readable without requiring jq.
+# Strip the trailing status-code line that csu_json_request appends and
+# echo only the body. Args: full_output.
+csu_body() {
+    printf '%s' "$1" | sed '$d'
+}
+
+# Echo only the trailing HTTP status code.
+csu_status() {
+    printf '%s' "$1" | tail -n1
+}
+
+# Pretty-print JSON on stdin via jq.
 csu_pretty() {
-    if command -v python >/dev/null 2>&1; then
-        python -m json.tool 2>/dev/null || cat
-    elif command -v jq >/dev/null 2>&1; then
-        jq . 2>/dev/null || cat
-    else
-        cat
-    fi
+    jq . 2>/dev/null || cat
 }
 
 # Read a file's contents to stdout, failing if missing.

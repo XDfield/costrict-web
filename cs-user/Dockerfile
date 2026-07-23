@@ -18,7 +18,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata && \
+# curl + jq ship in the image so ops scripts under cs-user/scripts/ can
+# run from inside the container (kubectl exec / docker run).
+RUN apk add --no-cache ca-certificates tzdata curl jq && \
     adduser -D -u 1000 csuser
 
 USER csuser

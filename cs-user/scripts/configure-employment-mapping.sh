@@ -20,8 +20,7 @@
 # Optional:
 #   --tenant       override CS_USER_TENANT_ID
 #   --merge-only   if set, merge with existing YAML instead of replacing
-#                  (uses python yaml.discard Preserve — currently NOT
-#                  implemented; reserved flag, errors out)
+#                  (currently NOT implemented; reserved flag, errors out)
 #
 # Env (see lib/common.sh).
 #
@@ -59,12 +58,13 @@ TENANT=$(csu_resolve_tenant "$TENANT_FLAG")
 YAML_CONTENT=$(csu_read_file "$YAML_FILE")
 
 # The PUT /api/internal/tenant/config endpoint accepts the YAML as a JSON
-# string field `config_yaml`. python keeps quoting safe.
-BODY=$(YAML_CONTENT="$YAML_CONTENT" python -c "
-import json, os
-print(json.dumps({'config_yaml': os.environ['YAML_CONTENT']}))
-")
+# string field `config_yaml`. jq --rawfile reads the file as a literal
+# string and embeds it safely without shell interpolation.
+BODY=$(jq -nc --rawfile yaml "$YAML_FILE" '{config_yaml: $yaml}')
 
 csu_log "uploading tenant config_yaml tenant=$TENANT (bytes=${#YAML_CONTENT})"
-RESP=$(csu_json_request PUT /api/internal/tenant/config "$BODY")
+OUT=$(csu_json_request PUT /api/internal/tenant/config "$BODY")
+STATUS=$(csu_status "$OUT")
+RESP=$(csu_body "$OUT")
+[[ "$STATUS" == "200" ]] || csu_die "PUT failed (HTTP $STATUS): $RESP"
 printf '%s\n' "$RESP" | csu_pretty
