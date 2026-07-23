@@ -40,7 +40,7 @@ wrapper around a per-service script (idempotent — re-running is safe).
 | Casdoor | Running and fully configured (idtrust provider attached to your Casdoor Application, redirect URI pointing at server). |
 | server | API up on `$SERVER_BASE_URL` (default localhost:8080), `INTERNAL_SECRET` set. |
 | cs-user | API up on `$CS_USER_BASE_URL` (default localhost:8081), `CS_USER_INTERNAL_TOKEN` set. |
-| Gitea | Up on `$GITEA_ENDPOINT` (default http://127.0.0.1:3001), admin token available. |
+| Gitea | Up on `$DEFAULT_GITEA_ENDPOINT` (default http://127.0.0.1:3001), admin token available. |
 
 Required env (source both `.env` files first):
 
@@ -63,7 +63,7 @@ export CS_USER_BASE_URL="http://localhost:8081"
 export SERVER_BASE_URL="http://localhost:8080"
 
 # Gitea reachable URL. Default http://127.0.0.1:3001.
-export GITEA_ENDPOINT="http://127.0.0.1:3001"
+export DEFAULT_GITEA_ENDPOINT="http://127.0.0.1:3001"
 
 # default_tenant identity — most dev envs leave these at defaults.
 # Override only if you want a different bootstrap tenant slug / display
@@ -86,7 +86,7 @@ export DEFAULT_TENANT_EDITION="enterprise"
 
 # Gitea admin token. NOT in any .env file — generate one via Gitea UI
 # (Profile → Settings → Applications → Generate New Token) and paste below.
-export GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
+export DEFAULT_GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
 
 # --- End copy-paste block ---
 ```
@@ -95,10 +95,10 @@ export GITEA_ADMIN_TOKEN="change-me-to-a-real-gitea-token"
 |---|---|---|---|---|
 | `CS_USER_INTERNAL_TOKEN` | yes | `cs-user/.env` | — | Sent as `X-Internal-Token`. 401 on mismatch. |
 | `INTERNAL_SECRET` | yes | `server/.env` | — | Sent as `X-Internal-Secret`. 401 on mismatch. |
-| `GITEA_ADMIN_TOKEN` | yes | Gitea UI | — | Persisted into `git_servers.config.admin_token`. |
+| `DEFAULT_GITEA_ADMIN_TOKEN` | yes | Gitea UI | — | Persisted into `git_servers.config.admin_token`. |
 | `CS_USER_BASE_URL` | no | — | `http://localhost:8081` | Override on non-default port. |
 | `SERVER_BASE_URL` | no | — | `http://localhost:8080` | Override on non-default port. |
-| `GITEA_ENDPOINT` | no | — | `http://127.0.0.1:3001` | Override for remote/non-default Gitea. |
+| `DEFAULT_GITEA_ENDPOINT` | no | — | `http://127.0.0.1:3001` | Override for remote/non-default Gitea. |
 | `DEFAULT_TENANT_SLUG` | no | — | `default` | Bootstrap tenant identity slug. |
 | `DEFAULT_TENANT_DISPLAY` | no | — | `Default Tenant` | Bootstrap tenant display name. |
 | `DEFAULT_TENANT_EDITION` | no | — | `enterprise` | `enterprise` needed for IdP mapping to engage. |
