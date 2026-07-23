@@ -40,10 +40,6 @@ type Config struct {
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
 	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
-	// AuthMultiIdP toggles the Phase E2.6 provider-aware OAuth flow.
-	// When empty/disabled (RPC client not configured), /api/auth/login
-	// and /api/auth/callback fall back to the legacy Casdoor flow.
-	AuthMultiIdP AuthMultiIdPConfig
 	// JWTSignMode controls the A8 灰度 (gradual rollout) state for JWT
 	// self-signing. Three states (off → dual → single) per ROADMAP §9.4:
 	//
@@ -100,19 +96,10 @@ const (
 	UserServiceBackendRPC   = "rpc"
 )
 
-// AuthMultiIdPConfig controls the Phase E2.6 multi-IdP OAuth orchestration
-// layer. When StateSecret is non-empty AND UserService.Backend==rpc, the
-// server becomes a provider-aware OAuth layer: /api/auth/login?idp=X routes
-// through cs-user's idp_sources, /api/auth/callback handles arbitrary OAuth
-// providers, /api/auth/idps lists the tenant's enabled providers.
-//
-// When StateSecret is empty the multi-IdP flow is inert — Login/Callback
-// fall back to legacy Casdoor behavior, matching pre-E2.6 deployments.
-type AuthMultiIdPConfig struct {
-	StateSecret     string // HMAC key for state tokens; empty disables the flow
-	DefaultProvider string // provider used when ?idp= is absent; empty = legacy Casdoor
-	StateTTLSec     int    // state validity window in seconds; default 600
-}
+// AuthMultiIdPConfig removed — Phase E2.6 multi-IdP bypass deprecated.
+// OAuth is brokered exclusively via Casdoor; per-provider credentials live
+// inside Casdoor only. The legacy /api/auth/login + /api/auth/callback
+// routes talk directly to Casdoor.
 
 // WriteMode values for UserServiceConfig.WriteMode.
 const (
@@ -327,11 +314,6 @@ func Load() *Config {
 		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
 		// OFF — Casdoor JWT stays authoritative until operator flips.
 		JWTSignMode: loadJWTSignMode(),
-		AuthMultiIdP: AuthMultiIdPConfig{
-			StateSecret:     getEnv("AUTH_STATE_SECRET", ""),
-			DefaultProvider: getEnv("DEFAULT_IDP_PROVIDER", ""),
-			StateTTLSec:     getEnvInt("AUTH_STATE_TTL_SECONDS", 600),
-		},
 	}
 }
 

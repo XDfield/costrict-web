@@ -53,7 +53,6 @@ import (
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
-	"github.com/costrict/costrict-web/server/internal/idp"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/kanban"
 	"github.com/costrict/costrict-web/server/internal/leader"
@@ -133,27 +132,6 @@ func main() {
 	handlers.InitCookieConfig(cfg)
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
-
-	// Phase E2.6: provider-aware multi-IdP OAuth orchestration. Wires the
-	// cs-user IdP RPC client + generic OAuth client into the Login/Callback
-	// wrappers. When AUTH_STATE_SECRET is empty or the cs-user RPC client
-	// isn't configured, the wrappers fall through to the legacy Casdoor
-	// flow — zero behavior change for pre-E2.6 deployments.
-	if cfg.AuthMultiIdP.StateSecret != "" {
-		if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient != nil && rpcClient.Configured() {
-			stateTTL := time.Duration(cfg.AuthMultiIdP.StateTTLSec) * time.Second
-			if stateTTL > 0 {
-				handlers.SetMultiIdPStateTTL(stateTTL)
-			}
-			handlers.InitMultiIdP(&handlers.MultiIdPHandler{
-				RPC:             idp.NewRPCClient(cfg.UserService),
-				UserWriter:      userModule.Writer,
-				StateSecret:     cfg.AuthMultiIdP.StateSecret,
-				DefaultProvider: cfg.AuthMultiIdP.DefaultProvider,
-				JWTSignMode:     cfg.JWTSignMode,
-			})
-		}
-	}
 
 	// Phase E3b.1.1: @server-side Gitea team sync (manual admin trigger),
 	// per-tenant resolved. Constructed only when cs-user RPC is configured
@@ -482,12 +460,11 @@ func main() {
 	{
 		auth := api.Group("/auth")
 		{
-			auth.GET("/callback", handlers.CallbackMultiIdP)
-			auth.GET("/login", handlers.LoginMultiIdP)
+			auth.GET("/callback", handlers.AuthCallback)
+			auth.GET("/login", handlers.Login)
 			auth.GET("/resolve", middleware.RequireAuth(casdoorEndpoint, jwksProvider), handlers.ResolveAuthUser)
 			auth.POST("/logout", handlers.Logout)
-			auth.GET("/bind/callback", handlers.CallbackMultiIdP)
-			auth.GET("/idps", handlers.ListIdPs)
+			auth.GET("/bind/callback", handlers.AuthCallback)
 		}
 
 		// === Public read-only endpoints (OptionalAuth, no login required) ===

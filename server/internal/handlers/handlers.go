@@ -539,7 +539,7 @@ func AuthCallback(c *gin.Context) {
 			} else if created != nil {
 				// Phase A4b/Slice 2: enterprise mapping is auto-triggered
 				// inside cs-user's GetOrCreateUser using claims.ExternalClaims
-				// (which the multi-idp callback harvests from profile.Raw).
+				// (which the Casdoor callback harvests from profile.Raw).
 				// Best-effort — employment mapping is a bonus feature and must
 				// never block login.
 				// Phase A8: when mode is dual or single, ask cs-user to mint

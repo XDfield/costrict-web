@@ -30,7 +30,7 @@ type JWTClaims struct {
 	ProviderUserID    string
 	Phone             string
 	// ExternalClaims carries the raw IdP userinfo map (Profile.Raw from the
-	// multi-idp OAuth client) so cs-user can run field_map extraction on the
+	// Casdoor OAuth callback) so cs-user can run field_map extraction on the
 	// tenant's employment_providers config. json tag is explicit so the wire
 	// key matches cs-user's models.JWTClaims.ExternalClaims tag ("external_claims")
 	// without relying on encoding/json's case-insensitive fallback.
@@ -948,8 +948,7 @@ func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
 	// Surface the raw Casdoor token payload (properties, signupApplication,
 	// user, ...) as ExternalClaims so cs-user's employment_providers.field_map
 	// can extract per-provider enterprise fields without server hard-coding
-	// each IdP's property namespace. This is the Casdoor-brokered counterpart
-	// to multi-idp's profile.Raw injection — it lets field_map configs like
+	// each IdP's property namespace. Lets field_map configs like
 	//   properties.oauth_Custom.id → enterprise_uid
 	// work for IdPs routed through Casdoor (idtrust, custom OAuth apps, ...).
 	// We pass the whole raw map rather than cherry-picking keys so future
