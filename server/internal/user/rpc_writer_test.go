@@ -723,13 +723,14 @@ func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 	}
 
 	// Verify the request body shape: user_subject_id forwarded; identity
-	// carries the OIDC fields (PascalCase on wire, decoded by cs-user via
-	// case-insensitive fallback).
+	// carries OIDC fields with explicit snake_case json tags (the prior
+	// reliance on encoding/json's case-insensitive fallback silently dropped
+	// snake_case-only fields like universal_id on the cs-user side).
 	var body struct {
 		UserSubjectID string `json:"user_subject_id"`
 		Identity      struct {
-			UniversalID string `json:"UniversalID"`
-			Name        string `json:"Name"`
+			UniversalID string `json:"universal_id"`
+			Name        string `json:"name"`
 		} `json:"identity"`
 	}
 	if err := json.Unmarshal(cap.Body, &body); err != nil {

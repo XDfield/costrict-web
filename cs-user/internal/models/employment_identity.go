@@ -26,6 +26,11 @@ type EmploymentIdentity struct {
 	UserSubjectID            string         `gorm:"index:idx_employment_identities_user_subject_id;not null;size:191;index:idx_employment_identities_tenant_user,priority:2" json:"user_subject_id"`
 	Provider                 string         `gorm:"index:idx_employment_identities_provider;size:64;not null" json:"provider"`
 	EnterpriseUID            *string        `gorm:"size:191;column:enterprise_uid" json:"enterprise_uid,omitempty"`
+	// DisplayName is the per-provider display name (e.g. idtrust 姓名),
+	// synced every login from properties.oauth_Custom_displayName via the
+	// tenant's field_map. Employment identity is immutable from the user's
+	// perspective — every login overwrites with the IdP-asserted value.
+	DisplayName              *string        `gorm:"size:191" json:"display_name"`
 	EmployeeNumber           *string        `gorm:"size:191" json:"employee_number"`
 	CostCenter               *string        `gorm:"index:idx_employment_identities_cost_center;size:191" json:"cost_center"`
 	OrgPath                  *string        `gorm:"type:text" json:"org_path"`
