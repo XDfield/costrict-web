@@ -356,6 +356,20 @@ func main() {
 		return userModule.Service.GetUserStatus(subjectID)
 	})
 
+	// R3 (REGISTRATION_PROFILE_DESIGN): profile-completion gate. Opt-in via
+	// PROFILE_GATE_ENABLED; inert by default so dev environments without the
+	// flag keep working. Lookup is a single-column read on profile_completed_at;
+	// the middleware caches it for 30s per subject and is invalidated by
+	// handlers.CompleteRegistration on success.
+	middleware.SetProfileGateEnabled(cfg.ProfileGateEnabled)
+	middleware.SetProfileChecker(func(subjectID string) (bool, error) {
+		complete, err := userModule.Service.IsProfileComplete(subjectID)
+		if err != nil {
+			return false, err
+		}
+		return complete, nil
+	})
+
 	// Bootstrap platform-admin granting (initial admin without manual SQL):
 	// installed as a post-login hook on GetOrCreateUser, which fires only on a
 	// genuine login by the user themselves (the OAuth callback and the JWKS
@@ -531,6 +545,11 @@ func main() {
 		// All routes below require authentication
 		authed := api.Group("")
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+		// R3 (REGISTRATION_PROFILE_DESIGN): profile-completion gate.
+		// Mounted AFTER RequireAuth so UserIDKey is populated. No-op when
+		// PROFILE_GATE_ENABLED=false (default). Whitelists the registration
+		// routes themselves (see registration_gate.go).
+		authed.Use(middleware.RequireProfileComplete)
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
 			authed.GET("/me", handlers.GetMe)

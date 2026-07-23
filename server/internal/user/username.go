@@ -208,3 +208,28 @@ func (s *UserService) IsUsernameAvailable(ctx context.Context, username, exclude
 	}
 	return count == 0, nil
 }
+
+// IsProfileComplete reports whether the user has finished first-time
+// registration (profile_completed_at IS NOT NULL). Backs the
+// middleware.RequireProfileComplete gate. Returns true when the user is
+// missing from the local mirror — the gate is best-effort and a missing
+// row shouldn't lock a logged-in user out (server-side mirror lag during
+// dual-write canary is the realistic trigger; cs-user is authoritative).
+func (s *UserService) IsProfileComplete(subjectID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("user.Service: nil db")
+	}
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" {
+		return false, errors.New("subject_id is required")
+	}
+	var u models.User
+	err := s.db.Where("subject_id = ?", subjectID).Take(&u).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return true, nil // fail open
+		}
+		return false, err
+	}
+	return u.ProfileCompletedAt != nil, nil
+}

@@ -65,6 +65,12 @@ type Config struct {
 	// "dual"; false/unset maps to "off". JWT_SIGN_MODE wins when both
 	// are set.
 	JWTSignMode string
+	// ProfileGateEnabled (R3 of REGISTRATION_PROFILE_DESIGN): when true,
+	// first-time users without profile_completed_at get 403 profile_incomplete
+	// on all non-whitelisted routes until they finish /register/complete.
+	// Default false for staged rollout (dev → canary → prod). When false,
+	// middleware.RequireProfileComplete is a no-op.
+	ProfileGateEnabled bool
 }
 
 // JWTSignMode values for Config.JWTSignMode.
@@ -314,6 +320,7 @@ func Load() *Config {
 		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
 		// OFF — Casdoor JWT stays authoritative until operator flips.
 		JWTSignMode: loadJWTSignMode(),
+		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
 	}
 }
 
@@ -394,6 +401,7 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
+// getEnvBool reads a boolean env var. Used by R3's PROFILE_GATE_ENABLED.
 func getEnvBool(key string, defaultValue bool) bool {
 	// Check if environment variable is explicitly set (even if empty)
 	viperValue := viper.GetString(key)
