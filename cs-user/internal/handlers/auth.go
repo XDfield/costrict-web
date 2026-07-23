@@ -48,8 +48,18 @@ type AuthAPI struct {
 // EmploymentReader is the subset of *user.Service the reissue flow needs.
 // Declared as an interface for the same testability reasons as UserService
 // — sqlite-backed fakes substitute without spinning a real Service.
+//
+// ApplyEnterpriseMapping is invoked BEFORE GetEmploymentIdentity so the
+// fresh-login Casdoor JWT (forwarded as Identity.ExternalClaims by server's
+// ParseJWTClaimsFromAccessToken) drives an upsert against the tenant's
+// employment_providers.field_map. Without this call the reissue flow would
+// read whatever row was previously cached (typically all-NULL when no other
+// caller populated it), and the freshly-arrived idtrust/github enterprise
+// fields would never reach the signed JWT. Errors are best-effort — see
+// ReissueToken for the swallow-and-continue contract.
 type EmploymentReader interface {
 	GetEmploymentIdentity(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
+	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
 }
 
 // PermissionReader is the Phase C1 subset of *user.Service the reissue flow
@@ -157,6 +167,25 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	// comparison when the JWT has no tenant_slug claim.
 	tenantSlug := req.TenantSlug
 
+	// Slice 1.6: refresh employment_identities from the freshly-arrived
+	// Casdoor JWT BEFORE reading it back. server's ParseJWTClaimsFromAccessToken
+	// populates Identity.ExternalClaims with the raw token payload
+	// (properties.oauth_Custom.*, signupApplication, ...) so the tenant's
+	// field_map can extract enterprise columns without server hard-coding
+	// each IdP's property namespace. ApplyEnterpriseMapping is best-effort:
+	// every error path (disabled provider, missing tenant_configs row,
+	// malformed YAML, empty ExternalClaims) is swallowed — the read below
+	// still runs and the JWT still issues. This preserves the "employment
+	// mapping is a bonus feature and must never block login" contract.
+	if req.Identity != nil && len(req.Identity.ExternalClaims) > 0 {
+		_ = a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
+			TenantID:        tenantID,
+			UserSubjectID:   req.UserSubjectID,
+			Provider:        req.Identity.Provider,
+			ExternalClaims:  req.Identity.ExternalClaims,
+		})
+	}
+
 	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), req.UserSubjectID)
 	if err != nil {
 		switch {
@@ -168,6 +197,33 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		return
 	}
 	// employment == nil is success — user has no enterprise snapshot yet.
+
+	// Tactical patch: MULTI_TENANCY §9.6 mandates `name` → user.display_name.
+	// Casdoor-brokered IdPs (idtrust etc.) frequently surface the employee
+	// number as Casdoor's User.Name (because the IdP returns id=42766 and
+	// Casdoor falls back to it when no canonical name claim exists). When
+	// that happens, Identity.Name equals EnterpriseUID/EmployeeNumber —
+	// clearly wrong. Override from Employment.DisplayName (which the
+	// field_map populated from oauth_Custom_displayName).
+	// TODO: replace with proper basic-user-init-mapping at registration
+	// (follow-up) — this only fixes the JWT emission path.
+	if req.Identity != nil && employment != nil && employment.DisplayName != nil {
+		displayName := *employment.DisplayName
+		if displayName != "" {
+			current := req.Identity.Name
+			uid := ""
+			if employment.EnterpriseUID != nil {
+				uid = *employment.EnterpriseUID
+			}
+			empNo := ""
+			if employment.EmployeeNumber != nil {
+				empNo = *employment.EmployeeNumber
+			}
+			if current == "" || current == uid || current == empNo {
+				req.Identity.Name = displayName
+			}
+		}
+	}
 
 	// Phase C1: populate permission claims from tenant_admins +
 	// platform_admins. Skipped entirely when Permissions is nil (灰度

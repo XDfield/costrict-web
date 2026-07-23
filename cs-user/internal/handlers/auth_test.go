@@ -24,12 +24,27 @@ import (
 
 // stubEmploymentReader lets handler tests pin GetEmploymentIdentity responses
 // without a DB. Mirrors the stubUserService pattern in users_test.go.
+//
+// applyCalls captures ApplyEnterpriseMapping invocations so tests can assert
+// the reissue-token flow forwarded the right ExternalClaims / Provider. Nil
+// slice = either no call or no capture — tests opt in by reading the slice.
 type stubEmploymentReader struct {
-	fn func(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
+	fn         func(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
+	applyCalls *[]user.EmploymentMappingParams
 }
 
 func (s stubEmploymentReader) GetEmploymentIdentity(ctx context.Context, id string) (*models.EmploymentIdentity, error) {
 	return s.fn(ctx, id)
+}
+
+// ApplyEnterpriseMapping records the call (when applyCalls is non-nil) so
+// the reissue-token wiring test can verify ExternalClaims forwarding. Return
+// value is irrelevant — the handler swallows it.
+func (s stubEmploymentReader) ApplyEnterpriseMapping(_ context.Context, params user.EmploymentMappingParams) error {
+	if s.applyCalls != nil {
+		*s.applyCalls = append(*s.applyCalls, params)
+	}
+	return nil
 }
 
 // stubPermissionReader lets handler tests pin GetPlatformAdmin +
@@ -174,6 +189,94 @@ func TestReissueToken_HappyPath(t *testing.T) {
 	// ExpiresAt should match the claim's exp.
 	if got.Expiry == nil || !got.Expiry.Equal(resp.ExpiresAt) {
 		t.Errorf("ExpiresAt mismatch: response=%v claims=%v", resp.ExpiresAt, got.Expiry)
+	}
+}
+
+// TestReissueToken_AppliesEnterpriseMappingFromExternalClaims verifies the
+// Slice 1.6 wiring: reissue-token must forward Identity.ExternalClaims to
+// ApplyEnterpriseMapping BEFORE reading the snapshot back, so freshly-arrived
+// Casdoor JWT payloads (properties.oauth_Custom.*, signupApplication, ...)
+// drive the field_map upsert. Without this call the snapshot stays NULL and
+// the signed JWT never carries enterprise claims.
+func TestReissueToken_AppliesEnterpriseMappingFromExternalClaims(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	var applyCalls []user.EmploymentMappingParams
+	svc := stubEmploymentReader{
+		fn: func(_ context.Context, _ string) (*models.EmploymentIdentity, error) {
+			return nil, nil // read path returns "no snapshot" — still issues token
+		},
+		applyCalls: &applyCalls,
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	externalClaims := map[string]any{
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom": map[string]any{
+				"id":           "alice-idtrust-uid",
+				"employeeNumber": "E-1001",
+			},
+		},
+	}
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		TenantID:      "default",
+		Identity: &models.JWTClaims{
+			Provider:        "idtrust",
+			ExternalClaims:  externalClaims,
+		},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if len(applyCalls) != 1 {
+		t.Fatalf("ApplyEnterpriseMapping calls: got %d, want 1", len(applyCalls))
+	}
+	got := applyCalls[0]
+	if got.UserSubjectID != "usr_alice" {
+		t.Errorf("UserSubjectID: got %q, want usr_alice", got.UserSubjectID)
+	}
+	if got.TenantID != "default" {
+		t.Errorf("TenantID: got %q, want default", got.TenantID)
+	}
+	if got.Provider != "idtrust" {
+		t.Errorf("Provider: got %q, want idtrust", got.Provider)
+	}
+	if len(got.ExternalClaims) != len(externalClaims) {
+		t.Errorf("ExternalClaims forwarded: got %d keys, want %d", len(got.ExternalClaims), len(externalClaims))
+	}
+}
+
+// TestReissueToken_NoExternalClaimsSkipsApplyMapping verifies the skip path:
+// when Identity.ExternalClaims is empty (refresh-token / cached identity
+// flows), the handler MUST NOT call ApplyEnterpriseMapping — there's nothing
+// new to extract, and calling it with an empty map would write a NULL row on
+// every reissue.
+func TestReissueToken_NoExternalClaimsSkipsApplyMapping(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	var applyCalls []user.EmploymentMappingParams
+	svc := stubEmploymentReader{
+		fn: func(_ context.Context, _ string) (*models.EmploymentIdentity, error) {
+			return nil, nil
+		},
+		applyCalls: &applyCalls,
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		Identity: &models.JWTClaims{
+			Provider: "idtrust",
+			// No ExternalClaims — refresh flow.
+		},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if len(applyCalls) != 0 {
+		t.Errorf("ApplyEnterpriseMapping calls: got %d, want 0 (no ExternalClaims to forward)", len(applyCalls))
 	}
 }
 

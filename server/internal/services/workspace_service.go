@@ -175,7 +175,8 @@ func (s *WorkspaceService) CreateWorkspace(userID string, req CreateWorkspaceReq
 		tx.Rollback()
 		if strings.Contains(err.Error(), "idx_workspaces_user_name_active") ||
 			strings.Contains(err.Error(), "duplicate key value violates unique constraint") ||
-			strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+			strings.Contains(err.Error(), "duplicated key not allowed") {
 			return nil, ErrWorkspaceNameExists
 		}
 		return nil, err

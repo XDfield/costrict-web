@@ -134,7 +134,9 @@ func TestNewEnterpriseClaims_NilIdentityAndEmployment(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	jsonStr := string(bs)
-	for _, banned := range []string{"universal_id", "employee_number", "job_title", "tenant_id"} {
+	// universal_id is ALWAYS emitted (falls back to Subject per §12.1
+	// "三字段同值约定" — Casdoor OAuth-brokered users arrive with it empty).
+	for _, banned := range []string{"employee_number", "job_title", "tenant_id"} {
 		if strings.Contains(jsonStr, banned) {
 			t.Errorf("nil-input JSON should omit %q; got %s", banned, jsonStr)
 		}
@@ -449,6 +451,8 @@ func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
 		"phone":              "Phone",
 
 		// Enterprise context (Phase A5 — employment_identities)
+		"enterprise_uid":  "EnterpriseUID",
+		"display_name":    "DisplayName",
 		"employee_number": "EmployeeNumber",
 		"job_title":       "JobTitle",
 		"job_level":       "JobLevel",

@@ -703,6 +703,7 @@ func TestAllowedEmploymentColumns(t *testing.T) {
 	t.Parallel()
 	want := []string{
 		"enterprise_uid",
+		"display_name",
 		"employee_number",
 		"cost_center",
 		"org_path",

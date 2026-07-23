@@ -1421,7 +1421,7 @@ user_auth_identities      INSERT 首行               INSERT 增量行          
   // === 标准注册 claims（RFC 7519）===
   "iss": "https://cs-user.example.com",
   "sub": "u_abc123def456",                     // user_id (UUID)，跨登录源不变
-  "universal_id": "u_abc123def456",            // 同 sub（cs-cloud 主 UserID 来源，不可降级，§9.2 硬约束 #2 / GLOSSARY §2.1 三字段同值约定）
+  "universal_id": "u_abc123def456",            // 首选 Casdoor JWT 内的 universal_id（brokered IdP 用），缺失 fallback 到 sub；详见下方「universal_id 取值约定」
   "aud": ["cs-cloud", "app-ai-native", "csc"], // 受众白名单
   "iat": 1730000000,
   "nbf": 1730000000,
@@ -1489,7 +1489,7 @@ user_auth_identities      INSERT 首行               INSERT 增量行          
 
 | 字段 | 类型 | 必填 | 来源 | 说明 |
 |---|---|---|---|---|
-| `id` | UUID | ✓ | cs-user 自生成 | 同 `sub` / `universal_id`（三字段同值，GLOSSARY §2.1），业务表 FK |
+| `id` | UUID | ✓ | cs-user 自生成 | 同 `sub`（业务表 FK）。注：`universal_id` 与 `sub` 不再保证同值，详见下方「universal_id 取值约定」 |
 | `username` | string | onboarding 完成后 ✓ | cs-user 自管 | tenant 内唯一（§6.1），**v1 一经确认不可变**（§11.3）；onboarding 窗口期为 NULL |
 | `display_name` | string | ✗（推荐）| IdP / 用户编辑 | 展示名，用户可随时修改（`PATCH /api/me/profile`，§11.3.4）|
 | `email` | string | ✓ | IdP / 用户绑定 | 用户主邮箱，全局唯一（§6.1）|
@@ -1779,7 +1779,7 @@ claims := jwt.MapClaims{
     "iss": "https://cs-user.example.com",
     "aud": []string{"cs-cloud", "app-ai-native", "csc"},
     "sub": user.ID,
-    "universal_id": user.ID,                   // 同 sub（cs-cloud 硬依赖，§9.2 #2 / GLOSSARY §2.1）
+    "universal_id": casdoorUniversalID(user),  // 首选 Casdoor JWT 内 universal_id，缺失 fallback 到 user.ID；详见 §12.7「universal_id 取值约定」
     "iat": now.Unix(),
     "nbf": now.Unix(),
     "exp": now.Add(30 * time.Minute).Unix(),
@@ -1889,7 +1889,19 @@ middleware 注入到 gin context 的字段：
 | `jwt_groups` | `groups` | []string | 成员关系鉴权 |
 | `jwt_primary_provider` | `primary_provider` | string | 审计 / 风控（用户当前用什么 IdP 登录）|
 
-> **`universal_id` / `sub` / `user.id` 三字段同值约定**：cs-user 签发的 JWT 在 `universal_id`（costrict 历史遗留字段，cs-cloud 主用）/ `sub`（OIDC 标准）/ `user.id`（嵌套快照）三处都填同一个 cs-user 内部 ID（格式 `u_[a-f0-9]{12}`）。SDK 按 `universal_id` → `sub` → `user.id` 顺序 fallback 取值，业务侧统一读 `jwt_user_id`。cs-cloud 仍直接读 `universal_id` 字段以维持零侵入（详见 [IDENTITY_ARCHITECTURE_ROADMAP](./IDENTITY_ARCHITECTURE_ROADMAP.md) §A5 / §下游兼容矩阵）。
+> **`universal_id` 取值约定（2026-07-23 修订）**：cs-user 签发的 JWT 中 `universal_id` 与 `sub` **不再保证同值**，取值优先级如下：
+>
+> 1. **Casdoor 原始 JWT 内的 `universal_id`**（首选）— server 的 `MergeJWTClaims` 对 brokered IdP（idtrust 等）让 raw JWT 的值优先于 `/api/getUserInfo` 响应；这样可保持与 Casdoor 自身生态（cs-cloud 已有用户表 `casdoor_universal_id` 列、quota-manager 历史数据）对齐。
+> 2. **cs-user 内部 Subject**（兜底）— 当 Casdoor JWT 本身也缺失 `universal_id`（罕见）时，`NewEnterpriseClaims` 用 `sub` 兜底，保证 quota-manager `internal/models/models.go:56` 这类硬依赖不会拿到空值。
+>
+> 历史版本的"三字段同值约定"（`universal_id` ≡ `sub` ≡ `user.id`，全部等于 cs-user 内部 ID）已废弃；下游 SDK 仍按 `universal_id` → `sub` → `user.id` 顺序 fallback。`user.id` 嵌套快照在 Phase B 才会发出，当前 Phase A 阶段 `user.id` 缺失时 SDK 自然 fallback 到 `sub`，行为不变。
+>
+> **影响范围**：
+> - cs-cloud `internal/provider/jwt.go`：先读 `universal_id` 再 fallback `sub`，现在 `universal_id` 拿到的是 Casdoor 原始值（即 Casdoor `sub`），跨登录源稳定，行为正确。
+> - quota-manager：拿 `universal_id` 作为唯一用户标识，现在获得 Casdoor 原始 universal_id，与历史数据匹配。
+> - SDK `jwt_user_id` 抽象：取值顺序不变，但 `jwt_user_id` 现在可能等于 Casdoor universal_id 而非 cs-user sub；业务表 `created_by` / `updated_by` FK 列若已存 cs-user sub 数据，**升级时需要数据迁移**（详见 P0-8_CUTOVER_RUNBOOK）。
+>
+> 详见 [IDENTITY_ARCHITECTURE_ROADMAP](./IDENTITY_ARCHITECTURE_ROADMAP.md) §A5 / §下游兼容矩阵。
 
 > **嵌套字段读取约定**：下游业务代码通过 SDK 提供的 typed accessor 读取嵌套字段，例如 `jwtclaims.UserEnterprise(c).UID` / `jwtclaims.UserEnterprise(c).EmployeeID` / `jwtclaims.UserEnterprise(c).Department`。SDK 内部封装 MapClaims 类型断言与默认值处理，避免业务代码直接操作 `map[string]any`。
 

@@ -54,6 +54,14 @@ type EnterpriseClaims struct {
 	Phone             string `json:"phone,omitempty"`
 
 	// --- Enterprise context (Phase A5 — from employment_identities) ---
+	// EnterpriseUID is the user's stable identifier at the enterprise IdP
+	// (e.g. idtrust id). DisplayName is the per-provider 姓名 (display name).
+	// Both are immutable from the user's perspective — every login
+	// overwrites them via ApplyEnterpriseMapping. Required pair per the
+	// two-layer design: basic user info is mutable, enterprise identity is
+	// IdP-synced and not user-editable.
+	EnterpriseUID string `json:"enterprise_uid,omitempty"`
+	DisplayName   string `json:"display_name,omitempty"`
 	EmployeeNumber string `json:"employee_number,omitempty"`
 	JobTitle       string `json:"job_title,omitempty"`
 	JobLevel       string `json:"job_level,omitempty"`
@@ -218,13 +226,31 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 		c.PreferredUsername = params.Identity.PreferredUsername
 		c.Email = params.Identity.Email
 		c.Picture = params.Identity.Picture
-		c.Owner = params.Identity.Owner
+		// Owner intentionally NOT carried into the cs-user JWT — it's a
+		// Casdoor-only concept (built-in organization, always "user-group"
+		// or similar) that the new identity architecture replaces with
+		// tenant_id. The struct field stays for vocab-lock / parsing
+		// compatibility, but emission is suppressed so relying parties
+		// don't see Casdoor's legacy org noise. See MULTI_TENANCY_DESIGN
+		// §12.1 — `owner` is absent from the canonical claim set.
 		c.Provider = params.Identity.Provider
 		c.ProviderUserID = params.Identity.ProviderUserID
 		c.Phone = params.Identity.Phone
 	}
 
+	// universal_id is sourced from the Casdoor JWT (preferred — server's
+	// MergeJWTClaims lets the signed JWT value win over /api/getUserInfo
+	// for OAuth-brokered users like idtrust). When that source is also
+	// empty (rare: Casdoor JWT itself lacks universal_id), fall back to
+	// cs-user's internal Subject so quota-manager / cs-cloud never see a
+	// blank universal_id (they treat it as a hard dependency).
+	if c.UniversalID == "" {
+		c.UniversalID = params.Subject
+	}
+
 	if params.Employment != nil {
+		c.EnterpriseUID = derefStr(params.Employment.EnterpriseUID)
+		c.DisplayName = derefStr(params.Employment.DisplayName)
 		c.EmployeeNumber = derefStr(params.Employment.EmployeeNumber)
 		c.JobTitle = derefStr(params.Employment.JobTitle)
 		c.JobLevel = derefStr(params.Employment.JobLevel)
