@@ -311,3 +311,90 @@ func (a *UsersAPI) GetUserProfile(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, dto)
 }
+
+// adminUpdateProfileRequest is the body for PUT
+// /api/internal/users/:subject_id/profile (R5). Both fields optional, but at
+// least one must be non-nil — the service rejects empty patches with 400.
+// username empty preserves the existing value; display_name nil preserves,
+// non-nil empty clears to NULL.
+type adminUpdateProfileRequest struct {
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name"`
+	OperatorID  string  `json:"operator_id"`
+}
+
+// AdminUpdateProfile godoc
+//
+//	@Summary		Override username / display_name (admin)
+//	@Description	Admin-side profile override (R5 of REGISTRATION_PROFILE_DESIGN). Unlike the user-self POST /profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. username changes are tenant-scoped-unique-checked; collisions return 409. operator_id is the admin's subject_id, recorded on the audit row. Used by @server's PUT /api/admin/users/:id/profile.
+//	@Tags			users,admin
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			subject_id	path		string						true	"Target user subject_id"
+//	@Param			body		body		adminUpdateProfileRequest	true	"Fields to override (at least one required)"
+//	@Success		200			{object}	adminUserProfileDTO
+//	@Failure		400			{object}	object{error=string}
+//	@Failure		404			{object}	object{error=string}
+//	@Failure		409			{object}	object{error=string}
+//	@Failure		500			{object}	object{error=string}
+//	@Router			/api/internal/users/{subject_id}/profile [put]
+func (a *UsersAPI) AdminUpdateProfile(c *gin.Context) {
+	subjectID := c.Param("subject_id")
+	if subjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		return
+	}
+	var req adminUpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	u, err := a.Svc.AdminUpdateProfile(c.Request.Context(), subjectID, req.Username, req.DisplayName, req.OperatorID)
+	if err != nil {
+		switch {
+		case errors.Is(err, userpkg.ErrUsernameInvalid),
+			errors.Is(err, userpkg.ErrUsernameReserved),
+			err.Error() == "invalid_display_name",
+			err.Error() == "subject_id is required",
+			err.Error() == "no fields to update":
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, userpkg.ErrUsernameTaken):
+			c.JSON(http.StatusConflict, gin.H{"error": "username_taken"})
+		case err.Error() == "user_not_found":
+			c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+
+	// Audit — best-effort; records before/after username + display_name so
+	// future dashboards can spot rename waves (e.g. post-acquisition rebrand).
+	recordAudit(a.Audit, c, models.ActionUserProfileOverridden, models.TargetTypeUser,
+		"user:"+u.SubjectID, map[string]any{
+			"operator":   req.OperatorID,
+			"username":   u.Username,
+			"updated_at": u.UpdatedAt,
+		})
+
+	dto := adminUserProfileDTO{
+		SubjectID:    u.SubjectID,
+		Username:     u.Username,
+		DisplayName:  u.DisplayName,
+		Email:        u.Email,
+		Phone:        u.Phone,
+		AvatarURL:    u.AvatarURL,
+		AuthProvider: u.AuthProvider,
+		Organization: u.Organization,
+		Status:       u.Status,
+		IsActive:     u.IsActive,
+		CreatedAt:    u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if u.LastLoginAt != nil {
+		s := u.LastLoginAt.Format("2006-01-02T15:04:05Z")
+		dto.LastLoginAt = &s
+	}
+	c.JSON(http.StatusOK, dto)
+}

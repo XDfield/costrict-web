@@ -26,6 +26,7 @@ type stubRPC struct {
 	setUserStatus     func(ctx context.Context, subjectID, status, operatorID string) (*userpkg.AdminSetUserStatusResult, error)
 	listOrganizations func(ctx context.Context) ([]userpkg.AdminOrganization, error)
 	getUserProfile    func(ctx context.Context, subjectID string) (*userpkg.AdminUserProfile, error)
+	adminUpdateProfile func(ctx context.Context, subjectID string, args userpkg.AdminUpdateProfileArgs) (*userpkg.AdminUserProfile, error)
 }
 
 func (s *stubRPC) Configured() bool { return s.configured }
@@ -56,6 +57,13 @@ func (s *stubRPC) GetUserProfile(ctx context.Context, subjectID string) (*userpk
 		return nil, userpkg.ErrRPCUnavailable
 	}
 	return s.getUserProfile(ctx, subjectID)
+}
+
+func (s *stubRPC) AdminUpdateProfile(ctx context.Context, subjectID string, args userpkg.AdminUpdateProfileArgs) (*userpkg.AdminUserProfile, error) {
+	if s.adminUpdateProfile == nil {
+		return nil, userpkg.ErrRPCUnavailable
+	}
+	return s.adminUpdateProfile(ctx, subjectID, args)
 }
 
 func setupTestDB(t *testing.T) *gorm.DB {

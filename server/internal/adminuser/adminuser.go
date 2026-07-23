@@ -31,6 +31,8 @@ type AdminUserRPC interface {
 	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*userpkg.AdminSetUserStatusResult, error)
 	ListOrganizations(ctx context.Context) ([]userpkg.AdminOrganization, error)
 	GetUserProfile(ctx context.Context, subjectID string) (*userpkg.AdminUserProfile, error)
+	// R5 — admin override (mutates username + display_name).
+	AdminUpdateProfile(ctx context.Context, subjectID string, args userpkg.AdminUpdateProfileArgs) (*userpkg.AdminUserProfile, error)
 }
 
 // Module wires the admin member-management endpoints. It holds two deps:
@@ -59,6 +61,7 @@ func New(rpc AdminUserRPC, users *userpkg.UserService) *Module {
 func (m *Module) RegisterRoutes(adminGroup *gin.RouterGroup) {
 	adminGroup.GET("/users", m.ListUsersHandler())
 	adminGroup.GET("/users/:id/profile", m.GetUserProfileHandler())
+	adminGroup.PUT("/users/:id/profile", m.UpdateProfileHandler())
 	adminGroup.PUT("/users/:id/status", m.SetUserStatusHandler())
 	adminGroup.GET("/organizations", m.ListOrganizationsHandler())
 }
