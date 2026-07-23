@@ -1,0 +1,35 @@
+# Example tenant_configs.config_yaml for an idtrust enterprise deployment.
+# Includes both employment_providers (field_map + Plan B provider_detection)
+# and the corresponding provider_mapping entry.
+#
+# Upload via:
+#   ./configure-employment-mapping.sh --tenant acme-corp --yaml examples/idtrust-employment.yaml
+
+employment_providers:
+  enabled:
+    - idtrust
+
+  # Plan B detection: when server's NormalizeClaimsMap cannot recognize
+  # the IdP (e.g. compound provider name "IDTrust - Sangfor" hasn't been
+  # added to server's switch), cs-user falls back to these rules matching
+  # against ExternalClaims.signupApplication.
+  provider_detection:
+    - signup_application: "application_v94pr3"
+      provider: idtrust
+
+  field_map:
+    idtrust:
+      # Flat Casdoor property keys (the real shape, see testdata/idtrust_jwt_token.txt).
+      enterprise_uid:   "properties.oauth_Custom_id"
+      job_title:        "properties.oauth_Custom_username"
+      employee_number:  "properties.no"
+
+# provider_mapping — required by cs-user's IdP source config so the runtime
+# knows how to map idp provider names to integration configs. This section
+# is the one /api/internal/tenant/provider-mapping manages directly.
+provider_mapping:
+  idtrust:
+    enabled: true
+    rank: 10
+    enterprise_sync:
+      interval: 24h
