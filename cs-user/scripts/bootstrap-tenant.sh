@@ -34,21 +34,13 @@ usage() {
 SLUG=""
 DISPLAY_NAME=""
 EDITION="community"
-EMAIL_DOMAINS_JSON="[]"
+EMAIL_DOMAINS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --slug) SLUG="$2"; shift 2 ;;
         --display-name) DISPLAY_NAME="$2"; shift 2 ;;
         --edition) EDITION="$2"; shift 2 ;;
-        --email-domain)
-            # Append to the JSON array via python so quoting stays safe.
-            EMAIL_DOMAINS_JSON=$(python -c "
-import json, sys
-arr = json.loads(sys.argv[1])
-arr.append(sys.argv[2])
-print(json.dumps(arr))
-" "$EMAIL_DOMAINS_JSON" "$2")
-            shift 2 ;;
+        --email-domain) EMAIL_DOMAINS+=("$2"); shift 2 ;;
         --help|-h) usage ;;
         *) echo "unknown flag: $1" >&2; usage ;;
     esac
@@ -59,16 +51,19 @@ done
 # shellcheck source=lib/common.sh
 source "$(dirname "$0")/lib/common.sh"
 
-BODY=$(python -c "
-import json
-print(json.dumps({
-    'slug': '$SLUG',
-    'display_name': '$DISPLAY_NAME',
-    'edition': '$EDITION',
-    'email_domains': $EMAIL_DOMAINS_JSON,
-}))
-")
+# Build payload via jq. Email domains are passed as positional args
+# ($ARGS.positional) so any number of --email-domain flags are picked
+# up uniformly without per-element jq --arg bindings.
+BODY=$(jq -nc \
+    --arg slug "$SLUG" \
+    --arg name "$DISPLAY_NAME" \
+    --arg edition "$EDITION" \
+    '{slug:$slug, display_name:$name, edition:$edition, email_domains:($ARGS.positional | map(.))}' \
+    "${EMAIL_DOMAINS[@]}")
 
 csu_log "creating tenant slug=$SLUG edition=$EDITION"
 RESP=$(csu_json_request POST /api/internal/platform/tenants "$BODY")
-printf '%s\n' "$RESP" | csu_pretty
+STATUS=$(csu_status "$RESP")
+BODY_RESP=$(csu_body "$RESP")
+[[ "$STATUS" == "200" || "$STATUS" == "201" ]] || csu_die "POST failed (HTTP $STATUS): $BODY_RESP"
+printf '%s\n' "$BODY_RESP" | csu_pretty
