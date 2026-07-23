@@ -1,0 +1,27 @@
+# Dev-profile employment_providers + provider_mapping for idtrust.
+# Mirrors cs-user/scripts/examples/idtrust-employment.yaml but trimmed
+# for the local-dev bootstrap (same Plan B detection rule).
+#
+# Consumed by scripts/bootstrap-dev-env.sh via
+# cs-user/scripts/configure-employment-mapping.sh.
+
+employment_providers:
+  enabled:
+    - idtrust
+
+  provider_detection:
+    - signup_application: "application_v94pr3"
+      provider: idtrust
+
+  field_map:
+    idtrust:
+      enterprise_uid:  "properties.oauth_Custom_id"
+      job_title:       "properties.oauth_Custom_username"
+      employee_number: "properties.no"
+
+provider_mapping:
+  idtrust:
+    enabled: true
+    rank: 10
+    enterprise_sync:
+      interval: 24h
