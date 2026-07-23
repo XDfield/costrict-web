@@ -567,6 +567,7 @@ func main() {
 				usersMe.GET("/username-available", handlers.UsernameAvailable)
 				usersMe.POST("/complete-registration", handlers.CompleteRegistration)
 				usersMe.PATCH("/profile", handlers.UpdateMyProfile)
+			usersMe.POST("/suggest-profile", handlers.SuggestProfile)
 			}
 
 			repos := authed.Group("/repositories")

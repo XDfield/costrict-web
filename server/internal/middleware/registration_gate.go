@@ -129,6 +129,7 @@ var profileGateWhitelist = []string{
 	"/api/users/me/username-available",
 	"/api/users/me/complete-registration",
 	"/api/users/me/profile",
+	"/api/users/me/suggest-profile",
 	"/api/users/me",
 	"/api/auth/me",
 	"/api/auth/logout",

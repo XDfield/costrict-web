@@ -589,6 +589,27 @@ func (a *UsersAPI) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": u})
 }
 
+// SuggestProfile godoc
+//
+//	@Summary		Suggest registration profile from IdP claims
+//	@Description	Pure-function hint generator (R4 of REGISTRATION_PROFILE_DESIGN). Given the JWT claims Casdoor minted after brokering the upstream IdP, returns a suggested {username, display_name} the form can pre-fill. Always advisory — caller must still validate.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			body	body		models.JWTClaims	true	"JWT claims"
+//	@Success		200		{object}	user.ProfileSuggestion
+//	@Router			/api/internal/users/suggest-profile [post]
+func (a *UsersAPI) SuggestProfile(c *gin.Context) {
+	var claims models.JWTClaims
+	if err := c.ShouldBindJSON(&claims); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	suggestion := user.MapProviderToProfile(&claims)
+	c.JSON(http.StatusOK, suggestion)
+}
+
 // UsernameAvailable godoc
 //
 //	@Summary		Check username availability

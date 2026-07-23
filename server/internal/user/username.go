@@ -233,3 +233,11 @@ func (s *UserService) IsProfileComplete(subjectID string) (bool, error) {
 	}
 	return u.ProfileCompletedAt != nil, nil
 }
+
+// SuggestProfile (R4) returns an empty suggestion under the local backend
+// — server has no provider-mapping logic, the authoritative generator
+// lives in cs-user. RPCWriter overrides this to forward to cs-user. The
+// stub exists so the UserWriter interface is uniform across backends.
+func (s *UserService) SuggestProfile(_ context.Context, _ *JWTClaims) (string, string, error) {
+	return "", "", nil
+}
