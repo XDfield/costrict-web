@@ -264,11 +264,13 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 // enterprise claims (Phase A5). cs-user loads employment_identities (A4),
 // builds claims, signs with its RSA key (A3), and returns {token, expires_at}.
 //
-// Wire format: Identity claims marshal as PascalCase (server's JWTClaims has
-// no json tags); cs-user's reissueTokenRequest.Identity is *models.JWTClaims
-// with snake_case tags, but encoding/json's case-insensitive field fallback
-// (https://pkg.go.dev/encoding/json#Unmarshal) makes the cross-shape work.
-// The same mechanism is what makes GetOrCreateUser's body interchangeable.
+// Wire format: JWTClaims now carries explicit snake_case json tags
+// (id/sub/universal_id/name/email/...) so the wire shape matches
+// cs-user's models.JWTClaims 1:1. The prior reliance on encoding/json's
+// case-insensitive fallback (https://pkg.go.dev/encoding/json#Unmarshal)
+// silently dropped snake_case-only fields like universal_id on the cs-user
+// side (EqualFold doesn't span underscores), which is why the tags were
+// added. GetOrCreateUser's body shares the same struct shape.
 //
 // audience is forwarded so the server can target specific relying parties
 // (csc CLI vs. costrict-web frontend). nil falls back to cs-user's
