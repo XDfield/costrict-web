@@ -10,7 +10,8 @@
 - **Phase 2（cs-user 加事件出口）**：✅ 已完成（2026-07-22）
 - **Phase 3（消费侧接入）**：✅ 已完成（2026-07-22）；**3.5/3.6 dev 环境真实 Gitea 端到端验证已通过（2026-07-23）**
 - **Phase 4（数据迁移与清理）**：✅ 已完成（2026-07-23，cs-user 未上线无数据，直接执行 destructive deletes）
-- **Phase 5（稳定性观察）**：⏳ 未开始
+- **Phase 5（Git Provider Adapter Pattern）**：✅ 已完成（2026-07-23，user provisioning 路径多 provider 适配；team/bot/org 路径按 plan 显式不动）
+- **Phase 6（稳定性观察）**：⏳ 待生产部署（cs-user 未上线，门槛意义弱化）
 
 **整体完成度**：23 / 35 任务
 
@@ -152,7 +153,40 @@
 
 ---
 
-## Phase 5 — 稳定性观察（预估 1 周）
+## Phase 5 — Git Provider Adapter Pattern（user provisioning 多 provider 适配）
+
+**目标**：把 user provisioning 路径改造成适配器模式，未来加 gitlab / gitea-enterprise 只需新增 provider 实现 + factory 注册。
+
+**完成情况（2026-07-23）**：plan 8 步全部落地。
+
+| Step | 内容 | 状态 |
+|---|---|---|
+| 1 | migration `20260722300000_rename_user_gitea_binding_to_user_git_binding.sql`：rename 表/字段/索引 + 加 `provider_kind` 列 | ✅ |
+| 2 | `server/internal/models/user_git_binding.go`：`UserGitBinding{GitUID, GitUsername, ProviderKind}` | ✅ |
+| 3 | `server/internal/gitsync/git_provider.go`：`GitProvider` interface + `ProviderUser` struct | ✅ |
+| 4 | `UserProvisionService.providerFactory` dispatch by `cfg.Kind`；`defaultProviderFactory` switch `case GitServerKindGitea, ""` | ✅ |
+| 5 | `ErrUsernameTaken` (canonical) + `ErrGiteaUsernameTaken = ErrUsernameTaken` alias；`ProviderUser` (canonical) + `GiteaUser = ProviderUser` alias | ✅ |
+| 6 | `userref.go` 用 `binding.GitUsername` 查本地 `user_git_binding` 表（Phase 4 进一步精简为唯一路径） | ✅ |
+| 7 | `migrate-git-from-cs-user` 脚本字段同步 | N/A — Phase 4 已删脚本（cs-user 无数据） |
+| 8 | 测试更新（用 alias 仍编译通过） | ✅ |
+
+**显式不动（plan 标注避免雪崩）**：
+- `teamns/service.go` / `teamns/workflow_repo*.go` / `teamns/service_test.go` / `teamns/e2e_test.go`：bot 凭据 `GiteaUsername` / `GiteaUserID` / `GiteaTokenID` 字段保持原名
+- `gitsync/bot_account.go` `BotCredentials` struct + `gitsync/provider.go` `TeamMember.GiteaUsername` + `gitsync/service.go` 同字段：team/bot 路径
+- `gitsync/repo_ops.go` 用 `ErrGiteaUsernameTaken`（通过 alias 指向 `ErrUsernameTaken`）：repo 路径
+- `models/team_ns.go` `TeamBotCredentials` 列名 `gitea_*`：team path schema
+- `handlers/kb_ensure*.go` / `workflow_init*.go` / `fake_gitserver_test.go`：bot 相关 handler / 测试
+
+**Adapter alias 设计**（让 team/bot/org 路径无需改动即可继续编译）：
+- `type GiteaUser = ProviderUser`（`client_extensions.go:62`，附注释说明）
+- `ErrGiteaUsernameTaken = ErrUsernameTaken`（`client_extensions.go:43`，附注释说明）
+- `type UserProvisionAPI = GitProvider`（`user_provision.go:54`，给老 fake 实现 backward compat）
+
+**Phase 5 Exit 标准**：用户 provisioning 路径完全 provider-agnostic；加新 provider = 新增 sibling 文件 + factory case 一行。✅ 达成。
+
+---
+
+## Phase 6 — 稳定性观察（预估 1 周）
 
 **目标**：双写窗口观察，确认无 dangling 状态后删灰度开关。
 
