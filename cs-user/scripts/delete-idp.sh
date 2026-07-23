@@ -50,5 +50,8 @@ if [[ $ASSUME_YES -ne 1 ]]; then
 fi
 
 csu_log "deleting idp source tenant=$TENANT provider=$PROVIDER"
-RESP=$(csu_json_request DELETE "/api/idp-sources/${TENANT}/${PROVIDER}")
+OUT=$(csu_json_request DELETE "/api/idp-sources/${TENANT}/${PROVIDER}")
+STATUS=$(csu_status "$OUT")
+RESP=$(csu_body "$OUT")
+[[ "$STATUS" == "200" || "$STATUS" == "204" ]] || csu_die "DELETE failed (HTTP $STATUS): $RESP"
 [[ -z "$RESP" ]] && echo "(deleted)" || printf '%s\n' "$RESP" | csu_pretty
