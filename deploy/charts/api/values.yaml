@@ -67,7 +67,25 @@ redis:
   existingSecret: ""
   existingSecretKey: password
 
+# Non-text artifact storage. The default keeps the existing local/PVC behavior.
+artifactStorage:
+  backend: local
+  s3:
+    endpoint: ""
+    bucket: ""
+    region: ""
+    forcePathStyle: true
+    existingSecret: ""
+    accessKeySecretKey: access-key
+    secretKeySecretKey: secret-key
+    sessionTokenSecretKey: ""
+    ca:
+      existingSecret: ""
+      key: ca.crt
+      mountPath: /etc/costrict/object-storage
+
 # Artifact storage persistence
+# Used only when artifactStorage.backend=local.
 persistence:
   enabled: true
   accessModes:

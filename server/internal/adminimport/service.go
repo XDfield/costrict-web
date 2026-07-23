@@ -155,8 +155,8 @@ func (s *Service) CreateURLJob(rawURL string, reparse bool, user string) (*model
 }
 
 // CreateUploadJob stores the uploaded bundle then records a pending dry-run job.
-// On a DB failure the just-stored object is best-effort removed so a failed
-// create leaves nothing behind.
+// A DB failure can leave an unreferenced object; physical garbage collection is
+// intentionally outside the minimal Put/Get storage contract.
 func (s *Service) CreateUploadJob(ctx context.Context, reader io.Reader, size int64, filename string, reparse bool, user string) (*models.CapabilityImportJob, error) {
 	jobID := uuid.New().String()
 	key := fmt.Sprintf("import-jobs/%s/bundle.tar.gz", jobID)
@@ -164,20 +164,20 @@ func (s *Service) CreateUploadJob(ctx context.Context, reader io.Reader, size in
 		return nil, fmt.Errorf("store uploaded bundle: %w", err)
 	}
 	job := &models.CapabilityImportJob{
-		ID:          jobID,
-		SourceKind:  sourceKindUpload,
-		Filename:    filename,
-		StorageKey:  key,
-		FileSize:    size,
-		Status:      statusPending,
-		DryRun:      true,
-		Reparse:     reparse,
-		TriggerUser: user,
-		MaxAttempts: 3,
-		ScheduledAt: time.Now(),
+		ID:             jobID,
+		SourceKind:     sourceKindUpload,
+		Filename:       filename,
+		StorageBackend: storage.KindOf(s.storage),
+		StorageKey:     key,
+		FileSize:       size,
+		Status:         statusPending,
+		DryRun:         true,
+		Reparse:        reparse,
+		TriggerUser:    user,
+		MaxAttempts:    3,
+		ScheduledAt:    time.Now(),
 	}
 	if err := s.db.Create(job).Error; err != nil {
-		_ = s.storage.Delete(ctx, key)
 		return nil, err
 	}
 	return job, nil
@@ -196,23 +196,17 @@ func (s *Service) GetJob(id string) (*models.CapabilityImportJob, error) {
 	return &job, nil
 }
 
-// maybeExpire lazily transitions a previewed job to expired once its TTL passes,
-// clearing the stored bundle. Runs on read so no timer is required; the runner
-// also sweeps expiries under leader election.
+// maybeExpire lazily transitions a previewed job to expired once its TTL
+// passes. The object mapping remains in DB for audit and future offline GC.
 func (s *Service) maybeExpire(job *models.CapabilityImportJob) {
 	if job.Status != statusPreviewed || time.Since(job.UpdatedAt) < previewTTL {
 		return
 	}
-	// CAS the status first; only clean up the bundle if this call won the
-	// previewed→expired transition. A concurrent ConfirmJob may have already
-	// flipped previewed→pending (bundle still needed) — then the guarded update
-	// affects 0 rows and we must NOT delete the bundle.
-	res := s.db.Model(&models.CapabilityImportJob{}).Where("id = ? AND status = ?", job.ID, statusPreviewed).Update("status", statusExpired)
+	res := s.db.Model(&models.CapabilityImportJob{}).
+		Where("id = ? AND status = ?", job.ID, statusPreviewed).
+		Update("status", statusExpired)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return
-	}
-	if job.StorageKey != "" {
-		_ = s.storage.Delete(context.Background(), job.StorageKey)
 	}
 	job.Status = statusExpired
 }

@@ -6,4 +6,4 @@ maintainers:
   url: https://github.com/costrict
 name: costrict-web-worker
 type: application
-version: 0.0.80
+version: 0.0.81

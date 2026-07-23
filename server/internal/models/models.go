@@ -557,7 +557,7 @@ type CapabilityVersionAsset struct {
 	VersionID      string    `gorm:"not null;index" json:"versionId"`
 	RelPath        string    `gorm:"not null" json:"relPath"`
 	TextContent    *string   `gorm:"type:text" json:"textContent,omitempty"`
-	StorageBackend string    `gorm:"default:'local'" json:"storageBackend"`
+	StorageBackend string    `json:"storageBackend"`
 	StorageKey     string    `json:"storageKey,omitempty"`
 	MimeType       string    `json:"mimeType"`
 	FileSize       int64     `gorm:"default:0" json:"fileSize"`
@@ -571,7 +571,7 @@ type CapabilityAsset struct {
 	ItemID         string    `gorm:"not null;index" json:"itemId"`
 	RelPath        string    `gorm:"not null" json:"relPath"`
 	TextContent    *string   `gorm:"type:text" json:"textContent,omitempty"`
-	StorageBackend string    `gorm:"default:'local'" json:"storageBackend"`
+	StorageBackend string    `json:"storageBackend"`
 	StorageKey     string    `json:"storageKey,omitempty"`
 	MimeType       string    `json:"mimeType"`
 	FileSize       int64     `gorm:"default:0" json:"fileSize"`

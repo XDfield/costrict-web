@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -23,6 +25,7 @@ type SyncService struct {
 	ScanJobService *ScanJobService
 	CategorySvc    *CategoryService
 	TagSvc         *TagService
+	Storage        storage.Backend
 }
 
 type SyncOptions struct {
@@ -340,6 +343,12 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				exists = existing != nil
 			}
 
+			// Assets can change independently from the primary file. This also
+			// migrates legacy binary rows that were stored in text_content.
+			if exists && !opts.DryRun {
+				result.Failed += s.syncAssets(ctx, cloneResult.LocalPath, relPath, existing.ID, &result.Errors)
+			}
+
 			if exists && existing.SourceSHA == contentHash {
 				result.Skipped++
 				continue
@@ -487,7 +496,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				}
 				s.DB.Create(ver)
 
-				s.syncAssets(cloneResult.LocalPath, relPath, newItem.ID, &result.Errors)
+				result.Failed += s.syncAssets(ctx, cloneResult.LocalPath, relPath, newItem.ID, &result.Errors)
 				s.enqueueScan(newItem.ID, 1)
 				result.Added++
 			}
@@ -512,31 +521,41 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			result.Deleted++
 		}
 
-		now := time.Now()
-		shaUpdates := map[string]any{"last_synced_at": now}
-		if result.Failed == 0 {
-			shaUpdates["last_sync_sha"] = cloneResult.CommitSHA
-		}
-		s.DB.Model(&registry).Updates(shaUpdates)
 	}
 
+	shaUpdates, syncErr := completeSyncResult(result, cloneResult.CommitSHA, time.Now())
+	if !opts.DryRun {
+		s.DB.Model(&registry).Updates(shaUpdates)
+	}
 	total := result.Added + result.Updated + result.Deleted + result.Skipped + result.Failed
 	syncLog.TotalItems = total
-	result.Status = "success"
 
-	return result, nil
+	return result, syncErr
+}
+
+func completeSyncResult(result *SyncResult, commitSHA string, completedAt time.Time) (map[string]any, error) {
+	updates := map[string]any{"last_synced_at": completedAt}
+	if result.Failed > 0 {
+		result.Status = "failed"
+		return updates, fmt.Errorf("sync completed with %d failed operations", result.Failed)
+	}
+	result.Status = "success"
+	updates["last_sync_sha"] = commitSHA
+	return updates, nil
 }
 
 // syncAssets collects and upserts non-primary files in the same skill directory.
-func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]string) {
+func (s *SyncService) syncAssets(ctx context.Context, localPath, relPath, itemID string, errs *[]string) int {
+	failures := 0
 	dir := filepath.Dir(relPath)
 	if dir == "." {
-		return
+		return failures
 	}
 
 	allFiles, err := s.Git.ListFiles(localPath, []string{dir + "/**"}, nil)
 	if err != nil {
-		return
+		*errs = append(*errs, fmt.Sprintf("list assets for %s: %v", relPath, err))
+		return failures + 1
 	}
 
 	primaryBase := strings.ToUpper(filepath.Base(relPath))
@@ -547,47 +566,126 @@ func (s *SyncService) syncAssets(localPath, relPath, itemID string, errs *[]stri
 	for i := range existingAssets {
 		assetByPath[existingAssets[i].RelPath] = &existingAssets[i]
 	}
+	seenAssetPaths := make(map[string]struct{}, len(allFiles))
 
 	for _, f := range allFiles {
 		if strings.ToUpper(filepath.Base(f)) == primaryBase {
 			continue
 		}
-		assetRelPath, _ := filepath.Rel(dir, f)
+		assetRelPath, err := filepath.Rel(dir, f)
+		if err != nil {
+			*errs = append(*errs, fmt.Sprintf("asset path %s: %v", f, err))
+			failures++
+			continue
+		}
 		assetRelPath = filepath.ToSlash(assetRelPath)
+		if assetRelPath == "." || assetRelPath == ".." ||
+			strings.HasPrefix(assetRelPath, "../") || filepath.IsAbs(assetRelPath) {
+			*errs = append(*errs, fmt.Sprintf("asset path %s escapes item directory", f))
+			failures++
+			continue
+		}
+		seenAssetPaths[assetRelPath] = struct{}{}
 
 		content, err := s.Git.ReadFile(localPath, f)
 		if err != nil {
 			*errs = append(*errs, fmt.Sprintf("asset read %s: %v", f, err))
+			failures++
 			continue
 		}
-		content = sanitizeSyncContent(content)
-
-		contentSHA := s.Git.ContentHash(content)
+		binary := isBinary(content) || !utf8.Valid(content)
+		if !binary {
+			content = sanitizeSyncContent(content)
+		}
+		contentSHA := sha256Hex(content)
 
 		if existing, ok := assetByPath[assetRelPath]; ok {
-			if existing.ContentSHA == contentSHA {
+			representationCurrent := !binary && existing.TextContent != nil && existing.StorageKey == ""
+			if binary && s.Storage != nil {
+				representationCurrent = existing.TextContent == nil &&
+					existing.StorageKey != "" &&
+					existing.StorageBackend == storage.KindOf(s.Storage)
+			}
+			if existing.ContentSHA == contentSHA && representationCurrent {
 				continue
 			}
-			text := string(content)
-			s.DB.Model(existing).Updates(map[string]any{
-				"text_content": text,
-				"content_sha":  contentSHA,
-				"file_size":    int64(len(content)),
-			})
-		} else {
-			text := string(content)
-			asset := &models.CapabilityAsset{
-				ID:          uuid.New().String(),
-				ItemID:      itemID,
-				RelPath:     assetRelPath,
-				TextContent: &text,
-				MimeType:    InferMimeType(f),
-				FileSize:    int64(len(content)),
-				ContentSHA:  contentSHA,
+			updates := map[string]any{
+				"content_sha": contentSHA,
+				"file_size":   int64(len(content)),
+				"mime_type":   InferMimeType(f),
 			}
-			s.DB.Create(asset)
+			if binary {
+				if s.Storage == nil {
+					*errs = append(*errs, fmt.Sprintf("asset store %s: storage backend is not configured", f))
+					failures++
+					continue
+				}
+				storageKey := filepath.ToSlash(filepath.Join("sync", itemID, "assets", contentSHA, assetRelPath))
+				if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(content), int64(len(content))); err != nil {
+					*errs = append(*errs, fmt.Sprintf("asset store %s: %v", f, err))
+					failures++
+					continue
+				}
+				updates["text_content"] = nil
+				updates["storage_backend"] = storage.KindOf(s.Storage)
+				updates["storage_key"] = storageKey
+			} else {
+				updates["text_content"] = string(content)
+				updates["storage_backend"] = ""
+				updates["storage_key"] = ""
+			}
+			if err := s.DB.Model(existing).Updates(updates).Error; err != nil {
+				*errs = append(*errs, fmt.Sprintf("asset update %s: %v", f, err))
+				failures++
+			}
+		} else {
+			asset := &models.CapabilityAsset{
+				ID:         uuid.New().String(),
+				ItemID:     itemID,
+				RelPath:    assetRelPath,
+				MimeType:   InferMimeType(f),
+				FileSize:   int64(len(content)),
+				ContentSHA: contentSHA,
+			}
+			if binary {
+				if s.Storage == nil {
+					*errs = append(*errs, fmt.Sprintf("asset store %s: storage backend is not configured", f))
+					failures++
+					continue
+				}
+				storageKey := filepath.ToSlash(filepath.Join("sync", itemID, "assets", contentSHA, assetRelPath))
+				if err := s.Storage.Put(ctx, storageKey, bytes.NewReader(content), int64(len(content))); err != nil {
+					*errs = append(*errs, fmt.Sprintf("asset store %s: %v", f, err))
+					failures++
+					continue
+				}
+				asset.StorageBackend = storage.KindOf(s.Storage)
+				asset.StorageKey = storageKey
+			} else {
+				text := string(content)
+				asset.TextContent = &text
+			}
+			if err := s.DB.Create(asset).Error; err != nil {
+				*errs = append(*errs, fmt.Sprintf("asset create %s: %v", f, err))
+				failures++
+			}
 		}
 	}
+
+	// Keep the previous manifest intact on a partial sync. Once every desired
+	// asset has been read and persisted, rows absent upstream can be removed.
+	if failures == 0 {
+		for _, existing := range existingAssets {
+			if _, ok := seenAssetPaths[existing.RelPath]; ok {
+				continue
+			}
+			if err := s.DB.Delete(&models.CapabilityAsset{}, "id = ?", existing.ID).Error; err != nil {
+				*errs = append(*errs, fmt.Sprintf("asset delete %s: %v", existing.RelPath, err))
+				failures++
+			}
+		}
+	}
+	return failures
 }
 
 func InferMimeType(filePath string) string {

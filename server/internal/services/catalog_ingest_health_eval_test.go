@@ -61,6 +61,12 @@ func newIngestTestDB(t *testing.T) *gorm.DB {
 			commit_msg TEXT, created_by TEXT NOT NULL, source_path TEXT,
 			created_at DATETIME
 		)`,
+		`CREATE TABLE capability_assets (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, rel_path TEXT NOT NULL,
+			text_content TEXT, storage_backend TEXT DEFAULT '',
+			storage_key TEXT, mime_type TEXT, file_size INTEGER DEFAULT 0,
+			content_sha TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
 		`CREATE TABLE item_tag_dicts (
 			id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE,
 			tag_class TEXT NOT NULL DEFAULT 'custom', created_by TEXT NOT NULL,

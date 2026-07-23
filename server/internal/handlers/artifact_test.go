@@ -25,6 +25,7 @@ import (
 type memBackend struct {
 	mu   sync.Mutex
 	data map[string][]byte
+	gets int
 }
 
 func newMemBackend() *memBackend {
@@ -44,6 +45,7 @@ func (m *memBackend) Put(_ context.Context, key string, r io.Reader, _ int64) er
 
 func (m *memBackend) Get(_ context.Context, key string) (io.ReadCloser, int64, error) {
 	m.mu.Lock()
+	m.gets++
 	b, ok := m.data[key]
 	m.mu.Unlock()
 	if !ok {
@@ -52,22 +54,17 @@ func (m *memBackend) Get(_ context.Context, key string) (io.ReadCloser, int64, e
 	return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
 }
 
-func (m *memBackend) Delete(_ context.Context, key string) error {
+func (m *memBackend) GetCount() int {
 	m.mu.Lock()
-	delete(m.data, key)
-	m.mu.Unlock()
-	return nil
+	defer m.mu.Unlock()
+	return m.gets
 }
 
-func (m *memBackend) PresignURL(_ context.Context, _ string, _ time.Duration) (string, error) {
-	return "", nil
-}
-
-func (m *memBackend) Exists(_ context.Context, key string) (bool, error) {
+func (m *memBackend) Has(key string) bool {
 	m.mu.Lock()
 	_, ok := m.data[key]
 	m.mu.Unlock()
-	return ok, nil
+	return ok
 }
 
 var _ storage.Backend = (*memBackend)(nil)
@@ -126,7 +123,8 @@ func TestUploadArtifact_Success(t *testing.T) {
 		Name: "Art Skill", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")),
 	})
 
-	rec := multipartUpload(newArtifactRouter("u1", backend), "/api/artifacts/upload", "tool.zip", "binary content", "item-art1", "1.0.0")
+	configured := &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: backend}
+	rec := multipartUpload(newArtifactRouter("u1", configured), "/api/artifacts/upload", "tool.zip", "binary content", "item-art1", "1.0.0")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -140,6 +138,14 @@ func TestUploadArtifact_Success(t *testing.T) {
 	}
 	if artifact["isLatest"] != true {
 		t.Fatalf("expected isLatest=true, got %v", artifact["isLatest"])
+	}
+	if artifact["storageBackend"] != storage.KindS3 {
+		t.Fatalf("expected configured storage backend, got %v", artifact["storageBackend"])
+	}
+	id, _ := artifact["id"].(string)
+	key, _ := artifact["storageKey"].(string)
+	if id == "" || !strings.Contains(key, "/"+id+"/") {
+		t.Fatalf("storage key %q is not scoped by artifact id %q", key, id)
 	}
 }
 
@@ -256,6 +262,42 @@ func TestDownloadArtifact_NotFound(t *testing.T) {
 	}
 }
 
+func TestDownloadArtifact_BackendMismatchDoesNotRead(t *testing.T) {
+	defer setupArtifactDB(t)()
+	backend := newMemBackend()
+	backend.data["artifact-key"] = []byte("must not be read")
+
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "art-backend-mismatch", ItemID: "item-mismatch", Filename: "tool.zip", FileSize: 16,
+		ChecksumSHA256: "abc123", StorageBackend: storage.KindLocal, StorageKey: "artifact-key",
+		ArtifactVersion: "1.0.0", IsLatest: true, UploadedBy: "u1", CreatedAt: time.Now(),
+	})
+
+	configured := &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: backend}
+	rec := get(newArtifactRouter("", configured), "/api/artifacts/art-backend-mismatch/download")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if backend.GetCount() != 0 {
+		t.Fatalf("backend mismatch must not call Get, got %d calls", backend.GetCount())
+	}
+}
+
+func TestDownloadArtifact_LegacyMappingRequiresConfiguredBackend(t *testing.T) {
+	defer setupArtifactDB(t)()
+
+	database.DB.Create(&models.CapabilityArtifact{
+		ID: "art-legacy-no-backend", ItemID: "item-legacy", Filename: "tool.zip", FileSize: 16,
+		ChecksumSHA256: "abc123", StorageKey: "artifact-key",
+		ArtifactVersion: "1.0.0", IsLatest: true, UploadedBy: "u1", CreatedAt: time.Now(),
+	})
+
+	rec := get(newArtifactRouter("", nil), "/api/artifacts/art-legacy-no-backend/download")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListArtifacts
 // ---------------------------------------------------------------------------
@@ -329,9 +371,8 @@ func TestDeleteArtifact_Success(t *testing.T) {
 		t.Fatal("artifact should have been deleted from DB")
 	}
 
-	exists, _ := backend.Exists(context.Background(), "item-del/v1.0.0/del.zip")
-	if exists {
-		t.Fatal("artifact file should have been deleted from storage")
+	if !backend.Has("item-del/v1.0.0/del.zip") {
+		t.Fatal("artifact object should be retained for offline garbage collection")
 	}
 }
 
