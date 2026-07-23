@@ -1,9 +1,9 @@
 # Capability Git 仓库管理规范
 
-| 版本 | v2.17（**架构反转**：KB / workflow repo 不再落全局 `costrict-kb/` / `costrict-workflow/` org，改为落 **per-team Gitea org `t-<team_short_id>/`**（team ns）；workflow 模型从「每实例一 repo」改为「每 (team, def) 一类型 repo + 实例 = branch `inst-<inst_short_id>`」；workflow 定义 canonical 存储在类型 repo 的 main 分支；新增 §18 Team Namespace Management；KB/WF 路径算法 v2.0 加 `team_id` 入参） |
+| 版本 | v2.18（**Git Ownership Refactor**：`git_servers` / `user_gitea_binding` / 用户级 Gitea 开户职责从 cs-user **整体迁回 server**。cs-user 通过 outbox 事件 `user.created` 异步通知 server 完成开户；server 端 `gitsync.RPCResolver` / `user.UserRefResolver` 在 `GIT_RESOLVER_MODE=local` 下走本地 DB 查询；新增 `server/cmd/migrate-git-from-cs-user` 一次性迁移脚本。详见 [`GIT_OWNERSHIP_REFACTOR_PROPOSAL.md`](./GIT_OWNERSHIP_REFACTOR_PROPOSAL.md)）<br>**v2.17**（架构反转：KB / workflow repo 不再落全局 `costrict-kb/` / `costrict-workflow/` org，改为落 **per-team Gitea org `t-<team_short_id>/`**（team ns）；workflow 模型从「每实例一 repo」改为「每 (team, def) 一类型 repo + 实例 = branch `inst-<inst_short_id>`」；workflow 定义 canonical 存储在类型 repo 的 main 分支；新增 §18 Team Namespace Management；KB/WF 路径算法 v2.0 加 `team_id` 入参） |
 |---|---|
 | 创建日期 | 2026-07-09 |
-| 依据 | [`CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md`](./CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md)、[`TEAM_ORG_UNIFICATION.md`](../identity-tenant/TEAM_ORG_UNIFICATION.md) ADR-3 v3、[`TEAM_NAMESPACE_API.md`](./TEAM_NAMESPACE_API.md) |
+| 依据 | [`CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md`](./CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md)、[`TEAM_ORG_UNIFICATION.md`](../identity-tenant/TEAM_ORG_UNIFICATION.md) ADR-3 v3、[`TEAM_NAMESPACE_API.md`](./TEAM_NAMESPACE_API.md)、[`GIT_OWNERSHIP_REFACTOR_PROPOSAL.md`](./GIT_OWNERSHIP_REFACTOR_PROPOSAL.md)（v2.18） |
 
 > 本规范定义 capability 仓库的**创建、命名、归属、协作**规则。健康度、配额、审计等细节见 v4 提案。
 >
