@@ -25,7 +25,6 @@ type Config struct {
 	Internal InternalConfig
 	JWT      JWTConfig
 	Tenant   TenantConfig
-	IDP      IDPConfig
 	EventBus EventBusConfig
 }
 
@@ -90,15 +89,9 @@ type TenantConfig struct {
 	ApexDomains []string
 }
 
-// IDPConfig holds IdP source validation knobs.
-//
-// AllowInsecure permits http:// (not just https://) URLs in IdP OAuth
-// endpoints. Required for local dev where Casdoor / mock IdPs run on plain
-// HTTP (e.g. http://127.0.0.1:8010). Production deployments must leave this
-// false — checked at the validator layer, never bypassed elsewhere.
-type IDPConfig struct {
-	AllowInsecure bool
-}
+// IDPConfig removed (Phase E2 multi-IdP bypass deprecated). OAuth is
+// brokered exclusively via Casdoor; cs-user no longer holds per-provider
+// IdP configs.
 
 // JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
 //
@@ -166,9 +159,6 @@ func Load() (*Config, error) {
 		JWT: jwtCfg,
 		Tenant: TenantConfig{
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
-		},
-		IDP: IDPConfig{
-			AllowInsecure: envBool("CS_USER_IDP_ALLOW_INSECURE", false),
 		},
 		EventBus: EventBusConfig{
 			TargetURL:    strings.TrimSpace(os.Getenv("CS_USER_EVENT_TARGET_URL")),

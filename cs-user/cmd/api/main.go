@@ -38,7 +38,6 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
 	"github.com/costrict/costrict-web/cs-user/internal/eventbus"
-	"github.com/costrict/costrict-web/cs-user/internal/idp"
 	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/migration"
 	"github.com/costrict/costrict-web/cs-user/internal/storage"
@@ -47,7 +46,6 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -176,7 +174,6 @@ func main() {
 		TenantAdmin:      tenant.NewAdmin(pool.Gorm),
 		TenantConfig:     tenantconfig.New(pool.Gorm),
 		AuditLog:         auditSvc,
-		IdPSources:       newIdPService(pool.Gorm, cfg.IDP.AllowInsecure),
 	})
 
 	srv := &http.Server{
@@ -215,19 +212,5 @@ func isTruthy(v string) bool {
 		return true
 	}
 	return false
-}
-
-// newIdPService constructs the IdP service with the validator configured
-// per env. When CS_USER_IDP_ALLOW_INSECURE=true, the validator permits
-// http:// IdP endpoint URLs (required for local dev where Casdoor / mock
-// IdPs run on plain HTTP). Production must leave this false.
-func newIdPService(db *gorm.DB, allowInsecure bool) *idp.Service {
-	svc := idp.New(db)
-	if allowInsecure {
-		v := idp.NewValidator()
-		v.AllowInsecure = true
-		svc.SetValidator(v)
-	}
-	return svc
 }
 
