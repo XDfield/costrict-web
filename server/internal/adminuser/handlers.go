@@ -224,6 +224,96 @@ type setStatusRequest struct {
 	Status string `json:"status" binding:"required"`
 }
 
+// updateProfileRequest is the body for PUT /api/admin/users/:id/profile (R5).
+// Both fields optional, but at least one must be present — empty patch is
+// rejected by cs-user with 400. username empty preserves; display_name null
+// preserves, non-null empty clears to NULL.
+type updateProfileRequest struct {
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name"`
+}
+
+// UpdateProfileHandler godoc
+//
+//	@Summary		Override member username / display_name (admin)
+//	@Description	Admin-side profile override (R5). Unlike the user-self PATCH /api/users/me/profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. Username changes are tenant-scoped-unique-checked (409 on collision). Proxied to cs-user — the source of truth for users.username/display_name. The platform-admin guard is applied by the caller (main.go's /admin group).
+//	@Tags			admin/users
+//	@Accept			json
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			id		path		string					true	"Member subject id"
+//	@Param			body	body		updateProfileRequest		true	"Fields to override (at least one required)"
+//	@Success		200		{object}	object{user=adminUserResponse}
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
+//	@Failure		409		{object}	object{error=string}
+//	@Failure		500		{object}	object{error=string}
+//	@Failure		503		{object}	object{error=string}
+//	@Router			/admin/users/{id}/profile [put]
+func (m *Module) UpdateProfileHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if m.rpcUnavailable() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "user service unavailable"})
+			return
+		}
+
+		operatorID := c.GetString(appmiddleware.UserIDKey)
+		if operatorID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		subjectID := c.Param("id")
+
+		var req updateProfileRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		if req.Username == "" && req.DisplayName == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+			return
+		}
+
+		updated, err := m.rpc.AdminUpdateProfile(c.Request.Context(), subjectID, userpkg.AdminUpdateProfileArgs{
+			Username:    req.Username,
+			DisplayName: req.DisplayName,
+			OperatorID:  operatorID,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, userpkg.ErrAdminUserRPCInvalidProfile),
+				errors.Is(err, userpkg.ErrAdminUserRPCInvalidStatus):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile input"})
+			case errors.Is(err, userpkg.ErrAdminUserRPCUsernameTaken):
+				c.JSON(http.StatusConflict, gin.H{"error": "username_taken"})
+			case errors.Is(err, userpkg.ErrAdminUserRPCNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			case errors.Is(err, userpkg.ErrRPCUnavailable):
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "user service unavailable"})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user profile"})
+			}
+			return
+		}
+
+		// Drop the cached profile-completion result so the gate reflects the
+		// new username/state immediately. Best-effort: the gate may not be
+		// installed (PROFILE_GATE_ENABLED=false); the call is nil-safe.
+		appmiddleware.InvalidateProfileCache(subjectID)
+
+		// Audit: cs-user writes the authoritative user_center_audit_log row
+		// keyed action=user.profile_overridden. No local audit.Record call —
+		// single source of truth per ADR D1.
+
+		roles := m.users.RolesForUsers([]string{subjectID})[subjectID]
+		c.JSON(http.StatusOK, gin.H{
+			"user": toResponseFromProfile(*updated, roles),
+		})
+	}
+}
+
 // SetUserStatusHandler godoc
 //
 //	@Summary		Set member status (admin)

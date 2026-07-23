@@ -59,6 +59,9 @@ type UserService interface {
 	CompleteRegistration(ctx context.Context, subjectID, username, displayName string) (*models.User, error)
 	UpdateProfile(ctx context.Context, subjectID, displayName string) (*models.User, error)
 	IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error)
+	// R5: admin override — may mutate username + display_name regardless of
+	// registration state. operatorID is the admin's subject_id (audit).
+	AdminUpdateProfile(ctx context.Context, subjectID, username string, displayName *string, operatorID string) (*models.User, error)
 	// Admin user-management (admin-user-migration slice). Powers
 	// @server's /api/admin/users/* surface, migrated to cs-user as the
 	// single source of truth for user identity + status.

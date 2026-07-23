@@ -39,6 +39,8 @@ type stubUserService struct {
 	completeRegistration func(context.Context, string, string, string) (*models.User, error)
 	updateProfile        func(context.Context, string, string) (*models.User, error)
 	isUsernameAvailable  func(context.Context, string, string) (bool, error)
+	// R5 — admin override.
+	adminUpdateProfile func(context.Context, string, string, *string, string) (*models.User, error)
 }
 
 func (s stubUserService) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -112,6 +114,12 @@ func (s stubUserService) IsUsernameAvailable(ctx context.Context, username, excl
 		panic("stubUserService.isUsernameAvailable not wired")
 	}
 	return s.isUsernameAvailable(ctx, username, excludeSubjectID)
+}
+func (s stubUserService) AdminUpdateProfile(ctx context.Context, subjectID, username string, displayName *string, operatorID string) (*models.User, error) {
+	if s.adminUpdateProfile == nil {
+		panic("stubUserService.adminUpdateProfile not wired")
+	}
+	return s.adminUpdateProfile(ctx, subjectID, username, displayName, operatorID)
 }
 func (s stubUserService) ListUsers(ctx context.Context, p user.ListUsersParams) ([]*models.User, int64, error) {
 	if s.listUsers == nil {
