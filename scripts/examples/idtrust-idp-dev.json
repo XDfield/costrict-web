@@ -1,0 +1,14 @@
+{
+  "client_id": "dev-idtrust-client",
+  "client_secret": "REPLACE_WITH_IDTRUST_CLIENT_SECRET",
+  "authorize_url": "http://127.0.0.1:8443/oauth2/authorize",
+  "token_url": "http://127.0.0.1:8443/oauth2/token",
+  "userinfo_url": "http://127.0.0.1:8443/oauth2/userinfo",
+  "scopes": ["openid", "profile", "email"],
+  "display_name": "IDTrust (dev)",
+  "field_map": {
+    "subject": "sub",
+    "email": "email",
+    "name": "name"
+  }
+}
