@@ -93,6 +93,9 @@
 #   --skip-git-server       skip the server-side git_server step (e.g.
 #                           when running before server is up)
 #   --skip-idtrust          skip the employment mapping step
+#   --update-if-exists      step 1 default is create-or-skip; pass this to
+#                           switch to create-or-update (PATCH mutable fields
+#                           on an existing tenant)
 #   --dry-run               print what would run without invoking sub-scripts
 #
 # Required env:
@@ -129,6 +132,7 @@ GITEA_DISPLAY="Local Gitea (dev)"
 EMPLOYMENT_YAML="$REPO_ROOT/scripts/examples/idtrust-employment-dev.yaml"
 SKIP_GIT_SERVER=0
 SKIP_IDTRUST=0
+UPDATE_IF_EXISTS=0
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -141,6 +145,7 @@ while [[ $# -gt 0 ]]; do
         --employment-yaml)   EMPLOYMENT_YAML="$2"; shift 2 ;;
         --skip-git-server)   SKIP_GIT_SERVER=1; shift ;;
         --skip-idtrust)      SKIP_IDTRUST=1; shift ;;
+        --update-if-exists)  UPDATE_IF_EXISTS=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
         --help|-h)
             sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -182,10 +187,13 @@ run() {
 # Step 1 — Default tenant
 # ===========================================================================
 log "step 1/4: create tenant slug=$TENANT_SLUG edition=$TENANT_EDITION"
-run "$CS_USER_SCRIPTS/bootstrap-tenant.sh" \
-    --slug "$TENANT_SLUG" \
-    --display-name "$TENANT_DISPLAY" \
+TENANT_ARGS=(
+    --slug "$TENANT_SLUG"
+    --display-name "$TENANT_DISPLAY"
     --edition "$TENANT_EDITION"
+)
+[[ $UPDATE_IF_EXISTS -eq 1 ]] && TENANT_ARGS+=(--update-if-exists)
+run "$CS_USER_SCRIPTS/bootstrap-tenant.sh" "${TENANT_ARGS[@]}"
 
 # ===========================================================================
 # Step 2 — git_server + tenant binding (server side)
