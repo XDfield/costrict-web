@@ -649,6 +649,104 @@ func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
 	}
 }
 
+// RequireAuth must accept the token from ?token= for a browser-native
+// WebSocket handshake, which cannot set an Authorization header. This is the
+// cross-origin path used when the SameSite=Lax session cookie is not sent.
+func TestRequireAuth_TokenFromQueryForWebSocketUpgrade(t *testing.T) {
+	SetSubjectResolver(nil)
+	key := generateTestRSAKey(t)
+	kid := "test-kid"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-ws",
+		"name":               "WS User",
+		"preferred_username": "wsuser",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	var capturedUserID string
+	router := gin.New()
+	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.GET("/protected", func(c *gin.Context) {
+		if uid, ok := c.Get(UserIDKey); ok {
+			capturedUserID = uid.(string)
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w := performRequest(router, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if capturedUserID != "user-ws" {
+		t.Errorf("expected userID 'user-ws', got %q", capturedUserID)
+	}
+}
+
+// RequireAuth must accept ?token= for an EventSource (SSE) handshake, which
+// also cannot set an Authorization header.
+func TestRequireAuth_TokenFromQueryForSSE(t *testing.T) {
+	SetSubjectResolver(nil)
+	key := generateTestRSAKey(t)
+	kid := "test-kid"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-sse",
+		"name":               "SSE User",
+		"preferred_username": "sseuser",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	router := gin.New()
+	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.GET("/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	w := performRequest(router, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// A plain HTTP request that carries the token only in ?token= must NOT be
+// authenticated -- the query fallback is reserved for WS/SSE handshakes so
+// tokens don't leak into URLs/access logs for ordinary requests.
+func TestRequireAuth_QueryTokenRejectedForPlainHTTP(t *testing.T) {
+	SetSubjectResolver(nil)
+	key := generateTestRSAKey(t)
+	kid := "test-kid"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-plain",
+		"preferred_username": "plainuser",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	router := gin.New()
+	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.GET("/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	w := performRequest(router, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for plain HTTP with query-only token, got %d", w.Code)
+	}
+}
+
 func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
 	SetSubjectResolver(nil)
 	// Mock Casdoor server that returns user info
