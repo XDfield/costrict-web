@@ -208,7 +208,13 @@ func SystemTokenAuth(token string) gin.HandlerFunc {
 	}
 }
 
-// ExtractToken extracts the access token from the Authorization header or auth_token cookie.
+// ExtractToken extracts the access token from the Authorization header, the
+// zgsmAdminToken cookie, or (as a last resort) the "token" query parameter.
+//
+// The query fallback exists for browser-native WebSocket and EventSource
+// handshakes: neither API lets the page set custom headers, so cross-origin
+// requests that can't rely on cookies (SameSite=Lax blocks them) carry the
+// session token as ?token=. HTTP fetches should keep using the header.
 func ExtractToken(c *gin.Context) string {
 	auth := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
@@ -216,6 +222,9 @@ func ExtractToken(c *gin.Context) string {
 	}
 	if cookie, err := c.Cookie("zgsmAdminToken"); err == nil && cookie != "" {
 		return cookie
+	}
+	if token := c.Query("token"); token != "" {
+		return token
 	}
 	return ""
 }

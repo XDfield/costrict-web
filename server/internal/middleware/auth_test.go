@@ -649,6 +649,44 @@ func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
 	}
 }
 
+// RequireAuth must accept the token from the ?token= query parameter, which is
+// how browser-native WebSocket / EventSource handshakes forward credentials
+// (they cannot set Authorization headers). This is the cross-origin path used
+// when the SameSite=Lax session cookie is not sent.
+func TestRequireAuth_TokenFromQueryParam(t *testing.T) {
+	SetSubjectResolver(nil)
+	key := generateTestRSAKey(t)
+	kid := "test-kid"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-query",
+		"name":               "Query User",
+		"preferred_username": "queryuser",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	var capturedUserID string
+	router := gin.New()
+	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.GET("/protected", func(c *gin.Context) {
+		if uid, ok := c.Get(UserIDKey); ok {
+			capturedUserID = uid.(string)
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	w := performRequest(router, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if capturedUserID != "user-query" {
+		t.Errorf("expected userID 'user-query', got %q", capturedUserID)
+	}
+}
+
 func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
 	SetSubjectResolver(nil)
 	// Mock Casdoor server that returns user info
