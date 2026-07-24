@@ -51,19 +51,69 @@ internalToken:
   existingSecret: ""
   existingSecretKey: internal-token
 
+# Phase A — self-signed JWT (RS256). cs-user mints its own JWT for relying
+# parties (cs-cloud, app-ai-native, csc) when JWT_SIGN_MODE on the server
+# side is moved to dual/single. The signing key is an RSA private key in
+# PEM format; mount it via Secret (chart-managed or existingSecret).
+jwt:
+  # Container path where the PEM is mounted. CS_USER_JWT_SIGNING_KEY_PATH
+  # is wired to this value; the file must be readable by the csuser UID.
+  signingKeyPath: /etc/cs-user/jwt.pem
+  # Secret holding the RSA PEM at key `signingKey.existingSecretKey`.
+  # Production: provision out-of-band, point existingSecret at it.
+  # Dev/CI: leave empty + set secrets.create=true + secrets.jwtSigningKeyPem.
+  signingKey:
+    existingSecret: ""
+    existingSecretKey: jwt.pem
+  issuer: cs-user
+  ttl: 1h
+  # Comma-separated audience claim. List the relying parties that will
+  # accept cs-user-issued tokens (cs-cloud, app-ai-native, csc). Empty
+  # omits the claim entirely (acceptable during dual-mode rollout).
+  audience: ""
+
+# Phase B3b — apex domains used for subdomain-based tenant resolution.
+# When a request arrives at <tenant>.<apex>, cs-user resolves the tenant
+# slug from the leftmost label. Empty list disables subdomain resolution
+# (tenant must come from JWT claim or X-Tenant-Id header).
+tenant:
+  apexDomains: []
+
+# Git Ownership Refactor Phase 2 — outbox emitting user.created events
+# to the server's /api/internal/users/created consumer. Leave targetUrl
+# empty to disable the outbox (cs-user won't attempt delivery).
+eventBus:
+  targetUrl: ""
+  # Auth token sent as X-Internal-Secret header to the server consumer.
+  # Must equal server's INTERNAL_SECRET. Use existingSecret in prod.
+  targetToken:
+    existingSecret: ""
+    existingSecretKey: internal-secret
+  pollInterval: 1s
+  batchSize: 50
+  maxAttempts: 0        # 0 = unlimited retries (configured backoff)
+  backoffBase: 2s
+  backoffMax: 5m
+  httpTimeout: 5s
+
 # Chart-managed Secret — opt-in. When create=true, the chart renders a
-# Secret named <release>-secrets containing the database password and the
-# internal token from the plaintext values below, AND auto-wires the
-# Deployment to reference it (existingSecret above falls back to this
-# name when left empty). Intended for dev / staging / CI only.
+# Secret named <release>-secrets containing the database password, the
+# internal token, AND the JWT signing key from the plaintext values
+# below, AND auto-wires the Deployment to reference it (existingSecret
+# above falls back to this name when left empty). Intended for dev /
+# staging / CI only.
 #
 # Production should leave create=false and provision the Secret via
 # sealed-secrets / external-secrets / kubectl create secret, then point
-# database.existingSecret + internalToken.existingSecret at it.
+# database.existingSecret + internalToken.existingSecret +
+# jwt.signingKey.existingSecret at it.
 secrets:
   create: false
   databasePassword: ""   # ignored unless create=true
   internalToken: ""      # ignored unless create=true
+  # PEM content of an RSA private key for dev/CI. Ignored unless create=true.
+  # Generate with: openssl genrsa -out jwt.pem 4096
+  jwtSigningKeyPem: ""
 
 # Helm test pod — invoked by `helm test <release>`. The curl image is
 # configurable so air-gapped clusters can point at a mirror.
