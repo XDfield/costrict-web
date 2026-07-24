@@ -87,9 +87,10 @@ persistence:
 # the cs-user internal API over X-Internal-Token shared secret.
 userService:
   backend: local
-  url: ""      # cs-user base URL; required when backend=rpc (e.g. http://cs-user.<ns>.svc:8082)
+  url: ""      # cs-user base URL; required when backend=rpc (e.g. http://cs-user.<ns>.svc:8081)
   internalToken:
-    existingSecret: ""
+    value: ""            # dev: plaintext token (must match cs-user internalToken)
+    existingSecret: ""   # prod: externally provisioned Secret name
     existingSecretKey: internal-token
 
 # JWT sign mode for gradual cs-user JWT rollout.

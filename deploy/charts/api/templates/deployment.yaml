@@ -85,7 +85,10 @@ spec:
               value: "rpc"
             - name: USER_SERVICE_URL
               value: {{ .url | quote }}
-            {{- if .internalToken.existingSecret }}
+            {{- if .internalToken.value }}
+            - name: USER_SERVICE_INTERNAL_TOKEN
+              value: {{ .internalToken.value | quote }}
+            {{- else if .internalToken.existingSecret }}
             - name: USER_SERVICE_INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef:

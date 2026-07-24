@@ -1,3 +1,12 @@
+{{/*
+Resolve a credential block into either:
+  - inline value (dev path)         → (value, "") returned
+  - chart-managed <release>-secrets (when value non-empty triggers it)
+  - externally-provisioned Secret   → ( "", "<secretName>" ) returned
+Helper pattern repeated for database / internalToken / eventBus.targetToken.
+*/}}
+{{- $chartManagedSecret := printf "%s-secrets" .Release.Name -}}
+{{- $hasPlaintext := or .Values.database.password .Values.internalToken.value .Values.jwt.signingKey.value .Values.eventBus.targetToken.value -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,26 +61,26 @@ spec:
               value: {{ .Values.database.user | quote }}
             - name: CS_USER_POSTGRES_SSLMODE
               value: {{ .Values.database.sslMode | quote }}
-            {{- $dbSecret := .Values.database.existingSecret }}
-            {{- if and (not $dbSecret) .Values.secrets.create }}
-            {{- $dbSecret = printf "%s-secrets" .Release.Name }}
-            {{- end }}
-            {{- if $dbSecret }}
+            {{- /* PG password: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .Values.database.password }}
+            - name: CS_USER_POSTGRES_PASSWORD
+              value: {{ .Values.database.password | quote }}
+            {{- else if or .Values.database.existingSecret $hasPlaintext }}
             - name: CS_USER_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $dbSecret }}
+                  name: {{ .Values.database.existingSecret | default $chartManagedSecret }}
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
-            {{- $tokenSecret := .Values.internalToken.existingSecret }}
-            {{- if and (not $tokenSecret) .Values.secrets.create }}
-            {{- $tokenSecret = printf "%s-secrets" .Release.Name }}
-            {{- end }}
-            {{- if $tokenSecret }}
+            {{- /* Internal token: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .Values.internalToken.value }}
+            - name: CS_USER_INTERNAL_TOKEN
+              value: {{ .Values.internalToken.value | quote }}
+            {{- else if or .Values.internalToken.existingSecret $hasPlaintext }}
             - name: CS_USER_INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ $tokenSecret }}
+                  name: {{ .Values.internalToken.existingSecret | default $chartManagedSecret }}
                   key: {{ .Values.internalToken.existingSecretKey }}
             {{- end }}
             {{- with .Values.jwt }}
@@ -91,12 +100,15 @@ spec:
             {{- with .Values.eventBus }}
             - name: CS_USER_EVENT_TARGET_URL
               value: {{ .targetUrl | quote }}
-            {{- $eventTokenSecret := .targetToken.existingSecret }}
-            {{- if $eventTokenSecret }}
+            {{- /* Event bus token: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .targetToken.value }}
+            - name: CS_USER_EVENT_TARGET_TOKEN
+              value: {{ .targetToken.value | quote }}
+            {{- else if or .targetToken.existingSecret $hasPlaintext }}
             - name: CS_USER_EVENT_TARGET_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ $eventTokenSecret }}
+                  name: {{ .targetToken.existingSecret | default $chartManagedSecret }}
                   key: {{ .targetToken.existingSecretKey }}
             {{- end }}
             - name: CS_USER_EVENT_POLL_INTERVAL
@@ -133,11 +145,13 @@ spec:
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- $jwtSecret := .Values.jwt.signingKey.existingSecret }}
-          {{- if and (not $jwtSecret) .Values.secrets.create }}
-          {{- $jwtSecret = printf "%s-secrets" .Release.Name }}
+          {{- /* JWT PEM: always file-mounted; secret name comes from
+                 existingSecret, or chart-managed when value is set. */}}
+          {{- $jwtSecretName := .Values.jwt.signingKey.existingSecret }}
+          {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
+          {{- $jwtSecretName = $chartManagedSecret }}
           {{- end }}
-          {{- if $jwtSecret }}
+          {{- if $jwtSecretName }}
           volumeMounts:
             - name: jwt-signing-key
               mountPath: {{ dir .Values.jwt.signingKeyPath }}
@@ -155,15 +169,15 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- $jwtSecret := .Values.jwt.signingKey.existingSecret }}
-      {{- if and (not $jwtSecret) .Values.secrets.create }}
-      {{- $jwtSecret = printf "%s-secrets" .Release.Name }}
+      {{- $jwtSecretName := .Values.jwt.signingKey.existingSecret }}
+      {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
+      {{- $jwtSecretName = $chartManagedSecret }}
       {{- end }}
-      {{- if $jwtSecret }}
+      {{- if $jwtSecretName }}
       volumes:
         - name: jwt-signing-key
           secret:
-            secretName: {{ $jwtSecret }}
+            secretName: {{ $jwtSecretName }}
             items:
               - key: {{ .Values.jwt.signingKey.existingSecretKey }}
                 path: {{ base .Values.jwt.signingKeyPath }}

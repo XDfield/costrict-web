@@ -1,5 +1,15 @@
 # Default values for costrict-web-cs-user
 # See ADR_CS_USER_PHASE1_DECISIONS.md for design rationale.
+#
+# Secret handling: each credential block exposes three sibling fields:
+#   value            — plaintext, used for dev / CI convenience
+#   existingSecret   — name of an externally-provisioned Secret (prod)
+#   existingSecretKey — key inside that Secret
+# When `value` is non-empty the chart renders a `<release>-secrets` Secret
+# holding all plaintext values and the Deployment references it. When
+# `existingSecret` is set the chart references it directly instead. Both
+# empty = the field is omitted from pod env (cs-user will fail loudly at
+# startup if a required credential is missing).
 
 replicaCount: 2
 
@@ -42,12 +52,14 @@ database:
   name: cs_user
   user: cs_user
   sslMode: disable
-  existingSecret: ""
+  password: ""               # dev: plaintext PG password (auto-wrapped in Secret)
+  existingSecret: ""         # prod: externally provisioned Secret name
   existingSecretKey: password
 
 # Shared secret for costrict-web → cs-user internal API auth (ADR D8).
-# Must be set via existingSecret in production; this empty default fails config.Load().
+# At least one of `value` / `existingSecret` must be set (config.Load() rejects empty).
 internalToken:
+  value: ""
   existingSecret: ""
   existingSecretKey: internal-token
 
@@ -59,10 +71,10 @@ jwt:
   # Container path where the PEM is mounted. CS_USER_JWT_SIGNING_KEY_PATH
   # is wired to this value; the file must be readable by the csuser UID.
   signingKeyPath: /etc/cs-user/jwt.pem
-  # Secret holding the RSA PEM at key `signingKey.existingSecretKey`.
-  # Production: provision out-of-band, point existingSecret at it.
-  # Dev/CI: leave empty + set secrets.create=true + secrets.jwtSigningKeyPem.
   signingKey:
+    # dev: paste `openssl genrsa -out jwt.pem 4096` output here (PEM stringData).
+    # prod: provision out-of-band, point existingSecret at it.
+    value: ""
     existingSecret: ""
     existingSecretKey: jwt.pem
   issuer: cs-user
@@ -85,8 +97,9 @@ tenant:
 eventBus:
   targetUrl: ""
   # Auth token sent as X-Internal-Secret header to the server consumer.
-  # Must equal server's INTERNAL_SECRET. Use existingSecret in prod.
+  # Must equal server's INTERNAL_SECRET.
   targetToken:
+    value: ""
     existingSecret: ""
     existingSecretKey: internal-secret
   pollInterval: 1s
@@ -95,25 +108,6 @@ eventBus:
   backoffBase: 2s
   backoffMax: 5m
   httpTimeout: 5s
-
-# Chart-managed Secret — opt-in. When create=true, the chart renders a
-# Secret named <release>-secrets containing the database password, the
-# internal token, AND the JWT signing key from the plaintext values
-# below, AND auto-wires the Deployment to reference it (existingSecret
-# above falls back to this name when left empty). Intended for dev /
-# staging / CI only.
-#
-# Production should leave create=false and provision the Secret via
-# sealed-secrets / external-secrets / kubectl create secret, then point
-# database.existingSecret + internalToken.existingSecret +
-# jwt.signingKey.existingSecret at it.
-secrets:
-  create: false
-  databasePassword: ""   # ignored unless create=true
-  internalToken: ""      # ignored unless create=true
-  # PEM content of an RSA private key for dev/CI. Ignored unless create=true.
-  # Generate with: openssl genrsa -out jwt.pem 4096
-  jwtSigningKeyPem: ""
 
 # Helm test pod — invoked by `helm test <release>`. The curl image is
 # configurable so air-gapped clusters can point at a mirror.
