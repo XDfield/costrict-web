@@ -79,6 +79,32 @@ spec:
             - name: ARTIFACT_STORAGE_PATH
               value: {{ .Values.persistence.mountPath | quote }}
             {{- end }}
+            {{- with .Values.userService }}
+            {{- if eq .backend "rpc" }}
+            - name: USER_SERVICE_BACKEND
+              value: "rpc"
+            - name: USER_SERVICE_URL
+              value: {{ .url | quote }}
+            {{- if .internalToken.existingSecret }}
+            - name: USER_SERVICE_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .internalToken.existingSecret }}
+                  key: {{ .internalToken.existingSecretKey }}
+            {{- end }}
+            {{- else }}
+            - name: USER_SERVICE_BACKEND
+              value: {{ .backend | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.jwtSignMode }}
+            - name: JWT_SIGN_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.profileGateEnabled }}
+            - name: PROFILE_GATE_ENABLED
+              value: "true"
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

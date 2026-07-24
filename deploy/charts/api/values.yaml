@@ -82,6 +82,27 @@ persistence:
   # Reclaim policy for dynamically provisioned volumes (Retain or Delete)
   reclaimPolicy: Retain
 
+# cs-user RPC backend — leave backend=local to use server's own user table
+# (legacy behavior). Switch to backend=rpc to route user reads/writes through
+# the cs-user internal API over X-Internal-Token shared secret.
+userService:
+  backend: local
+  url: ""      # cs-user base URL; required when backend=rpc (e.g. http://cs-user.<ns>.svc:8082)
+  internalToken:
+    existingSecret: ""
+    existingSecretKey: internal-token
+
+# JWT sign mode for gradual cs-user JWT rollout.
+#   off    — server issues all JWTs (legacy, default)
+#   dual   — accept both server-issued and cs-user-issued JWTs
+#   single — only cs-user-issued JWTs are accepted
+jwtSignMode: ""
+
+# Registration Profile gate (R0–R6 design). When true, the
+# PROFILE_GATE_ENABLED middleware enforces admin-approved profiles
+# before allowing user creation.
+profileGateEnabled: false
+
 env: []
 envFrom: []
 
