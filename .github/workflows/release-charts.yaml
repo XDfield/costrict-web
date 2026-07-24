@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       charts:
-        description: 'Charts to release (comma-separated: gateway,api,worker,portal,proxy,postgres,wecom-bot-proxy,all)'
+        description: 'Charts to release (comma-separated: gateway,api,worker,portal,proxy,postgres,wecom-bot-proxy,cs-user,all)'
         required: false
         default: 'all'
       version:
@@ -58,7 +58,7 @@ jobs:
           fi
 
           if [ "$CHARTS_INPUT" = "all" ]; then
-            echo 'charts=["gateway","api","worker","portal","proxy","postgres","wecom-bot-proxy"]' >> $GITHUB_OUTPUT
+            echo 'charts=["gateway","api","worker","portal","proxy","postgres","wecom-bot-proxy","cs-user"]' >> $GITHUB_OUTPUT
           else
             # Convert comma-separated to JSON array
             CHARTS_JSON=$(echo "$CHARTS_INPUT" | tr ',' '\n' | jq -Rc 'split("\n") | map(select(. != ""))')
@@ -214,6 +214,7 @@ jobs:
             helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz
             helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz
             helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml
+            helm install cs-user ./costrict-web-cs-user-${{ needs.detect-charts.outputs.version }}.tgz
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -243,4 +244,5 @@ jobs:
           echo "helm install worker ./costrict-web-worker-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install portal ./costrict-web-portal-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo "helm install postgres ./costrict-web-postgres-<version>.tgz  # version from Chart.yaml" >> $GITHUB_STEP_SUMMARY
+          echo "helm install cs-user ./costrict-web-cs-user-${{ needs.detect-charts.outputs.version }}.tgz" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
