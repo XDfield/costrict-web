@@ -209,12 +209,15 @@ func SystemTokenAuth(token string) gin.HandlerFunc {
 }
 
 // ExtractToken extracts the access token from the Authorization header, the
-// zgsmAdminToken cookie, or (as a last resort) the "token" query parameter.
+// zgsmAdminToken cookie, or (as a last resort, for browser-native WebSocket
+// and EventSource handshakes only) the "token" query parameter.
 //
-// The query fallback exists for browser-native WebSocket and EventSource
-// handshakes: neither API lets the page set custom headers, so cross-origin
-// requests that can't rely on cookies (SameSite=Lax blocks them) carry the
-// session token as ?token=. HTTP fetches should keep using the header.
+// The query fallback exists because neither WebSocket nor EventSource lets
+// the page set custom headers, so cross-origin handshakes that can't rely on
+// cookies (SameSite=Lax blocks them) carry the session token as ?token=. It
+// is gated on the Upgrade/Accept headers so an ordinary HTTP request can't
+// authenticate via the URL (which would leak the token into access logs);
+// those must keep using the Authorization header.
 func ExtractToken(c *gin.Context) string {
 	auth := c.GetHeader("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
@@ -223,10 +226,27 @@ func ExtractToken(c *gin.Context) string {
 	if cookie, err := c.Cookie("zgsmAdminToken"); err == nil && cookie != "" {
 		return cookie
 	}
-	if token := c.Query("token"); token != "" {
-		return token
+	if acceptsQueryToken(c) {
+		if token := c.Query("token"); token != "" {
+			return token
+		}
 	}
 	return ""
+}
+
+// acceptsQueryToken reports whether the request is a browser-native WebSocket
+// upgrade or EventSource handshake -- the only requests whose ?token= query
+// parameter is honored. Ordinary HTTP fetches must use the Authorization
+// header so the token never lands in a URL or access log.
+func acceptsQueryToken(c *gin.Context) bool {
+	if strings.Contains(strings.ToLower(c.GetHeader("Connection")), "upgrade") &&
+		strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(c.GetHeader("Accept")), "text/event-stream") {
+		return true
+	}
+	return false
 }
 
 func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
