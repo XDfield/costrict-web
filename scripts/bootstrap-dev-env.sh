@@ -92,7 +92,7 @@
 #                           scripts/examples/idtrust-employment-dev.yaml)
 #   --skip-git-server       skip the server-side git_server step (e.g.
 #                           when running before server is up)
-#   --skip-idtrust          skip the employment mapping step
+#   --skip-employment       skip the employment provider config upload step
 #   --update-if-exists      step 1 default is create-or-skip; pass this to
 #                           switch to create-or-update (PATCH mutable fields
 #                           on an existing tenant)
@@ -131,7 +131,7 @@ DEFAULT_GITEA_ENDPOINT="${DEFAULT_GITEA_ENDPOINT:-http://127.0.0.1:3001}"
 GITEA_DISPLAY="Local Gitea (dev)"
 EMPLOYMENT_YAML="$REPO_ROOT/scripts/examples/idtrust-employment-dev.yaml"
 SKIP_GIT_SERVER=0
-SKIP_IDTRUST=0
+SKIP_EMPLOYMENT=0
 UPDATE_IF_EXISTS=0
 DRY_RUN=0
 
@@ -144,7 +144,7 @@ while [[ $# -gt 0 ]]; do
         --gitea-display)     GITEA_DISPLAY="$2"; shift 2 ;;
         --employment-yaml)   EMPLOYMENT_YAML="$2"; shift 2 ;;
         --skip-git-server)   SKIP_GIT_SERVER=1; shift ;;
-        --skip-idtrust)      SKIP_IDTRUST=1; shift ;;
+        --skip-employment)   SKIP_EMPLOYMENT=1; shift ;;
         --update-if-exists)  UPDATE_IF_EXISTS=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
         --help|-h)
@@ -170,7 +170,7 @@ if [[ $SKIP_GIT_SERVER -eq 0 ]]; then
     [[ -f "$SERVER_SCRIPTS/bootstrap-git-server.sh" ]] || die "missing server/scripts/bootstrap-git-server.sh"
 fi
 
-if [[ $SKIP_IDTRUST -eq 0 ]]; then
+if [[ $SKIP_EMPLOYMENT -eq 0 ]]; then
     [[ -f "$EMPLOYMENT_YAML" ]] || die "employment yaml not found: $EMPLOYMENT_YAML"
 fi
 
@@ -212,8 +212,8 @@ fi
 # ===========================================================================
 # Step 3 — idtrust employment_providers + provider_mapping YAML
 # ===========================================================================
-if [[ $SKIP_IDTRUST -eq 1 ]]; then
-    log "step 3/4: SKIPPED (--skip-idtrust)"
+if [[ $SKIP_EMPLOYMENT -eq 1 ]]; then
+    log "step 3/4: SKIPPED (--skip-employment)"
 else
     log "step 3/4: upload employment mapping yaml=$EMPLOYMENT_YAML"
     run "$CS_USER_SCRIPTS/configure-employment-mapping.sh" \
