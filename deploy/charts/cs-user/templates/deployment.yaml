@@ -74,6 +74,44 @@ spec:
                   name: {{ $tokenSecret }}
                   key: {{ .Values.internalToken.existingSecretKey }}
             {{- end }}
+            {{- with .Values.jwt }}
+            - name: CS_USER_JWT_SIGNING_KEY_PATH
+              value: {{ .signingKeyPath | quote }}
+            - name: CS_USER_JWT_ISSUER
+              value: {{ .issuer | quote }}
+            - name: CS_USER_JWT_TTL
+              value: {{ .ttl | quote }}
+            - name: CS_USER_JWT_AUDIENCE
+              value: {{ .audience | quote }}
+            {{- end }}
+            {{- with .Values.tenant }}
+            - name: CS_USER_APEX_DOMAINS
+              value: {{ .apexDomains | join "," | quote }}
+            {{- end }}
+            {{- with .Values.eventBus }}
+            - name: CS_USER_EVENT_TARGET_URL
+              value: {{ .targetUrl | quote }}
+            {{- $eventTokenSecret := .targetToken.existingSecret }}
+            {{- if $eventTokenSecret }}
+            - name: CS_USER_EVENT_TARGET_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $eventTokenSecret }}
+                  key: {{ .targetToken.existingSecretKey }}
+            {{- end }}
+            - name: CS_USER_EVENT_POLL_INTERVAL
+              value: {{ .pollInterval | quote }}
+            - name: CS_USER_EVENT_BATCH_SIZE
+              value: {{ .batchSize | quote }}
+            - name: CS_USER_EVENT_MAX_ATTEMPTS
+              value: {{ .maxAttempts | quote }}
+            - name: CS_USER_EVENT_BACKOFF_BASE
+              value: {{ .backoffBase | quote }}
+            - name: CS_USER_EVENT_BACKOFF_MAX
+              value: {{ .backoffMax | quote }}
+            - name: CS_USER_EVENT_HTTP_TIMEOUT
+              value: {{ .httpTimeout | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -95,6 +133,16 @@ spec:
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- $jwtSecret := .Values.jwt.signingKey.existingSecret }}
+          {{- if and (not $jwtSecret) .Values.secrets.create }}
+          {{- $jwtSecret = printf "%s-secrets" .Release.Name }}
+          {{- end }}
+          {{- if $jwtSecret }}
+          volumeMounts:
+            - name: jwt-signing-key
+              mountPath: {{ dir .Values.jwt.signingKeyPath }}
+              readOnly: true
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -106,4 +154,18 @@ spec:
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $jwtSecret := .Values.jwt.signingKey.existingSecret }}
+      {{- if and (not $jwtSecret) .Values.secrets.create }}
+      {{- $jwtSecret = printf "%s-secrets" .Release.Name }}
+      {{- end }}
+      {{- if $jwtSecret }}
+      volumes:
+        - name: jwt-signing-key
+          secret:
+            secretName: {{ $jwtSecret }}
+            items:
+              - key: {{ .Values.jwt.signingKey.existingSecretKey }}
+                path: {{ base .Values.jwt.signingKeyPath }}
+            defaultMode: 0o400
       {{- end }}
