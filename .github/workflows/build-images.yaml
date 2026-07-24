@@ -171,7 +171,7 @@ jobs:
               IMAGE_NAME="costrict-web-wecom-bot-proxy"
               ;;
             cs-user)
-              CONTEXT="./cs-user"
+              CONTEXT="."
               DOCKERFILE="./cs-user/Dockerfile"
               IMAGE_NAME="costrict-web-cs-user"
               ;;
