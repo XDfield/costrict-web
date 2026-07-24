@@ -66,6 +66,12 @@ server/logs/
 cs-user/logs/
 cs-user/coverage
 cs-user/*.out
+cs-user/bin/
+cs-user/*.exe
+cs-user/*.exe~
+cs-user/*.dll
+cs-user/*.so
+cs-user/*.dylib
 
 gateway/bin/
 gateway/*.exe
