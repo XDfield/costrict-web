@@ -148,14 +148,10 @@ func main() {
 	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient.Configured() {
 		teamProvider := gitsync.NewStubProvider()          // TODO(E3b.2): replace with real provider
 		teamResolver := gitsync.NewConfigTeamResolver(nil) // TODO: DB-backed team metadata
-		gitResolver := gitsync.NewRPCResolver(
-			&tenantGitServerAdapter{rpc: rpcClient},
-			gitsync.CacheTTL,
-		)
 		// Git Ownership Refactor Phase 4: @server is now the canonical owner
 		// of git_servers data, so team-sync resolves locally. cs-user's RPC
 		// endpoint + cs-user.git_servers table were deleted in Phase 4.
-		gitResolver = gitsync.NewLocalResolver(gitserver.NewDBResolver(db))
+		gitResolver := gitsync.NewLocalResolver(gitserver.NewDBResolver(db))
 		teamSyncSvc := gitsync.NewService(teamProvider, gitResolver, teamResolver, logger.L())
 		handlers.InitTeamSyncService(teamSyncSvc)
 
