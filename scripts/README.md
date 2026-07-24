@@ -144,7 +144,7 @@ once the env vars above are exported.
 ### Useful flags
 
 - `--skip-git-server` — skip step 2 when server isn't up yet.
-- `--skip-idtrust` — skip step 3 (e.g. for a tenant without idtrust).
+- `--skip-employment` — skip step 3 (employment provider config upload).
 - `--dry-run` — print each sub-command without invoking it.
 
 ## Customizing the idtrust mapping

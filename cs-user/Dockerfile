@@ -9,12 +9,13 @@ WORKDIR /src
 COPY cs-user/go.mod cs-user/go.sum* ./
 RUN go mod download
 
-# Build all three binaries (API server + migrate tool + ETL tool) in one
-# layer to share the warm compile cache.
+# Build all four binaries (API server + migrate tool + ETL tool + bootstrap
+# orchestrator) in one layer to share the warm compile cache.
 COPY cs-user/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user ./cmd/api && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user-migrate ./cmd/migrate && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user-etl ./cmd/etl
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user-etl ./cmd/etl && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cs-user-bootstrap ./cmd/bootstrap
 
 FROM alpine:3.20
 
@@ -27,6 +28,7 @@ USER csuser
 COPY --from=builder /out/cs-user /app/cs-user
 COPY --from=builder /out/cs-user-migrate /app/cs-user-migrate
 COPY --from=builder /out/cs-user-etl /app/cs-user-etl
+COPY --from=builder /out/cs-user-bootstrap /app/cs-user-bootstrap
 
 EXPOSE 8081
 ENV CS_USER_HTTP_PORT=8081 \
