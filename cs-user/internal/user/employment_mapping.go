@@ -387,6 +387,7 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		now := time.Now()
 		row := models.EmploymentIdentity{
+			TenantID:      params.TenantID,
 			UserSubjectID: params.UserSubjectID,
 			Provider:      params.Provider,
 			SyncStatus:    "fresh",
@@ -395,6 +396,22 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 		}
 		applyMappedToRow(&row, mapped)
 		if err := db.Create(&row).Error; err != nil {
+			// Server-side GetOrCreate can hand cs-user two different
+			// user_subject_id values for what is actually a single IdP user
+			// (e.g. one row cached under an old subject_id, a fresh created
+			// row under a new subject_id). When the field_map surfaces a
+			// non-empty enterprise_uid, the (tenant_id, enterprise_uid)
+			// partial unique index blocks this Create and surfaces as a
+			// duplicate-key error. Fall back to looking up the existing row
+			// by enterprise_uid and refreshing it (including realigning
+			// user_subject_id to the new server-provided value) so JWT
+			// issuance can complete — the deeper ID-consistency bug lives
+			// on the server side and is tracked separately.
+			if isDuplicateKeyError(err) {
+				if handled, hErr := s.reconcileByEnterpriseUID(ctx, params, mapped); hErr == nil && handled {
+					return nil
+				}
+			}
 			logger.Warn("[employment-mapping] Create failed: %v", err)
 			return fmt.Errorf("create employment_identity: %w", err)
 		}
@@ -424,6 +441,86 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 	logger.Info("[employment-mapping] employment_identity UPDATED user_subject_id=%s provider=%q",
 		params.UserSubjectID, params.Provider)
 	return nil
+}
+
+// duplicateKeyErrorFragments are the substrings (lower-cased) used to detect a
+// unique-constraint violation across the drivers cs-user supports in dev
+// (SQLite) and prod (Postgres). Kept loose on purpose — we only use this to
+// decide whether to attempt the by-enterprise-uid reconcile fallback, so a
+// false positive just means we run a no-op lookup that returns ErrRecordNotFound.
+var duplicateKeyErrorFragments = []string{
+	"unique constraint",      // SQLite: "UNIQUE constraint failed: ..."
+	"duplicate key",          // Postgres: "duplicate key value violates unique constraint"
+	"duplicated key",         // some Postgres driver phrasings
+	"duplicate entry",        // MySQL
+	"23505",                  // Postgres SQLSTATE for unique_violation
+}
+
+// isDuplicateKeyError reports whether err looks like a unique-constraint
+// violation. Driver-portable: SQLite, Postgres, MySQL.
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, frag := range duplicateKeyErrorFragments {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileByEnterpriseUID is the fallback path when Create hits the
+// (tenant_id, enterprise_uid) partial unique index. It looks up the existing
+// row by enterprise_uid within the same tenant and refreshes it with the
+// newly-arrived field values. The row's user_subject_id is realigned to
+// params.UserSubjectID — the server is now using the new ID for subsequent
+// reads (GetEmploymentIdentity in the reissue-token handler), so leaving the
+// row pinned to the stale ID would cause the JWT to miss enterprise claims on
+// every login until the server-side ID-consistency bug is fixed.
+//
+// Returns (handled=true, nil) when an existing row was found and updated.
+// Returns (handled=false, nil) when no row matched the enterprise_uid — caller
+// should treat the original Create error as authoritative in that case.
+func (s *Service) reconcileByEnterpriseUID(ctx context.Context, params EmploymentMappingParams, mapped map[string]any) (bool, error) {
+	uidRaw, ok := mapped["enterprise_uid"]
+	if !ok || uidRaw == nil {
+		return false, nil
+	}
+	enterpriseUID := strings.TrimSpace(fmt.Sprint(uidRaw))
+	if enterpriseUID == "" {
+		return false, nil
+	}
+
+	var existing models.EmploymentIdentity
+	err := s.db.WithContext(ctx).
+		Where("tenant_id = ? AND enterprise_uid = ? AND deleted_at IS NULL", params.TenantID, enterpriseUID).
+		Take(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	now := time.Now()
+	updates := map[string]any{
+		"user_subject_id":  params.UserSubjectID,
+		"provider":         params.Provider,
+		"sync_status":      "fresh",
+		"last_synced_at":   now,
+		"next_sync_due_at": now.Add(employmentSyncInterval),
+	}
+	for col, val := range mapped {
+		updates[col] = val
+	}
+	if err := s.db.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
+		return false, fmt.Errorf("update employment_identity (reconcile): %w", err)
+	}
+	logger.Warn("[employment-mapping] employment_identity RECONCILED by enterprise_uid=%s old_user_subject_id=%s → new_user_subject_id=%s provider=%q",
+		enterpriseUID, existing.UserSubjectID, params.UserSubjectID, params.Provider)
+	return true, nil
 }
 
 // mappedColumnSummary renders the applyFieldMap output as a debugging-friendly
