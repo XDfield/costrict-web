@@ -148,7 +148,11 @@ tolerations: []
 affinity: {}
 
 # Restrict ingress to pods labeled costrict.io/cs-user-consumer=true in the same
-# namespace (defense in depth on top of X-Internal-Token). Disable if your
-# cluster CNI doesn't support NetworkPolicy.
+# namespace (defense in depth on top of X-Internal-Token).
+#
+# Default OFF so dev / staging deployments don't silently blackhole server
+# traffic (server pod must carry the consumer label, or it gets 10s-timeout).
+# Production should set this to true and add `costrict.io/cs-user-consumer: "true"`
+# to every consumer pod (the api chart exposes this via its podLabels field).
 networkPolicy:
-  enabled: true
+  enabled: false
