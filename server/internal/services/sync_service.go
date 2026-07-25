@@ -342,8 +342,12 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				matchedByPath = exists
 			}
 			if !exists {
-				existing = slugIndex[parsed.ItemType+":"+parsed.Slug]
-				exists = existing != nil
+				candidate := slugIndex[parsed.ItemType+":"+parsed.Slug]
+				if candidate != nil &&
+					(!capabilityslug.RequiresCanonical(parsed.ItemType) || candidate.SourcePath == relPath) {
+					existing = candidate
+					exists = true
+				}
 			}
 			if exists {
 				if matchedByPath && capabilityslug.RequiresCanonical(parsed.ItemType) {
@@ -470,14 +474,21 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					CreatedBy:       triggerUser,
 					UpdatedBy:       triggerUser,
 				}
-				if err := s.DB.Create(newItem).Error; err != nil {
+				baseSlug := newItem.Slug
+				createErr := s.DB.Create(newItem).Error
+				for attempt := 2; createErr != nil && isUniqueViolationErr(createErr) && attempt <= 10; attempt++ {
+					newItem.Slug = fmt.Sprintf("%s-%d", baseSlug, attempt)
+					createErr = s.DB.Create(newItem).Error
+				}
+				if createErr != nil {
 					result.Failed++
-					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, err))
+					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, createErr))
 					continue
 				}
 
-				// Index newly created item so later files with the same slug are
-				// treated as updates instead of inserts.
+				// Index the allocated slug and stable source identity. Another
+				// source that canonicalizes to the same base gets its own
+				// collision suffix instead of overwriting this row.
 				existingByPath[newItem.SourcePath] = newItem
 				slugIndex[newItem.ItemType+":"+newItem.Slug] = newItem
 

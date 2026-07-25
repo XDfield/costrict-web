@@ -585,12 +585,14 @@ func (s *CatalogIngestService) applyChangedEntry(
 				break
 			}
 		}
-		if !exists && !isPluginBundledChild(entry) {
+		if !exists &&
+			!isPluginBundledChild(entry) &&
+			!capabilityslug.RequiresCanonical(parsed.ItemType) {
 			// Cross-entry slug collision: another upstream entry already
 			// owns a row with this (item_type, slug). Treat as update of
 			// THAT row instead of inserting a duplicate (which would crash
-			// on the unique constraint). Mirrors SyncService's slugIndex
-			// fallback behavior.
+			// on the unique constraint). Invocable capability types must stay
+			// source-distinct and use insertItem's stable collision suffix.
 			if global, ok := globalBySlug[key]; ok {
 				existing = global
 				exists = true

@@ -142,6 +142,68 @@ func TestCatalogIngest_CollisionSuffixKeepsEntryIdentityOnReingest(t *testing.T)
 	}
 }
 
+func TestCatalogIngest_FirstCanonicalCollisionCreatesDistinctRows(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+	entries := []catalogEntry{
+		{ID: "foo.bar", Type: "skill", Source: "catalog/foo.bar"},
+		{ID: "foo-bar", Type: "skill", Source: "catalog/foo-bar"},
+	}
+	bodies := map[string]string{
+		"foo.bar": "---\nname: Foo Dot Bar\n---\ndot v1\n",
+		"foo-bar": "---\nname: Foo Dash Bar\n---\ndash v1\n",
+	}
+
+	first, err := svc.Ingest(
+		context.Background(),
+		IngestSource{Dir: writeMultiEntryBundle(t, entries, bodies)},
+		IngestOptions{TriggerUser: "tester"},
+	)
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	if first.Added != 2 || first.Updated != 0 || first.Failed != 0 {
+		t.Fatalf("first ingest result: added=%d updated=%d failed=%d errors=%v", first.Added, first.Updated, first.Failed, first.Errors)
+	}
+
+	dot := loadItemBySourcePath(t, db, "skills/foo.bar/SKILL.md")
+	dash := loadItemBySourcePath(t, db, "skills/foo-bar/SKILL.md")
+	if dot.ID == dash.ID {
+		t.Fatal("canonical collision collapsed two catalog entries into one row")
+	}
+	gotSlugs := map[string]bool{dot.Slug: true, dash.Slug: true}
+	if !gotSlugs["foo-bar"] || !gotSlugs["foo-bar-2"] {
+		t.Fatalf("collision slugs = %q and %q, want foo-bar and foo-bar-2", dot.Slug, dash.Slug)
+	}
+	if !strings.Contains(dot.Content, "dot v1") || !strings.Contains(dash.Content, "dash v1") {
+		t.Fatalf("catalog contents crossed entries: dot=%q dash=%q", dot.Content, dash.Content)
+	}
+
+	bodies["foo.bar"] = "---\nname: Foo Dot Bar\n---\ndot v2\n"
+	bodies["foo-bar"] = "---\nname: Foo Dash Bar\n---\ndash v2\n"
+	second, err := svc.Ingest(
+		context.Background(),
+		IngestSource{Dir: writeMultiEntryBundle(t, entries, bodies)},
+		IngestOptions{TriggerUser: "tester"},
+	)
+	if err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+	if second.Added != 0 || second.Updated != 2 || second.Failed != 0 {
+		t.Fatalf("second ingest result: added=%d updated=%d failed=%d errors=%v", second.Added, second.Updated, second.Failed, second.Errors)
+	}
+
+	dotAfter := loadItemBySourcePath(t, db, "skills/foo.bar/SKILL.md")
+	dashAfter := loadItemBySourcePath(t, db, "skills/foo-bar/SKILL.md")
+	if dotAfter.ID != dot.ID || dotAfter.Slug != dot.Slug ||
+		dashAfter.ID != dash.ID || dashAfter.Slug != dash.Slug {
+		t.Fatalf("re-ingest changed collision identities: dot=%+v dash=%+v", dotAfter, dashAfter)
+	}
+	if !strings.Contains(dotAfter.Content, "dot v2") || !strings.Contains(dashAfter.Content, "dash v2") {
+		t.Fatalf("re-ingest crossed contents: dot=%q dash=%q", dotAfter.Content, dashAfter.Content)
+	}
+}
+
 func TestSyncRegistry_NonASCIISkillUsesStableCanonicalSlug(t *testing.T) {
 	db := newIngestTestDB(t)
 	for _, stmt := range []string{
@@ -362,5 +424,132 @@ func TestSyncRegistry_CollisionSuffixSurvivesPathMatchedUpdate(t *testing.T) {
 	}
 	if gotOccupant.Slug != occupant.Slug || gotOccupant.Content != occupant.Content {
 		t.Fatalf("occupant was polluted: %+v", gotOccupant)
+	}
+}
+
+func TestSyncRegistry_FirstCanonicalCollisionCreatesDistinctRows(t *testing.T) {
+	db := newIngestTestDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE sync_logs (
+			id TEXT PRIMARY KEY, registry_id TEXT NOT NULL, trigger_type TEXT,
+			trigger_user TEXT, status TEXT, commit_sha TEXT, previous_sha TEXT,
+			total_items INTEGER DEFAULT 0, added_items INTEGER DEFAULT 0,
+			updated_items INTEGER DEFAULT 0, deleted_items INTEGER DEFAULT 0,
+			skipped_items INTEGER DEFAULT 0, failed_items INTEGER DEFAULT 0,
+			error_message TEXT, duration_ms INTEGER DEFAULT 0, started_at DATETIME,
+			finished_at DATETIME, created_at DATETIME
+		)`,
+		`CREATE TABLE capability_assets (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, rel_path TEXT NOT NULL,
+			text_content TEXT, storage_backend TEXT, storage_key TEXT,
+			mime_type TEXT, file_size INTEGER DEFAULT 0, content_sha TEXT,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("create sync table: %v", err)
+		}
+	}
+
+	repoDir := t.TempDir()
+	writeSkill := func(dir, name, body string) {
+		t.Helper()
+		skillDir := filepath.Join(repoDir, "skills", dir)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatalf("mkdir skill %s: %v", dir, err)
+		}
+		content := "---\nname: " + name + "\n---\n" + body + "\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", dir, err)
+		}
+	}
+	writeSkill("foo.bar", "Foo Dot Bar", "dot v1")
+	writeSkill("foo-bar", "Foo Dash Bar", "dash v1")
+
+	repo, err := git.PlainInit(repoDir, false)
+	if err != nil {
+		t.Fatalf("init git repo: %v", err)
+	}
+	commitAll := func(message string) {
+		t.Helper()
+		worktree, err := repo.Worktree()
+		if err != nil {
+			t.Fatalf("open worktree: %v", err)
+		}
+		if _, err := worktree.Add("."); err != nil {
+			t.Fatalf("git add: %v", err)
+		}
+		if _, err := worktree.Commit(message, &git.CommitOptions{Author: &object.Signature{
+			Name: "Test", Email: "test@example.com", When: time.Now(),
+		}}); err != nil {
+			t.Fatalf("git commit: %v", err)
+		}
+	}
+	commitAll("initial")
+
+	registry := models.CapabilityRegistry{
+		ID:             "registry-sync-first-collision",
+		Name:           "sync first collision",
+		SourceType:     "git",
+		ExternalURL:    repoDir,
+		ExternalBranch: "master",
+		RepoID:         "repo-sync-first-collision",
+		OwnerID:        "tester",
+	}
+	if err := db.Create(&registry).Error; err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	svc := &SyncService{
+		DB:     db,
+		Git:    &GitService{TempBaseDir: t.TempDir()},
+		Parser: &ParserService{},
+	}
+
+	first, err := svc.SyncRegistry(context.Background(), registry.ID, SyncOptions{TriggerType: "manual", TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if first.Added != 2 || first.Updated != 0 || first.Failed != 0 {
+		t.Fatalf("first sync result: added=%d updated=%d failed=%d errors=%v", first.Added, first.Updated, first.Failed, first.Errors)
+	}
+
+	var dot, dash models.CapabilityItem
+	if err := db.First(&dot, "registry_id = ? AND source_path = ?", registry.ID, "skills/foo.bar/SKILL.md").Error; err != nil {
+		t.Fatalf("load dot skill: %v", err)
+	}
+	if err := db.First(&dash, "registry_id = ? AND source_path = ?", registry.ID, "skills/foo-bar/SKILL.md").Error; err != nil {
+		t.Fatalf("load dash skill: %v", err)
+	}
+	gotSlugs := map[string]bool{dot.Slug: true, dash.Slug: true}
+	if dot.ID == dash.ID || !gotSlugs["foo-bar"] || !gotSlugs["foo-bar-2"] {
+		t.Fatalf("first sync collapsed collision: dot=%+v dash=%+v", dot, dash)
+	}
+	if !strings.Contains(dot.Content, "dot v1") || !strings.Contains(dash.Content, "dash v1") {
+		t.Fatalf("first sync crossed contents: dot=%q dash=%q", dot.Content, dash.Content)
+	}
+
+	writeSkill("foo.bar", "Foo Dot Bar", "dot v2")
+	writeSkill("foo-bar", "Foo Dash Bar", "dash v2")
+	commitAll("update")
+	second, err := svc.SyncRegistry(context.Background(), registry.ID, SyncOptions{TriggerType: "manual", TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if second.Added != 0 || second.Updated != 2 || second.Failed != 0 {
+		t.Fatalf("second sync result: added=%d updated=%d failed=%d errors=%v", second.Added, second.Updated, second.Failed, second.Errors)
+	}
+
+	var dotAfter, dashAfter models.CapabilityItem
+	if err := db.First(&dotAfter, "id = ?", dot.ID).Error; err != nil {
+		t.Fatalf("reload dot skill: %v", err)
+	}
+	if err := db.First(&dashAfter, "id = ?", dash.ID).Error; err != nil {
+		t.Fatalf("reload dash skill: %v", err)
+	}
+	if dotAfter.Slug != dot.Slug || dashAfter.Slug != dash.Slug {
+		t.Fatalf("second sync changed collision slugs: dot=%q dash=%q", dotAfter.Slug, dashAfter.Slug)
+	}
+	if !strings.Contains(dotAfter.Content, "dot v2") || !strings.Contains(dashAfter.Content, "dash v2") {
+		t.Fatalf("second sync crossed contents: dot=%q dash=%q", dotAfter.Content, dashAfter.Content)
 	}
 }
