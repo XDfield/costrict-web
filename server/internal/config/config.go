@@ -32,6 +32,7 @@ type Config struct {
 	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
 	UserService               UserServiceConfig
+	TeamDirectory             TeamDirectoryConfig
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -102,6 +103,16 @@ const (
 	UserServiceBackendLocal = "local"
 	UserServiceBackendRPC   = "rpc"
 )
+
+// TeamDirectoryConfig configures the team-directory HTTP backend — the
+// authoritative source of "which teams/workspaces a user belongs to".
+// Today the backend is multica (temporary); the long-term plan is a
+// dedicated org-team-service. Auth is per-request via Casdoor JWT
+// forwarding, so there is no shared internal token here.
+type TeamDirectoryConfig struct {
+	BaseURL    string // e.g. http://multica:8080
+	TimeoutSec int    // per-request HTTP timeout, default 10
+}
 
 // AuthMultiIdPConfig removed — Phase E2.6 multi-IdP bypass deprecated.
 // OAuth is brokered exclusively via Casdoor; per-provider credentials live
@@ -280,6 +291,10 @@ func Load() *Config {
 			TimeoutSec:    getEnvInt("USER_SERVICE_TIMEOUT_SECONDS", 10),
 			WriteMode:     getEnv("USER_SERVICE_WRITE_MODE", UserServiceWriteModeLocal),
 			ApexDomains:   getEnvSlice("USER_SERVICE_APEX_DOMAINS", nil),
+		},
+		TeamDirectory: TeamDirectoryConfig{
+			BaseURL:    getEnv("TEAM_DIRECTORY_URL", ""),
+			TimeoutSec: getEnvInt("TEAM_DIRECTORY_TIMEOUT_SECONDS", 10),
 		},
 		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),

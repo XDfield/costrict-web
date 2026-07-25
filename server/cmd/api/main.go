@@ -68,6 +68,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/settings"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/costrict/costrict-web/server/internal/teamdir"
 	"github.com/costrict/costrict-web/server/internal/teamns"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
@@ -178,13 +179,18 @@ func main() {
 			log.Printf("teamns: CS_BOT_TOKEN_KEY not configured (%v); team-namespace API disabled", err)
 		}
 
-		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). TeamResolver
-		// forwards the caller's Casdoor JWT to multica's GET /api/workspaces,
-		// which resolves membership via its own CasdoorAuth. An empty workspace
-		// list maps to 403 NO_TEAM_MEMBERSHIP; transport/auth failure surfaces
+		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). The
+		// team-directory resolver forwards the caller's Casdoor JWT to the
+		// team-directory backend (today: multica's GET /api/workspaces; the
+		// long-term plan is a dedicated org-team-service). An empty list
+		// maps to 403 NO_TEAM_MEMBERSHIP; transport/auth failure surfaces
 		// as ErrOrgTeamServiceUnavailable so KBEnsure fails closed 503
 		// (KB_USER_ENSURE_API.md §2.3).
-		handlers.InitTeamResolver(&handlers.CSUserTeamResolver{Client: rpcClient})
+		teamDirClient := teamdir.NewClient(teamdir.Config{
+			BaseURL:    cfg.TeamDirectory.BaseURL,
+			TimeoutSec: cfg.TeamDirectory.TimeoutSec,
+		})
+		handlers.InitTeamResolver(&handlers.TeamDirectoryResolver{Client: teamDirClient})
 	}
 
 	// Git Ownership Refactor Phase 1: server-side user provisioning service.
