@@ -22,9 +22,11 @@ FROM alpine:3.20
 # curl + jq ship in the image so ops scripts under cs-user/scripts/ can
 # run from inside the container (kubectl exec / docker run).
 RUN apk add --no-cache ca-certificates tzdata curl jq && \
-    adduser -D -u 1000 csuser
+    adduser -D -u 1000 csuser && \
+    mkdir -p /app/logs && chown -R csuser:csuser /app
 
 USER csuser
+WORKDIR /app
 COPY --from=builder /out/cs-user /app/cs-user
 COPY --from=builder /out/cs-user-migrate /app/cs-user-migrate
 COPY --from=builder /out/cs-user-etl /app/cs-user-etl
