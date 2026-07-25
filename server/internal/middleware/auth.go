@@ -283,6 +283,10 @@ func acceptsQueryToken(c *gin.Context) bool {
 	return false
 }
 
+// OptionalAuth decodes the JWT without verifying the signature — gateway
+// layer is responsible for signature verification. Tokens that fail to
+// decode are silently ignored (no auth context populated), matching the
+// prior "invalid token on optional route" behavior.
 func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
@@ -291,22 +295,11 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token, jwks)
+		userInfo, err := decodeJWTToken(token)
 		if err != nil {
-			// Only fall back to Casdoor if the token looks like a JWT.
-			// Device tokens (hex strings) and other non-JWT formats will
-			// always fail Casdoor validation, so skip the network call.
-			if looksLikeJWT(token) {
-				userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-				if err != nil {
-					logger.Warn("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-					c.Next()
-					return
-				}
-			} else {
-				c.Next()
-				return
-			}
+			logger.Warn("[OptionalAuth] token decode failed: %v", err)
+			c.Next()
+			return
 		}
 
 		setAuthContext(c, userInfo)
@@ -315,6 +308,10 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	}
 }
 
+// RequireAuth decodes the JWT without verifying the signature — gateway
+// layer is responsible for signature verification before the request
+// reaches this server. The decoded claims populate the auth context.
+// Account-status gate (banned/disabled) runs after the decode succeeds.
 func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
@@ -323,17 +320,12 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token, jwks)
+		userInfo, err := decodeJWTToken(token)
 		if err != nil {
-			// Fallback to Casdoor API verification
-			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-			if err != nil {
-				// Clear invalid cookie to prevent repeated failed requests
-				ClearAuthCookie(c)
-				logger.Warn("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-				return
-			}
+			ClearAuthCookie(c)
+			logger.Warn("[RequireAuth] token decode failed: %v", err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
 		}
 
 		setAuthContext(c, userInfo)
@@ -413,6 +405,10 @@ const csUserIssuer = "cs-user"
 
 // parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
 // If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
+//
+// NOTE: currently only referenced by tests; the production auth path
+// (RequireAuth/OptionalAuth/ParseToken) decodes without verifying — the
+// signature check is delegated to the gateway layer.
 func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS provider not configured")
@@ -437,6 +433,30 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
+	return claimsToUserInfo(claims)
+}
+
+// decodeJWTToken decodes the JWT claims WITHOUT verifying the signature.
+// This is safe only because the gateway layer is responsible for signature
+// verification before the request reaches the server. Doing the decode
+// locally avoids both the JWKS fetch and the Casdoor /api/userinfo network
+// round-trip on every request.
+func decodeJWTToken(tokenString string) (*CasdoorUserInfo, error) {
+	parser := jwt.Parser{}
+	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("JWT decode failed: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+	return claimsToUserInfo(claims)
+}
+
+// claimsToUserInfo maps a Casdoor/cs-user JWT claims map to CasdoorUserInfo.
+// Shared by parseJWTToken (verified) and decodeJWTToken (unverified).
+func claimsToUserInfo(claims jwt.MapClaims) (*CasdoorUserInfo, error) {
 	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
 
 	// Subject resolution diverges by issuer:
@@ -570,16 +590,12 @@ func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
 	}, nil
 }
 
-// ParseToken verifies a token using JWKS first, falling back to Casdoor userinfo API.
+// ParseToken decodes a JWT without verifying the signature — the gateway
+// layer is responsible for signature verification. The casdoorEndpoint and
+// jwks params are retained for signature compatibility with existing
+// callers (e.g. authz.Service.VerifyTokenWithUser) but are no longer used.
 func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
-	userInfo, err := parseJWTToken(token, jwks)
-	if err != nil {
-		userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return userInfo, nil
+	return decodeJWTToken(token)
 }
 
 func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
