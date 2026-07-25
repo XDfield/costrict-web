@@ -68,7 +68,11 @@ type Config struct {
 	// "http://server:8080/api/internal/users/created"). Required.
 	TargetURL string
 
-	// TargetToken is the X-Internal-Token header value. Required.
+	// TargetToken is the X-Internal-Secret header value. Required.
+	// Must match server's INTERNAL_SECRET — server's InternalAuth middleware
+	// (server/internal/middleware/auth.go) reads exactly this header name.
+	// Sending X-Internal-Token here surfaces as a per-second 403 in server
+	// logs because the secret is never read.
 	TargetToken string
 
 	// PollInterval is the gap between worker sweeps. Default 1s.
@@ -300,7 +304,7 @@ func (o *Outbox) deliver(ctx context.Context, row *models.UserEvent) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", o.cfg.TargetToken)
+	req.Header.Set("X-Internal-Secret", o.cfg.TargetToken)
 	req.Header.Set("X-Event-ID", row.EventID)
 
 	resp, err := o.httpDo(req)
