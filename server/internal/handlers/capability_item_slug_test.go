@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -18,7 +17,8 @@ func TestCanonicalCapabilitySlug(t *testing.T) {
 		{name: "normalizes explicit display-style skill slug", itemType: "skill", slug: "Skill with Skill", displayName: "ignored", want: "skill-with-skill"},
 		{name: "normalizes skill separators and case", itemType: "skill", slug: "MD_to DOCX", displayName: "ignored", want: "md-to-docx"},
 		{name: "generates skill slug from display name", itemType: "skill", displayName: "E2E Skill Tree", want: "e2e-skill-tree"},
-		{name: "uses stable fallback for skill values without ASCII identifier characters", itemType: "skill", slug: "技能", displayName: "技能", want: "skill-12345678abcd4321abcd1234567890ab"},
+		{name: "preserves Chinese skill identifiers", itemType: "skill", slug: "技能", displayName: "技能", want: "技能"},
+		{name: "normalizes spaces in mixed Unicode identifiers", itemType: "skill", slug: "01 仓库概览", displayName: "01 仓库概览", want: "01-仓库概览"},
 		{name: "normalizes commands", itemType: "command", slug: "Deploy Command", displayName: "ignored", want: "deploy-command"},
 		{name: "normalizes subagents", itemType: "subagent", slug: "Review Agent", displayName: "ignored", want: "review-agent"},
 		{name: "preserves explicit non-skill identifiers", itemType: "mcp", slug: "Acme:Server", displayName: "ignored", want: "Acme:Server"},
@@ -33,14 +33,14 @@ func TestCanonicalCapabilitySlug(t *testing.T) {
 	}
 }
 
-func TestCreateItemDirect_NonASCIISkillUsesStableFallback(t *testing.T) {
+func TestCreateItemDirect_UnicodeSkillPreservesInvocationAndDisplayName(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 
 	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
 		"itemType": "skill",
-		"name":     "技能",
-		"slug":     "技能",
+		"name":     "技能 仓库",
+		"slug":     "技能 仓库",
 		"content":  "# 技能",
 	})
 	if w.Code != http.StatusCreated {
@@ -51,12 +51,10 @@ func TestCreateItemDirect_NonASCIISkillUsesStableFallback(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	slug, _ := item["slug"].(string)
-	id, _ := item["id"].(string)
-	if slug != "skill-"+strings.ReplaceAll(id, "-", "") {
-		t.Fatalf("expected stable id fallback, got slug=%q id=%q", slug, id)
+	if item["slug"] != "技能-仓库" {
+		t.Fatalf("expected invocable Unicode slug, got %v", item["slug"])
 	}
-	if item["name"] != "技能" {
+	if item["name"] != "技能 仓库" {
 		t.Fatalf("expected display name to remain unchanged, got %v", item["name"])
 	}
 }
@@ -141,18 +139,18 @@ func TestCreateItemDirect_ZipSkill_NormalizesExplicitSlug(t *testing.T) {
 	}
 }
 
-func TestCreateItemDirect_ZipNonASCIISkillUsesStableFallback(t *testing.T) {
+func TestCreateItemDirect_ZipUnicodeSkillPreservesInvocationAndDisplayName(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 	setMemoryStorageBackend(t)
 
 	zipBytes := createTestZip(map[string][]byte{
-		"SKILL.md": []byte("---\nname: 技能\n---\n# 技能"),
+		"SKILL.md": []byte("---\nname: 01 仓库概览\n---\n# 仓库概览"),
 	})
 	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
 		"itemType": "skill",
-		"name":     "技能",
-		"slug":     "技能",
+		"name":     "01 仓库概览",
+		"slug":     "01 仓库概览",
 	}, zipBytes)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -162,12 +160,10 @@ func TestCreateItemDirect_ZipNonASCIISkillUsesStableFallback(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	slug, _ := item["slug"].(string)
-	id, _ := item["id"].(string)
-	if slug != "skill-"+strings.ReplaceAll(id, "-", "") {
-		t.Fatalf("expected stable id fallback, got slug=%q id=%q", slug, id)
+	if item["slug"] != "01-仓库概览" {
+		t.Fatalf("expected invocable Unicode slug, got %v", item["slug"])
 	}
-	if item["name"] != "技能" {
+	if item["name"] != "01 仓库概览" {
 		t.Fatalf("expected display name to remain unchanged, got %v", item["name"])
 	}
 }

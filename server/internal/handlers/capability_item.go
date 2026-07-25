@@ -184,7 +184,7 @@ func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []stri
 var ErrSlugConflict = errors.New("slug conflict")
 
 // ErrInvalidSlug is returned when neither the supplied slug nor display name
-// can produce an ASCII lowercase kebab-case capability identifier.
+// can produce a safe capability invocation identifier.
 var ErrInvalidSlug = errors.New("invalid slug")
 
 // createItemRequest contains all fields needed to persist a new item.
@@ -1070,12 +1070,12 @@ func ListItems(c *gin.Context) {
 
 // CreateItem godoc
 // @Summary      Create item in registry
-// @Description  Create a new capability item in a specific registry. Skill, command, and subagent slugs are normalized to lowercase kebab-case; names remain unchanged for display.
+// @Description  Create a new capability item in a specific registry. Invocable capability slugs normalize ASCII separators to lowercase kebab-case while preserving Unicode token characters; names remain unchanged for display.
 // @Tags         items
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data; invocable capability slugs are normalized to lowercase kebab-case"
+// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data; invocable slugs use Unicode-aware lowercase kebab normalization"
 // @Success      201   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
@@ -2383,11 +2383,11 @@ func ListItemFilterOptions(c *gin.Context) {
 
 // CreateItemDirect godoc
 // @Summary      Create item (direct)
-// @Description  Create a capability item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Skill, command, and subagent slugs are normalized to lowercase kebab-case while names remain unchanged for display. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.
+// @Description  Create a capability item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Invocable capability slugs normalize ASCII separators to lowercase kebab-case while preserving Unicode token characters; names remain unchanged for display. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON); invocable capability slugs are normalized to lowercase kebab-case"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON); invocable slugs use Unicode-aware lowercase kebab normalization"
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"

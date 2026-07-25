@@ -17,9 +17,13 @@ func TestCanonical(t *testing.T) {
 		{name: "subagent case", itemType: "subagent", slug: "Code Reviewer", want: "code-reviewer"},
 		{name: "legacy agent alias", itemType: "agent", slug: "Release Agent", want: "release-agent"},
 		{name: "missing slug uses display", itemType: "skill", display: "E2E Skill Tree", want: "e2e-skill-tree"},
-		{name: "non ASCII skill uses stable id", itemType: "skill", slug: "技能", display: "技能", itemID: itemID, want: "skill-12345678abcd4321abcd1234567890ab"},
-		{name: "non ASCII command uses stable id", itemType: "command", slug: "命令", itemID: itemID, want: "command-12345678abcd4321abcd1234567890ab"},
-		{name: "non ASCII waits for id", itemType: "skill", slug: "技能", want: ""},
+		{name: "Chinese skill remains invocable", itemType: "skill", slug: "技能", display: "技能", itemID: itemID, want: "技能"},
+		{name: "Chinese command spaces become dashes", itemType: "command", slug: "01 仓库概览", itemID: itemID, want: "01-仓库概览"},
+		{name: "Unicode is NFC normalized", itemType: "skill", slug: "Cafe\u0301 技能", want: "café-技能"},
+		{name: "non ASCII symbols remain invocable", itemType: "skill", slug: "😀 Skill", want: "😀-skill"},
+		{name: "unsafe ASCII separators become dashes", itemType: "skill", slug: "../技能\\仓库", want: "技能-仓库"},
+		{name: "separator only skill uses stable id", itemType: "skill", slug: " ! / ", itemID: itemID, want: "skill-12345678abcd4321abcd1234567890ab"},
+		{name: "separator only skill waits for id", itemType: "skill", slug: " ! / ", want: ""},
 		{name: "explicit mcp identifier is unchanged", itemType: "mcp", slug: "Acme:Server", want: "Acme:Server"},
 		{name: "missing mcp slug keeps legacy generation", itemType: "mcp", display: "Acme Server", want: "acme-server"},
 	}
@@ -36,9 +40,11 @@ func TestCanonical(t *testing.T) {
 func TestCanonicalIsIdempotent(t *testing.T) {
 	const itemID = "12345678-abcd-4321-abcd-1234567890ab"
 	for _, itemType := range []string{"skill", "command", "subagent", "agent"} {
-		first := Canonical(itemType, "Display Name", "", itemID)
-		if second := Canonical(itemType, first, "", itemID); second != first {
-			t.Fatalf("%s canonicalization is not idempotent: first=%q second=%q", itemType, first, second)
+		for _, source := range []string{"Display Name", "技能 仓库", "Cafe\u0301 😀"} {
+			first := Canonical(itemType, source, "", itemID)
+			if second := Canonical(itemType, first, "", itemID); second != first {
+				t.Fatalf("%s canonicalization is not idempotent for %q: first=%q second=%q", itemType, source, first, second)
+			}
 		}
 	}
 }

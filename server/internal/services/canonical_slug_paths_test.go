@@ -13,7 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-func TestCatalogIngest_NonASCIISkillKeepsStableCanonicalSlugOnReingest(t *testing.T) {
+func TestCatalogIngest_UnicodeSkillKeepsStableCanonicalSlugOnReingest(t *testing.T) {
 	db := newIngestTestDB(t)
 	svc := newIngestService(db)
 	entry := catalogEntry{
@@ -36,7 +36,7 @@ func TestCatalogIngest_NonASCIISkillKeepsStableCanonicalSlugOnReingest(t *testin
 	if err := db.Where("catalog_entry_dir = ?", "skills/技能").First(&created).Error; err != nil {
 		t.Fatalf("load created item: %v", err)
 	}
-	wantSlug := "skill-" + strings.ReplaceAll(created.ID, "-", "")
+	wantSlug := "技能"
 	if created.Slug != wantSlug {
 		t.Fatalf("created slug = %q, want %q", created.Slug, wantSlug)
 	}
@@ -204,7 +204,7 @@ func TestCatalogIngest_FirstCanonicalCollisionCreatesDistinctRows(t *testing.T) 
 	}
 }
 
-func TestSyncRegistry_NonASCIISkillUsesStableCanonicalSlug(t *testing.T) {
+func TestSyncRegistry_UnicodeSkillKeepsStableCanonicalSlug(t *testing.T) {
 	db := newIngestTestDB(t)
 	for _, stmt := range []string{
 		`CREATE TABLE sync_logs (
@@ -288,7 +288,7 @@ func TestSyncRegistry_NonASCIISkillUsesStableCanonicalSlug(t *testing.T) {
 	if err := db.Where("registry_id = ?", registry.ID).First(&created).Error; err != nil {
 		t.Fatalf("load synced item: %v", err)
 	}
-	wantSlug := "skill-" + strings.ReplaceAll(created.ID, "-", "")
+	wantSlug := "技能"
 	if created.Slug != wantSlug {
 		t.Fatalf("synced slug = %q, want %q", created.Slug, wantSlug)
 	}

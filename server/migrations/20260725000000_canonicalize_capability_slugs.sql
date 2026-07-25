@@ -1,8 +1,8 @@
 -- +goose Up
 -- Capability names are presentation text, but slugs are installed by CSC as
 -- command/directory identifiers. Normalize legacy invocable rows created
--- before the API enforced lowercase kebab-case. Display-only capability types
--- retain their existing identifier contracts.
+-- before the API enforced Unicode-aware lowercase kebab identifiers.
+-- Display-only capability types retain their existing identifier contracts.
 --
 -- Process rows one at a time so the immediate unique index on
 -- (repo_id, item_type, slug) cannot observe a transient collision. Existing
@@ -26,13 +26,14 @@ BEGIN
                 COALESCE(
                     NULLIF(
                         trim(BOTH '-' FROM regexp_replace(
-                            lower(
+                            lower(normalize(
                                 CASE
                                     WHEN trim(COALESCE(slug, '')) = '' THEN name
                                     ELSE slug
-                                END
-                            ),
-                            '[^a-z0-9]+',
+                                END,
+                                NFC
+                            )),
+                            '[\x01-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f\u0080-\u009f\u00a0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000]+',
                             '-',
                             'g'
                         )),

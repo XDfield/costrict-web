@@ -3,6 +3,9 @@ package capabilityslug
 import (
 	"strconv"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Canonical returns the persisted invocation identifier for a capability.
@@ -42,27 +45,31 @@ func RequiresCanonical(itemType string) bool {
 	}
 }
 
-// Slugify converts presentation text to lowercase ASCII kebab-case.
+// Slugify converts ASCII separators to kebab-case while preserving normalized
+// non-ASCII token characters that CSC accepts in invocation identifiers.
 func Slugify(value string) string {
-	result := make([]byte, 0, len(value))
+	value = norm.NFC.String(value)
+	var result strings.Builder
+	result.Grow(len(value))
 	prevDash := false
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			result = append(result, c)
+
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
 			prevDash = false
-		} else if c >= 'A' && c <= 'Z' {
-			result = append(result, c+32)
+		} else if r >= 'A' && r <= 'Z' {
+			result.WriteRune(r + ('a' - 'A'))
 			prevDash = false
-		} else if !prevDash && len(result) > 0 {
-			result = append(result, '-')
+		} else if r > unicode.MaxASCII && !unicode.IsSpace(r) && !unicode.IsControl(r) {
+			result.WriteRune(unicode.ToLower(r))
+			prevDash = false
+		} else if !prevDash && result.Len() > 0 {
+			result.WriteByte('-')
 			prevDash = true
 		}
 	}
-	if len(result) > 0 && result[len(result)-1] == '-' {
-		result = result[:len(result)-1]
-	}
-	return string(result)
+
+	return strings.TrimSuffix(result.String(), "-")
 }
 
 // HasAssignedCollisionSuffix reports whether candidate is a persisted variant
