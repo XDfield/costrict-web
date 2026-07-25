@@ -25,6 +25,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/teamns"
+	"github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -142,18 +143,45 @@ func KBEnsure(c *gin.Context) {
 		return
 	}
 
-	// 1. Verify team ns exists.
+	// 1. Verify team ns exists. Auto-provision when missing — the team
+	// already exists in the directory backend (we just confirmed
+	// membership) but lacks a git namespace binding. CreateTeam is
+	// idempotent on team_id, so concurrent ensure calls on the same
+	// unbound team race safely: the loser's persist hits the existing
+	// row and returns the existing binding.
 	ns, err := lookupTeamNSForKB(c, resolvedTeamID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		displayName := pickTeamDisplayName(teams, resolvedTeamID)
+		if displayName == "" {
+			// Directory backend gave us no display name to bind —
+			// can't auto-provision without one (DB NOT NULL). Surface
+			// TEAM_NS_NOT_INITIALIZED so an admin provisions manually.
 			c.JSON(http.StatusPreconditionFailed, gin.H{
-				"error":      "team ns not initialized; ask your platform admin to provision the team first",
+				"error":      "team ns not initialized; directory backend returned no display name; ask your platform admin to provision the team first",
 				"error_code": "TEAM_NS_NOT_INITIALIZED",
 			})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		provReq := teamns.CreateTeamRequest{
+			TeamID:          resolvedTeamID,
+			TeamDisplayName: displayName,
+			Creator:         user.UserRef{UserID: subjectID},
+		}
+		if _, perr := teamnsService.CreateTeam(c.Request.Context(), provReq); perr != nil {
+			status, body := mapKBEnsureError(perr)
+			c.JSON(status, body)
+			return
+		}
+		// Re-lookup; CreateTeam persisted the binding row.
+		ns, err = lookupTeamNSForKB(c, resolvedTeamID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	// 2. Provision kb repo (delegates to teamns.EnsureKBRepo).
@@ -277,6 +305,19 @@ func validateKBEnsureRequest(req KBEnsureRequest) error {
 // teamnsService.LookupTeamNS.
 func lookupTeamNSForKB(c *gin.Context, teamID string) (*models.TeamNamespace, error) {
 	return teamnsService.LookupTeamNS(c.Request.Context(), teamID)
+}
+
+// pickTeamDisplayName returns the display name the directory backend
+// carried for teamID. Returns "" when unknown — KBEnsure treats that as
+// "cannot auto-provision" and surfaces TEAM_NS_NOT_INITIALIZED, since
+// team_ns.team_display_name is NOT NULL.
+func pickTeamDisplayName(teams []TeamSummary, teamID string) string {
+	for _, t := range teams {
+		if t.TeamID == teamID {
+			return t.DisplayName
+		}
+	}
+	return ""
 }
 
 // lookupBotMetaForKB mirrors lookupBotMetaForWorkflow.
