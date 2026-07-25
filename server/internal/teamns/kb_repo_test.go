@@ -119,6 +119,72 @@ func TestEnsureKBRepo_CreateRepoError(t *testing.T) {
 	}
 }
 
+// TestEnsureKBRepo_CreateRepoRace_RecoversViaReget exercises the race-recovery
+// branch in EnsureKBRepo step 4: a concurrent ensure won the create between
+// our GetRepo (returned nil) and our CreateRepo (returned "already exists"),
+// so the re-GetRepo MUST find the repo and the whole call MUST be treated as
+// idempotent success — falling through to branch protection with
+// KbRepoCreated=false.
+func TestEnsureKBRepo_CreateRepoRace_RecoversViaReget(t *testing.T) {
+	racedRepo := &gitsync.Repo{Name: "kb-github.com__ownera__proj"}
+	fake := &fakeGitServer{
+		createRepoErr: errors.New("repo already exists"),
+		getRepoHook: func(callIdx int) (*gitsync.Repo, error) {
+			// First call (race-detect pre-create): not found.
+			// Second call (post-create re-GetRepo): the winner created it.
+			if callIdx == 0 {
+				return nil, nil
+			}
+			return racedRepo, nil
+		},
+	}
+	svc, db := newSvcWithFakeGit(t, fake)
+	seedTeamNS(t, db, kbTeamID, "tenant-1")
+
+	res, err := svc.EnsureKBRepo(context.Background(), kbTeamID,
+		"https://github.com/ownerA/proj.git")
+	if err != nil {
+		t.Fatalf("race recovery should succeed, got %v", err)
+	}
+	if res.KbRepoCreated {
+		t.Error("KbRepoCreated must be false on race-loser (we didn't create)")
+	}
+	if !res.BranchProtectionSet {
+		t.Error("expected BranchProtectionSet=true after race recovery")
+	}
+	if fake.getRepoCalls != 2 {
+		t.Errorf("getRepoCalls: got %d, want 2 (initial + post-create re-get)", fake.getRepoCalls)
+	}
+	if fake.createRepoCalls != 1 {
+		t.Errorf("createRepoCalls: got %d, want 1", fake.createRepoCalls)
+	}
+	if len(fake.setBranchProtectionCalls) != 1 || fake.setBranchProtectionCalls[0] != "main" {
+		t.Errorf("setBranchProtectionCalls: got %v, want [main]", fake.setBranchProtectionCalls)
+	}
+}
+
+// TestEnsureKBRepo_CreateRepoRace_RegetStillMissing_FailsHard covers the
+// sibling branch: CreateRepo errored, re-GetRepo still returns nil — no
+// recovery, surface ErrKBRepoProvisioning with both the create error and
+// lookup error.
+func TestEnsureKBRepo_CreateRepoRace_RegetStillMissing_FailsHard(t *testing.T) {
+	fake := &fakeGitServer{
+		createRepoErr: errors.New("gitea 500"),
+		// getRepoHook returns nil for every call (default behavior).
+	}
+	svc, db := newSvcWithFakeGit(t, fake)
+	seedTeamNS(t, db, kbTeamID, "tenant-1")
+
+	_, err := svc.EnsureKBRepo(context.Background(), kbTeamID,
+		"https://github.com/ownerA/proj.git")
+	if !errors.Is(err, ErrKBRepoProvisioning) {
+		t.Errorf("expected ErrKBRepoProvisioning wrap, got %v", err)
+	}
+	if fake.getRepoCalls != 2 {
+		t.Errorf("getRepoCalls: got %d, want 2 (initial + post-create re-get)", fake.getRepoCalls)
+	}
+}
+
 func TestEnsureKBRepo_GetRepoError(t *testing.T) {
 	fake := &fakeGitServer{
 		getRepoErr: errors.New("gitea 500"),

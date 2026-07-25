@@ -699,9 +699,9 @@ func TestMapBotCredentialsError_ClassifiesThreeModes(t *testing.T) {
 	})
 
 	t.Run("decrypt-failure-key-drift", func(t *testing.T) {
-		// Real DecryptBotToken wraps with this prefix at service.go:819.
+		// DecryptBotToken wraps the AES-GCM failure with ErrBotTokenDecrypt.
 		status, code, msg := mapBotCredentialsError(
-			fmt.Errorf("teamns: decrypt token: cipher: message authentication failed"))
+			fmt.Errorf("%w: cipher: message authentication failed", teamns.ErrBotTokenDecrypt))
 		if status != http.StatusInternalServerError {
 			t.Errorf("status=%d, want 500", status)
 		}
@@ -715,7 +715,7 @@ func TestMapBotCredentialsError_ClassifiesThreeModes(t *testing.T) {
 
 	t.Run("db-lookup-error", func(t *testing.T) {
 		status, code, msg := mapBotCredentialsError(
-			fmt.Errorf("teamns: decrypt lookup: connection refused"))
+			fmt.Errorf("%w: connection refused", teamns.ErrBotCredsLookup))
 		if status != http.StatusInternalServerError {
 			t.Errorf("status=%d, want 500", status)
 		}
