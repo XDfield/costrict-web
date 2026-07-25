@@ -519,11 +519,49 @@ func (s *Service) reconcileByEnterpriseUID(ctx context.Context, params Employmen
 	for col, val := range mapped {
 		updates[col] = val
 	}
+
+	// Self-heal: when the orphan row's user_subject_id doesn't match the
+	// current request's authoritative ID, realign it. The deeper cause is
+	// server-side GetOrCreateUser divergence (fixed server-side); cs-user's
+	// job here is to keep its own employment_identities consistent with the
+	// ID server is now forwarding. Without realignment, every login hits
+	// this WARN and the JWT issuance path falls back to external_key lookup.
+	//
+	// Safety: uq_employment_identities_user_subject_id is a partial unique
+	// index on (user_subject_id) WHERE deleted_at IS NULL. We must verify
+	// the new subject_id has no active row before claiming it — otherwise
+	// the Updates call below collides with that index. The verify-then-update
+	// pair is not atomic against concurrent writes, but employment mapping
+	// for a single external_key is gated upstream by the per-tenant
+	// provider flow and is effectively single-writer per user.
+	if existing.UserSubjectID != params.UserSubjectID {
+		var clash models.EmploymentIdentity
+		clashErr := s.db.WithContext(ctx).
+			Where("user_subject_id = ? AND deleted_at IS NULL", params.UserSubjectID).
+			Take(&clash).Error
+		if clashErr == nil {
+			// New subject_id already has its own row — leave it authoritative,
+			// just hard-delete the orphan so future logins stop reconciling.
+			if err := s.db.WithContext(ctx).Unscoped().Delete(&existing).Error; err != nil {
+				return false, fmt.Errorf("delete orphan employment_identity during reconcile: %w", err)
+			}
+			logger.Warn("[employment-mapping] employment_identity orphan dropped enterprise_uid=%s (orphan_subject_id=%s, canonical_subject_id=%s already has row) provider=%q",
+				enterpriseUID, existing.UserSubjectID, params.UserSubjectID, params.Provider)
+			return true, nil
+		} else if !errors.Is(clashErr, gorm.ErrRecordNotFound) {
+			return false, fmt.Errorf("query clash on realign: %w", clashErr)
+		}
+		updates["user_subject_id"] = params.UserSubjectID
+		logger.Warn("[employment-mapping] employment_identity REALIGNED by enterprise_uid=%s (subject_id %s → %s) provider=%q",
+			enterpriseUID, existing.UserSubjectID, params.UserSubjectID, params.Provider)
+	} else {
+		logger.Info("[employment-mapping] employment_identity refreshed by enterprise_uid=%s subject_id=%s provider=%q",
+			enterpriseUID, existing.UserSubjectID, params.Provider)
+	}
+
 	if err := s.db.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
 		return false, fmt.Errorf("update employment_identity (reconcile): %w", err)
 	}
-	logger.Warn("[employment-mapping] employment_identity RECONCILED by enterprise_uid=%s (subject_id preserved=%s, server sent=%s, mismatch will be resolved via external_key lookup in handler) provider=%q",
-		enterpriseUID, existing.UserSubjectID, params.UserSubjectID, params.Provider)
 	return true, nil
 }
 

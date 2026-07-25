@@ -231,6 +231,75 @@ func TestApplyEnterpriseMapping_MalformedYAML(t *testing.T) {
 	}
 }
 
+// TestApplyEnterpriseMapping_ReconcileRealignsOrphanSubjectID locks in the
+// self-heal path: when an orphan employment_identity row exists under a stale
+// subject_id (orphan_subject_id) and a fresh request arrives carrying the
+// canonical subject_id plus the same enterprise_uid, the row's user_subject_id
+// is realigned to the canonical value. Without this, every login against the
+// orphan re-runs reconcile and the JWT issuance path falls back to
+// external_key lookup. The fix keeps cs-user's employment snapshot aligned
+// with the ID server is forwarding.
+func TestApplyEnterpriseMapping_ReconcileRealignsOrphanSubjectID(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+	// Mirror production schema: the partial unique index on (tenant_id,
+	// enterprise_uid) is what makes Create collide and trigger the reconcile
+	// fallback. AutoMigrate skips partial indexes, so we add it manually.
+	if err := svc.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_employment_identities_tenant_enterprise_uid
+        ON employment_identities (tenant_id, enterprise_uid)
+        WHERE enterprise_uid IS NOT NULL AND deleted_at IS NULL`).Error; err != nil {
+		t.Fatalf("create enterprise_uid unique index: %v", err)
+	}
+	seedTenantConfig(t, svc, "default", `employment_providers:
+  enabled: [idtrust]
+  field_map:
+    idtrust:
+      enterprise_uid: "properties.uid"
+`)
+
+	// Seed the orphan row keyed to a stale subject_id with the same enterprise_uid.
+	orphan := &models.EmploymentIdentity{
+		UserSubjectID: "usr_stale_orphan",
+		Provider:      "idtrust",
+		EnterpriseUID: stringPtr("42766"),
+		SyncStatus:    "stale",
+	}
+	if err := svc.db.Create(orphan).Error; err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	err := svc.ApplyEnterpriseMapping(t.Context(), EmploymentMappingParams{
+		UserSubjectID: "usr_canonical",
+		Provider:      "idtrust",
+		TenantID:      "default",
+		ExternalClaims: map[string]any{
+			"properties": map[string]any{"uid": "42766"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyEnterpriseMapping: %v", err)
+	}
+
+	// Canonical subject_id should now own the row.
+	var got models.EmploymentIdentity
+	if err := svc.db.Where("enterprise_uid = ?", "42766").Take(&got).Error; err != nil {
+		t.Fatalf("row missing post-reconcile: %v", err)
+	}
+	if got.UserSubjectID != "usr_canonical" {
+		t.Errorf("UserSubjectID: got %q, want usr_canonical (realigned)", got.UserSubjectID)
+	}
+	if got.SyncStatus != "fresh" {
+		t.Errorf("SyncStatus: got %q, want fresh", got.SyncStatus)
+	}
+
+	// Orphan subject_id should have no row.
+	var staleCount int64
+	svc.db.Model(&models.EmploymentIdentity{}).Where("user_subject_id = ?", "usr_stale_orphan").Count(&staleCount)
+	if staleCount != 0 {
+		t.Errorf("stale subject_id still has %d row(s), want 0", staleCount)
+	}
+}
+
 // TestApplyEnterpriseMapping_DefaultTenantID verifies that an empty
 // TenantID falls back to "default" rather than erroring. Phase A callers
 // don't need to know the tenant routing.
