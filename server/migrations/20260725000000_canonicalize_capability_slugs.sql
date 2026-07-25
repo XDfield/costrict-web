@@ -15,24 +15,46 @@ DECLARE
     suffix_counter INTEGER;
 BEGIN
     FOR capability_row IN
-        SELECT
-            id,
-            repo_id,
-            item_type,
-            slug,
-            COALESCE(
-                NULLIF(trim(BOTH '-' FROM regexp_replace(lower(slug), '[^a-z0-9]+', '-', 'g')), ''),
-                item_type || '-' || replace(id::text, '-', '')
-            ) AS base_slug
-        FROM capability_items
-        WHERE item_type IN ('skill', 'command', 'subagent', 'agent')
+        SELECT normalized.*
+        FROM (
+            SELECT
+                id,
+                repo_id,
+                item_type,
+                slug,
+                created_at,
+                COALESCE(
+                    NULLIF(
+                        trim(BOTH '-' FROM regexp_replace(
+                            lower(
+                                CASE
+                                    WHEN trim(COALESCE(slug, '')) = '' THEN name
+                                    ELSE slug
+                                END
+                            ),
+                            '[^a-z0-9]+',
+                            '-',
+                            'g'
+                        )),
+                        ''
+                    ),
+                    CASE lower(trim(item_type))
+                        WHEN 'agent' THEN 'agent'
+                        WHEN 'command' THEN 'command'
+                        WHEN 'subagent' THEN 'subagent'
+                        ELSE 'skill'
+                    END || '-' || replace(id::text, '-', '')
+                ) AS base_slug
+            FROM capability_items
+            WHERE lower(trim(item_type)) IN (
+                'skill',
+                'command',
+                'subagent',
+                'agent'
+            )
+        ) AS normalized
         ORDER BY
-            (
-                slug = COALESCE(
-                    NULLIF(trim(BOTH '-' FROM regexp_replace(lower(slug), '[^a-z0-9]+', '-', 'g')), ''),
-                    item_type || '-' || replace(id::text, '-', '')
-                )
-            ) DESC,
+            (slug = base_slug) DESC,
             created_at,
             id
     LOOP
