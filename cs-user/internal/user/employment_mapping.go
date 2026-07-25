@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
@@ -179,16 +180,23 @@ func (s *Service) ApplyEnterpriseMapping(ctx context.Context, params EmploymentM
 		params.TenantID = defaultTenantID
 	}
 
+	logger.Info("[employment-mapping] ApplyEnterpriseMapping start user_subject_id=%s tenant_id=%s provider_hint=%q external_claims_keys=%v",
+		params.UserSubjectID, params.TenantID, params.Provider, externalClaimKeys(params.ExternalClaims))
+
 	cfg, err := s.loadEmploymentProvidersConfig(ctx, params.TenantID)
 	if err != nil {
+		logger.Warn("[employment-mapping] loadEmploymentProvidersConfig failed: %v", err)
 		return fmt.Errorf("load employment_providers config: %w", err)
 	}
+	logger.Info("[employment-mapping] tenant config loaded enabled=%v field_map_providers=%v provider_detection_count=%d",
+		cfg.Enabled, fieldMapProviderKeys(cfg.FieldMap), len(cfg.ProviderDetection))
 
 	provider := params.Provider
 	if provider == "" || !containsString(cfg.Enabled, provider) {
 		// Server didn't recognize the IdP (or no provider hint at all). Try
 		// the tenant's detection rules before giving up.
 		if detected := detectProvider(cfg.ProviderDetection, params.ExternalClaims); detected != "" && containsString(cfg.Enabled, detected) {
+			logger.Info("[employment-mapping] provider resolved via detection rule: %q", detected)
 			provider = detected
 		}
 	}
@@ -197,11 +205,54 @@ func (s *Service) ApplyEnterpriseMapping(ctx context.Context, params EmploymentM
 	// login" rather than a caller bug. Enterprise mapping is a bonus hook and
 	// must never block login.
 	if provider == "" || !containsString(cfg.Enabled, provider) {
+		logger.Warn("[employment-mapping] provider NOT resolved (provider=%q enabled=%v) → returning ErrEnterpriseMappingDisabled",
+			provider, cfg.Enabled)
 		return ErrEnterpriseMappingDisabled
 	}
 	params.Provider = provider
+	logger.Info("[employment-mapping] provider resolved=%q field_map_keys=%v",
+		provider, fieldMapKeys(cfg.FieldMap[provider]))
 
 	return s.upsertEmploymentIdentity(ctx, params, cfg.FieldMap[provider])
+}
+
+// externalClaimKeys returns the top-level keys of the ExternalClaims map for
+// diagnostic logging without dumping values (which may contain PII).
+func externalClaimKeys(m map[string]any) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// fieldMapProviderKeys returns the provider names that have a configured
+// field_map, for diagnostic logging.
+func fieldMapProviderKeys(m map[string]FieldMapConfig) []string {
+	if len(m) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// fieldMapKeys returns the internal column names mapped by a single
+// provider's field_map (e.g. ["enterprise_uid", "employee_number"]).
+func fieldMapKeys(c FieldMapConfig) []string {
+	if len(c) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // detectProvider evaluates the tenant's detection rules in order against the
@@ -328,6 +379,8 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 	// or empty claims yields an empty map, preserving the stub write path
 	// for callers that haven't wired ExternalClaims yet.
 	mapped := applyFieldMap(fieldMap, params.ExternalClaims)
+	logger.Info("[employment-mapping] field_map applied user_subject_id=%s provider=%q mapped_columns=%v",
+		params.UserSubjectID, params.Provider, mappedColumnSummary(mapped))
 
 	var existing models.EmploymentIdentity
 	err := db.Where("user_subject_id = ?", params.UserSubjectID).Take(&existing).Error
@@ -342,11 +395,15 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 		}
 		applyMappedToRow(&row, mapped)
 		if err := db.Create(&row).Error; err != nil {
+			logger.Warn("[employment-mapping] Create failed: %v", err)
 			return fmt.Errorf("create employment_identity: %w", err)
 		}
+		logger.Info("[employment-mapping] employment_identity CREATED user_subject_id=%s provider=%q",
+			params.UserSubjectID, params.Provider)
 		return nil
 	}
 	if err != nil {
+		logger.Warn("[employment-mapping] query existing failed: %v", err)
 		return fmt.Errorf("query employment_identity: %w", err)
 	}
 
@@ -361,9 +418,28 @@ func (s *Service) upsertEmploymentIdentity(ctx context.Context, params Employmen
 		updates[col] = val
 	}
 	if err := db.Model(&existing).Updates(updates).Error; err != nil {
+		logger.Warn("[employment-mapping] Updates failed: %v", err)
 		return fmt.Errorf("update employment_identity: %w", err)
 	}
+	logger.Info("[employment-mapping] employment_identity UPDATED user_subject_id=%s provider=%q",
+		params.UserSubjectID, params.Provider)
 	return nil
+}
+
+// mappedColumnSummary renders the applyFieldMap output as a debugging-friendly
+// "col=value" list. Values are emitted verbatim — this is intentional for
+// diagnostic visibility during the migration period; operators should treat
+// cs-user app logs as containing user-entered PII (same trust level as the
+// HTTP access log).
+func mappedColumnSummary(mapped map[string]any) []string {
+	if len(mapped) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(mapped))
+	for col, val := range mapped {
+		out = append(out, fmt.Sprintf("%s=%v", col, val))
+	}
+	return out
 }
 
 // applyMappedToRow writes applyFieldMap output onto an EmploymentIdentity
