@@ -111,6 +111,15 @@ persistence:
 userService:
   backend: local
   url: ""      # cs-user base URL; required when backend=rpc (e.g. http://cs-user.<ns>.svc:8081)
+  # Write authority posture. Leave empty to fall back to the binary default
+  # (local — DualWriter canary when backend=rpc). Set explicitly to:
+  #   local    — DualWriter canary: server's local users table is written
+  #              first, cs-user is best-effort replicated. Returned identity
+  #              still comes from cs-user so JWT `sub` aligns with cs-user's
+  #              employment snapshot.
+  #   readonly — cs-user is the sole write authority; server has no local
+  #              users writes. Production cutover posture.
+  writeMode: ""
   internalToken:
     value: ""            # dev: plaintext token (must match cs-user internalToken)
     existingSecret: ""   # prod: externally provisioned Secret name
