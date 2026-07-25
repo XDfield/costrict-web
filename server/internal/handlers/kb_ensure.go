@@ -155,16 +155,13 @@ func KBEnsure(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// Display name is non-core cached metadata — fall back to the
+		// team_id when the directory backend didn't carry one, rather
+		// than blocking the user. team_ns.team_display_name is a
+		// best-effort cache; the directory backend stays authoritative.
 		displayName := pickTeamDisplayName(teams, resolvedTeamID)
 		if displayName == "" {
-			// Directory backend gave us no display name to bind —
-			// can't auto-provision without one (DB NOT NULL). Surface
-			// TEAM_NS_NOT_INITIALIZED so an admin provisions manually.
-			c.JSON(http.StatusPreconditionFailed, gin.H{
-				"error":      "team ns not initialized; directory backend returned no display name; ask your platform admin to provision the team first",
-				"error_code": "TEAM_NS_NOT_INITIALIZED",
-			})
-			return
+			displayName = "team-" + shortID(resolvedTeamID)
 		}
 		provReq := teamns.CreateTeamRequest{
 			TeamID:          resolvedTeamID,
@@ -200,7 +197,14 @@ func KBEnsure(c *gin.Context) {
 	}
 	plaintext, err := teamnsService.DecryptBotToken(c.Request.Context(), resolvedTeamID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt bot token: " + err.Error()})
+		// Distinguish the three real failure modes so operators can
+		// diagnose without reading stack traces. None of these are
+		// auto-recoverable from inside the request.
+		status, code, msg := mapBotCredentialsError(err)
+		c.JSON(status, gin.H{
+			"error":      msg,
+			"error_code": code,
+		})
 		return
 	}
 	botMeta, _ := lookupBotMetaForKB(c, resolvedTeamID)
@@ -308,9 +312,9 @@ func lookupTeamNSForKB(c *gin.Context, teamID string) (*models.TeamNamespace, er
 }
 
 // pickTeamDisplayName returns the display name the directory backend
-// carried for teamID. Returns "" when unknown — KBEnsure treats that as
-// "cannot auto-provision" and surfaces TEAM_NS_NOT_INITIALIZED, since
-// team_ns.team_display_name is NOT NULL.
+// carried for teamID. Returns "" when unknown — KBEnsure then falls back
+// to a placeholder derived from teamID (display name is non-core cached
+// metadata; the directory backend stays authoritative).
 func pickTeamDisplayName(teams []TeamSummary, teamID string) string {
 	for _, t := range teams {
 		if t.TeamID == teamID {
@@ -318,6 +322,42 @@ func pickTeamDisplayName(teams []TeamSummary, teamID string) string {
 		}
 	}
 	return ""
+}
+
+// shortID returns the first 8 chars of a UUID-ish id for use as a
+// display-name fallback. Returns the input unchanged if shorter.
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+// mapBotCredentialsError classifies the three real failure modes of
+// DecryptBotToken so the response carries actionable context. None are
+// auto-recoverable within the request — they signal prior-state damage
+// (interrupted provisioning, key drift, or DB issues) that needs an
+// operator.
+func mapBotCredentialsError(err error) (status int, code string, msg string) {
+	switch {
+	case errors.Is(err, teamns.ErrTeamNotFound):
+		// team_ns row exists but team_bot_credentials row is missing —
+		// CreateTeam was interrupted mid-way. Re-running CreateTeam
+		// (or POST /api/internal/teams) re-issues the bot.
+		return http.StatusPreconditionFailed, "BOT_CREDENTIALS_MISSING",
+			"team_ns is bound but bot credentials are missing — provision was interrupted; ask your platform admin to re-provision the team bot"
+	case strings.Contains(err.Error(), "teamns: decrypt token:"):
+		// AES-GCM Open failed — almost always CS_BOT_TOKEN_KEY drift
+		// (key rotated without re-encrypting existing creds) or DB
+		// row corruption.
+		return http.StatusInternalServerError, "BOT_TOKEN_DECRYPT_FAILED",
+			"failed to decrypt bot token — likely CS_BOT_TOKEN_KEY mismatch or corrupted credential row; ask your platform admin to verify the key and re-provision if needed"
+	default:
+		// "teamns: decrypt lookup:" or any other unexpected error —
+		// DB-level or transport. Surface verbatim for ops.
+		return http.StatusInternalServerError, "BOT_CREDENTIALS_LOOKUP_FAILED",
+			"failed to load bot credentials: " + err.Error()
+	}
 }
 
 // lookupBotMetaForKB mirrors lookupBotMetaForWorkflow.
