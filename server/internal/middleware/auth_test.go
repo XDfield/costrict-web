@@ -747,39 +747,23 @@ func TestRequireAuth_QueryTokenRejectedForPlainHTTP(t *testing.T) {
 	}
 }
 
-func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
+func TestRequireAuth_InvalidJWTReturns401_NoCasdoorFallback(t *testing.T) {
 	SetSubjectResolver(nil)
-	// Mock Casdoor server that returns user info
+	// Casdoor should NOT be contacted in the new auth model — signature
+	// verification is the gateway's responsibility, and the server only
+	// decodes. A malformed token must produce 401 without any network call.
+	casdoorCalled := false
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/userinfo" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		// Verify the token is forwarded
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer invalid-jwt-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(casdoorUserinfoResponse{
-			Sub:  "casdoor-user-999",
-			Name: "Casdoor User",
-		})
+		casdoorCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer casdoorServer.Close()
 
-	// JWKS provider with no matching keys — JWT parsing will fail, triggering fallback
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
-
-	var capturedUserID string
 
 	router := gin.New()
 	router.Use(RequireAuth(casdoorServer.URL, jwks))
 	router.GET("/protected", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
@@ -787,11 +771,11 @@ func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer invalid-jwt-token")
 	w := performRequest(router, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 (Casdoor fallback), got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
 	}
-	if capturedUserID != "casdoor-user-999" {
-		t.Errorf("expected userId 'casdoor-user-999', got %q", capturedUserID)
+	if casdoorCalled {
+		t.Errorf("Casdoor must not be contacted in the new auth model")
 	}
 }
 
@@ -917,31 +901,29 @@ func TestOptionalAuth_InvalidJWTAndCasdoorFailureStillPassesThrough(t *testing.T
 	}
 }
 
-func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
+func TestOptionalAuth_InvalidJWTSilentlyIgnored_NoCasdoorFallback(t *testing.T) {
 	SetSubjectResolver(nil)
-	// Mock Casdoor server that returns user info
+	// New auth model: server decodes JWT without verifying and never calls
+	// Casdoor. A malformed token on an optional route should pass through
+	// without populating the userID, and Casdoor must not be contacted.
+	casdoorCalled := false
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/userinfo" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(casdoorUserinfoResponse{
-			Sub:  "casdoor-opt-user",
-			Name: "Casdoor Opt User",
-		})
+		casdoorCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer casdoorServer.Close()
 
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
 
 	var capturedUserID string
+	var hasUserID bool
 
 	router := gin.New()
 	router.Use(OptionalAuth(casdoorServer.URL, jwks))
 	router.GET("/optional", func(c *gin.Context) {
 		if uid, ok := c.Get(UserIDKey); ok {
 			capturedUserID = uid.(string)
+			hasUserID = true
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -953,8 +935,11 @@ func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if capturedUserID != "casdoor-opt-user" {
-		t.Errorf("expected userId 'casdoor-opt-user', got %q", capturedUserID)
+	if hasUserID {
+		t.Errorf("expected no userId on malformed token, got %q", capturedUserID)
+	}
+	if casdoorCalled {
+		t.Errorf("Casdoor must not be contacted in the new auth model")
 	}
 }
 
