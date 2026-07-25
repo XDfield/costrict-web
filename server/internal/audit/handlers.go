@@ -5,16 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 )
-
-type listAuditLogsResponse struct {
-	Logs     []models.AdminAuditLog `json:"logs"`
-	Total    int64                  `json:"total"`
-	Page     int                    `json:"page"`
-	PageSize int                    `json:"pageSize"`
-}
 
 // parseTime accepts either an RFC3339 timestamp or a YYYY-MM-DD date. A bare
 // date is interpreted as the start of that UTC day. Returns nil for empty input.
@@ -56,7 +48,7 @@ func atoiDefault(s string, def int) int {
 //	@Param			to			query		string	false	"Upper bound on created_at (RFC3339 or YYYY-MM-DD)"
 //	@Param			page		query		int		false	"Page number (1-based)"
 //	@Param			pageSize	query		int		false	"Page size (default 20, max 200)"
-//	@Success		200			{object}	listAuditLogsResponse
+//	@Success		200			{object}	object{logs=[]models.AdminAuditLog,total=int,page=int,pageSize=int}
 //	@Failure		401			{object}	object{error=string}
 //	@Failure		500			{object}	object{error=string}
 //	@Router			/admin/audit-logs [get]

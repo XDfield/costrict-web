@@ -23,1903 +23,6 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/admin/announcements": {
-            "post": {
-                "description": "Send an in-app announcement to all users / an organization / a single user (platform admin only). Optionally also pushes to recipients' external channels.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/announcements"
-                ],
-                "summary": "Broadcast an announcement",
-                "parameters": [
-                    {
-                        "description": "Announcement",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "content": {
-                                    "type": "string"
-                                },
-                                "pushExternal": {
-                                    "type": "boolean"
-                                },
-                                "scope": {
-                                    "type": "object",
-                                    "properties": {
-                                        "targetId": {
-                                            "type": "string"
-                                        },
-                                        "type": {
-                                            "type": "string"
-                                        }
-                                    }
-                                },
-                                "title": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "sentCount": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/audit-logs": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "List management write-operation audit logs with optional filters and pagination (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/audit-logs"
-                ],
-                "summary": "List admin audit logs",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Filter by action (e.g. enterprise.create)",
-                        "name": "action",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by actor subject id",
-                        "name": "actorId",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by target type",
-                        "name": "targetType",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Lower bound on created_at (RFC3339 or YYYY-MM-DD)",
-                        "name": "from",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Upper bound on created_at (RFC3339 or YYYY-MM-DD)",
-                        "name": "to",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (1-based)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size (default 20, max 200)",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_audit.listAuditLogsResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/departments/children": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Direct children of a department (depth-1) for lazy-loading the admin department tree. An empty parentId returns the top-level roots; each node carries childDeptCount so the UI can show an expand affordance. Platform admin only. Returns 503 when dept-sync is not configured/unreachable.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/departments"
-                ],
-                "summary": "Department children (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Parent department id (dept_id); empty for top-level roots",
-                        "name": "parentId",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "departments": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/departments/tree": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Proxy the real dept-sync department tree (platform admin only). Returns 503 when dept-sync is not configured/unreachable.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/departments"
-                ],
-                "summary": "Department tree (admin)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "departments": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/departments/{id}/users": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Members of one department from dept-sync, correlated to local users via universal id (platform admin only). Returns 503 when dept-sync is not configured/unreachable.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/departments"
-                ],
-                "summary": "Department members (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Department id (dept_id)",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "members": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/distributions": {
-            "get": {
-                "description": "List distributions across all distributors with status/scope/search filters and pagination. Platform admin only.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "List all distributions (platform admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Filter by status (active|paused|revoked)",
-                        "name": "status",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by scope type (user|department)",
-                        "name": "scope",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Search by item name / distributor / target",
-                        "name": "search",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (1-based)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size (default 20)",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "distributions": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/distributions/{id}/receipts": {
-            "get": {
-                "description": "List all receipts for a distribution (unread/read/accepted/dismissed). Platform admin only.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "List distribution receipts (platform admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Distribution ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "receipts": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/enterprise-customers": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "List all enterprise customer configs with raw universal_id account list + resolved members (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/enterprise-customers"
-                ],
-                "summary": "List enterprise customers (admin)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "customers": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "id": {
-                                                "type": "string"
-                                            },
-                                            "logo": {
-                                                "type": "string"
-                                            },
-                                            "members": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "object"
-                                                }
-                                            },
-                                            "name": {
-                                                "type": "string"
-                                            },
-                                            "universalIds": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Create an enterprise customer branding config (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/enterprise-customers"
-                ],
-                "summary": "Create enterprise customer",
-                "parameters": [
-                    {
-                        "description": "Enterprise customer (ids = Casdoor universal_id list)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ids": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "logo": {
-                                    "type": "string"
-                                },
-                                "name": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "customer": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {
-                                            "type": "string"
-                                        },
-                                        "logo": {
-                                            "type": "string"
-                                        },
-                                        "members": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object"
-                                            }
-                                        },
-                                        "name": {
-                                            "type": "string"
-                                        },
-                                        "universalIds": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "string"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/enterprise-customers/{id}": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Update an enterprise customer branding config (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/enterprise-customers"
-                ],
-                "summary": "Update enterprise customer",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Enterprise customer ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Enterprise customer (ids = Casdoor universal_id list)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ids": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "logo": {
-                                    "type": "string"
-                                },
-                                "name": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "customer": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {
-                                            "type": "string"
-                                        },
-                                        "logo": {
-                                            "type": "string"
-                                        },
-                                        "members": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object"
-                                            }
-                                        },
-                                        "name": {
-                                            "type": "string"
-                                        },
-                                        "universalIds": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "string"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Delete an enterprise customer branding config (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/enterprise-customers"
-                ],
-                "summary": "Delete enterprise customer",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Enterprise customer ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/import-jobs": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Paginated import history, newest first (platform admin only).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "List import jobs (admin)",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "Page number (1-based)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size (default 20, max 100)",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                },
-                                "page": {
-                                    "type": "integer"
-                                },
-                                "pageSize": {
-                                    "type": "integer"
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Submit a catalog bundle for dry-run import. Two mutually exclusive submit modes: JSON {sourceUrl,reparse} (preferred) or multipart file upload (field \"file\", optional form \"reparse\"). Returns 202 with a pending jobId; the leader-elected runner executes the dry-run asynchronously.",
-                "consumes": [
-                    "application/json",
-                    "multipart/form-data"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "Create catalog import job (admin)",
-                "responses": {
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "jobId": {
-                                    "type": "string"
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "413": {
-                        "description": "Request Entity Too Large",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/import-jobs/{id}": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Poll an import job's status and dry-run/import result (platform admin only).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "Get import job (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/import-jobs/{id}/confirm": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Promote a previewed job to the real-import phase. Rejects when the dry-run had failures, or when the delete count exceeds threshold and confirmLargeDelete is not set. Returns 202; the runner executes asynchronously.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "Confirm import job (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Confirmation flags",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "confirmLargeDelete": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/import-jobs/{id}/errors.log": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Download the job's errors + incompleteErrors as a plain-text attachment (platform admin only).",
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "Download import errors log (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Job id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "plain text log",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/import-stats": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Current active inventory grouped by item_type, plus total (platform admin only).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/import"
-                ],
-                "summary": "Import inventory stats (admin)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "byType": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Cross-registry capability-item list with type/status/security-status filters for the content-management console (platform admin only). Defaults to all statuses (active + archived).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "List items (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Exact item type filter (skill|plugin|mcp|...)",
-                        "name": "type",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact status filter (active|archived); empty = all",
-                        "name": "status",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Security risk group (unknown|low|medium|high) or exact security_status",
-                        "name": "securityStatus",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "name/description LIKE",
-                        "name": "search",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact author subject_id filter",
-                        "name": "createdBy",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (1-based)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size (default 20, max 200)",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                },
-                                "page": {
-                                    "type": "integer"
-                                },
-                                "pageSize": {
-                                    "type": "integer"
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items/batch-delete": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Delete up to 200 items (any author) and their dependent records in a single transaction (platform admin only). All succeed or none do; ids that no longer exist are reported as skipped.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "Batch delete items (admin)",
-                "parameters": [
-                    {
-                        "description": "Item ids to delete",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ids": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "deleted": {
-                                    "type": "integer"
-                                },
-                                "skipped": {
-                                    "type": "integer"
-                                },
-                                "skippedIds": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items/batch-status": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Take up to 200 items online/offline (active|archived) across any author in a single transaction (platform admin only). ids that no longer exist are reported as skipped.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "Batch set item status (admin)",
-                "parameters": [
-                    {
-                        "description": "Item ids + new status (active|archived)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ids": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "skipped": {
-                                    "type": "integer"
-                                },
-                                "skippedIds": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "success": {
-                                    "type": "boolean"
-                                },
-                                "updated": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items/export.csv": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Stream all items matching the same filters as the list (including missingSecurityEval / missingScore) as a CSV attachment (platform admin only). Not paginated.",
-                "produces": [
-                    "text/csv"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "Export items as CSV (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Exact item type filter",
-                        "name": "type",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact status filter",
-                        "name": "status",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Security risk group or exact value",
-                        "name": "securityStatus",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "name/description LIKE",
-                        "name": "search",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact author subject_id",
-                        "name": "createdBy",
-                        "in": "query"
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "Only items never security-evaluated (security_status=unscanned)",
-                        "name": "missingSecurityEval",
-                        "in": "query"
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "Only items with experience_score\u003c=0",
-                        "name": "missingScore",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "CSV attachment",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items/{id}": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Delete any author's item and its dependent records (platform admin only).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "Delete item (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/items/{id}/status": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Take an item online/offline (active|archived) across any author (platform admin only).",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/items"
-                ],
-                "summary": "Set item status (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "New status (active|archived)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/admin/notification-channels": {
             "get": {
                 "description": "Get all system notification channels (admin only)",
@@ -2197,742 +300,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/organizations": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Roll up users by organization with member counts, busiest first (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/users"
-                ],
-                "summary": "List organizations (admin)",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "organizations": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "memberCount": {
-                                                "type": "integer"
-                                            },
-                                            "organization": {
-                                                "type": "string"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/permission-grants": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "List fine-grained permission grants, optionally filtered by permissionCode (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "List permission grants",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Filter by permission code",
-                        "name": "permissionCode",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "grants": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Grant a permission to a user or department (platform admin only). For department subjects the materialized dept_path is resolved from dept-sync and stored redundantly for prefix-based inheritance.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "Grant fine-grained permission",
-                "parameters": [
-                    {
-                        "description": "Grant request",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_authz.grantPermissionRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "grant": {
-                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/permission-grants/{id}": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Revoke a permission grant by id (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "Revoke fine-grained permission",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Grant id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/permissions/users/{userId}/grant": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Grant a system role (module permission) to a user by user ID (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "Grant module permission to user",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "User ID",
-                        "name": "userId",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Grant permission request",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_authz.grantUserRoleRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/resource-permissions": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "List all resource permissions (menu + api) for the permission matrix (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "List resource permissions",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "permissions": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ResourcePermission"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/resource-permissions/{code}": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Update the allowed roles for a single resource code (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/permissions"
-                ],
-                "summary": "Update resource permission",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Resource code",
-                        "name": "code",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Allowed roles",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_authz.updateResourcePermissionRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/settings": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Return every system-level setting as a key→value map (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/settings"
-                ],
-                "summary": "List system settings",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "settings": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/settings/{key}": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Upsert a single system setting by key (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/settings"
-                ],
-                "summary": "Update a system setting",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Setting key",
-                        "name": "key",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Setting value (any JSON)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "value": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "setting": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -3322,277 +689,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/admin/users": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Paginated/searchable/status-filtered user list for the admin console (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/users"
-                ],
-                "summary": "List members (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "username/display name/email LIKE",
-                        "name": "search",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact organization filter",
-                        "name": "organization",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact status filter (active|disabled|banned)",
-                        "name": "status",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page number (1-based)",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size (default 20, max 200)",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "page": {
-                                    "type": "integer"
-                                },
-                                "pageSize": {
-                                    "type": "integer"
-                                },
-                                "total": {
-                                    "type": "integer"
-                                },
-                                "users": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/users/{id}/profile": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Aggregated activity (created items, distributions sent/received) + roles for one member (platform admin only)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/users"
-                ],
-                "summary": "Member profile (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Member subject id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "profile": {
-                                    "type": "object"
-                                },
-                                "user": {
-                                    "type": "object"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/admin/users/{id}/status": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Enable/disable/ban a member. Refuses to change the operator's own status (platform admin only)",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "admin/users"
-                ],
-                "summary": "Set member status (admin)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Member subject id",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "New status (active|disabled|banned)",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/artifacts/upload": {
             "post": {
                 "description": "Upload a file artifact for a skill item",
@@ -3784,164 +880,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/bind/cancel-merge": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Cancels the merge operation when the user declines the merge dialog.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Cancel account merge",
-                "parameters": [
-                    {
-                        "description": "Merge token to cancel",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "merge_token": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/auth/bind/confirm-merge": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "After the user confirms the merge dialog on the frontend, this endpoint",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Confirm account merge",
-                "parameters": [
-                    {
-                        "description": "Merge token from the OAuth redirect",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "merge_token": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/auth/bind/start": {
             "post": {
                 "security": [
@@ -4114,14 +1052,14 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/identities/{provider}/unbind": {
+        "/auth/identities/{id}/unbind": {
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Unbinds an auth identity from the current user by provider type",
+                "description": "Unbinds an auth identity from the current user",
                 "produces": [
                     "application/json"
                 ],
@@ -4131,9 +1069,9 @@ const docTemplate = `{
                 "summary": "Unbind auth identity",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Provider type (e.g. idtrust, github, phone)",
-                        "name": "provider",
+                        "type": "integer",
+                        "description": "Identity ID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -4208,7 +1146,7 @@ const docTemplate = `{
         },
         "/auth/logout": {
             "post": {
-                "description": "Clear the auth cookie. Does NOT revoke the token at Casdoor to avoid invalidating sessions in other systems (e.g., credit-manager).",
+                "description": "Invalidate current session, revoke token at Casdoor, and clear auth cookie",
                 "produces": [
                     "application/json"
                 ],
@@ -5166,7 +2104,7 @@ const docTemplate = `{
         },
         "/devices": {
             "get": {
-                "description": "Get all devices registered by the authenticated user, with update availability info",
+                "description": "Get all devices registered by the authenticated user",
                 "produces": [
                     "application/json"
                 ],
@@ -5291,18 +2229,15 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Recovery available: user must decide",
+                        "description": "Different user: unauthorized device registration",
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "error": {
+                                "deviceId": {
                                     "type": "string"
                                 },
-                                "recoverableDevice": {
-                                    "type": "object"
-                                },
-                                "recoveryAvailable": {
-                                    "type": "boolean"
+                                "error": {
+                                    "type": "string"
                                 }
                             }
                         }
@@ -5398,6 +2333,7 @@ const docTemplate = `{
                 "tags": [
                     "devices"
                 ],
+                "summary": "Update device",
                 "parameters": [
                     {
                         "type": "string",
@@ -5543,90 +2479,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/devices/{deviceID}/fingerprint": {
-            "put": {
-                "description": "Record the current machine fingerprint (MAC-based hash) for a device, enabling recovery when hardware changes",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "devices"
-                ],
-                "summary": "Update legacy fingerprint",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Device ID",
-                        "name": "deviceID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Legacy fingerprint",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "legacyDeviceId": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ok": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/devices/{deviceID}/rotate-token": {
             "post": {
                 "description": "Rotate the authentication token for a device",
@@ -5674,451 +2526,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/eligible-users": {
-            "get": {
-                "description": "Search users the current operator may distribute to. Platform admins can see all active users; department managers only see users inside managed subtrees.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Search users eligible for distribution",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Search keyword",
-                        "name": "q",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "users": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/my/authority": {
-            "get": {
-                "description": "The current user's distribution reach: unlimited for platform admins, otherwise the department subtrees they lead (manage). Drives the frontend distribute entry + department picker scope. Any authenticated user may query their own.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "My distribution authority",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionAuthority"
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/my/received": {
-            "get": {
-                "description": "Get all distributions received by the current user with item details",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "List my received distributions",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "receipts": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/my/sent": {
-            "get": {
-                "description": "Get all distributions sent by the current user",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "List my sent distributions",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "distributions": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/{id}": {
-            "put": {
-                "description": "Update a distribution's status, permission mode, or message",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Update distribution",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Distribution ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Update fields",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                },
-                                "permissionMode": {
-                                    "type": "string"
-                                },
-                                "status": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "description": "Revoke a distribution (soft delete)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Revoke distribution",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Distribution ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/{id}/dismiss": {
-            "post": {
-                "description": "Dismiss a received distribution from the user's view",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Dismiss distribution receipt",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Distribution ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/distributions/{id}/read": {
-            "post": {
-                "description": "Mark a received distribution as read",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Mark distribution as read",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Distribution ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "message": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/enterprise-customers": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "List all enterprise customer branding configs (readable by any authenticated user)",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "enterprise-customers"
-                ],
-                "summary": "List enterprise customers",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "customers": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "id": {
-                                                "type": "string"
-                                            },
-                                            "ids": {
-                                                "type": "array",
-                                                "items": {
-                                                    "type": "string"
-                                                }
-                                            },
-                                            "logo": {
-                                                "type": "string"
-                                            },
-                                            "name": {
-                                                "type": "string"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -6369,9 +2776,6 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "apiBaseURL": {
-                                    "type": "string"
-                                },
                                 "capacity": {
                                     "type": "integer"
                                 },
@@ -7023,18 +3427,6 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "type": "string",
-                        "description": "Filter to sub-skills bundled by the given parent plugin item ID",
-                        "name": "parentPluginId",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Hide bundled sub-skills from the result when true",
-                        "name": "excludeSubSkills",
-                        "in": "query"
-                    },
-                    {
                         "type": "integer",
                         "description": "Page number (default: 1)",
                         "name": "page",
@@ -7198,90 +3590,6 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "description": "Delete up to 200 of the caller's own items (or any items for a platform admin) and their dependent records in a single transaction. All authorized deletes succeed or none do. Items the caller may not delete are reported in ` + "`" + `forbidden` + "`" + `; ids that no longer exist are reported in ` + "`" + `skipped` + "`" + `.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "items"
-                ],
-                "summary": "Batch delete items",
-                "parameters": [
-                    {
-                        "description": "Item ids to delete",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ids": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "deleted": {
-                                    "type": "integer"
-                                },
-                                "forbidden": {
-                                    "type": "integer"
-                                },
-                                "skipped": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -7634,28 +3942,6 @@ const docTemplate = `{
                             }
                         }
                     },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -7895,28 +4181,6 @@ const docTemplate = `{
                             }
                         }
                     },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "429": {
-                        "description": "Too Many Requests",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -7990,136 +4254,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/items/{id}/distribute": {
-            "post": {
-                "description": "Push (distribute) an item to users or departments with specified permission mode.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "Push item to targets",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Distribution request",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "distributions": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/items/{id}/distributions": {
-            "get": {
-                "description": "Get all distributions for a specific item",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "distributions"
-                ],
-                "summary": "List item distributions",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "distributions": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -8349,101 +4483,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/items/{id}/fork": {
-            "post": {
-                "description": "Create a personal copy of a public capability item under the current user, placed in the public registry, recording fork provenance (forkedFromItemId/ownerId). Only public, non-archive items not owned by the caller can be forked; each user may fork a given source item once.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "items"
-                ],
-                "summary": "Fork an item",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Source item ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.ItemResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/items/{id}/improve": {
             "post": {
                 "description": "Apply suggested improvements to a skill",
@@ -8503,85 +4542,6 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/items/{id}/mcp-config": {
-            "put": {
-                "description": "Save the current user's filled placeholder values for an MCP item (merge; empty v clears a key). Returns the saved status (owner-only).",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "items"
-                ],
-                "summary": "Upsert per-user MCP config values",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Item ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Field values",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.upsertMCPConfigRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "mcpConfig": {
-                                    "$ref": "#/definitions/internal_handlers.MCPConfigStatus"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -9709,323 +5669,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/marketplace/{repo}/marketplace.json": {
-            "get": {
-                "description": "Return a csc-compatible marketplace manifest containing all plugins in the repo.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "marketplace"
-                ],
-                "summary": "Get marketplace.json",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Repository name",
-                        "name": "repo",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                }
-            }
-        },
-        "/memories": {
-            "get": {
-                "description": "按项目路径、工作目录、类型、关键词过滤查询当前用户的记忆列表",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "查询记忆列表",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "项目路径",
-                        "name": "projectPath",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "工作目录",
-                        "name": "workDir",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "记忆类型",
-                        "name": "type",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "关键词搜索",
-                        "name": "keyword",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "description": "创建新记忆或更新已存在的记忆（按 userID + projectPath + slug 去重）",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "上报记忆",
-                "parameters": [
-                    {
-                        "description": "记忆数据",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_memory.CreateMemoryRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
-                        }
-                    }
-                }
-            }
-        },
-        "/memories/{id}": {
-            "get": {
-                "description": "获取指定记忆的元信息（不含内容）",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "获取记忆详情",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
-                        }
-                    }
-                }
-            },
-            "put": {
-                "description": "更新指定记忆的内容，可选择创建新版本或覆盖当前版本",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "更新记忆",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "更新数据",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/internal_memory.UpdateMemoryRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "description": "软删除指定记忆及其所有版本记录",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "删除记忆",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "success": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/memories/{id}/content": {
-            "get": {
-                "description": "获取指定记忆当前版本的 markdown 内容",
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "获取记忆内容",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/memories/{id}/versions": {
-            "get": {
-                "description": "获取指定记忆的所有历史版本",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "获取版本列表",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryVersion"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/memories/{id}/versions/{version}/content": {
-            "get": {
-                "description": "获取指定记忆指定版本的 markdown 内容",
-                "produces": [
-                    "text/plain"
-                ],
-                "tags": [
-                    "memories"
-                ],
-                "summary": "获取指定版本内容",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "记忆ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "版本号",
-                        "name": "version",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
         "/notification-channels": {
             "get": {
                 "description": "Get all notification channels configured by the authenticated user",
@@ -10559,169 +6202,6 @@ const docTemplate = `{
                                 },
                                 "success": {
                                     "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/plugins/builtin": {
-            "get": {
-                "description": "Get all plugins marked as built-in (is_builtin = true).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "plugins"
-                ],
-                "summary": "List built-in plugins",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "Page number",
-                        "name": "page",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page size",
-                        "name": "pageSize",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "items": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/internal_handlers.builtinPluginItemResponse"
-                                    }
-                                },
-                                "total": {
-                                    "type": "integer"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/plugins/upload": {
-            "post": {
-                "description": "Upload a plugin zip file to create or overwrite a plugin item.",
-                "consumes": [
-                    "multipart/form-data"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "plugins"
-                ],
-                "summary": "Upload a plugin archive",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Target repository ID",
-                        "name": "repo_id",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "file",
-                        "description": "Plugin zip archive",
-                        "name": "file",
-                        "in": "formData",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.ItemResponse"
-                        }
-                    },
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.ItemResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/plugins/{slug}/download": {
-            "get": {
-                "description": "Download a plugin (and its assets) packaged as a zip file.",
-                "produces": [
-                    "application/zip"
-                ],
-                "tags": [
-                    "plugins"
-                ],
-                "summary": "Download plugin zip",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Plugin slug",
-                        "name": "slug",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "file"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
                                 }
                             }
                         }
@@ -15988,7 +11468,7 @@ const docTemplate = `{
         },
         "/users/search": {
             "get": {
-                "description": "Search users by username or display name keyword (requires authentication). Returns only basic, non-sensitive fields.",
+                "description": "Search users by username or email keyword (requires authentication)",
                 "produces": [
                     "application/json"
                 ],
@@ -15999,7 +11479,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search keyword (min 1 character)",
+                        "description": "Search keyword",
                         "name": "q",
                         "in": "query",
                         "required": true
@@ -16014,19 +11494,8 @@ const docTemplate = `{
                                 "users": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/internal_handlers.userSearchResult"
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser"
                                     }
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
                                 }
                             }
                         }
@@ -17073,37 +12542,31 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "github_com_costrict_costrict-web_server_internal_deptsync.Dept": {
+        "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
-                "childDeptCount": {
-                    "type": "integer"
-                },
-                "children": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept"
-                    }
-                },
-                "deptId": {
+                "email": {
                     "type": "string"
                 },
-                "deptLevel": {
-                    "type": "integer"
-                },
-                "deptName": {
+                "id": {
                     "type": "string"
                 },
-                "deptPath": {
+                "name": {
                     "type": "string"
                 },
-                "leaderId": {
+                "owner": {
                     "type": "string"
                 },
-                "orderNum": {
-                    "type": "integer"
+                "picture": {
+                    "type": "string"
                 },
-                "parentDeptId": {
+                "preferred_username": {
+                    "type": "string"
+                },
+                "sub": {
+                    "type": "string"
+                },
+                "universal_id": {
                     "type": "string"
                 }
             }
@@ -17173,32 +12636,6 @@ const docTemplate = `{
                 "ActionFeedback",
                 "ActionIgnore"
             ]
-        },
-        "github_com_costrict_costrict-web_server_internal_models.AdminAuditLog": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string"
-                },
-                "actorId": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "payload": {
-                    "type": "object"
-                },
-                "targetId": {
-                    "type": "string"
-                },
-                "targetType": {
-                    "type": "string"
-                }
-            }
         },
         "github_com_costrict_costrict-web_server_internal_models.BehaviorLog": {
             "type": "object",
@@ -17377,9 +12814,8 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
-                    "type": "object"
+                "embeddingUpdatedAt": {
+                    "type": "string"
                 },
                 "evaluation": {
                     "type": "object"
@@ -17390,14 +12826,6 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
-                "forkedFromItemId": {
-                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
-                    "type": "string"
-                },
                 "health": {
                     "type": "object"
                 },
@@ -17406,9 +12834,6 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
-                },
-                "isBuiltIn": {
-                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -17420,10 +12845,6 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
-                    "type": "string"
-                },
-                "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -17455,7 +12876,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive | fork",
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -17581,9 +13002,6 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "type": "object"
-                },
                 "id": {
                     "type": "string"
                 },
@@ -17697,83 +13115,6 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_models.ItemDistribution": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "distributorId": {
-                    "type": "string"
-                },
-                "expiresAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "item": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
-                },
-                "itemId": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "permissionMode": {
-                    "description": "readonly | dismissible",
-                    "type": "string"
-                },
-                "revokedAt": {
-                    "type": "string"
-                },
-                "scopeType": {
-                    "description": "user | department",
-                    "type": "string"
-                },
-                "status": {
-                    "description": "active | paused | revoked",
-                    "type": "string"
-                },
-                "targetId": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "distribution": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
-                },
-                "distributionId": {
-                    "type": "string"
-                },
-                "forkedItemId": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "receiptStatus": {
-                    "description": "unread | read | dismissed | accepted",
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "userId": {
-                    "type": "string"
-                }
-            }
-        },
         "github_com_costrict_costrict-web_server_internal_models.ItemTagDict": {
             "type": "object",
             "properties": {
@@ -17792,68 +13133,6 @@ const docTemplate = `{
                 "tagClass": {
                     "description": "system | custom",
                     "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_models.MemoryFile": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "currentVersion": {
-                    "type": "integer"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "projectPath": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "type": {
-                    "description": "user | feedback | project | reference",
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "userId": {
-                    "type": "string"
-                },
-                "workDir": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_models.MemoryVersion": {
-            "type": "object",
-            "properties": {
-                "contentMD5": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "memoryFileId": {
-                    "type": "string"
-                },
-                "storageKey": {
-                    "type": "string"
-                },
-                "version": {
-                    "type": "integer"
                 }
             }
         },
@@ -17891,34 +13170,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "userId": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_models.PermissionGrant": {
-            "type": "object",
-            "properties": {
-                "createdAt": {
-                    "type": "string"
-                },
-                "deptPath": {
-                    "description": "部门授权时冗余存其 dept_path",
-                    "type": "string"
-                },
-                "grantedBy": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "permissionCode": {
-                    "type": "string"
-                },
-                "subjectId": {
-                    "type": "string"
-                },
-                "subjectType": {
-                    "description": "user | department",
                     "type": "string"
                 }
             }
@@ -18131,33 +13382,6 @@ const docTemplate = `{
                 },
                 "visibility": {
                     "description": "public | private",
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_models.ResourcePermission": {
-            "type": "object",
-            "properties": {
-                "allowedRoles": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "resourceCode": {
-                    "type": "string"
-                },
-                "resourceType": {
-                    "description": "menu | api",
-                    "type": "string"
-                },
-                "updatedAt": {
                     "type": "string"
                 }
             }
@@ -18566,84 +13790,6 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest": {
-            "type": "object",
-            "required": [
-                "permissionMode",
-                "targets"
-            ],
-            "properties": {
-                "expiresAt": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "permissionMode": {
-                    "type": "string",
-                    "enum": [
-                        "readonly",
-                        "dismissible"
-                    ]
-                },
-                "targets": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionTarget"
-                    }
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.DistributionAuthority": {
-            "type": "object",
-            "properties": {
-                "departments": {
-                    "description": "Departments are the managed subtrees (the departments the user leads). For an\nunlimited operator this is empty and the frontend uses the full admin tree.",
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept"
-                    }
-                },
-                "unlimited": {
-                    "description": "Unlimited is true for platform admins (may distribute to anyone / any scope).",
-                    "type": "boolean"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.DistributionTarget": {
-            "type": "object",
-            "required": [
-                "scopeType",
-                "targetId"
-            ],
-            "properties": {
-                "scopeType": {
-                    "description": "user | department",
-                    "type": "string"
-                },
-                "targetId": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser": {
-            "type": "object",
-            "properties": {
-                "avatarUrl": {
-                    "type": "string"
-                },
-                "displayName": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
         "github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
@@ -18753,9 +13899,8 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
-                    "type": "object"
+                "embeddingUpdatedAt": {
+                    "type": "string"
                 },
                 "evaluation": {
                     "type": "object"
@@ -18766,14 +13911,6 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
-                "forkedFromItemId": {
-                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
-                    "type": "string"
-                },
                 "health": {
                     "type": "object"
                 },
@@ -18782,9 +13919,6 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
-                },
-                "isBuiltIn": {
-                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -18796,10 +13930,6 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
-                    "type": "string"
-                },
-                "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -18837,7 +13967,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive | fork",
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -18940,9 +14070,8 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
-                    "type": "object"
+                "embeddingUpdatedAt": {
+                    "type": "string"
                 },
                 "evaluation": {
                     "type": "object"
@@ -18953,14 +14082,6 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
-                "forkedFromItemId": {
-                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
-                    "type": "string"
-                },
                 "health": {
                     "type": "object"
                 },
@@ -18969,9 +14090,6 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
-                },
-                "isBuiltIn": {
-                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -18983,10 +14101,6 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
-                    "type": "string"
-                },
-                "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -19021,7 +14135,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive | fork",
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -19107,6 +14221,168 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse": {
+            "type": "object",
+            "properties": {
+                "git_repo_url": {
+                    "type": "string"
+                },
+                "range": {
+                    "type": "object",
+                    "properties": {
+                        "from": {
+                            "type": "string"
+                        },
+                        "to": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageUserActivity"
+                    }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UsageDaily": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string"
+                },
+                "requests": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UsageReportItem": {
+            "type": "object",
+            "required": [
+                "date",
+                "git_repo_url",
+                "message_id",
+                "model_id",
+                "session_id",
+                "updated"
+            ],
+            "properties": {
+                "cache_read_tokens": {
+                    "type": "integer"
+                },
+                "cache_write_tokens": {
+                    "type": "integer"
+                },
+                "cost": {
+                    "type": "number"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "git_repo_url": {
+                    "type": "string"
+                },
+                "git_worktree": {
+                    "type": "string"
+                },
+                "input_tokens": {
+                    "type": "integer"
+                },
+                "message_id": {
+                    "type": "string"
+                },
+                "model_id": {
+                    "type": "string"
+                },
+                "output_tokens": {
+                    "type": "integer"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "reasoning_tokens": {
+                    "type": "integer"
+                },
+                "request_id": {
+                    "type": "string"
+                },
+                "request_time": {
+                    "type": "string"
+                },
+                "rounds": {
+                    "type": "integer"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "updated": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UsageReportRequest": {
+            "type": "object",
+            "required": [
+                "reports"
+            ],
+            "properties": {
+                "client_version": {
+                    "type": "string"
+                },
+                "device_id": {
+                    "type": "string"
+                },
+                "reported_at": {
+                    "type": "string"
+                },
+                "reports": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportItem"
+                    }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UsageReportResponse": {
+            "type": "object",
+            "properties": {
+                "accepted": {
+                    "type": "integer"
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "skipped": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.UsageUserActivity": {
+            "type": "object",
+            "properties": {
+                "daily": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageDaily"
+                    }
+                },
+                "total_requests": {
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus": {
             "type": "object",
             "properties": {
@@ -19157,72 +14433,6 @@ const docTemplate = `{
                 },
                 "userId": {
                     "type": "string"
-                }
-            }
-        },
-        "internal_audit.listAuditLogsResponse": {
-            "type": "object",
-            "properties": {
-                "logs": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.AdminAuditLog"
-                    }
-                },
-                "page": {
-                    "type": "integer"
-                },
-                "pageSize": {
-                    "type": "integer"
-                },
-                "total": {
-                    "type": "integer"
-                }
-            }
-        },
-        "internal_authz.grantPermissionRequest": {
-            "type": "object",
-            "required": [
-                "permissionCode",
-                "subjectId",
-                "subjectType"
-            ],
-            "properties": {
-                "permissionCode": {
-                    "type": "string"
-                },
-                "subjectId": {
-                    "type": "string"
-                },
-                "subjectType": {
-                    "description": "user | department",
-                    "type": "string"
-                },
-                "targetDeptId": {
-                    "description": "TargetDeptID is an optional target department, used only when the grant binds\na TARGET department to a USER subject — i.e. the metrics-view preset\n\"kanban.scope.dept\" where a specific user A is allowed to see an extra\ndepartment Y (and its subtree) beyond their own. The target department's\nmaterialized dept_path is resolved from dept-sync and stored in the grant's\ndept_path, which ResolveUserScope reads as the extra-visible prefix for A.\n(For department subjects the dept_path is the SUBJECT department's own path,\nresolved from SubjectID; TargetDeptID is ignored there.)",
-                    "type": "string"
-                }
-            }
-        },
-        "internal_authz.grantUserRoleRequest": {
-            "type": "object",
-            "required": [
-                "role"
-            ],
-            "properties": {
-                "role": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_authz.updateResourcePermissionRequest": {
-            "type": "object",
-            "properties": {
-                "allowedRoles": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
                 }
             }
         },
@@ -19358,12 +14568,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "description": {
-                    "description": "Resolved per ` + "`" + `?lang=` + "`" + ` query or Accept-Language header; en is the default. Use ` + "`" + `descriptions` + "`" + ` for raw locale map.",
                     "type": "string"
                 },
-                "descriptions": {
-                    "description": "Raw locale → text map, e.g. {\"en\":\"...\",\"zh\":\"...\"}.",
-                    "type": "object"
+                "embeddingUpdatedAt": {
+                    "type": "string"
                 },
                 "evaluation": {
                     "type": "object"
@@ -19377,16 +14585,6 @@ const docTemplate = `{
                 "favorited": {
                     "type": "boolean"
                 },
-                "forkCount": {
-                    "description": "本 item 被 fork 的次数",
-                    "type": "integer"
-                },
-                "forkedFromItemId": {
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "type": "string"
-                },
                 "health": {
                     "type": "object"
                 },
@@ -19396,43 +14594,16 @@ const docTemplate = `{
                 "installCount": {
                     "type": "integer"
                 },
-                "isBuiltIn": {
-                    "type": "boolean"
-                },
                 "itemType": {
                     "type": "string"
                 },
                 "lastScanId": {
                     "type": "string"
                 },
-                "mcpConfig": {
-                    "description": "per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/internal_handlers.MCPConfigStatus"
-                        }
-                    ]
-                },
                 "metadata": {
                     "type": "object"
                 },
-                "myForkItemId": {
-                    "description": "当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）",
-                    "type": "string"
-                },
                 "name": {
-                    "type": "string"
-                },
-                "parentPluginId": {
-                    "description": "sub-skill: 所属父 plugin item ID",
-                    "type": "string"
-                },
-                "parentPluginName": {
-                    "description": "父 plugin 展示名（供「来自插件 X」徽章）",
-                    "type": "string"
-                },
-                "parentPluginSlug": {
-                    "description": "父 plugin slug（供跳转）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -19445,9 +14616,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "repoId": {
-                    "type": "string"
-                },
-                "repoName": {
                     "type": "string"
                 },
                 "repoVisibility": {
@@ -19491,34 +14659,6 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.MCPConfigStatus": {
-            "type": "object",
-            "properties": {
-                "fields": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_handlers.MCPFieldStatus"
-                    }
-                }
-            }
-        },
-        "internal_handlers.MCPFieldStatus": {
-            "type": "object",
-            "properties": {
-                "hasValue": {
-                    "type": "boolean"
-                },
-                "key": {
-                    "type": "string"
-                },
-                "secret": {
-                    "type": "boolean"
-                },
-                "value": {
-                    "type": "string"
-                }
-            }
-        },
         "internal_handlers.MyItem": {
             "type": "object",
             "properties": {
@@ -19555,9 +14695,8 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
-                    "type": "object"
+                "embeddingUpdatedAt": {
+                    "type": "string"
                 },
                 "evaluation": {
                     "type": "object"
@@ -19568,20 +14707,6 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
-                "favorited": {
-                    "type": "boolean"
-                },
-                "forkCount": {
-                    "type": "integer"
-                },
-                "forkedFromItemId": {
-                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
-                    "type": "string"
-                },
                 "health": {
                     "type": "object"
                 },
@@ -19590,9 +14715,6 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
-                },
-                "isBuiltIn": {
-                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -19604,10 +14726,6 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
-                    "type": "string"
-                },
-                "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -19645,7 +14763,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive | fork",
+                    "description": "direct | archive",
                     "type": "string"
                 },
                 "status": {
@@ -19747,9 +14865,6 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "descriptions": {
-                    "type": "object"
-                },
                 "id": {
                     "type": "string"
                 },
@@ -19772,155 +14887,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "versionLabel": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.builtinPluginAssetResponse": {
-            "type": "object",
-            "properties": {
-                "contentSha": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "fileSize": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "itemId": {
-                    "type": "string"
-                },
-                "mimeType": {
-                    "type": "string"
-                },
-                "relPath": {
-                    "type": "string"
-                },
-                "storageBackend": {
-                    "type": "string"
-                },
-                "storageKey": {
-                    "type": "string"
-                },
-                "updatedAt": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.builtinPluginItemResponse": {
-            "type": "object",
-            "properties": {
-                "assets": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/internal_handlers.builtinPluginAssetResponse"
-                    }
-                },
-                "category": {
-                    "type": "string"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "contentMd5": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "createdBy": {
-                    "type": "string"
-                },
-                "currentRevision": {
-                    "type": "integer"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "descriptions": {},
-                "evaluation": {},
-                "favoriteCount": {
-                    "type": "integer"
-                },
-                "forkedFromItemId": {
-                    "type": "string"
-                },
-                "forkedFromOwnerId": {
-                    "type": "string"
-                },
-                "health": {},
-                "id": {
-                    "type": "string"
-                },
-                "installCount": {
-                    "type": "integer"
-                },
-                "isBuiltIn": {
-                    "type": "boolean"
-                },
-                "itemType": {
-                    "type": "string"
-                },
-                "lastScanId": {
-                    "type": "string"
-                },
-                "metadata": {},
-                "name": {
-                    "type": "string"
-                },
-                "previewCount": {
-                    "type": "integer"
-                },
-                "registry": {
-                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
-                },
-                "registryId": {
-                    "type": "string"
-                },
-                "repoId": {
-                    "type": "string"
-                },
-                "securityStatus": {
-                    "type": "string"
-                },
-                "shareUrl": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "source": {
-                    "type": "string"
-                },
-                "sourcePath": {
-                    "type": "string"
-                },
-                "sourceSha": {
-                    "type": "string"
-                },
-                "sourceType": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "string"
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
-                    }
-                },
-                "updatedAt": {
-                    "type": "string"
-                },
-                "updatedBy": {
-                    "type": "string"
-                },
-                "version": {
                     "type": "string"
                 }
             }
@@ -19968,17 +14934,6 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.mcpFieldEntry": {
-            "type": "object",
-            "properties": {
-                "secret": {
-                    "type": "boolean"
-                },
-                "v": {
-                    "type": "string"
-                }
-            }
-        },
         "internal_handlers.setItemTagsRequest": {
             "type": "object",
             "properties": {
@@ -20015,17 +14970,6 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.upsertMCPConfigRequest": {
-            "type": "object",
-            "properties": {
-                "fields": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "$ref": "#/definitions/internal_handlers.mcpFieldEntry"
-                    }
-                }
-            }
-        },
         "internal_handlers.userBasicInfoResponse": {
             "type": "object",
             "properties": {
@@ -20033,82 +14977,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.userSearchResult": {
-            "type": "object",
-            "properties": {
-                "avatarUrl": {
-                    "type": "string"
-                },
-                "displayName": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_memory.CreateMemoryRequest": {
-            "type": "object",
-            "required": [
-                "content",
-                "name",
-                "projectPath",
-                "slug",
-                "type"
-            ],
-            "properties": {
-                "content": {
-                    "type": "string"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "projectPath": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string",
-                    "enum": [
-                        "user",
-                        "feedback",
-                        "project",
-                        "reference"
-                    ]
-                },
-                "workDir": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_memory.UpdateMemoryRequest": {
-            "type": "object",
-            "required": [
-                "content"
-            ],
-            "properties": {
-                "bumpVersion": {
-                    "type": "boolean"
-                },
-                "content": {
-                    "type": "string"
-                },
-                "description": {
                     "type": "string"
                 },
                 "name": {
