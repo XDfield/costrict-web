@@ -178,10 +178,11 @@ func main() {
 		}
 
 		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). TeamResolver
-		// delegates to cs-user's /api/internal/users/:subject_id/teams, which
-		// today returns 503 ORG_TEAM_SERVICE_UNAVAILABLE until org-team-service
-		// lands. CSUserTeamResolver surfaces that as ErrOrgTeamServiceUnavailable
-		// so KBEnsure fails closed (KB_USER_ENSURE_API.md §2.3).
+		// forwards the caller's Casdoor JWT to multica's GET /api/workspaces,
+		// which resolves membership via its own CasdoorAuth. An empty workspace
+		// list maps to 403 NO_TEAM_MEMBERSHIP; transport/auth failure surfaces
+		// as ErrOrgTeamServiceUnavailable so KBEnsure fails closed 503
+		// (KB_USER_ENSURE_API.md §2.3).
 		handlers.InitTeamResolver(&handlers.CSUserTeamResolver{Client: rpcClient})
 	}
 

@@ -12,6 +12,7 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -27,13 +28,18 @@ type CSUserTeamResolver struct {
 
 // ResolveCurrentUserTeams implements TeamResolver.
 //
+// subjectID is kept for interface compatibility but is no longer the
+// primary key — multica resolves the user from the forwarded Casdoor JWT
+// (its CasdoorAuth middleware handles subject → multica_user mapping).
+//
 // Empty slice (not nil) is preserved as the legitimate "user belongs to no
 // team" state — KBEnsure maps that to 403 NO_TEAM_MEMBERSHIP.
 func (r *CSUserTeamResolver) ResolveCurrentUserTeams(c *gin.Context, subjectID string) ([]TeamSummary, error) {
 	if r == nil || r.Client == nil {
 		return nil, ErrOrgTeamServiceUnavailable
 	}
-	teams, err := r.Client.ListUserTeams(c.Request.Context(), subjectID)
+	jwt := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	teams, err := r.Client.ListUserTeams(c.Request.Context(), jwt)
 	if err != nil {
 		if errors.Is(err, user.ErrOrgTeamServiceUnavailable) {
 			return nil, ErrOrgTeamServiceUnavailable
