@@ -28,9 +28,14 @@ import (
 // applyCalls captures ApplyEnterpriseMapping invocations so tests can assert
 // the reissue-token flow forwarded the right ExternalClaims / Provider. Nil
 // slice = either no call or no capture — tests opt in by reading the slice.
+//
+// externalKeyFn, when non-nil, drives GetSubjectIDByExternalKey — used by the
+// fallback-path test to simulate "server-supplied subject_id misses; cs-user's
+// authoritative subject_id is resolved via external_key".
 type stubEmploymentReader struct {
-	fn         func(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
-	applyCalls *[]user.EmploymentMappingParams
+	fn            func(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
+	applyCalls    *[]user.EmploymentMappingParams
+	externalKeyFn func(ctx context.Context, externalKey string) (string, error)
 }
 
 func (s stubEmploymentReader) GetEmploymentIdentity(ctx context.Context, id string) (*models.EmploymentIdentity, error) {
@@ -47,13 +52,15 @@ func (s stubEmploymentReader) ApplyEnterpriseMapping(_ context.Context, params u
 	return nil
 }
 
-// GetSubjectIDByExternalKey is wired to satisfy the EmploymentReader interface
-// after the external_key fallback landed. The reissue-token flow's tests don't
-// exercise the fallback path (server/cs-user subject_id mismatch is covered in
-// service-level tests), so this stub returns "" — handler treats it as "no
-// user matched, fall through to employment == nil".
-func (s stubEmploymentReader) GetSubjectIDByExternalKey(_ context.Context, _ string) (string, error) {
-	return "", nil
+// GetSubjectIDByExternalKey satisfies the EmploymentReader interface. When
+// externalKeyFn is nil the stub returns ("", nil) — handler treats as "no
+// fallback available, fall through to employment == nil". When non-nil the
+// test pins the return so the fallback branch can be exercised.
+func (s stubEmploymentReader) GetSubjectIDByExternalKey(ctx context.Context, extKey string) (string, error) {
+	if s.externalKeyFn == nil {
+		return "", nil
+	}
+	return s.externalKeyFn(ctx, extKey)
 }
 
 // stubPermissionReader lets handler tests pin GetPlatformAdmin +
@@ -761,5 +768,123 @@ func TestReissueToken_TenantRolesLookupErrorMaps500(t *testing.T) {
 	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// TestReissueToken_ExternalKeyFallbackResolvesEmployment locks in the
+// server/cs-user subject_id mismatch fallback. The scenario: server's
+// GetOrCreate generated usr_server_new while cs-user reuses usr_cs_existing
+// for the same IdP user; the first GetEmploymentIdentity(server_id) misses,
+// the handler falls back via external_key, re-queries with cs-user's ID, and
+// the resulting JWT carries the enterprise claims. Also asserts that the JWT
+// Subject claim stays as server-supplied id (existing JWT consumers see no
+// change in `sub`).
+func TestReissueToken_ExternalKeyFallbackResolvesEmployment(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	empNum := "42766"
+	displayName := "陈烜"
+
+	// Track the two GetEmploymentIdentity calls separately so the test can
+	// assert both happened in order.
+	var firstLookup, secondLookup bool
+	svc := stubEmploymentReader{
+		fn: func(_ context.Context, id string) (*models.EmploymentIdentity, error) {
+			switch id {
+			case "usr_server_new":
+				firstLookup = true
+				return nil, nil // server-supplied ID misses
+			case "usr_cs_existing":
+				secondLookup = true
+				return &models.EmploymentIdentity{
+					UserSubjectID:  "usr_cs_existing",
+					EmployeeNumber: &empNum,
+					DisplayName:    &displayName,
+				}, nil
+			default:
+				t.Errorf("unexpected GetEmploymentIdentity id=%q", id)
+				return nil, nil
+			}
+		},
+		externalKeyFn: func(_ context.Context, extKey string) (string, error) {
+			if want := "casdoor:idtrust:uuid-bob"; extKey != want {
+				t.Errorf("external_key: got %q, want %q", extKey, want)
+			}
+			return "usr_cs_existing", nil
+		},
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_server_new",
+		Identity: &models.JWTClaims{
+			UniversalID: "uuid-bob",
+			Name:        "42766",
+			Email:       "42766@sangfor.com",
+			Provider:    "idtrust",
+		},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if !firstLookup {
+		t.Error("expected first GetEmploymentIdentity(server_id) call")
+	}
+	if !secondLookup {
+		t.Error("expected fallback GetEmploymentIdentity(cs-user_id) call")
+	}
+
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	parsed, err := jwt.ParseWithClaims(resp.Token, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	if err != nil {
+		t.Fatalf("ParseWithClaims: %v", err)
+	}
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	// Subject claim stays as server-supplied — handler intentionally does not
+	// rewrite `sub`; only enterprise fields resolve via the fallback.
+	if got.Subject != "usr_server_new" {
+		t.Errorf("JWT Subject: got %q, want usr_server_new", got.Subject)
+	}
+	if got.EmployeeNumber != empNum {
+		t.Errorf("EmployeeNumber: got %q, want %q", got.EmployeeNumber, empNum)
+	}
+	if got.DisplayName != displayName {
+		t.Errorf("DisplayName: got %q, want %q", got.DisplayName, displayName)
+	}
+}
+
+// TestReissueToken_ExternalKeyFallbackNoUserMatches verifies the fallback is
+// a no-op when GetSubjectIDByExternalKey returns ("", nil) — handler should
+// fall through to employment == nil and still issue a valid (enterprise-less)
+// token, never 500.
+func TestReissueToken_ExternalKeyFallbackNoUserMatches(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(_ context.Context, _ string) (*models.EmploymentIdentity, error) {
+			return nil, nil // no row for any subject_id
+		},
+		externalKeyFn: func(_ context.Context, _ string) (string, error) {
+			return "", nil // external_key resolves to no user
+		},
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_server_new",
+		Identity: &models.JWTClaims{
+			UniversalID: "uuid-bob",
+			Provider:    "idtrust",
+		},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
 	}
 }
