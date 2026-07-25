@@ -110,9 +110,19 @@ func (s *Service) EnsureKBRepo(
 			AutoInit:      true,
 			DefaultBranch: "main",
 		}); err != nil {
-			return nil, fmt.Errorf("%w: create repo: %v", ErrKBRepoProvisioning, err)
+			// Race: another concurrent ensure on the same (teamID,
+			// codeRepoURL) won the create between our GetRepo and
+			// CreateRepo. Re-GetRepo; if it now exists, treat the
+			// whole step as idempotent success and fall through to
+			// branch protection. Any other create error is real.
+			repo, lookupErr := gitcli.GetRepo(ctx, owner, repoName)
+			if lookupErr != nil || repo == nil {
+				return nil, fmt.Errorf("%w: create repo: %v (post-create lookup: %v)",
+					ErrKBRepoProvisioning, err, lookupErr)
+			}
+		} else {
+			result.KbRepoCreated = true
 		}
-		result.KbRepoCreated = true
 	}
 
 	// 5. Protect main. Tolerate already-exists (idempotent). Reuses

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -369,10 +370,15 @@ type errOrgTeamServiceUnavailableTest string
 
 func (e errOrgTeamServiceUnavailableTest) Error() string { return string(e) }
 
-func TestKBEnsure_TeamNSMissing_EmptyDisplayName_Returns412(t *testing.T) {
-	// team_ns row is missing AND the directory backend carried no display
-	// name for the team → cannot auto-provision (team_display_name NOT NULL).
-	// Surface TEAM_NS_NOT_INITIALIZED so an admin provisions manually.
+func TestKBEnsure_TeamNSMissing_EmptyDisplayName_FallsBack(t *testing.T) {
+	// Directory backend returned no display name — no longer a blocker.
+	// KBEnsure falls back to a team-id-derived placeholder so the user
+	// is not blocked on a missing non-core field. The test's core
+	// assertion is that the response does NOT carry TEAM_NS_NOT_INITIALIZED
+	// (i.e. empty display name did not short-circuit). With gitsync nil
+	// here, CreateTeam fails at git-server resolution and returns 503 —
+	// that's fine; we're testing the display-name fallback, not the
+	// provisioning outcome.
 	db := setupTeamnsDB(t)
 	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
 	teamID := padUUIDHandler(12)
@@ -381,11 +387,15 @@ func TestKBEnsure_TeamNSMissing_EmptyDisplayName_Returns412(t *testing.T) {
 
 	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
 	w := doKBEnsure(t, r, "user-1", body)
-	if w.Code != http.StatusPreconditionFailed {
-		t.Errorf("got %d, want 412; body=%s", w.Code, w.Body.String())
+	if containsStr(w.Body.String(), "TEAM_NS_NOT_INITIALIZED") {
+		t.Errorf("must NOT surface TEAM_NS_NOT_INITIALIZED for empty display name anymore: %s", w.Body.String())
 	}
-	if !containsStr(w.Body.String(), "TEAM_NS_NOT_INITIALIZED") {
-		t.Errorf("expected TEAM_NS_NOT_INITIALIZED: %s", w.Body.String())
+	// Either the auto-provision succeeded (200) or it failed downstream
+	// at git-server resolution (503 ORG_TEAM_SERVICE_UNAVAILABLE). Both
+	// are acceptable — what's unacceptable is 412 TEAM_NS_NOT_INITIALIZED
+	// driven by the empty display name.
+	if w.Code != http.StatusOK && w.Code != http.StatusServiceUnavailable {
+		t.Errorf("got %d, want 200 or 503; body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -505,9 +515,11 @@ func TestKBEnsure_NoJWTSubject_Returns401(t *testing.T) {
 	}
 }
 
-// TestKBEnsure_BotCredsMissing_Returns500 seeds team_ns only (no bot creds
-// row). Provisioning succeeds but DecryptBotToken fails → 500.
-func TestKBEnsure_BotCredsMissing_Returns500(t *testing.T) {
+// TestKBEnsure_BotCredsMissing_Returns412 seeds team_ns only (no bot creds
+// row). Provisioning succeeds but DecryptBotToken fails with ErrTeamNotFound
+// → 412 BOT_CREDENTIALS_MISSING (classified as re-provisionable, not a
+// generic 500).
+func TestKBEnsure_BotCredsMissing_Returns412(t *testing.T) {
 	db := setupTeamnsDB(t)
 	aes := mustAESHandler(t)
 	now := time.Now().UTC()
@@ -533,11 +545,14 @@ func TestKBEnsure_BotCredsMissing_Returns500(t *testing.T) {
 
 	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
 	w := doKBEnsure(t, r, "user-1", body)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("got %d, want 500; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusPreconditionFailed {
+		t.Errorf("got %d, want 412; body=%s", w.Code, w.Body.String())
 	}
-	if !containsStr(w.Body.String(), "decrypt bot token") {
-		t.Errorf("expected decrypt-failure message in body: %s", w.Body.String())
+	if !containsStr(w.Body.String(), "BOT_CREDENTIALS_MISSING") {
+		t.Errorf("expected BOT_CREDENTIALS_MISSING code: %s", w.Body.String())
+	}
+	if !containsStr(w.Body.String(), "interrupted") {
+		t.Errorf("expected diagnostic about interrupted provision: %s", w.Body.String())
 	}
 }
 
@@ -667,4 +682,48 @@ func TestKBEnsure_FeatureDisabled_Returns503(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("got %d, want 503; body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestMapBotCredentialsError_ClassifiesThreeModes(t *testing.T) {
+	t.Run("missing-credentials-row", func(t *testing.T) {
+		status, code, msg := mapBotCredentialsError(teamns.ErrTeamNotFound)
+		if status != http.StatusPreconditionFailed {
+			t.Errorf("status=%d, want 412", status)
+		}
+		if code != "BOT_CREDENTIALS_MISSING" {
+			t.Errorf("code=%q, want BOT_CREDENTIALS_MISSING", code)
+		}
+		if !strings.Contains(msg, "interrupted") {
+			t.Errorf("msg should explain interrupted provision: %q", msg)
+		}
+	})
+
+	t.Run("decrypt-failure-key-drift", func(t *testing.T) {
+		// Real DecryptBotToken wraps with this prefix at service.go:819.
+		status, code, msg := mapBotCredentialsError(
+			fmt.Errorf("teamns: decrypt token: cipher: message authentication failed"))
+		if status != http.StatusInternalServerError {
+			t.Errorf("status=%d, want 500", status)
+		}
+		if code != "BOT_TOKEN_DECRYPT_FAILED" {
+			t.Errorf("code=%q, want BOT_TOKEN_DECRYPT_FAILED", code)
+		}
+		if !strings.Contains(msg, "CS_BOT_TOKEN_KEY") {
+			t.Errorf("msg should mention key drift: %q", msg)
+		}
+	})
+
+	t.Run("db-lookup-error", func(t *testing.T) {
+		status, code, msg := mapBotCredentialsError(
+			fmt.Errorf("teamns: decrypt lookup: connection refused"))
+		if status != http.StatusInternalServerError {
+			t.Errorf("status=%d, want 500", status)
+		}
+		if code != "BOT_CREDENTIALS_LOOKUP_FAILED" {
+			t.Errorf("code=%q, want BOT_CREDENTIALS_LOOKUP_FAILED", code)
+		}
+		if !strings.Contains(msg, "connection refused") {
+			t.Errorf("msg should surface underlying error verbatim: %q", msg)
+		}
+	})
 }
