@@ -140,3 +140,34 @@ func TestCreateItemDirect_ZipSkill_NormalizesExplicitSlug(t *testing.T) {
 		t.Fatalf("expected display name to remain unchanged, got %v", item["name"])
 	}
 }
+
+func TestCreateItemDirect_ZipNonASCIISkillUsesStableFallback(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	setMemoryStorageBackend(t)
+
+	zipBytes := createTestZip(map[string][]byte{
+		"SKILL.md": []byte("---\nname: 技能\n---\n# 技能"),
+	})
+	w := postMultipart(newItemRouter("u1"), "/api/items", map[string]string{
+		"itemType": "skill",
+		"name":     "技能",
+		"slug":     "技能",
+	}, zipBytes)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	slug, _ := item["slug"].(string)
+	id, _ := item["id"].(string)
+	if slug != "skill-"+strings.ReplaceAll(id, "-", "") {
+		t.Fatalf("expected stable id fallback, got slug=%q id=%q", slug, id)
+	}
+	if item["name"] != "技能" {
+		t.Fatalf("expected display name to remain unchanged, got %v", item["name"])
+	}
+}

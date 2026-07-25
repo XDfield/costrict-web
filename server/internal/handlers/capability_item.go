@@ -3686,9 +3686,10 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
-	itemID := uuid.New().String()
-	slug = canonicalCapabilitySlug(itemType, slug, name, itemID)
-	if slug == "" {
+	canonicalSlug := canonicalCapabilitySlug(itemType, slug, name, "")
+	if canonicalSlug != "" {
+		slug = canonicalSlug
+	} else if !capabilityslug.RequiresCanonical(itemType) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain at least one ASCII letter or number", "code": "invalid_slug"})
 		return
 	}
@@ -3752,6 +3753,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		}
 	}
 
+	itemID := uuid.New().String()
 	ctx := context.Background()
 	uploadedKeys := make([]string, 0, len(result.Assets)+1)
 	assetStorageKeys := make(map[string]string, len(result.Assets))
