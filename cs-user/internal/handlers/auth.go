@@ -61,6 +61,13 @@ type AuthAPI struct {
 type EmploymentReader interface {
 	GetEmploymentIdentity(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
 	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
+	// GetSubjectIDByExternalKey resolves cs-user's authoritative subject_id
+	// from a Casdoor-style external_key. Used as a fallback when the
+	// server-supplied user_subject_id doesn't match any employment row —
+	// server's GetOrCreate can generate a fresh subject_id while cs-user
+	// reuses the existing one (cs-user is single-source-of-truth on its own
+	// users table). Returns ("", nil) when no user matches.
+	GetSubjectIDByExternalKey(ctx context.Context, externalKey string) (string, error)
 }
 
 // PermissionReader is the Phase C1 subset of *user.Service the reissue flow
@@ -229,6 +236,31 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		}
 		return
+	}
+
+	// Fallback when server-supplied subject_id doesn't match an employment
+	// row: server's GetOrCreate can generate a fresh subject_id (usr_X) while
+	// cs-user reuses its existing one (usr_Y) for the same IdP user — so the
+	// employment_identities row stays keyed to usr_Y. Resolve cs-user's
+	// authoritative subject_id via the external_key derived from the Identity
+	// payload (provider + universal_id) and re-query. Errors are swallowed
+	// (best-effort fallback) — failure leaves employment == nil and JWT still
+	// issues, just without enterprise claims (same as pre-fallback behavior).
+	if employment == nil && req.Identity != nil {
+		if extKey := user.BuildExternalKey(req.Identity); extKey != "" {
+			realSubID, lookupErr := a.Svc.GetSubjectIDByExternalKey(c.Request.Context(), extKey)
+			if lookupErr != nil {
+				logger.Warn("[reissue-token] external_key fallback lookup failed (continuing without enterprise claims): %v", lookupErr)
+			} else if realSubID != "" && realSubID != req.UserSubjectID {
+				logger.Warn("[reissue-token] server user_subject_id=%s does not match cs-user's authoritative subject_id=%s for external_key=%s; re-querying employment with cs-user ID",
+					req.UserSubjectID, realSubID, extKey)
+				employment, err = a.Svc.GetEmploymentIdentity(c.Request.Context(), realSubID)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+					return
+				}
+			}
+		}
 	}
 	// employment == nil is success — user has no enterprise snapshot yet.
 

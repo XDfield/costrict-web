@@ -47,6 +47,15 @@ func (s stubEmploymentReader) ApplyEnterpriseMapping(_ context.Context, params u
 	return nil
 }
 
+// GetSubjectIDByExternalKey is wired to satisfy the EmploymentReader interface
+// after the external_key fallback landed. The reissue-token flow's tests don't
+// exercise the fallback path (server/cs-user subject_id mismatch is covered in
+// service-level tests), so this stub returns "" — handler treats it as "no
+// user matched, fall through to employment == nil".
+func (s stubEmploymentReader) GetSubjectIDByExternalKey(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 // stubPermissionReader lets handler tests pin GetPlatformAdmin +
 // ListActiveTenantRoles responses without a DB. Phase C1.
 type stubPermissionReader struct {
