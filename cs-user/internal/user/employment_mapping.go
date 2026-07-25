@@ -473,12 +473,17 @@ func isDuplicateKeyError(err error) bool {
 
 // reconcileByEnterpriseUID is the fallback path when Create hits the
 // (tenant_id, enterprise_uid) partial unique index. It looks up the existing
-// row by enterprise_uid within the same tenant and refreshes it with the
-// newly-arrived field values. The row's user_subject_id is realigned to
-// params.UserSubjectID — the server is now using the new ID for subsequent
-// reads (GetEmploymentIdentity in the reissue-token handler), so leaving the
-// row pinned to the stale ID would cause the JWT to miss enterprise claims on
-// every login until the server-side ID-consistency bug is fixed.
+// row by enterprise_uid within the same tenant and refreshes the enterprise
+// fields only. user_subject_id is INTENTIONALLY PRESERVED — the row's
+// existing subject_id is what cs-user's users table also holds (single source
+// of truth); realigning it to params.UserSubjectID would orphan the row from
+// users + cascade through audit logs / bindings.
+//
+// The deeper "server sends a different subject_id than cs-user holds" bug
+// surfaces as: reissue-token handler's GetEmploymentIdentity(params.UserSubjectID)
+// returns nil because the row is keyed to a different subject_id. That handler
+// resolves the mismatch via an external_key lookup (see handlers/auth.go)
+// rather than mutating employment_identities here.
 //
 // Returns (handled=true, nil) when an existing row was found and updated.
 // Returns (handled=false, nil) when no row matched the enterprise_uid — caller
@@ -506,7 +511,6 @@ func (s *Service) reconcileByEnterpriseUID(ctx context.Context, params Employmen
 
 	now := time.Now()
 	updates := map[string]any{
-		"user_subject_id":  params.UserSubjectID,
 		"provider":         params.Provider,
 		"sync_status":      "fresh",
 		"last_synced_at":   now,
@@ -518,7 +522,7 @@ func (s *Service) reconcileByEnterpriseUID(ctx context.Context, params Employmen
 	if err := s.db.WithContext(ctx).Model(&existing).Updates(updates).Error; err != nil {
 		return false, fmt.Errorf("update employment_identity (reconcile): %w", err)
 	}
-	logger.Warn("[employment-mapping] employment_identity RECONCILED by enterprise_uid=%s old_user_subject_id=%s → new_user_subject_id=%s provider=%q",
+	logger.Warn("[employment-mapping] employment_identity RECONCILED by enterprise_uid=%s (subject_id preserved=%s, server sent=%s, mismatch will be resolved via external_key lookup in handler) provider=%q",
 		enterpriseUID, existing.UserSubjectID, params.UserSubjectID, params.Provider)
 	return true, nil
 }
@@ -630,6 +634,39 @@ func (s *Service) GetEmploymentIdentity(ctx context.Context, userSubjectID strin
 		return nil, fmt.Errorf("query employment_identity: %w", err)
 	}
 	return &row, nil
+}
+
+// GetSubjectIDByExternalKey resolves a user's subject_id from the durable
+// external_key (format: `casdoor:<provider>:<universal_id>`, see
+// BuildExternalKey). Returns ("", nil) when no user matches — caller treats
+// as "no employment context" rather than failing.
+//
+// Used by the reissue-token handler as a fallback when the server-supplied
+// user_subject_id doesn't match any employment_identities row: server's
+// GetOrCreate can generate a new subject_id while cs-user reuses its existing
+// one (single-source-of-truth on cs-user's side). The handler resolves the
+// cs-user-authoritative subject_id via this lookup and re-queries employment.
+//
+// Empty externalKey short-circuits to ("", nil) — caller can call without
+// pre-checking. Soft-deleted users are excluded by gorm's DeletedAt handling.
+func (s *Service) GetSubjectIDByExternalKey(ctx context.Context, externalKey string) (string, error) {
+	if s == nil || s.db == nil {
+		return "", errors.New("user.Service: nil db")
+	}
+	if externalKey == "" {
+		return "", nil
+	}
+	var u models.User
+	err := s.db.WithContext(ctx).
+		Where("external_key = ?", externalKey).
+		Take(&u).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("query user by external_key: %w", err)
+	}
+	return u.SubjectID, nil
 }
 
 // containsString reports whether v contains s. Enabled-provider lists are
