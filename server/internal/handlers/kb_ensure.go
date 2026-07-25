@@ -64,9 +64,10 @@ type TeamSummary struct {
 }
 
 // TeamResolver abstracts "list the teams the current user belongs to".
-// Production impl delegates to cs-user RPC → org-team-service; tests
-// inject a stub. The handler never falls back to Gitea org membership
-// (KB_USER_ENSURE_API.md §2.3 — avoid double-source-of-truth drift).
+// Production impl (TeamDirectoryResolver) forwards the caller's Casdoor
+// JWT to the team-directory backend; tests inject a stub. The handler
+// never falls back to Gitea org membership (KB_USER_ENSURE_API.md §2.3
+// — avoid double-source-of-truth drift).
 type TeamResolver interface {
 	// ResolveCurrentUserTeams returns the teams the JWT subject belongs
 	// to, in the tenant resolved by middleware.RequireAuth. An empty slice
