@@ -144,7 +144,7 @@ func TestRun_DeliversToConsumer(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		authSeen = r.Header.Get("X-Internal-Token")
+		authSeen = r.Header.Get("X-Internal-Secret")
 		eventIDHD = r.Header.Get("X-Event-ID")
 		body, _ := io.ReadAll(r.Body)
 		var p EventPayload
