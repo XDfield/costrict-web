@@ -12,6 +12,15 @@
 //	--skip-auth-identities  Skip user_auth_identities table
 //	--sqlite              Dev-only: treat DSNs as sqlite file paths
 //	--report FILE         Path to write JSON report (default: log summary only)
+//	--init                Wipe cs-user's user dataset (users + auth_identities +
+//	                      employment_identities + tenant_admins + platform_admins +
+//	                      audit_logs + user_events) BEFORE importing. Use this when
+//	                      cutting cs-user over from dual-write canary: the existing
+//	                      cs-user rows (with divergent subject_ids from the
+//	                      server-canary era) are discarded, and the import rebuilds
+//	                      the dataset with server's authoritative subject_ids. Server's
+//	                      business tables (devices.user_id etc.) are untouched because
+//	                      the imported rows reuse server's subject_ids verbatim.
 //
 // Idempotent by design: a re-run with no source changes produces zero writes.
 // All writes per batch run in one transaction; mid-batch failure leaves
@@ -59,6 +68,7 @@ type flags struct {
 	skipAuthIDs    bool
 	useSqlite      bool
 	reportFile     string
+	init           bool
 }
 
 func parseFlags() flags {
@@ -72,6 +82,7 @@ func parseFlags() flags {
 	flag.BoolVar(&f.skipAuthIDs, "skip-auth-identities", false, "skip the user_auth_identities table")
 	flag.BoolVar(&f.useSqlite, "sqlite", false, "dev-only: treat DSNs as sqlite file paths")
 	flag.StringVar(&f.reportFile, "report", "", "path to write JSON report (default: log summary only)")
+	flag.BoolVar(&f.init, "init", false, "wipe cs-user's user dataset BEFORE importing (users + auth_identities + employment_identities + tenant_admins + platform_admins + audit_logs + user_events). Discards any dual-write-canary-era rows so the import rebuilds the dataset with server's authoritative subject_ids. Server's business tables are untouched.")
 	flag.Parse()
 	return f
 }
@@ -102,11 +113,30 @@ func main() {
 	}
 	defer target.Close()
 
-	log.Printf("etl: source=%s target=%s batch_size=%d dry_run=%v",
-		maskDSN(f.sourceDSN), maskDSN(f.targetDSN), f.batchSize, f.dryRun)
+	log.Printf("etl: source=%s target=%s batch_size=%d dry_run=%v init=%v",
+		maskDSN(f.sourceDSN), maskDSN(f.targetDSN), f.batchSize, f.dryRun, f.init)
 
 	started := time.Now()
 	report := etl.Stats{DryRun: f.dryRun}
+
+	// --init: wipe cs-user's user dataset before importing. Order matters:
+	// must run before any Import* call. The wipe is gated on dryRun too, so
+	// operators can audit what --init would discard (--init --dry-run).
+	if f.init {
+		resetStats, err := etl.ResetTarget(ctx, target.Gorm, etl.ResetUserDataset, f.dryRun)
+		if err != nil {
+			log.Fatalf("init reset failed: %v", err)
+		}
+		log.Printf("init: wiped cs-user user dataset "+
+			"(users=%d auth_identities=%d employment_identities=%d tenant_admins=%d platform_admins=%d audit_logs=%d user_events=%d, total=%d, dry_run=%v)",
+			resetStats.Users, resetStats.AuthIdentities, resetStats.EmploymentIdentities,
+			resetStats.TenantAdmins, resetStats.PlatformAdmins,
+			resetStats.AuditLogs, resetStats.UserEvents,
+			resetStats.Total(), f.dryRun)
+		if f.dryRun {
+			log.Printf("init: dry-run only; target unchanged. Re-run without --dry-run to actually wipe.")
+		}
+	}
 
 	// Pre-flight: source-level uniqueness validation (cheap, catches a
 	// duplicate casdoor_universal_id that would otherwise abort mid-batch).
@@ -208,9 +238,9 @@ func runAuthIdentities(ctx context.Context, source, target *gorm.DB, f flags) (e
 // logAndReport emits a human-readable summary to stderr and, if --report is
 // set, dumps the full Stats as JSON to that path.
 func logAndReport(s etl.Stats, elapsed time.Duration, f flags) {
-	log.Printf("done in %s: inserted=%d updated=%d unchanged=%d failed=%d (dry_run=%v)",
+	log.Printf("done in %s: inserted=%d updated=%d unchanged=%d failed=%d (dry_run=%v init=%v)",
 		elapsed.Round(time.Millisecond),
-		s.Inserted, s.Updated, s.Unchanged, s.Failed, s.DryRun)
+		s.Inserted, s.Updated, s.Unchanged, s.Failed, s.DryRun, f.init)
 	if f.reportFile == "" {
 		if s.DryRun && len(s.FieldDiffs) > 0 {
 			log.Printf("dry-run sample of changed rows (capped at %d):", f.maxDiffRecords)
