@@ -1,8 +1,8 @@
 -- +goose Up
 -- Capability names are presentation text, but slugs are installed by CSC as
--- command/directory identifiers. Normalize legacy skill rows created before
--- the API enforced lowercase kebab-case. Other capability types retain their
--- existing identifier contracts.
+-- command/directory identifiers. Normalize legacy invocable rows created
+-- before the API enforced lowercase kebab-case. Display-only capability types
+-- retain their existing identifier contracts.
 --
 -- Process rows one at a time so the immediate unique index on
 -- (repo_id, item_type, slug) cannot observe a transient collision. Existing
@@ -10,59 +10,60 @@
 -- +goose StatementBegin
 DO $migration$
 DECLARE
-    skill_row RECORD;
+    capability_row RECORD;
     candidate TEXT;
     suffix_counter INTEGER;
 BEGIN
-    FOR skill_row IN
+    FOR capability_row IN
         SELECT
             id,
             repo_id,
+            item_type,
             slug,
             COALESCE(
                 NULLIF(trim(BOTH '-' FROM regexp_replace(lower(slug), '[^a-z0-9]+', '-', 'g')), ''),
-                'skill-' || replace(id::text, '-', '')
+                item_type || '-' || replace(id::text, '-', '')
             ) AS base_slug
         FROM capability_items
-        WHERE item_type = 'skill'
+        WHERE item_type IN ('skill', 'command', 'subagent', 'agent')
         ORDER BY
             (
                 slug = COALESCE(
                     NULLIF(trim(BOTH '-' FROM regexp_replace(lower(slug), '[^a-z0-9]+', '-', 'g')), ''),
-                    'skill-' || replace(id::text, '-', '')
+                    item_type || '-' || replace(id::text, '-', '')
                 )
             ) DESC,
             created_at,
             id
     LOOP
-        IF skill_row.slug = skill_row.base_slug THEN
+        IF capability_row.slug = capability_row.base_slug THEN
             CONTINUE;
         END IF;
 
-        candidate := skill_row.base_slug;
+        candidate := capability_row.base_slug;
         IF EXISTS (
             SELECT 1
             FROM capability_items
-            WHERE repo_id = skill_row.repo_id
-              AND item_type = 'skill'
+            WHERE repo_id = capability_row.repo_id
+              AND item_type = capability_row.item_type
               AND slug = candidate
-              AND id <> skill_row.id
+              AND id <> capability_row.id
         ) THEN
-            candidate := skill_row.base_slug
+            candidate := capability_row.base_slug
                 || '-migrated-'
-                || replace(skill_row.id::text, '-', '');
+                || replace(capability_row.id::text, '-', '');
             suffix_counter := 2;
             WHILE EXISTS (
                 SELECT 1
                 FROM capability_items
-                WHERE repo_id = skill_row.repo_id
-                  AND item_type = 'skill'
+                WHERE repo_id = capability_row.repo_id
+                  AND item_type = capability_row.item_type
                   AND slug = candidate
-                  AND id <> skill_row.id
+                  AND id <> capability_row.id
             ) LOOP
-                candidate := skill_row.base_slug
+                candidate := capability_row.base_slug
                     || '-migrated-'
-                    || replace(skill_row.id::text, '-', '')
+                    || replace(capability_row.id::text, '-', '')
                     || '-'
                     || suffix_counter::text;
                 suffix_counter := suffix_counter + 1;
@@ -71,7 +72,7 @@ BEGIN
 
         UPDATE capability_items
         SET slug = candidate
-        WHERE id = skill_row.id;
+        WHERE id = capability_row.id;
     END LOOP;
 END
 $migration$;

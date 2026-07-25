@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/capabilityslug"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/itemdelete"
 	"github.com/costrict/costrict-web/server/internal/middleware"
@@ -412,7 +413,7 @@ func isUniqueConstraintError(err error) bool {
 // persistNewItem creates an item, its initial version, optional assets and artifact
 // in a single DB transaction. No storage I/O or async work happens here.
 func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets) (*models.CapabilityItem, error) {
-	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name)
+	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name, req.ID)
 	if req.Slug == "" {
 		return nil, ErrInvalidSlug
 	}
@@ -1069,12 +1070,12 @@ func ListItems(c *gin.Context) {
 
 // CreateItem godoc
 // @Summary      Create item in registry
-// @Description  Create a new skill item in a specific registry. Skill slugs are normalized to lowercase kebab-case; names remain unchanged for display.
+// @Description  Create a new capability item in a specific registry. Skill, command, and subagent slugs are normalized to lowercase kebab-case; names remain unchanged for display.
 // @Tags         items
 // @Accept       json
 // @Produce      json
 // @Param        id    path      string  true  "Registry ID"
-// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data; skill slugs are normalized to lowercase kebab-case"
+// @Param        body  body      object{slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,sourcePath=string,createdBy=string}  true  "Item data; invocable capability slugs are normalized to lowercase kebab-case"
 // @Success      201   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      409   {object}  object{error=string}
@@ -1107,7 +1108,8 @@ func CreateItem(c *gin.Context) {
 		return
 	}
 
-	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name)
+	itemID := uuid.New().String()
+	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name, itemID)
 	if req.Slug == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain at least one ASCII letter or number", "code": "invalid_slug"})
 		return
@@ -1131,7 +1133,7 @@ func CreateItem(c *gin.Context) {
 		return
 	}
 	item, err := persistNewItem(db, createItemRequest{
-		ID:          uuid.New().String(),
+		ID:          itemID,
 		RegistryID:  registryId,
 		RepoID:      registryRepoID(db, registryId),
 		Slug:        req.Slug,
@@ -2381,11 +2383,11 @@ func ListItemFilterOptions(c *gin.Context) {
 
 // CreateItemDirect godoc
 // @Summary      Create item (direct)
-// @Description  Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Skill slugs are normalized to lowercase kebab-case while names remain unchanged for display. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.
+// @Description  Create a capability item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Skill, command, and subagent slugs are normalized to lowercase kebab-case while names remain unchanged for display. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.
 // @Tags         items
 // @Accept       json,multipart/form-data
 // @Produce      json
-// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON); skill slugs are normalized to lowercase kebab-case"
+// @Param        body  body      object{registryId=string,slug=string,itemType=string,name=string,description=string,category=string,version=string,content=string,metadata=object,createdBy=string,tags=[]string}  false  "Item data (JSON); invocable capability slugs are normalized to lowercase kebab-case"
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
@@ -2418,7 +2420,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		Source      string             `json:"source"`
 		Assets      []itemAssetPayload `json:"assets"`
 		// CreatedBy removed: always derived from authenticated user
-		Tags        []string           `json:"tags"`
+		Tags []string `json:"tags"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2427,17 +2429,18 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	}
 
 	uid := c.GetString(middleware.UserIDKey)
-		if uid == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-			return
-		}
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
 
 	registryID := req.RegistryID
 	if registryID == "" {
 		registryID = PublicRegistryID
 	}
 
-	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name)
+	itemID := uuid.New().String()
+	req.Slug = canonicalCapabilitySlug(req.ItemType, req.Slug, req.Name, itemID)
 	if req.Slug == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain at least one ASCII letter or number", "code": "invalid_slug"})
 		return
@@ -2480,7 +2483,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 		return
 	}
 	item, err := persistNewItem(h.db, createItemRequest{
-		ID:          uuid.New().String(),
+		ID:          itemID,
 		RegistryID:  registryID,
 		RepoID:      registryRepoID(h.db, registryID),
 		Slug:        req.Slug,
@@ -3683,7 +3686,8 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
-	slug = canonicalCapabilitySlug(itemType, slug, name)
+	itemID := uuid.New().String()
+	slug = canonicalCapabilitySlug(itemType, slug, name, itemID)
 	if slug == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain at least one ASCII letter or number", "code": "invalid_slug"})
 		return
@@ -3748,7 +3752,6 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		}
 	}
 
-	itemID := uuid.New().String()
 	ctx := context.Background()
 	uploadedKeys := make([]string, 0, len(result.Assets)+1)
 	assetStorageKeys := make(map[string]string, len(result.Assets))
@@ -4139,36 +4142,12 @@ func TransferItemToRepo(c *gin.Context) {
 	c.JSON(http.StatusOK, item)
 }
 
-func canonicalCapabilitySlug(itemType, slug, name string) string {
-	if strings.TrimSpace(slug) == "" {
-		return slugify(name)
-	}
-	if itemType == "skill" {
-		return slugify(slug)
-	}
-	return slug
+func canonicalCapabilitySlug(itemType, slug, name, itemID string) string {
+	return capabilityslug.Canonical(itemType, slug, name, itemID)
 }
 
 func slugify(name string) string {
-	result := make([]byte, 0, len(name))
-	prevDash := false
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			result = append(result, c)
-			prevDash = false
-		} else if c >= 'A' && c <= 'Z' {
-			result = append(result, c+32)
-			prevDash = false
-		} else if !prevDash && len(result) > 0 {
-			result = append(result, '-')
-			prevDash = true
-		}
-	}
-	if len(result) > 0 && result[len(result)-1] == '-' {
-		result = result[:len(result)-1]
-	}
-	return string(result)
+	return capabilityslug.Slugify(name)
 }
 
 // GetPublicRegistry godoc

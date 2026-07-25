@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -17,16 +18,46 @@ func TestCanonicalCapabilitySlug(t *testing.T) {
 		{name: "normalizes explicit display-style skill slug", itemType: "skill", slug: "Skill with Skill", displayName: "ignored", want: "skill-with-skill"},
 		{name: "normalizes skill separators and case", itemType: "skill", slug: "MD_to DOCX", displayName: "ignored", want: "md-to-docx"},
 		{name: "generates skill slug from display name", itemType: "skill", displayName: "E2E Skill Tree", want: "e2e-skill-tree"},
-		{name: "rejects skill values without ASCII identifier characters", itemType: "skill", slug: "技能", displayName: "技能", want: ""},
+		{name: "uses stable fallback for skill values without ASCII identifier characters", itemType: "skill", slug: "技能", displayName: "技能", want: "skill-12345678abcd4321abcd1234567890ab"},
+		{name: "normalizes commands", itemType: "command", slug: "Deploy Command", displayName: "ignored", want: "deploy-command"},
+		{name: "normalizes subagents", itemType: "subagent", slug: "Review Agent", displayName: "ignored", want: "review-agent"},
 		{name: "preserves explicit non-skill identifiers", itemType: "mcp", slug: "Acme:Server", displayName: "ignored", want: "Acme:Server"},
 		{name: "generates missing non-skill slug with existing behavior", itemType: "mcp", displayName: "Acme Server", want: "acme-server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := canonicalCapabilitySlug(tc.itemType, tc.slug, tc.displayName); got != tc.want {
+			if got := canonicalCapabilitySlug(tc.itemType, tc.slug, tc.displayName, "12345678-abcd-4321-abcd-1234567890ab"); got != tc.want {
 				t.Fatalf("canonicalCapabilitySlug(%q, %q, %q) = %q, want %q", tc.itemType, tc.slug, tc.displayName, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCreateItemDirect_NonASCIISkillUsesStableFallback(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+
+	w := postJSON(newItemRouter("u1"), "/api/items", map[string]interface{}{
+		"itemType": "skill",
+		"name":     "技能",
+		"slug":     "技能",
+		"content":  "# 技能",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var item map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	slug, _ := item["slug"].(string)
+	id, _ := item["id"].(string)
+	if slug != "skill-"+strings.ReplaceAll(id, "-", "") {
+		t.Fatalf("expected stable id fallback, got slug=%q id=%q", slug, id)
+	}
+	if item["name"] != "技能" {
+		t.Fatalf("expected display name to remain unchanged, got %v", item["name"])
 	}
 }
 

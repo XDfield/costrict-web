@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/capabilityslug"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
@@ -324,6 +325,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 
 		for _, parsed := range parsedItems {
 			parsed.ContentHash = contentHash
+			if canonicalSlug := capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, ""); canonicalSlug != "" {
+				parsed.Slug = canonicalSlug
+			}
 
 			itemKey := relPath
 			if len(parsedItems) > 1 {
@@ -338,6 +342,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			if !exists {
 				existing = slugIndex[parsed.ItemType+":"+parsed.Slug]
 				exists = existing != nil
+			}
+			if exists {
+				parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
 			}
 
 			if exists && existing.SourceSHA == contentHash {
@@ -374,6 +381,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Source = parsed.Source
 				existing.ExperienceScore = parsed.ExperienceScore
 				existing.Status = "active"
+				existing.Slug = parsed.Slug
 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
@@ -431,8 +439,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					}
 					meta = normalized
 				}
+				itemID := uuid.New().String()
+				parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, itemID)
 				newItem := &models.CapabilityItem{
-					ID:              uuid.New().String(),
+					ID:              itemID,
 					RegistryID:      registryID,
 					RepoID:          syncRepoID(registry.RepoID),
 					Slug:            parsed.Slug,

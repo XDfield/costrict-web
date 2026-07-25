@@ -58,6 +58,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/capabilityslug"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
@@ -543,6 +544,9 @@ func (s *CatalogIngestService) applyChangedEntry(
 		if isPluginBundledChild(entry) && parsed.ItemType != entry.Type {
 			parsed.ItemType = entry.Type
 		}
+		if canonicalSlug := capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, ""); canonicalSlug != "" {
+			parsed.Slug = canonicalSlug
+		}
 		scopedParsedItems = append(scopedParsedItems, parsed)
 	}
 	// Rows that will be matched by slug belong to their parsed item; the
@@ -596,6 +600,25 @@ func (s *CatalogIngestService) applyChangedEntry(
 				break
 			}
 		}
+		needsIDFallback := capabilityslug.RequiresCanonical(parsed.ItemType) &&
+			capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, "") == ""
+		if !exists && needsIDFallback {
+			// A non-ASCII invocation name needs the row ID for its stable
+			// fallback. Re-adopt the row from this catalog entry before
+			// computing that fallback so re-ingest cannot create duplicates.
+			for _, old := range relatedItems {
+				if old.ItemType != parsed.ItemType || adoptedRowIDs[old.ID] {
+					continue
+				}
+				existing = old
+				exists = true
+				adoptedRowIDs[old.ID] = true
+				break
+			}
+		}
+		if exists {
+			parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
+		}
 
 		if dryRun {
 			if exists {
@@ -623,6 +646,7 @@ func (s *CatalogIngestService) applyChangedEntry(
 				errs = append(errs, fmt.Sprintf("update %s: %v", existing.ID, err))
 				continue
 			}
+			globalBySlug[existing.ItemType+":"+existing.Slug] = existing
 			updated++
 		} else {
 			newItem, err := s.insertItem(parsed, fileSHA, displayPath, paths.EntryDir, entry, triggerUser)
@@ -635,7 +659,7 @@ func (s *CatalogIngestService) applyChangedEntry(
 			// subsequent parsed items in the SAME ingest run (e.g. another
 			// .mcp.json that defines the same server name) treat it as an
 			// update instead of a duplicate INSERT.
-			globalBySlug[key] = newItem
+			globalBySlug[newItem.ItemType+":"+newItem.Slug] = newItem
 			// Also queue the new row for the SecurityScan side-channel
 			// below, otherwise its risk_level / last_scan_id would stay
 			// NULL until a future ingest cycle re-classifies it as
@@ -974,11 +998,12 @@ func (s *CatalogIngestService) updateItem(
 	existing.Health = healthJSON(entry.Health)
 	existing.Evaluation = evaluationJSON(entry.Evaluation)
 	existing.Status = "active"
-	// Slug migration for adopted rows (independent→bundled flip rewrote the
-	// parsed slug; the row was matched by entryDir instead). No-op when the
-	// row was matched by slug — parsed.Slug equals the existing slug then.
-	if parsed.Slug != "" {
-		existing.Slug = parsed.Slug
+	// Keep adopted and re-ingested rows on the same invocation contract as
+	// direct uploads. The existing ID supplies a stable fallback for names
+	// that contain no ASCII identifier characters.
+	canonicalSlug := capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
+	if canonicalSlug != "" {
+		existing.Slug = canonicalSlug
 	}
 	existing.Metadata = metadataJSON(meta)
 	existing.SourcePath = primaryPath
@@ -1059,11 +1084,13 @@ func (s *CatalogIngestService) insertItem(
 		experienceScore = entry.FinalScore
 	}
 
+	itemID := uuid.New().String()
+	canonicalSlug := capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, itemID)
 	newItem := &models.CapabilityItem{
-		ID:              uuid.New().String(),
+		ID:              itemID,
 		RegistryID:      PublicRegistryID,
 		RepoID:          PublicRepoID,
-		Slug:            parsed.Slug,
+		Slug:            canonicalSlug,
 		ItemType:        parsed.ItemType,
 		Name:            parsed.Name,
 		Description:     description,
