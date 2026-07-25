@@ -55,31 +55,51 @@ func NewSignerFromPEMPath(path string) (*Signer, error) {
 // Accepts both PKCS#1 ("RSA PRIVATE KEY") and PKCS#8 ("PRIVATE KEY") PEM
 // blocks; the latter is what `openssl genpkey -algorithm RSA` produces and
 // what most k8s secret scaffolding emits.
+//
+// The PEM block.Type header is treated as a HINT, not a contract: if the
+// header says "RSA PRIVATE KEY" but the underlying ASN.1 is actually PKCS#8
+// (seen in practice with some secret tooling and OpenSSL 3.x edge cases),
+// we fall back to the PKCS#8 parser. Same in reverse.
 func NewSignerFromPEM(pemBytes []byte) (*Signer, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
 		return nil, errors.New("auth: signing key is not valid PEM")
 	}
+
+	parseAsRSA := func(b []byte) (*rsa.PrivateKey, error) {
+		// Try PKCS#1 first (traditional RSA PRIVATE KEY).
+		if k, err := x509.ParsePKCS1PrivateKey(b); err == nil {
+			return k, nil
+		}
+		// Fall back to PKCS#8 — many tools emit PKCS#8 bytes under a
+		// "RSA PRIVATE KEY" header, which Go's strict PKCS#1 parser
+		// rejects with "use ParsePKCS8PrivateKey instead".
+		k, err := x509.ParsePKCS8PrivateKey(b)
+		if err != nil {
+			return nil, err
+		}
+		rsaKey, ok := k.(*rsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("PKCS#8 key is not RSA")
+		}
+		return rsaKey, nil
+	}
+
 	var pk *rsa.PrivateKey
 	switch block.Type {
-	case "RSA PRIVATE KEY":
-		parsed, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "RSA PRIVATE KEY", "PRIVATE KEY":
+		parsed, err := parseAsRSA(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("auth: parse PKCS#1 RSA key: %w", err)
+			return nil, fmt.Errorf("auth: parse RSA key (header=%q): %w", block.Type, err)
 		}
 		pk = parsed
-	case "PRIVATE KEY":
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("auth: parse PKCS#8 key: %w", err)
-		}
-		rsaKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, errors.New("auth: PKCS#8 key is not RSA")
-		}
-		pk = rsaKey
 	default:
-		return nil, fmt.Errorf("auth: unsupported PEM type %q (want RSA PRIVATE KEY or PRIVATE KEY)", block.Type)
+		// Last-ditch: try both parsers regardless of header.
+		parsed, err := parseAsRSA(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("auth: unsupported PEM type %q (want RSA PRIVATE KEY or PRIVATE KEY): %w", block.Type, err)
+		}
+		pk = parsed
 	}
 	return &Signer{
 		privateKey: pk,
