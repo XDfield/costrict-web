@@ -346,15 +346,20 @@ func mapBotCredentialsError(err error) (status int, code string, msg string) {
 		// (or POST /api/internal/teams) re-issues the bot.
 		return http.StatusPreconditionFailed, "BOT_CREDENTIALS_MISSING",
 			"team_ns is bound but bot credentials are missing — provision was interrupted; ask your platform admin to re-provision the team bot"
-	case strings.Contains(err.Error(), "teamns: decrypt token:"):
+	case errors.Is(err, teamns.ErrBotTokenDecrypt):
 		// AES-GCM Open failed — almost always CS_BOT_TOKEN_KEY drift
 		// (key rotated without re-encrypting existing creds) or DB
 		// row corruption.
 		return http.StatusInternalServerError, "BOT_TOKEN_DECRYPT_FAILED",
 			"failed to decrypt bot token — likely CS_BOT_TOKEN_KEY mismatch or corrupted credential row; ask your platform admin to verify the key and re-provision if needed"
+	case errors.Is(err, teamns.ErrBotCredsLookup):
+		// DB-level or transport failure on the credentials lookup.
+		// Surface verbatim for ops.
+		return http.StatusInternalServerError, "BOT_CREDENTIALS_LOOKUP_FAILED",
+			"failed to load bot credentials: " + err.Error()
 	default:
-		// "teamns: decrypt lookup:" or any other unexpected error —
-		// DB-level or transport. Surface verbatim for ops.
+		// Unexpected / unwrapped error — surface verbatim rather than
+		// misclassifying under a typed branch.
 		return http.StatusInternalServerError, "BOT_CREDENTIALS_LOOKUP_FAILED",
 			"failed to load bot credentials: " + err.Error()
 	}

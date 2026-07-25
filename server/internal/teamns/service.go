@@ -64,6 +64,12 @@ var (
 	// ErrTenantGitServerUnresolved — tenant has no bound git_server or the
 	// bound server is disabled. HTTP 412.
 	ErrTenantGitServerUnresolved = errors.New("teamns: tenant git server unresolved")
+	// ErrBotCredsLookup — DecryptBotToken couldn't load the
+	// team_bot_credentials row (DB-level / transport). HTTP 500.
+	ErrBotCredsLookup = errors.New("teamns: bot credentials lookup failed")
+	// ErrBotTokenDecrypt — credentials row loaded but AES-GCM Open failed.
+	// Almost always CS_BOT_TOKEN_KEY drift or row corruption. HTTP 500.
+	ErrBotTokenDecrypt = errors.New("teamns: bot token decrypt failed")
 )
 
 // DefaultRetention is the post-dissolve retention window before physical
@@ -812,11 +818,11 @@ func (s *Service) DecryptBotToken(ctx context.Context, teamID string) (string, e
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", ErrTeamNotFound
 		}
-		return "", fmt.Errorf("teamns: decrypt lookup: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrBotCredsLookup, err)
 	}
 	plaintext, err := s.crypto.Open(creds.TokenEncrypted)
 	if err != nil {
-		return "", fmt.Errorf("teamns: decrypt token: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrBotTokenDecrypt, err)
 	}
 	return string(plaintext), nil
 }

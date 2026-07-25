@@ -21,6 +21,11 @@ type fakeGitServer struct {
 	getRepoCalls  int
 	getRepoResult *gitsync.Repo
 	getRepoErr    error
+	// getRepoHook, when non-nil, overrides the static Result/Err fields.
+	// callIdx is 0-based and reflects the per-instance invocation count
+	// before this call (i.e. 0 for first call, 1 for second, …). Used by
+	// race-recovery tests that need the second GetRepo to flip behavior.
+	getRepoHook func(callIdx int) (*gitsync.Repo, error)
 	// CreateRepo
 	createRepoCalls  int
 	createRepoResult *gitsync.Repo
@@ -45,7 +50,11 @@ type fakeGitServer struct {
 }
 
 func (f *fakeGitServer) GetRepo(ctx context.Context, owner, name string) (*gitsync.Repo, error) {
+	idx := f.getRepoCalls
 	f.getRepoCalls++
+	if f.getRepoHook != nil {
+		return f.getRepoHook(idx)
+	}
 	return f.getRepoResult, f.getRepoErr
 }
 func (f *fakeGitServer) CreateRepo(ctx context.Context, owner string, opts gitsync.CreateRepoOptions) (*gitsync.Repo, error) {
