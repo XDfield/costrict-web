@@ -14,6 +14,11 @@ fullnameOverride: ""
 
 podAnnotations: {}
 
+# Extra labels applied to the Pod template (not the Deployment). Useful for
+# network policy selectors — e.g. set `costrict.io/cs-user-consumer: "true"`
+# so cs-user's ingress NetworkPolicy allows this pod to reach :8081.
+podLabels: {}
+
 podSecurityContext:
   fsGroup: 1000
 
