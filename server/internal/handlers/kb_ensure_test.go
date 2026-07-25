@@ -369,13 +369,14 @@ type errOrgTeamServiceUnavailableTest string
 
 func (e errOrgTeamServiceUnavailableTest) Error() string { return string(e) }
 
-func TestKBEnsure_TeamNSMissing_Returns412(t *testing.T) {
+func TestKBEnsure_TeamNSMissing_EmptyDisplayName_Returns412(t *testing.T) {
+	// team_ns row is missing AND the directory backend carried no display
+	// name for the team → cannot auto-provision (team_display_name NOT NULL).
+	// Surface TEAM_NS_NOT_INITIALIZED so an admin provisions manually.
 	db := setupTeamnsDB(t)
 	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
-	// No team_ns seeded. Single-team resolver returns a team_id, but lookup
-	// in DB will fail → 412.
 	teamID := padUUIDHandler(12)
-	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Ghost", Role: "owner"}}
+	teams := []TeamSummary{{TeamID: teamID, DisplayName: "", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
 	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
@@ -385,6 +386,28 @@ func TestKBEnsure_TeamNSMissing_Returns412(t *testing.T) {
 	}
 	if !containsStr(w.Body.String(), "TEAM_NS_NOT_INITIALIZED") {
 		t.Errorf("expected TEAM_NS_NOT_INITIALIZED: %s", w.Body.String())
+	}
+}
+
+func TestKBEnsure_TeamNSMissing_AutoProvisionFails_Returns503(t *testing.T) {
+	// team_ns row is missing, display name is known, but the underlying
+	// teamns.Service can't reach gitsync (nil here) → CreateTeam fails
+	// with ErrTenantGitServerUnresolved → mapped to 503
+	// ORG_TEAM_SERVICE_UNAVAILABLE (same code as multica-lookup failures,
+	// intentional: caller sees a single "service not ready" code).
+	db := setupTeamnsDB(t)
+	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
+	teamID := padUUIDHandler(12)
+	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Ghost", Role: "owner"}}
+	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
+
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	w := doKBEnsure(t, r, "user-1", body)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("got %d, want 503; body=%s", w.Code, w.Body.String())
+	}
+	if !containsStr(w.Body.String(), "ORG_TEAM_SERVICE_UNAVAILABLE") {
+		t.Errorf("expected ORG_TEAM_SERVICE_UNAVAILABLE: %s", w.Body.String())
 	}
 }
 
