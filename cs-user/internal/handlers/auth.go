@@ -22,6 +22,7 @@ import (
 
 	"github.com/costrict/costrict-web/cs-user/internal/auth"
 	"github.com/costrict/costrict-web/cs-user/internal/config"
+	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
@@ -148,6 +149,27 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		return
 	}
 
+	// Debug: dump what we received from server so ApplyEnterpriseMapping
+	// failures are diagnosable. Keys only (no values) to avoid leaking PII
+	// or secrets in log aggregation systems.
+	if req.Identity != nil {
+		externalKeys := []string{}
+		for k := range req.Identity.ExternalClaims {
+			externalKeys = append(externalKeys, k)
+		}
+		logger.Info("[reissue-token] incoming request user_subject_id=%s provider=%q name=%q external_claims_keys=%v external_claims_count=%d tenant_slug=%q audience=%v",
+			req.UserSubjectID,
+			req.Identity.Provider,
+			req.Identity.Name,
+			externalKeys,
+			len(req.Identity.ExternalClaims),
+			req.TenantSlug,
+			req.Audience,
+		)
+	} else {
+		logger.Info("[reissue-token] incoming request user_subject_id=%s identity=nil", req.UserSubjectID)
+	}
+
 	// Audience: request override wins; otherwise fall back to config default.
 	audience := req.Audience
 	if len(audience) == 0 {
@@ -178,12 +200,24 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	// still runs and the JWT still issues. This preserves the "employment
 	// mapping is a bonus feature and must never block login" contract.
 	if req.Identity != nil && len(req.Identity.ExternalClaims) > 0 {
-		_ = a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
+		err := a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
 			TenantID:        tenantID,
 			UserSubjectID:   req.UserSubjectID,
 			Provider:        req.Identity.Provider,
 			ExternalClaims:  req.Identity.ExternalClaims,
 		})
+		if err != nil {
+			logger.Warn("[reissue-token] ApplyEnterpriseMapping returned error (login continues): %v", err)
+		} else {
+			logger.Info("[reissue-token] ApplyEnterpriseMapping completed without error")
+		}
+	} else {
+		externalCount := 0
+		if req.Identity != nil {
+			externalCount = len(req.Identity.ExternalClaims)
+		}
+		logger.Info("[reissue-token] skipping ApplyEnterpriseMapping: identity_present=%v external_claims_count=%d",
+			req.Identity != nil, externalCount)
 	}
 
 	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), req.UserSubjectID)
