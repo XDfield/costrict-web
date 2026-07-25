@@ -4,8 +4,17 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 )
+
+type memoryFilesResponse struct {
+	Items []models.MemoryFile `json:"items"`
+}
+
+type memoryVersionsResponse struct {
+	Items []models.MemoryVersion `json:"items"`
+}
 
 // CreateMemoryHandler 上报记忆
 // @Summary      上报记忆

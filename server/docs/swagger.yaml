@@ -1,22 +1,26 @@
 basePath: /api
 definitions:
-  github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser:
+  github_com_costrict_costrict-web_server_internal_deptsync.Dept:
     properties:
-      email:
+      childDeptCount:
+        type: integer
+      children:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept'
+        type: array
+      deptId:
         type: string
-      id:
+      deptLevel:
+        type: integer
+      deptName:
         type: string
-      name:
+      deptPath:
         type: string
-      owner:
+      leaderId:
         type: string
-      picture:
-        type: string
-      preferred_username:
-        type: string
-      sub:
-        type: string
-      universal_id:
+      orderNum:
+        type: integer
+      parentDeptId:
         type: string
     type: object
   github_com_costrict_costrict-web_server_internal_llm.SkillAnalysis:
@@ -67,6 +71,23 @@ definitions:
     - ActionFail
     - ActionFeedback
     - ActionIgnore
+  github_com_costrict_costrict-web_server_internal_models.AdminAuditLog:
+    properties:
+      action:
+        type: string
+      actorId:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      payload:
+        type: object
+      targetId:
+        type: string
+      targetType:
+        type: string
+    type: object
   github_com_costrict_costrict-web_server_internal_models.BehaviorLog:
     properties:
       actionType:
@@ -183,20 +204,30 @@ definitions:
         type: integer
       description:
         type: string
-      embeddingUpdatedAt:
-        type: string
+      descriptions:
+        description: '{"en":"...","zh":"..."} — locale → text map; flat `description`
+          is the en/default resolution'
+        type: object
       evaluation:
         type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      forkedFromItemId:
+        description: 'Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）'
+        type: string
+      forkedFromOwnerId:
+        description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+        type: string
       health:
         type: object
       id:
         type: string
       installCount:
         type: integer
+      isBuiltIn:
+        type: boolean
       itemType:
         type: string
       lastScanId:
@@ -204,6 +235,10 @@ definitions:
       metadata:
         type: object
       name:
+        type: string
+      parentPluginId:
+        description: 'Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的
+          sub-skill 填充）'
         type: string
       previewCount:
         type: integer
@@ -225,7 +260,7 @@ definitions:
       sourceSha:
         type: string
       sourceType:
-        description: direct | archive
+        description: direct | archive | fork
         type: string
       status:
         type: string
@@ -309,6 +344,8 @@ definitions:
         type: string
       description:
         type: string
+      descriptions:
+        type: object
       id:
         type: string
       itemId:
@@ -387,6 +424,58 @@ definitions:
       updatedAt:
         type: string
     type: object
+  github_com_costrict_costrict-web_server_internal_models.ItemDistribution:
+    properties:
+      createdAt:
+        type: string
+      distributorId:
+        type: string
+      expiresAt:
+        type: string
+      id:
+        type: string
+      item:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem'
+      itemId:
+        type: string
+      message:
+        type: string
+      permissionMode:
+        description: readonly | dismissible
+        type: string
+      revokedAt:
+        type: string
+      scopeType:
+        description: user | department
+        type: string
+      status:
+        description: active | paused | revoked
+        type: string
+      targetId:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt:
+    properties:
+      createdAt:
+        type: string
+      distribution:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution'
+      distributionId:
+        type: string
+      forkedItemId:
+        type: string
+      id:
+        type: string
+      receiptStatus:
+        description: unread | read | dismissed | accepted
+        type: string
+      updatedAt:
+        type: string
+      userId:
+        type: string
+    type: object
   github_com_costrict_costrict-web_server_internal_models.ItemTagDict:
     properties:
       createdAt:
@@ -400,6 +489,47 @@ definitions:
       tagClass:
         description: system | custom
         type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.MemoryFile:
+    properties:
+      createdAt:
+        type: string
+      currentVersion:
+        type: integer
+      description:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      projectPath:
+        type: string
+      slug:
+        type: string
+      type:
+        description: user | feedback | project | reference
+        type: string
+      updatedAt:
+        type: string
+      userId:
+        type: string
+      workDir:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.MemoryVersion:
+    properties:
+      contentMD5:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: string
+      memoryFileId:
+        type: string
+      storageKey:
+        type: string
+      version:
+        type: integer
     type: object
   github_com_costrict_costrict-web_server_internal_models.NotificationLog:
     properties:
@@ -424,6 +554,25 @@ definitions:
       userChannelId:
         type: string
       userId:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.PermissionGrant:
+    properties:
+      createdAt:
+        type: string
+      deptPath:
+        description: 部门授权时冗余存其 dept_path
+        type: string
+      grantedBy:
+        type: string
+      id:
+        type: string
+      permissionCode:
+        type: string
+      subjectId:
+        type: string
+      subjectType:
+        description: user | department
         type: string
     type: object
   github_com_costrict_costrict-web_server_internal_models.Project:
@@ -565,6 +714,24 @@ definitions:
         type: string
       visibility:
         description: public | private
+        type: string
+    type: object
+  github_com_costrict_costrict-web_server_internal_models.ResourcePermission:
+    properties:
+      allowedRoles:
+        items:
+          type: string
+        type: array
+      createdAt:
+        type: string
+      id:
+        type: string
+      resourceCode:
+        type: string
+      resourceType:
+        description: menu | api
+        type: string
+      updatedAt:
         type: string
     type: object
   github_com_costrict_costrict-web_server_internal_models.SecurityScan:
@@ -842,6 +1009,62 @@ definitions:
     - directories
     - name
     type: object
+  github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest:
+    properties:
+      expiresAt:
+        type: string
+      message:
+        type: string
+      permissionMode:
+        enum:
+        - readonly
+        - dismissible
+        type: string
+      targets:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionTarget'
+        minItems: 1
+        type: array
+    required:
+    - permissionMode
+    - targets
+    type: object
+  github_com_costrict_costrict-web_server_internal_services.DistributionAuthority:
+    properties:
+      departments:
+        description: |-
+          Departments are the managed subtrees (the departments the user leads). For an
+          unlimited operator this is empty and the frontend uses the full admin tree.
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept'
+        type: array
+      unlimited:
+        description: Unlimited is true for platform admins (may distribute to anyone
+          / any scope).
+        type: boolean
+    type: object
+  github_com_costrict_costrict-web_server_internal_services.DistributionTarget:
+    properties:
+      scopeType:
+        description: user | department
+        type: string
+      targetId:
+        type: string
+    required:
+    - scopeType
+    - targetId
+    type: object
+  github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser:
+    properties:
+      avatarUrl:
+        type: string
+      displayName:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+    type: object
   github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats:
     properties:
       averageRating:
@@ -914,20 +1137,30 @@ definitions:
         type: integer
       description:
         type: string
-      embeddingUpdatedAt:
-        type: string
+      descriptions:
+        description: '{"en":"...","zh":"..."} — locale → text map; flat `description`
+          is the en/default resolution'
+        type: object
       evaluation:
         type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      forkedFromItemId:
+        description: 'Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）'
+        type: string
+      forkedFromOwnerId:
+        description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+        type: string
       health:
         type: object
       id:
         type: string
       installCount:
         type: integer
+      isBuiltIn:
+        type: boolean
       itemType:
         type: string
       lastScanId:
@@ -935,6 +1168,10 @@ definitions:
       metadata:
         type: object
       name:
+        type: string
+      parentPluginId:
+        description: 'Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的
+          sub-skill 填充）'
         type: string
       previewCount:
         type: integer
@@ -960,7 +1197,7 @@ definitions:
       sourceSha:
         type: string
       sourceType:
-        description: direct | archive
+        description: direct | archive | fork
         type: string
       status:
         type: string
@@ -1028,20 +1265,30 @@ definitions:
         type: integer
       description:
         type: string
-      embeddingUpdatedAt:
-        type: string
+      descriptions:
+        description: '{"en":"...","zh":"..."} — locale → text map; flat `description`
+          is the en/default resolution'
+        type: object
       evaluation:
         type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      forkedFromItemId:
+        description: 'Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）'
+        type: string
+      forkedFromOwnerId:
+        description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+        type: string
       health:
         type: object
       id:
         type: string
       installCount:
         type: integer
+      isBuiltIn:
+        type: boolean
       itemType:
         type: string
       lastScanId:
@@ -1049,6 +1296,10 @@ definitions:
       metadata:
         type: object
       name:
+        type: string
+      parentPluginId:
+        description: 'Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的
+          sub-skill 填充）'
         type: string
       previewCount:
         type: integer
@@ -1072,7 +1323,7 @@ definitions:
       sourceSha:
         type: string
       sourceType:
-        description: direct | archive
+        description: direct | archive | fork
         type: string
       status:
         type: string
@@ -1131,114 +1382,6 @@ definitions:
         - archived
         type: string
     type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse:
-    properties:
-      git_repo_url:
-        type: string
-      range:
-        properties:
-          from:
-            type: string
-          to:
-            type: string
-        type: object
-      users:
-        items:
-          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageUserActivity'
-        type: array
-    type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageDaily:
-    properties:
-      date:
-        type: string
-      requests:
-        type: integer
-    type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageReportItem:
-    properties:
-      cache_read_tokens:
-        type: integer
-      cache_write_tokens:
-        type: integer
-      cost:
-        type: number
-      date:
-        type: string
-      git_repo_url:
-        type: string
-      git_worktree:
-        type: string
-      input_tokens:
-        type: integer
-      message_id:
-        type: string
-      model_id:
-        type: string
-      output_tokens:
-        type: integer
-      provider_id:
-        type: string
-      reasoning_tokens:
-        type: integer
-      request_id:
-        type: string
-      request_time:
-        type: string
-      rounds:
-        type: integer
-      session_id:
-        type: string
-      updated:
-        type: string
-    required:
-    - date
-    - git_repo_url
-    - message_id
-    - model_id
-    - session_id
-    - updated
-    type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageReportRequest:
-    properties:
-      client_version:
-        type: string
-      device_id:
-        type: string
-      reported_at:
-        type: string
-      reports:
-        items:
-          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportItem'
-        maxItems: 500
-        minItems: 1
-        type: array
-    required:
-    - reports
-    type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageReportResponse:
-    properties:
-      accepted:
-        type: integer
-      errors:
-        items:
-          type: string
-        type: array
-      skipped:
-        type: integer
-    type: object
-  github_com_costrict_costrict-web_server_internal_services.UsageUserActivity:
-    properties:
-      daily:
-        items:
-          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageDaily'
-        type: array
-      total_requests:
-        type: integer
-      user_id:
-        type: string
-      username:
-        type: string
-    type: object
   github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus:
     properties:
       createdAt:
@@ -1275,6 +1418,58 @@ definitions:
         type: string
       userId:
         type: string
+    type: object
+  internal_audit.listAuditLogsResponse:
+    properties:
+      logs:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.AdminAuditLog'
+        type: array
+      page:
+        type: integer
+      pageSize:
+        type: integer
+      total:
+        type: integer
+    type: object
+  internal_authz.grantPermissionRequest:
+    properties:
+      permissionCode:
+        type: string
+      subjectId:
+        type: string
+      subjectType:
+        description: user | department
+        type: string
+      targetDeptId:
+        description: |-
+          TargetDeptID is an optional target department, used only when the grant binds
+          a TARGET department to a USER subject — i.e. the metrics-view preset
+          "kanban.scope.dept" where a specific user A is allowed to see an extra
+          department Y (and its subtree) beyond their own. The target department's
+          materialized dept_path is resolved from dept-sync and stored in the grant's
+          dept_path, which ResolveUserScope reads as the extra-visible prefix for A.
+          (For department subjects the dept_path is the SUBJECT department's own path,
+          resolved from SubjectID; TargetDeptID is ignored there.)
+        type: string
+    required:
+    - permissionCode
+    - subjectId
+    - subjectType
+    type: object
+  internal_authz.grantUserRoleRequest:
+    properties:
+      role:
+        type: string
+    required:
+    - role
+    type: object
+  internal_authz.updateResourcePermissionRequest:
+    properties:
+      allowedRoles:
+        items:
+          type: string
+        type: array
     type: object
   internal_handlers.ConsistencyCheckResponse:
     properties:
@@ -1363,9 +1558,12 @@ definitions:
       currentVersionLabel:
         type: string
       description:
+        description: Resolved per `?lang=` query or Accept-Language header; en is
+          the default. Use `descriptions` for raw locale map.
         type: string
-      embeddingUpdatedAt:
-        type: string
+      descriptions:
+        description: Raw locale → text map, e.g. {"en":"...","zh":"..."}.
+        type: object
       evaluation:
         type: object
       experienceScore:
@@ -1374,19 +1572,44 @@ definitions:
         type: integer
       favorited:
         type: boolean
+      forkCount:
+        description: 本 item 被 fork 的次数
+        type: integer
+      forkedFromItemId:
+        type: string
+      forkedFromOwnerId:
+        type: string
       health:
         type: object
       id:
         type: string
       installCount:
         type: integer
+      isBuiltIn:
+        type: boolean
       itemType:
         type: string
       lastScanId:
         type: string
+      mcpConfig:
+        allOf:
+        - $ref: '#/definitions/internal_handlers.MCPConfigStatus'
+        description: per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
       metadata:
         type: object
+      myForkItemId:
+        description: 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
+        type: string
       name:
+        type: string
+      parentPluginId:
+        description: 'sub-skill: 所属父 plugin item ID'
+        type: string
+      parentPluginName:
+        description: 父 plugin 展示名（供「来自插件 X」徽章）
+        type: string
+      parentPluginSlug:
+        description: 父 plugin slug（供跳转）
         type: string
       previewCount:
         type: integer
@@ -1395,6 +1618,8 @@ definitions:
       registryId:
         type: string
       repoId:
+        type: string
+      repoName:
         type: string
       repoVisibility:
         type: string
@@ -1423,6 +1648,24 @@ definitions:
       version:
         type: string
     type: object
+  internal_handlers.MCPConfigStatus:
+    properties:
+      fields:
+        items:
+          $ref: '#/definitions/internal_handlers.MCPFieldStatus'
+        type: array
+    type: object
+  internal_handlers.MCPFieldStatus:
+    properties:
+      hasValue:
+        type: boolean
+      key:
+        type: string
+      secret:
+        type: boolean
+      value:
+        type: string
+    type: object
   internal_handlers.MyItem:
     properties:
       artifacts:
@@ -1447,20 +1690,34 @@ definitions:
         type: integer
       description:
         type: string
-      embeddingUpdatedAt:
-        type: string
+      descriptions:
+        description: '{"en":"...","zh":"..."} — locale → text map; flat `description`
+          is the en/default resolution'
+        type: object
       evaluation:
         type: object
       experienceScore:
         type: number
       favoriteCount:
         type: integer
+      favorited:
+        type: boolean
+      forkCount:
+        type: integer
+      forkedFromItemId:
+        description: 'Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）'
+        type: string
+      forkedFromOwnerId:
+        description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+        type: string
       health:
         type: object
       id:
         type: string
       installCount:
         type: integer
+      isBuiltIn:
+        type: boolean
       itemType:
         type: string
       lastScanId:
@@ -1468,6 +1725,10 @@ definitions:
       metadata:
         type: object
       name:
+        type: string
+      parentPluginId:
+        description: 'Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的
+          sub-skill 填充）'
         type: string
       previewCount:
         type: integer
@@ -1493,7 +1754,7 @@ definitions:
       sourceSha:
         type: string
       sourceType:
-        description: direct | archive
+        description: direct | archive | fork
         type: string
       status:
         type: string
@@ -1560,6 +1821,8 @@ definitions:
         type: string
       description:
         type: string
+      descriptions:
+        type: object
       id:
         type: string
       itemId:
@@ -1575,6 +1838,106 @@ definitions:
       version:
         type: string
       versionLabel:
+        type: string
+    type: object
+  internal_handlers.builtinPluginAssetResponse:
+    properties:
+      contentSha:
+        type: string
+      createdAt:
+        type: string
+      fileSize:
+        type: integer
+      id:
+        type: string
+      itemId:
+        type: string
+      mimeType:
+        type: string
+      relPath:
+        type: string
+      storageBackend:
+        type: string
+      storageKey:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  internal_handlers.builtinPluginItemResponse:
+    properties:
+      assets:
+        items:
+          $ref: '#/definitions/internal_handlers.builtinPluginAssetResponse'
+        type: array
+      category:
+        type: string
+      content:
+        type: string
+      contentMd5:
+        type: string
+      createdAt:
+        type: string
+      createdBy:
+        type: string
+      currentRevision:
+        type: integer
+      description:
+        type: string
+      descriptions: {}
+      evaluation: {}
+      favoriteCount:
+        type: integer
+      forkedFromItemId:
+        type: string
+      forkedFromOwnerId:
+        type: string
+      health: {}
+      id:
+        type: string
+      installCount:
+        type: integer
+      isBuiltIn:
+        type: boolean
+      itemType:
+        type: string
+      lastScanId:
+        type: string
+      metadata: {}
+      name:
+        type: string
+      previewCount:
+        type: integer
+      registry:
+        $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry'
+      registryId:
+        type: string
+      repoId:
+        type: string
+      securityStatus:
+        type: string
+      shareUrl:
+        type: string
+      slug:
+        type: string
+      source:
+        type: string
+      sourcePath:
+        type: string
+      sourceSha:
+        type: string
+      sourceType:
+        type: string
+      status:
+        type: string
+      tags:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict'
+        type: array
+      updatedAt:
+        type: string
+      updatedBy:
+        type: string
+      version:
         type: string
     type: object
   internal_handlers.itemAssetPayload:
@@ -1605,6 +1968,13 @@ definitions:
       total:
         type: integer
     type: object
+  internal_handlers.mcpFieldEntry:
+    properties:
+      secret:
+        type: boolean
+      v:
+        type: string
+    type: object
   internal_handlers.setItemTagsRequest:
     properties:
       tagIds:
@@ -1628,6 +1998,13 @@ definitions:
       tag:
         $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict'
     type: object
+  internal_handlers.upsertMCPConfigRequest:
+    properties:
+      fields:
+        additionalProperties:
+          $ref: '#/definitions/internal_handlers.mcpFieldEntry'
+        type: object
+    type: object
   internal_handlers.userBasicInfoResponse:
     properties:
       avatarUrl:
@@ -1636,6 +2013,58 @@ definitions:
         type: string
       name:
         type: string
+    type: object
+  internal_handlers.userSearchResult:
+    properties:
+      avatarUrl:
+        type: string
+      displayName:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+    type: object
+  internal_memory.CreateMemoryRequest:
+    properties:
+      content:
+        type: string
+      description:
+        type: string
+      name:
+        type: string
+      projectPath:
+        type: string
+      slug:
+        type: string
+      type:
+        enum:
+        - user
+        - feedback
+        - project
+        - reference
+        type: string
+      workDir:
+        type: string
+    required:
+    - content
+    - name
+    - projectPath
+    - slug
+    - type
+    type: object
+  internal_memory.UpdateMemoryRequest:
+    properties:
+      bumpVersion:
+        type: boolean
+      content:
+        type: string
+      description:
+        type: string
+      name:
+        type: string
+    required:
+    - content
     type: object
   internal_project.CreateInvitationRequest:
     properties:
@@ -1963,6 +2392,1234 @@ info:
   title: Costrict Web API
   version: "1.0"
 paths:
+  /admin/announcements:
+    post:
+      consumes:
+      - application/json
+      description: Send an in-app announcement to all users / an organization / a
+        single user (platform admin only). Optionally also pushes to recipients' external
+        channels.
+      parameters:
+      - description: Announcement
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            content:
+              type: string
+            pushExternal:
+              type: boolean
+            scope:
+              properties:
+                targetId:
+                  type: string
+                type:
+                  type: string
+              type: object
+            title:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              sentCount:
+                type: integer
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Broadcast an announcement
+      tags:
+      - admin/announcements
+  /admin/audit-logs:
+    get:
+      description: List management write-operation audit logs with optional filters
+        and pagination (platform admin only)
+      parameters:
+      - description: Filter by action (e.g. enterprise.create)
+        in: query
+        name: action
+        type: string
+      - description: Filter by actor subject id
+        in: query
+        name: actorId
+        type: string
+      - description: Filter by target type
+        in: query
+        name: targetType
+        type: string
+      - description: Lower bound on created_at (RFC3339 or YYYY-MM-DD)
+        in: query
+        name: from
+        type: string
+      - description: Upper bound on created_at (RFC3339 or YYYY-MM-DD)
+        in: query
+        name: to
+        type: string
+      - description: Page number (1-based)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 200)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_audit.listAuditLogsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List admin audit logs
+      tags:
+      - admin/audit-logs
+  /admin/departments/{id}/users:
+    get:
+      description: Members of one department from dept-sync, correlated to local users
+        via universal id (platform admin only). Returns 503 when dept-sync is not
+        configured/unreachable.
+      parameters:
+      - description: Department id (dept_id)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              members:
+                items:
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Department members (admin)
+      tags:
+      - admin/departments
+  /admin/departments/children:
+    get:
+      description: Direct children of a department (depth-1) for lazy-loading the
+        admin department tree. An empty parentId returns the top-level roots; each
+        node carries childDeptCount so the UI can show an expand affordance. Platform
+        admin only. Returns 503 when dept-sync is not configured/unreachable.
+      parameters:
+      - description: Parent department id (dept_id); empty for top-level roots
+        in: query
+        name: parentId
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              departments:
+                items:
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Department children (admin)
+      tags:
+      - admin/departments
+  /admin/departments/tree:
+    get:
+      description: Proxy the real dept-sync department tree (platform admin only).
+        Returns 503 when dept-sync is not configured/unreachable.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              departments:
+                items:
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Department tree (admin)
+      tags:
+      - admin/departments
+  /admin/distributions:
+    get:
+      description: List distributions across all distributors with status/scope/search
+        filters and pagination. Platform admin only.
+      parameters:
+      - description: Filter by status (active|paused|revoked)
+        in: query
+        name: status
+        type: string
+      - description: Filter by scope type (user|department)
+        in: query
+        name: scope
+        type: string
+      - description: Search by item name / distributor / target
+        in: query
+        name: search
+        type: string
+      - description: Page number (1-based)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              distributions:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution'
+                type: array
+              total:
+                type: integer
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List all distributions (platform admin)
+      tags:
+      - distributions
+  /admin/distributions/{id}/receipts:
+    get:
+      description: List all receipts for a distribution (unread/read/accepted/dismissed).
+        Platform admin only.
+      parameters:
+      - description: Distribution ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              receipts:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List distribution receipts (platform admin)
+      tags:
+      - distributions
+  /admin/enterprise-customers:
+    get:
+      description: List all enterprise customer configs with raw universal_id account
+        list + resolved members (platform admin only)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              customers:
+                items:
+                  properties:
+                    id:
+                      type: string
+                    logo:
+                      type: string
+                    members:
+                      items:
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    universalIds:
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List enterprise customers (admin)
+      tags:
+      - admin/enterprise-customers
+    post:
+      consumes:
+      - application/json
+      description: Create an enterprise customer branding config (platform admin only)
+      parameters:
+      - description: Enterprise customer (ids = Casdoor universal_id list)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+            logo:
+              type: string
+            name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              customer:
+                properties:
+                  id:
+                    type: string
+                  logo:
+                    type: string
+                  members:
+                    items:
+                      type: object
+                    type: array
+                  name:
+                    type: string
+                  universalIds:
+                    items:
+                      type: string
+                    type: array
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create enterprise customer
+      tags:
+      - admin/enterprise-customers
+  /admin/enterprise-customers/{id}:
+    delete:
+      description: Delete an enterprise customer branding config (platform admin only)
+      parameters:
+      - description: Enterprise customer ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete enterprise customer
+      tags:
+      - admin/enterprise-customers
+    put:
+      consumes:
+      - application/json
+      description: Update an enterprise customer branding config (platform admin only)
+      parameters:
+      - description: Enterprise customer ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Enterprise customer (ids = Casdoor universal_id list)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+            logo:
+              type: string
+            name:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              customer:
+                properties:
+                  id:
+                    type: string
+                  logo:
+                    type: string
+                  members:
+                    items:
+                      type: object
+                    type: array
+                  name:
+                    type: string
+                  universalIds:
+                    items:
+                      type: string
+                    type: array
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update enterprise customer
+      tags:
+      - admin/enterprise-customers
+  /admin/import-jobs:
+    get:
+      description: Paginated import history, newest first (platform admin only).
+      parameters:
+      - description: Page number (1-based)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  type: object
+                type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List import jobs (admin)
+      tags:
+      - admin/import
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: 'Submit a catalog bundle for dry-run import. Two mutually exclusive
+        submit modes: JSON {sourceUrl,reparse} (preferred) or multipart file upload
+        (field "file", optional form "reparse"). Returns 202 with a pending jobId;
+        the leader-elected runner executes the dry-run asynchronously.'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              jobId:
+                type: string
+              status:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "413":
+          description: Request Entity Too Large
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create catalog import job (admin)
+      tags:
+      - admin/import
+  /admin/import-jobs/{id}:
+    get:
+      description: Poll an import job's status and dry-run/import result (platform
+        admin only).
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get import job (admin)
+      tags:
+      - admin/import
+  /admin/import-jobs/{id}/confirm:
+    post:
+      consumes:
+      - application/json
+      description: Promote a previewed job to the real-import phase. Rejects when
+        the dry-run had failures, or when the delete count exceeds threshold and confirmLargeDelete
+        is not set. Returns 202; the runner executes asynchronously.
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Confirmation flags
+        in: body
+        name: body
+        schema:
+          properties:
+            confirmLargeDelete:
+              type: boolean
+          type: object
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              status:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Confirm import job (admin)
+      tags:
+      - admin/import
+  /admin/import-jobs/{id}/errors.log:
+    get:
+      description: Download the job's errors + incompleteErrors as a plain-text attachment
+        (platform admin only).
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: plain text log
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Download import errors log (admin)
+      tags:
+      - admin/import
+  /admin/import-stats:
+    get:
+      description: Current active inventory grouped by item_type, plus total (platform
+        admin only).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              byType:
+                items:
+                  type: object
+                type: array
+              total:
+                type: integer
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Import inventory stats (admin)
+      tags:
+      - admin/import
+  /admin/items:
+    get:
+      description: Cross-registry capability-item list with type/status/security-status
+        filters for the content-management console (platform admin only). Defaults
+        to all statuses (active + archived).
+      parameters:
+      - description: Exact item type filter (skill|plugin|mcp|...)
+        in: query
+        name: type
+        type: string
+      - description: Exact status filter (active|archived); empty = all
+        in: query
+        name: status
+        type: string
+      - description: Security risk group (unknown|low|medium|high) or exact security_status
+        in: query
+        name: securityStatus
+        type: string
+      - description: name/description LIKE
+        in: query
+        name: search
+        type: string
+      - description: Exact author subject_id filter
+        in: query
+        name: createdBy
+        type: string
+      - description: Page number (1-based)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 200)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  type: object
+                type: array
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List items (admin)
+      tags:
+      - admin/items
+  /admin/items/{id}:
+    delete:
+      description: Delete any author's item and its dependent records (platform admin
+        only).
+      parameters:
+      - description: Item id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete item (admin)
+      tags:
+      - admin/items
+  /admin/items/{id}/status:
+    put:
+      consumes:
+      - application/json
+      description: Take an item online/offline (active|archived) across any author
+        (platform admin only).
+      parameters:
+      - description: Item id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New status (active|archived)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            status:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Set item status (admin)
+      tags:
+      - admin/items
+  /admin/items/batch-delete:
+    post:
+      consumes:
+      - application/json
+      description: Delete up to 200 items (any author) and their dependent records
+        in a single transaction (platform admin only). All succeed or none do; ids
+        that no longer exist are reported as skipped.
+      parameters:
+      - description: Item ids to delete
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              deleted:
+                type: integer
+              skipped:
+                type: integer
+              skippedIds:
+                items:
+                  type: string
+                type: array
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Batch delete items (admin)
+      tags:
+      - admin/items
+  /admin/items/batch-status:
+    post:
+      consumes:
+      - application/json
+      description: Take up to 200 items online/offline (active|archived) across any
+        author in a single transaction (platform admin only). ids that no longer exist
+        are reported as skipped.
+      parameters:
+      - description: Item ids + new status (active|archived)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+            status:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              skipped:
+                type: integer
+              skippedIds:
+                items:
+                  type: string
+                type: array
+              success:
+                type: boolean
+              updated:
+                type: integer
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Batch set item status (admin)
+      tags:
+      - admin/items
+  /admin/items/export.csv:
+    get:
+      description: Stream all items matching the same filters as the list (including
+        missingSecurityEval / missingScore) as a CSV attachment (platform admin only).
+        Not paginated.
+      parameters:
+      - description: Exact item type filter
+        in: query
+        name: type
+        type: string
+      - description: Exact status filter
+        in: query
+        name: status
+        type: string
+      - description: Security risk group or exact value
+        in: query
+        name: securityStatus
+        type: string
+      - description: name/description LIKE
+        in: query
+        name: search
+        type: string
+      - description: Exact author subject_id
+        in: query
+        name: createdBy
+        type: string
+      - description: Only items never security-evaluated (security_status=unscanned)
+        in: query
+        name: missingSecurityEval
+        type: boolean
+      - description: Only items with experience_score<=0
+        in: query
+        name: missingScore
+        type: boolean
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV attachment
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export items as CSV (admin)
+      tags:
+      - admin/items
   /admin/notification-channels:
     get:
       description: Get all system notification channels (admin only)
@@ -2156,6 +3813,475 @@ paths:
       summary: Update system notification channel
       tags:
       - admin/notification-channels
+  /admin/organizations:
+    get:
+      description: Roll up users by organization with member counts, busiest first
+        (platform admin only)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              organizations:
+                items:
+                  properties:
+                    memberCount:
+                      type: integer
+                    organization:
+                      type: string
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List organizations (admin)
+      tags:
+      - admin/users
+  /admin/permission-grants:
+    get:
+      description: List fine-grained permission grants, optionally filtered by permissionCode
+        (platform admin only)
+      parameters:
+      - description: Filter by permission code
+        in: query
+        name: permissionCode
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              grants:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List permission grants
+      tags:
+      - admin/permissions
+    post:
+      consumes:
+      - application/json
+      description: Grant a permission to a user or department (platform admin only).
+        For department subjects the materialized dept_path is resolved from dept-sync
+        and stored redundantly for prefix-based inheritance.
+      parameters:
+      - description: Grant request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_authz.grantPermissionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              grant:
+                $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Grant fine-grained permission
+      tags:
+      - admin/permissions
+  /admin/permission-grants/{id}:
+    delete:
+      description: Revoke a permission grant by id (platform admin only)
+      parameters:
+      - description: Grant id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revoke fine-grained permission
+      tags:
+      - admin/permissions
+  /admin/permissions/users/{userId}/grant:
+    post:
+      consumes:
+      - application/json
+      description: Grant a system role (module permission) to a user by user ID (platform
+        admin only)
+      parameters:
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      - description: Grant permission request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_authz.grantUserRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Grant module permission to user
+      tags:
+      - admin/permissions
+  /admin/resource-permissions:
+    get:
+      description: List all resource permissions (menu + api) for the permission matrix
+        (platform admin only)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              permissions:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ResourcePermission'
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List resource permissions
+      tags:
+      - admin/permissions
+  /admin/resource-permissions/{code}:
+    put:
+      consumes:
+      - application/json
+      description: Update the allowed roles for a single resource code (platform admin
+        only)
+      parameters:
+      - description: Resource code
+        in: path
+        name: code
+        required: true
+        type: string
+      - description: Allowed roles
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_authz.updateResourcePermissionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update resource permission
+      tags:
+      - admin/permissions
+  /admin/settings:
+    get:
+      description: Return every system-level setting as a key→value map (platform
+        admin only)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              settings:
+                type: object
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List system settings
+      tags:
+      - admin/settings
+  /admin/settings/{key}:
+    put:
+      consumes:
+      - application/json
+      description: Upsert a single system setting by key (platform admin only)
+      parameters:
+      - description: Setting key
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Setting value (any JSON)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            value:
+              type: object
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              setting:
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a system setting
+      tags:
+      - admin/settings
   /admin/system-roles:
     get:
       description: List members by target system role (platform admin only)
@@ -2387,6 +4513,180 @@ paths:
       summary: Revoke system role
       tags:
       - admin/system-roles
+  /admin/users:
+    get:
+      description: Paginated/searchable/status-filtered user list for the admin console
+        (platform admin only)
+      parameters:
+      - description: username/display name/email LIKE
+        in: query
+        name: search
+        type: string
+      - description: Exact organization filter
+        in: query
+        name: organization
+        type: string
+      - description: Exact status filter (active|disabled|banned)
+        in: query
+        name: status
+        type: string
+      - description: Page number (1-based)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 200)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              page:
+                type: integer
+              pageSize:
+                type: integer
+              total:
+                type: integer
+              users:
+                items:
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List members (admin)
+      tags:
+      - admin/users
+  /admin/users/{id}/profile:
+    get:
+      description: Aggregated activity (created items, distributions sent/received)
+        + roles for one member (platform admin only)
+      parameters:
+      - description: Member subject id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              profile:
+                type: object
+              user:
+                type: object
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Member profile (admin)
+      tags:
+      - admin/users
+  /admin/users/{id}/status:
+    put:
+      consumes:
+      - application/json
+      description: Enable/disable/ban a member. Refuses to change the operator's own
+        status (platform admin only)
+      parameters:
+      - description: Member subject id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New status (active|disabled|banned)
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            status:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Set member status (admin)
+      tags:
+      - admin/users
   /artifacts/{id}:
     delete:
       description: Delete an artifact by ID and remove its stored file
@@ -2511,6 +4811,105 @@ paths:
       summary: Upload artifact
       tags:
       - artifacts
+  /auth/bind/cancel-merge:
+    post:
+      description: Cancels the merge operation when the user declines the merge dialog.
+      parameters:
+      - description: Merge token to cancel
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            merge_token:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Cancel account merge
+      tags:
+      - auth
+  /auth/bind/confirm-merge:
+    post:
+      description: After the user confirms the merge dialog on the frontend, this
+        endpoint
+      parameters:
+      - description: Merge token from the OAuth redirect
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            merge_token:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Confirm account merge
+      tags:
+      - auth
   /auth/bind/start:
     post:
       description: Returns an OAuth URL for binding another provider to the current
@@ -2625,15 +5024,15 @@ paths:
       summary: List bound auth identities
       tags:
       - auth
-  /auth/identities/{id}/unbind:
+  /auth/identities/{provider}/unbind:
     post:
-      description: Unbinds an auth identity from the current user
+      description: Unbinds an auth identity from the current user by provider type
       parameters:
-      - description: Identity ID
+      - description: Provider type (e.g. idtrust, github, phone)
         in: path
-        name: id
+        name: provider
         required: true
-        type: integer
+        type: string
       produces:
       - application/json
       responses:
@@ -2686,8 +5085,8 @@ paths:
       - auth
   /auth/logout:
     post:
-      description: Invalidate current session, revoke token at Casdoor, and clear
-        auth cookie
+      description: Clear the auth cookie. Does NOT revoke the token at Casdoor to
+        avoid invalidating sessions in other systems (e.g., credit-manager).
       produces:
       - application/json
       responses:
@@ -3311,7 +5710,8 @@ paths:
       - cloud
   /devices:
     get:
-      description: Get all devices registered by the authenticated user
+      description: Get all devices registered by the authenticated user, with update
+        availability info
       produces:
       - application/json
       responses:
@@ -3390,13 +5790,15 @@ paths:
                 type: string
             type: object
         "409":
-          description: 'Different user: unauthorized device registration'
+          description: 'Recovery available: user must decide'
           schema:
             properties:
-              deviceId:
-                type: string
               error:
                 type: string
+              recoverableDevice:
+                type: object
+              recoveryAvailable:
+                type: boolean
             type: object
         "500":
           description: Internal Server Error
@@ -3549,7 +5951,61 @@ paths:
               error:
                 type: string
             type: object
-      summary: Update device
+      tags:
+      - devices
+  /devices/{deviceID}/fingerprint:
+    put:
+      consumes:
+      - application/json
+      description: Record the current machine fingerprint (MAC-based hash) for a device,
+        enabling recovery when hardware changes
+      parameters:
+      - description: Device ID
+        in: path
+        name: deviceID
+        required: true
+        type: string
+      - description: Legacy fingerprint
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            legacyDeviceId:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              ok:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update legacy fingerprint
       tags:
       - devices
   /devices/{deviceID}/rotate-token:
@@ -3597,6 +6053,297 @@ paths:
       summary: Rotate device token
       tags:
       - devices
+  /distributions/{id}:
+    delete:
+      description: Revoke a distribution (soft delete)
+      parameters:
+      - description: Distribution ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Revoke distribution
+      tags:
+      - distributions
+    put:
+      consumes:
+      - application/json
+      description: Update a distribution's status, permission mode, or message
+      parameters:
+      - description: Distribution ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update fields
+        in: body
+        name: body
+        schema:
+          properties:
+            message:
+              type: string
+            permissionMode:
+              type: string
+            status:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Update distribution
+      tags:
+      - distributions
+  /distributions/{id}/dismiss:
+    post:
+      description: Dismiss a received distribution from the user's view
+      parameters:
+      - description: Distribution ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Dismiss distribution receipt
+      tags:
+      - distributions
+  /distributions/{id}/read:
+    post:
+      description: Mark a received distribution as read
+      parameters:
+      - description: Distribution ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              message:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Mark distribution as read
+      tags:
+      - distributions
+  /distributions/eligible-users:
+    get:
+      description: Search users the current operator may distribute to. Platform admins
+        can see all active users; department managers only see users inside managed
+        subtrees.
+      parameters:
+      - description: Search keyword
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              users:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Search users eligible for distribution
+      tags:
+      - distributions
+  /distributions/my/authority:
+    get:
+      description: 'The current user''s distribution reach: unlimited for platform
+        admins, otherwise the department subtrees they lead (manage). Drives the frontend
+        distribute entry + department picker scope. Any authenticated user may query
+        their own.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionAuthority'
+      summary: My distribution authority
+      tags:
+      - distributions
+  /distributions/my/received:
+    get:
+      description: Get all distributions received by the current user with item details
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              receipts:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List my received distributions
+      tags:
+      - distributions
+  /distributions/my/sent:
+    get:
+      description: Get all distributions sent by the current user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              distributions:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List my sent distributions
+      tags:
+      - distributions
+  /enterprise-customers:
+    get:
+      description: List all enterprise customer branding configs (readable by any
+        authenticated user)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              customers:
+                items:
+                  properties:
+                    id:
+                      type: string
+                    ids:
+                      items:
+                        type: string
+                      type: array
+                    logo:
+                      type: string
+                    name:
+                      type: string
+                  type: object
+                type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List enterprise customers
+      tags:
+      - enterprise-customers
   /internal/gateway/{gatewayID}:
     delete:
       description: Remove a gateway instance from the registry.
@@ -3835,6 +6582,8 @@ paths:
         required: true
         schema:
           properties:
+            apiBaseURL:
+              type: string
             capacity:
               type: integer
             endpoint:
@@ -4124,6 +6873,63 @@ paths:
       tags:
       - invitations
   /items:
+    delete:
+      consumes:
+      - application/json
+      description: Delete up to 200 of the caller's own items (or any items for a
+        platform admin) and their dependent records in a single transaction. All authorized
+        deletes succeed or none do. Items the caller may not delete are reported in
+        `forbidden`; ids that no longer exist are reported in `skipped`.
+      parameters:
+      - description: Item ids to delete
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            ids:
+              items:
+                type: string
+              type: array
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              deleted:
+                type: integer
+              forbidden:
+                type: integer
+              skipped:
+                type: integer
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Batch delete items
+      tags:
+      - items
     get:
       description: Get all skill items visible to the current user with pagination
         and author information
@@ -4163,6 +6969,15 @@ paths:
       - description: Filter to only favorited items (requires auth)
         in: query
         name: favorited
+        type: string
+      - description: Filter to sub-skills bundled by the given parent plugin item
+          ID
+        in: query
+        name: parentPluginId
+        type: string
+      - description: Hide bundled sub-skills from the result when true
+        in: query
+        name: excludeSubSkills
         type: string
       - description: 'Page number (default: 1)'
         in: query
@@ -4215,11 +7030,14 @@ paths:
       consumes:
       - application/json
       - multipart/form-data
-      description: Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz
-        archive via multipart/form-data. Auto-selects public registry if registryId
-        is omitted. Successful responses include populated tags when available.
+      description: Create a capability item via JSON or upload a .zip, .tar.gz, or
+        .tgz archive via multipart/form-data. Skill, command, and subagent slugs are
+        normalized to lowercase kebab-case while names remain unchanged for display.
+        Auto-selects public registry if registryId is omitted. Successful responses
+        include populated tags when available.
       parameters:
-      - description: Item data (JSON)
+      - description: Item data (JSON); invocable capability slugs are normalized to
+          lowercase kebab-case
         in: body
         name: body
         schema:
@@ -4309,6 +7127,20 @@ paths:
           schema:
             properties:
               message:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
                 type: string
             type: object
         "500":
@@ -4561,6 +7393,20 @@ paths:
               error:
                 type: string
             type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
         "500":
           description: Internal Server Error
           schema:
@@ -4618,6 +7464,91 @@ paths:
       summary: Check item consistency
       tags:
       - items
+  /items/{id}/distribute:
+    post:
+      consumes:
+      - application/json
+      description: Push (distribute) an item to users or departments with specified
+        permission mode.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Distribution request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            properties:
+              distributions:
+                items:
+                  type: object
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Push item to targets
+      tags:
+      - distributions
+  /items/{id}/distributions:
+    get:
+      description: Get all distributions for a specific item
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              distributions:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List item distributions
+      tags:
+      - distributions
   /items/{id}/download:
     get:
       description: Download the Markdown content of a capability item (skill/subagent/command)
@@ -4759,6 +7690,70 @@ paths:
       summary: Favorite item
       tags:
       - behavior
+  /items/{id}/fork:
+    post:
+      description: Create a personal copy of a public capability item under the current
+        user, placed in the public registry, recording fork provenance (forkedFromItemId/ownerId).
+        Only public, non-archive items not owned by the caller can be forked; each
+        user may fork a given source item once.
+      parameters:
+      - description: Source item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handlers.ItemResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Fork an item
+      tags:
+      - items
   /items/{id}/improve:
     post:
       consumes:
@@ -4805,6 +7800,58 @@ paths:
       summary: Improve a skill
       tags:
       - generate
+  /items/{id}/mcp-config:
+    put:
+      consumes:
+      - application/json
+      description: Save the current user's filled placeholder values for an MCP item
+        (merge; empty v clears a key). Returns the saved status (owner-only).
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Field values
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.upsertMCPConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              mcpConfig:
+                $ref: '#/definitions/internal_handlers.MCPConfigStatus'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Upsert per-user MCP config values
+      tags:
+      - items
   /items/{id}/move:
     put:
       consumes:
@@ -5382,6 +8429,26 @@ paths:
       summary: List my items
       tags:
       - items
+  /marketplace/{repo}/marketplace.json:
+    get:
+      description: Return a csc-compatible marketplace manifest containing all plugins
+        in the repo.
+      parameters:
+      - description: Repository name
+        in: path
+        name: repo
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: Get marketplace.json
+      tags:
+      - marketplace
   /marketplace/items/hybrid-search:
     post:
       consumes:
@@ -5640,6 +8707,195 @@ paths:
       summary: Get trending items
       tags:
       - recommendations
+  /memories:
+    get:
+      description: 按项目路径、工作目录、类型、关键词过滤查询当前用户的记忆列表
+      parameters:
+      - description: 项目路径
+        in: query
+        name: projectPath
+        type: string
+      - description: 工作目录
+        in: query
+        name: workDir
+        type: string
+      - description: 记忆类型
+        in: query
+        name: type
+        type: string
+      - description: 关键词搜索
+        in: query
+        name: keyword
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile'
+                type: array
+            type: object
+      summary: 查询记忆列表
+      tags:
+      - memories
+    post:
+      consumes:
+      - application/json
+      description: 创建新记忆或更新已存在的记忆（按 userID + projectPath + slug 去重）
+      parameters:
+      - description: 记忆数据
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_memory.CreateMemoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile'
+      summary: 上报记忆
+      tags:
+      - memories
+  /memories/{id}:
+    delete:
+      description: 软删除指定记忆及其所有版本记录
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              success:
+                type: boolean
+            type: object
+      summary: 删除记忆
+      tags:
+      - memories
+    get:
+      description: 获取指定记忆的元信息（不含内容）
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile'
+      summary: 获取记忆详情
+      tags:
+      - memories
+    put:
+      consumes:
+      - application/json
+      description: 更新指定记忆的内容，可选择创建新版本或覆盖当前版本
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 更新数据
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_memory.UpdateMemoryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile'
+      summary: 更新记忆
+      tags:
+      - memories
+  /memories/{id}/content:
+    get:
+      description: 获取指定记忆当前版本的 markdown 内容
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: 获取记忆内容
+      tags:
+      - memories
+  /memories/{id}/versions:
+    get:
+      description: 获取指定记忆的所有历史版本
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryVersion'
+                type: array
+            type: object
+      summary: 获取版本列表
+      tags:
+      - memories
+  /memories/{id}/versions/{version}/content:
+    get:
+      description: 获取指定记忆指定版本的 markdown 内容
+      parameters:
+      - description: 记忆ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 版本号
+        in: path
+        name: version
+        required: true
+        type: integer
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: 获取指定版本内容
+      tags:
+      - memories
   /notification-channels:
     get:
       description: Get all notification channels configured by the authenticated user
@@ -5989,6 +9245,112 @@ paths:
       summary: List available notification channel types
       tags:
       - notification-channels
+  /plugins/{slug}/download:
+    get:
+      description: Download a plugin (and its assets) packaged as a zip file.
+      parameters:
+      - description: Plugin slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/zip
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Download plugin zip
+      tags:
+      - plugins
+  /plugins/builtin:
+    get:
+      description: Get all plugins marked as built-in (is_builtin = true).
+      parameters:
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              items:
+                items:
+                  $ref: '#/definitions/internal_handlers.builtinPluginItemResponse'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List built-in plugins
+      tags:
+      - plugins
+  /plugins/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a plugin zip file to create or overwrite a plugin item.
+      parameters:
+      - description: Target repository ID
+        in: formData
+        name: repo_id
+        required: true
+        type: string
+      - description: Plugin zip archive
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.ItemResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handlers.ItemResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Upload a plugin archive
+      tags:
+      - plugins
   /projects:
     get:
       description: List all projects the authenticated user belongs to
@@ -6985,14 +10347,17 @@ paths:
     post:
       consumes:
       - application/json
-      description: Create a new skill item in a specific registry
+      description: Create a new capability item in a specific registry. Skill, command,
+        and subagent slugs are normalized to lowercase kebab-case; names remain unchanged
+        for display.
       parameters:
       - description: Registry ID
         in: path
         name: id
         required: true
         type: string
-      - description: Item data
+      - description: Item data; invocable capability slugs are normalized to lowercase
+          kebab-case
         in: body
         name: body
         required: true
@@ -9397,9 +12762,10 @@ paths:
       - users
   /users/search:
     get:
-      description: Search users by username or email keyword (requires authentication)
+      description: Search users by username or display name keyword (requires authentication).
+        Returns only basic, non-sensitive fields.
       parameters:
-      - description: Search keyword
+      - description: Search keyword (min 1 character)
         in: query
         name: q
         required: true
@@ -9413,8 +12779,15 @@ paths:
             properties:
               users:
                 items:
-                  $ref: '#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser'
+                  $ref: '#/definitions/internal_handlers.userSearchResult'
                 type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
             type: object
         "401":
           description: Unauthorized
