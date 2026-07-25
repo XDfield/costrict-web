@@ -42,3 +42,28 @@ func TestCanonicalIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestHasAssignedCollisionSuffix(t *testing.T) {
+	const compactID = "12345678abcd4321abcd1234567890ab"
+	cases := []struct {
+		candidate string
+		want      bool
+	}{
+		{candidate: "foo-bar-2", want: true},
+		{candidate: "foo-bar-10", want: true},
+		{candidate: "foo-bar-migrated-" + compactID, want: true},
+		{candidate: "foo-bar-migrated-" + compactID + "-2", want: true},
+		{candidate: "foo-bar-1", want: false},
+		{candidate: "foo-bar-child", want: false},
+		{candidate: "foo-bar-migrated-short", want: false},
+		{candidate: "other-2", want: false},
+	}
+	for _, tc := range cases {
+		if got := HasAssignedCollisionSuffix("foo-bar", tc.candidate); got != tc.want {
+			t.Errorf("HasAssignedCollisionSuffix(%q, %q) = %v, want %v", "foo-bar", tc.candidate, got, tc.want)
+		}
+	}
+	if HasAssignedCollisionSuffix("", "-2") {
+		t.Error("empty base must not match an allocated suffix")
+	}
+}

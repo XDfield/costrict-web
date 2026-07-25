@@ -1,6 +1,9 @@
 package capabilityslug
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Canonical returns the persisted invocation identifier for a capability.
 // Display names remain separate and are never modified here.
@@ -60,6 +63,44 @@ func Slugify(value string) string {
 		result = result[:len(result)-1]
 	}
 	return string(result)
+}
+
+// HasAssignedCollisionSuffix reports whether candidate is a persisted variant
+// allocated by the canonical-slug migration or insert collision retry.
+func HasAssignedCollisionSuffix(base, candidate string) bool {
+	if base == "" {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(candidate, base+"-")
+	if !ok || suffix == "" {
+		return false
+	}
+	if attempt, err := strconv.Atoi(suffix); err == nil {
+		return attempt >= 2
+	}
+
+	const migratedPrefix = "migrated-"
+	if !strings.HasPrefix(suffix, migratedPrefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(suffix, migratedPrefix), "-")
+	if len(parts) < 1 || len(parts) > 2 || len(parts[0]) != 32 || !isLowerHex(parts[0]) {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	attempt, err := strconv.Atoi(parts[1])
+	return err == nil && attempt >= 2
+}
+
+func isLowerHex(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if !((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func fallbackPrefix(itemType string) string {

@@ -65,6 +65,83 @@ func TestCatalogIngest_NonASCIISkillKeepsStableCanonicalSlugOnReingest(t *testin
 	}
 }
 
+func TestCatalogIngest_CollisionSuffixKeepsEntryIdentityOnReingest(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+
+	occupant := models.CapabilityItem{
+		ID:              "occupant",
+		RegistryID:      PublicRegistryID,
+		RepoID:          PublicRepoID,
+		Slug:            "foo-bar",
+		ItemType:        "skill",
+		Name:            "Foo Bar",
+		Content:         "occupant content",
+		SourcePath:      "skills/foo-bar/SKILL.md",
+		CatalogEntryDir: "skills/foo-bar",
+		SourceSHA:       "old-occupant-sha",
+		Status:          "active",
+		CreatedBy:       "tester",
+		UpdatedBy:       "tester",
+	}
+	migrated := models.CapabilityItem{
+		ID:              "migrated",
+		RegistryID:      PublicRegistryID,
+		RepoID:          PublicRepoID,
+		Slug:            "foo-bar-migrated-12345678abcd4321abcd1234567890ab",
+		ItemType:        "skill",
+		Name:            "Foo Dot Bar",
+		Content:         "migrated content",
+		SourcePath:      "skills/foo.bar/SKILL.md",
+		CatalogEntryDir: "skills/foo.bar",
+		SourceSHA:       "old-migrated-sha",
+		Status:          "active",
+		CreatedBy:       "tester",
+		UpdatedBy:       "tester",
+	}
+	if err := db.Create(&occupant).Error; err != nil {
+		t.Fatalf("seed occupant: %v", err)
+	}
+	if err := db.Create(&migrated).Error; err != nil {
+		t.Fatalf("seed migrated row: %v", err)
+	}
+
+	entry := catalogEntry{
+		ID:          "foo.bar",
+		Type:        "skill",
+		Source:      "catalog/foo.bar",
+		Description: "updated migrated entry",
+	}
+	dir := writeSkillBundle(t, entry, "---\nname: Foo Dot Bar\n---\n# updated migrated content\n")
+	result, err := svc.Ingest(context.Background(), IngestSource{Dir: dir}, IngestOptions{TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("re-ingest collision entry: %v", err)
+	}
+	if result.Updated != 1 || result.Added != 0 || result.Failed != 0 {
+		t.Fatalf("re-ingest result: added=%d updated=%d failed=%d errors=%v", result.Added, result.Updated, result.Failed, result.Errors)
+	}
+
+	var gotMigrated models.CapabilityItem
+	if err := db.First(&gotMigrated, "id = ?", migrated.ID).Error; err != nil {
+		t.Fatalf("load migrated row: %v", err)
+	}
+	if gotMigrated.Slug != migrated.Slug || gotMigrated.CatalogEntryDir != migrated.CatalogEntryDir {
+		t.Fatalf("migrated identity changed: slug=%q entryDir=%q", gotMigrated.Slug, gotMigrated.CatalogEntryDir)
+	}
+	if !strings.Contains(gotMigrated.Content, "updated migrated content") {
+		t.Fatalf("migrated row was not updated: content=%q", gotMigrated.Content)
+	}
+
+	var gotOccupant models.CapabilityItem
+	if err := db.First(&gotOccupant, "id = ?", occupant.ID).Error; err != nil {
+		t.Fatalf("load occupant: %v", err)
+	}
+	if gotOccupant.Slug != occupant.Slug || gotOccupant.CatalogEntryDir != occupant.CatalogEntryDir ||
+		gotOccupant.Content != occupant.Content {
+		t.Fatalf("foreign occupant was polluted: %+v", gotOccupant)
+	}
+}
+
 func TestSyncRegistry_NonASCIISkillUsesStableCanonicalSlug(t *testing.T) {
 	db := newIngestTestDB(t)
 	for _, stmt := range []string{
@@ -172,5 +249,118 @@ func TestSyncRegistry_NonASCIISkillUsesStableCanonicalSlug(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != created.ID || items[0].Slug != wantSlug {
 		t.Fatalf("second sync changed identity: %+v", items)
+	}
+}
+
+func TestSyncRegistry_CollisionSuffixSurvivesPathMatchedUpdate(t *testing.T) {
+	db := newIngestTestDB(t)
+	for _, stmt := range []string{
+		`CREATE TABLE sync_logs (
+			id TEXT PRIMARY KEY, registry_id TEXT NOT NULL, trigger_type TEXT,
+			trigger_user TEXT, status TEXT, commit_sha TEXT, previous_sha TEXT,
+			total_items INTEGER DEFAULT 0, added_items INTEGER DEFAULT 0,
+			updated_items INTEGER DEFAULT 0, deleted_items INTEGER DEFAULT 0,
+			skipped_items INTEGER DEFAULT 0, failed_items INTEGER DEFAULT 0,
+			error_message TEXT, duration_ms INTEGER DEFAULT 0, started_at DATETIME,
+			finished_at DATETIME, created_at DATETIME
+		)`,
+		`CREATE TABLE capability_assets (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, rel_path TEXT NOT NULL,
+			text_content TEXT, storage_backend TEXT, storage_key TEXT,
+			mime_type TEXT, file_size INTEGER DEFAULT 0, content_sha TEXT,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("create sync table: %v", err)
+		}
+	}
+
+	repoDir := t.TempDir()
+	skillDir := filepath.Join(repoDir, "skills", "foo.bar")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: Foo Dot Bar\n---\n# updated\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	repo, err := git.PlainInit(repoDir, false)
+	if err != nil {
+		t.Fatalf("init git repo: %v", err)
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("open worktree: %v", err)
+	}
+	if _, err := worktree.Add("."); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := worktree.Commit("initial", &git.CommitOptions{Author: &object.Signature{
+		Name: "Test", Email: "test@example.com", When: time.Now(),
+	}}); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	registry := models.CapabilityRegistry{
+		ID:             "registry-sync-collision",
+		Name:           "sync collision",
+		SourceType:     "git",
+		ExternalURL:    repoDir,
+		ExternalBranch: "master",
+		RepoID:         "repo-sync-collision",
+		OwnerID:        "tester",
+	}
+	if err := db.Create(&registry).Error; err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	occupant := models.CapabilityItem{
+		ID: "occupant", RegistryID: "other-registry", RepoID: registry.RepoID,
+		Slug: "foo-bar", ItemType: "skill", Name: "Foo Bar",
+		SourcePath: "skills/foo-bar/SKILL.md", SourceSHA: "occupant-sha",
+		Status: "active", CreatedBy: "tester", UpdatedBy: "tester",
+	}
+	migrated := models.CapabilityItem{
+		ID: "migrated", RegistryID: registry.ID, RepoID: registry.RepoID,
+		Slug: "foo-bar-migrated-12345678abcd4321abcd1234567890ab", ItemType: "skill", Name: "Foo Dot Bar",
+		SourcePath: "skills/foo.bar/SKILL.md", SourceSHA: "old-migrated-sha",
+		Status: "active", CreatedBy: "tester", UpdatedBy: "tester",
+	}
+	if err := db.Create(&occupant).Error; err != nil {
+		t.Fatalf("seed occupant: %v", err)
+	}
+	if err := db.Create(&migrated).Error; err != nil {
+		t.Fatalf("seed migrated row: %v", err)
+	}
+
+	svc := &SyncService{
+		DB:     db,
+		Git:    &GitService{TempBaseDir: t.TempDir()},
+		Parser: &ParserService{},
+	}
+	result, err := svc.SyncRegistry(context.Background(), registry.ID, SyncOptions{TriggerType: "manual", TriggerUser: "tester"})
+	if err != nil {
+		t.Fatalf("sync collision entry: %v", err)
+	}
+	if result.Updated != 1 || result.Failed != 0 {
+		t.Fatalf("sync result: updated=%d failed=%d errors=%v", result.Updated, result.Failed, result.Errors)
+	}
+
+	var gotMigrated models.CapabilityItem
+	if err := db.First(&gotMigrated, "id = ?", migrated.ID).Error; err != nil {
+		t.Fatalf("load migrated row: %v", err)
+	}
+	if gotMigrated.Slug != migrated.Slug || !strings.Contains(gotMigrated.Content, "# updated") {
+		t.Fatalf("migrated row changed incorrectly: %+v", gotMigrated)
+	}
+	var gotOccupant models.CapabilityItem
+	if err := db.First(&gotOccupant, "id = ?", occupant.ID).Error; err != nil {
+		t.Fatalf("load occupant: %v", err)
+	}
+	if gotOccupant.Slug != occupant.Slug || gotOccupant.Content != occupant.Content {
+		t.Fatalf("occupant was polluted: %+v", gotOccupant)
 	}
 }

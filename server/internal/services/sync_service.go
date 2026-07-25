@@ -335,16 +335,25 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			}
 
 			existing, exists := existingByPath[itemKey]
+			matchedByPath := exists
 			if !exists && len(parsedItems) > 1 {
 				existing = existingByPath[relPath]
 				exists = existing != nil && existing.Slug == parsed.Slug
+				matchedByPath = exists
 			}
 			if !exists {
 				existing = slugIndex[parsed.ItemType+":"+parsed.Slug]
 				exists = existing != nil
 			}
 			if exists {
-				parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
+				if matchedByPath && capabilityslug.RequiresCanonical(parsed.ItemType) {
+					// SourcePath is the stable identity for registry sync. Keep
+					// any collision suffix already assigned to that row instead
+					// of recomputing the occupied base slug.
+					parsed.Slug = existing.Slug
+				} else {
+					parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
+				}
 			}
 
 			if exists && existing.SourceSHA == contentHash {

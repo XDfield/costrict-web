@@ -567,6 +567,24 @@ func (s *CatalogIngestService) applyChangedEntry(
 	for _, parsed := range scopedParsedItems {
 		key := parsed.ItemType + ":" + parsed.Slug
 		existing, exists := localBySlug[key]
+		if !exists && capabilityslug.RequiresCanonical(parsed.ItemType) {
+			// CatalogEntryDir is the stable identity for catalog rows. A
+			// migration or insert collision may have assigned this row a
+			// suffix that cannot be recovered from the upstream slug. Adopt
+			// the entry's own row before consulting the global slug index.
+			for _, old := range relatedItems {
+				if old.ItemType != parsed.ItemType ||
+					adoptedRowIDs[old.ID] ||
+					!capabilityslug.HasAssignedCollisionSuffix(parsed.Slug, old.Slug) {
+					continue
+				}
+				existing = old
+				exists = true
+				adoptedRowIDs[old.ID] = true
+				parsed.Slug = old.Slug
+				break
+			}
+		}
 		if !exists && !isPluginBundledChild(entry) {
 			// Cross-entry slug collision: another upstream entry already
 			// owns a row with this (item_type, slug). Treat as update of
@@ -607,7 +625,9 @@ func (s *CatalogIngestService) applyChangedEntry(
 			// fallback. Re-adopt the row from this catalog entry before
 			// computing that fallback so re-ingest cannot create duplicates.
 			for _, old := range relatedItems {
-				if old.ItemType != parsed.ItemType || adoptedRowIDs[old.ID] {
+				if old.ItemType != parsed.ItemType ||
+					adoptedRowIDs[old.ID] ||
+					old.Slug != capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, old.ID) {
 					continue
 				}
 				existing = old
