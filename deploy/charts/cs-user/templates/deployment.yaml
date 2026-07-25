@@ -51,6 +51,10 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: CS_USER_HTTP_MODE
               value: "release"
+            {{- if .Values.logs.enabled }}
+            - name: LOG_DIR
+              value: {{ .Values.logs.mountPath | quote }}
+            {{- end }}
             - name: CS_USER_POSTGRES_HOST
               value: {{ .Values.database.host | quote }}
             - name: CS_USER_POSTGRES_PORT
@@ -151,11 +155,18 @@ spec:
           {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
           {{- $jwtSecretName = $chartManagedSecret }}
           {{- end }}
-          {{- if $jwtSecretName }}
+          {{- $hasLogsMount := .Values.logs.enabled }}
+          {{- if or $jwtSecretName $hasLogsMount }}
           volumeMounts:
+            {{- if $jwtSecretName }}
             - name: jwt-signing-key
               mountPath: {{ dir .Values.jwt.signingKeyPath }}
               readOnly: true
+            {{- end }}
+            {{- if $hasLogsMount }}
+            - name: logs
+              mountPath: {{ .Values.logs.mountPath }}
+            {{- end }}
           {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -173,8 +184,9 @@ spec:
       {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
       {{- $jwtSecretName = $chartManagedSecret }}
       {{- end }}
-      {{- if $jwtSecretName }}
+      {{- if or $jwtSecretName .Values.logs.enabled }}
       volumes:
+        {{- if $jwtSecretName }}
         - name: jwt-signing-key
           secret:
             secretName: {{ $jwtSecretName }}
@@ -182,4 +194,9 @@ spec:
               - key: {{ .Values.jwt.signingKey.existingSecretKey }}
                 path: {{ base .Values.jwt.signingKeyPath }}
             defaultMode: 0o400
+        {{- end }}
+        {{- if .Values.logs.enabled }}
+        - name: logs
+          emptyDir: {}
+        {{- end }}
       {{- end }}

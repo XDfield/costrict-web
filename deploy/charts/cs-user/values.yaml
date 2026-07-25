@@ -114,6 +114,14 @@ eventBus:
 tests:
   curlImage: "curlimages/curl:8.10.1"
 
+# Runtime log directory — the binary calls os.MkdirAll("./logs") at startup
+# and fatals out if the dir is not writable by UID 1000 (csuser). Mount an
+# emptyDir here so the dir always exists with correct ownership. Disable
+# only if you have a Dockerfile that pre-creates /app/logs as csuser-owned.
+logs:
+  enabled: true
+  mountPath: /app/logs
+
 # Runtime env vars (CS_USER_ prefix applied in deployment template).
 extraEnv: []
 
