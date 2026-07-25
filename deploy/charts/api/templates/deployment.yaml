@@ -102,6 +102,10 @@ spec:
             - name: USER_SERVICE_BACKEND
               value: {{ .backend | quote }}
             {{- end }}
+            {{- with .writeMode }}
+            - name: USER_SERVICE_WRITE_MODE
+              value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- with .Values.jwtSignMode }}
             - name: JWT_SIGN_MODE
