@@ -89,22 +89,49 @@ type UserWriter interface {
 // GetOrCreateUser's post-login hook fires inside Primary (UserService), so
 // the hook runs exactly once per login — Secondary (RPCWriter) does not
 // re-run it (cs-user has no systemrole package; the hook is server-side).
+//
+// Returned identity authority: GetOrCreateUser is asymmetric — when
+// Secondary succeeds, its *models.User (cs-user's authoritative record) is
+// returned, not Primary's. cs-user's subject_id is the durable handle for
+// all identity-side concerns (employment, permissions, JWT sub). The other
+// methods (SyncUser, BindIdentityToUser, etc.) preserve Primary-authoritative
+// return semantics because their return values do not flow into JWT signing.
 type DualWriter struct {
 	Primary   UserWriter // *UserService — authoritative during canary
 	Secondary UserWriter // *RPCWriter — best-effort replication target
 }
 
-// GetOrCreateUser delegates to Primary (which fires the post-login hook) and
-// best-effort replicates to Secondary. Returns Primary's user + is_new_user
-// flag; Secondary divergence is logged only.
+// GetOrCreateUser delegates to Primary (which fires the post-login hook and
+// writes the local mirror row) and then best-effort replicates to Secondary.
+//
+// Return value: when Secondary succeeds, its user (cs-user's authoritative
+// record) is returned — NOT Primary's. cs-user generates its own stable
+// subject_id (usr_<uuid>) per external_key, distinct from server's
+// locally-generated subject_id. Downstream callers — most notably the OAuth
+// callback's ReissueToken call — must use cs-user's subject_id, because
+// cs-user keys employment_identities / tenant_roles / platform_admins to
+// that ID and embeds it as the JWT `sub`. Returning Primary's ID here would
+// mint a JWT whose `sub` cs-user cannot resolve, dropping enterprise +
+// permission claims on every dual-write-canary login.
+//
+// The post-login hook still fires inside Primary on Primary's user; the local
+// users table still receives Primary's write. Canary divergence is observable
+// by comparing the two databases, not by inspecting this method's return
+// value. When Secondary fails or is nil, Primary's user is returned as a
+// degraded fallback — login proceeds, JWT signing will surface the
+// misalignment via missing enterprise claims (caught by cs-user's
+// external_key fallback at the cs-user side).
 func (d *DualWriter) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error) {
 	u, isNew, err := d.Primary.GetOrCreateUser(ctx, claims)
 	if err != nil {
 		return nil, false, err
 	}
 	if d.Secondary != nil {
-		if _, _, secErr := d.Secondary.GetOrCreateUser(ctx, claims); secErr != nil {
-			logger.Warn("[user-dual-write] secondary GetOrCreateUser failed: %v", secErr)
+		secUser, secIsNew, secErr := d.Secondary.GetOrCreateUser(ctx, claims)
+		if secErr != nil {
+			logger.Warn("[user-dual-write] secondary GetOrCreateUser failed (returning primary user as fallback): %v", secErr)
+		} else if secUser != nil {
+			return secUser, secIsNew, nil
 		}
 	}
 	return u, isNew, nil

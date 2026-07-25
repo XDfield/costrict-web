@@ -383,6 +383,11 @@ type recordingWriter struct {
 	reissueToken           int
 	reissueTokenFn         func(userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
 	primaryError           error // forces a non-nil return from all methods when set
+	// subjectID overrides the default "usr_recording" returned by
+	// GetOrCreateUser. Used to distinguish Primary vs Secondary users in
+	// DualWriter tests where the contract depends on which side's identity
+	// propagates. Empty → default.
+	subjectID string
 }
 
 func (r *recordingWriter) GetOrCreateUser(_ context.Context, _ *JWTClaims) (*models.User, bool, error) {
@@ -390,7 +395,11 @@ func (r *recordingWriter) GetOrCreateUser(_ context.Context, _ *JWTClaims) (*mod
 	if r.primaryError != nil {
 		return nil, false, r.primaryError
 	}
-	return &models.User{SubjectID: "usr_recording"}, r.getOrCreate == 1, nil
+	sid := r.subjectID
+	if sid == "" {
+		sid = "usr_recording"
+	}
+	return &models.User{SubjectID: sid}, r.getOrCreate == 1, nil
 }
 func (r *recordingWriter) SyncUser(_ context.Context, _ *JWTClaims) (*models.User, error) {
 	r.sync++
@@ -494,6 +503,67 @@ func TestDualWriter_SecondaryFailureDoesNotFailRequest(t *testing.T) {
 	}
 	if secondary.getOrCreate != 1 {
 		t.Fatalf("secondary should have been called, got %d", secondary.getOrCreate)
+	}
+}
+
+// TestDualWriter_GetOrCreateUser_AdoptsSecondaryIdentity locks in the
+// cs-user-authoritative return contract: when both sides succeed, the
+// returned *models.User must carry Secondary's subject_id (cs-user's
+// authoritative ID), not Primary's. This is the fix for the dual-write-canary
+// JWT `sub` divergence — server-side ReissueToken must receive cs-user's ID
+// so cs-user can resolve employment_identities / permissions against it.
+func TestDualWriter_GetOrCreateUser_AdoptsSecondaryIdentity(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{subjectID: "usr_server_local"}
+	secondary := &recordingWriter{subjectID: "usr_csuser_authoritative"}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	u, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
+	if err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+	if u == nil || u.SubjectID != "usr_csuser_authoritative" {
+		t.Fatalf("expected secondary subject_id usr_csuser_authoritative, got %v", u)
+	}
+	if primary.getOrCreate != 1 || secondary.getOrCreate != 1 {
+		t.Fatalf("expected both sides called once, got primary=%d secondary=%d",
+			primary.getOrCreate, secondary.getOrCreate)
+	}
+}
+
+// TestDualWriter_GetOrCreateUser_SecondaryFailureFallsBackToPrimary verifies
+// the degraded path: when Secondary fails, Primary's user is returned so
+// login still proceeds. JWT signing will then surface the misalignment via
+// missing enterprise claims (cs-user's external_key fallback catches it on
+// the cs-user side).
+func TestDualWriter_GetOrCreateUser_SecondaryFailureFallsBackToPrimary(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{subjectID: "usr_server_local"}
+	secondary := &recordingWriter{subjectID: "usr_csuser_authoritative", primaryError: fmt.Errorf("cs-user down")}
+	dw := &DualWriter{Primary: primary, Secondary: secondary}
+
+	u, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
+	if err != nil {
+		t.Fatalf("secondary failure must not fail request, got %v", err)
+	}
+	if u == nil || u.SubjectID != "usr_server_local" {
+		t.Fatalf("expected fallback to primary subject_id usr_server_local, got %v", u)
+	}
+}
+
+// TestDualWriter_GetOrCreateUser_NilSecondaryReturnsPrimary verifies the
+// no-canary configuration (Secondary unset) still returns Primary's user.
+func TestDualWriter_GetOrCreateUser_NilSecondaryReturnsPrimary(t *testing.T) {
+	t.Parallel()
+	primary := &recordingWriter{subjectID: "usr_server_local"}
+	dw := &DualWriter{Primary: primary, Secondary: nil}
+
+	u, _, err := dw.GetOrCreateUser(context.Background(), &JWTClaims{UniversalID: "uuid-1"})
+	if err != nil {
+		t.Fatalf("GetOrCreateUser: %v", err)
+	}
+	if u == nil || u.SubjectID != "usr_server_local" {
+		t.Fatalf("expected primary subject_id usr_server_local, got %v", u)
 	}
 }
 
