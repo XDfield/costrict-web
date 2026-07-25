@@ -3492,7 +3492,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.",
+                "description": "Create a capability item via JSON or upload a .zip, .tar.gz, or .tgz archive via multipart/form-data. Invocable capability slugs normalize ASCII separators to lowercase kebab-case while preserving Unicode token characters; names remain unchanged for display. Auto-selects public registry if registryId is omitted. Successful responses include populated tags when available.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -3506,7 +3506,7 @@ const docTemplate = `{
                 "summary": "Create item (direct)",
                 "parameters": [
                     {
-                        "description": "Item data (JSON)",
+                        "description": "Item data (JSON); invocable slugs use Unicode-aware lowercase kebab normalization",
                         "name": "body",
                         "in": "body",
                         "schema": {
@@ -7838,7 +7838,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Create a new skill item in a specific registry",
+                "description": "Create a new capability item in a specific registry. Invocable capability slugs normalize ASCII separators to lowercase kebab-case while preserving Unicode token characters; names remain unchanged for display.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7858,7 +7858,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Item data",
+                        "description": "Item data; invocable slugs use Unicode-aware lowercase kebab normalization",
                         "name": "body",
                         "in": "body",
                         "required": true,

@@ -4215,11 +4215,14 @@ paths:
       consumes:
       - application/json
       - multipart/form-data
-      description: Create a skill item via JSON or upload a .zip, .tar.gz, or .tgz
-        archive via multipart/form-data. Auto-selects public registry if registryId
+      description: Create a capability item via JSON or upload a .zip, .tar.gz,
+        or .tgz archive via multipart/form-data. Invocable capability slugs normalize
+        ASCII separators to lowercase kebab-case while preserving Unicode token characters;
+        names remain unchanged for display. Auto-selects public registry if registryId
         is omitted. Successful responses include populated tags when available.
       parameters:
-      - description: Item data (JSON)
+      - description: Item data (JSON); invocable slugs use Unicode-aware lowercase
+          kebab normalization
         in: body
         name: body
         schema:
@@ -6985,14 +6988,17 @@ paths:
     post:
       consumes:
       - application/json
-      description: Create a new skill item in a specific registry
+      description: Create a new capability item in a specific registry. Invocable
+        capability slugs normalize ASCII separators to lowercase kebab-case while
+        preserving Unicode token characters; names remain unchanged for display.
       parameters:
       - description: Registry ID
         in: path
         name: id
         required: true
         type: string
-      - description: Item data
+      - description: Item data; invocable slugs use Unicode-aware lowercase kebab
+          normalization
         in: body
         name: body
         required: true

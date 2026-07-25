@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/capabilityslug"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/google/uuid"
@@ -324,6 +325,9 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 
 		for _, parsed := range parsedItems {
 			parsed.ContentHash = contentHash
+			if canonicalSlug := capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, ""); canonicalSlug != "" {
+				parsed.Slug = canonicalSlug
+			}
 
 			itemKey := relPath
 			if len(parsedItems) > 1 {
@@ -331,13 +335,29 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 			}
 
 			existing, exists := existingByPath[itemKey]
+			matchedByPath := exists
 			if !exists && len(parsedItems) > 1 {
 				existing = existingByPath[relPath]
 				exists = existing != nil && existing.Slug == parsed.Slug
+				matchedByPath = exists
 			}
 			if !exists {
-				existing = slugIndex[parsed.ItemType+":"+parsed.Slug]
-				exists = existing != nil
+				candidate := slugIndex[parsed.ItemType+":"+parsed.Slug]
+				if candidate != nil &&
+					(!capabilityslug.RequiresCanonical(parsed.ItemType) || candidate.SourcePath == relPath) {
+					existing = candidate
+					exists = true
+				}
+			}
+			if exists {
+				if matchedByPath && capabilityslug.RequiresCanonical(parsed.ItemType) {
+					// SourcePath is the stable identity for registry sync. Keep
+					// any collision suffix already assigned to that row instead
+					// of recomputing the occupied base slug.
+					parsed.Slug = existing.Slug
+				} else {
+					parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, existing.ID)
+				}
 			}
 
 			if exists && existing.SourceSHA == contentHash {
@@ -374,6 +394,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 				existing.Source = parsed.Source
 				existing.ExperienceScore = parsed.ExperienceScore
 				existing.Status = "active"
+				existing.Slug = parsed.Slug
 
 				if s.CategorySvc != nil && parsed.Category != "" {
 					s.CategorySvc.EnsureCategory(parsed.Category, triggerUser)
@@ -431,8 +452,10 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					}
 					meta = normalized
 				}
+				itemID := uuid.New().String()
+				parsed.Slug = capabilityslug.Canonical(parsed.ItemType, parsed.Slug, parsed.Name, itemID)
 				newItem := &models.CapabilityItem{
-					ID:              uuid.New().String(),
+					ID:              itemID,
 					RegistryID:      registryID,
 					RepoID:          syncRepoID(registry.RepoID),
 					Slug:            parsed.Slug,
@@ -451,14 +474,21 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 					CreatedBy:       triggerUser,
 					UpdatedBy:       triggerUser,
 				}
-				if err := s.DB.Create(newItem).Error; err != nil {
+				baseSlug := newItem.Slug
+				createErr := s.DB.Create(newItem).Error
+				for attempt := 2; createErr != nil && isUniqueViolationErr(createErr) && attempt <= 10; attempt++ {
+					newItem.Slug = fmt.Sprintf("%s-%d", baseSlug, attempt)
+					createErr = s.DB.Create(newItem).Error
+				}
+				if createErr != nil {
 					result.Failed++
-					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, err))
+					result.Errors = append(result.Errors, fmt.Sprintf("create %s: %v", relPath, createErr))
 					continue
 				}
 
-				// Index newly created item so later files with the same slug are
-				// treated as updates instead of inserts.
+				// Index the allocated slug and stable source identity. Another
+				// source that canonicalizes to the same base gets its own
+				// collision suffix instead of overwriting this row.
 				existingByPath[newItem.SourcePath] = newItem
 				slugIndex[newItem.ItemType+":"+newItem.Slug] = newItem
 
