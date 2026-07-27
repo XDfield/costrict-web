@@ -301,7 +301,15 @@ func (c *Client) ReadFile(ctx context.Context, owner, repo, branch, path string)
 	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
 	}
-	if fr.Encoding != "base64" || fr.Content == "" {
+	// Empty content is a legitimate "no snapshot" state (multica M2 leaves the
+	// workflow DefinitionSnapshot empty — DB is the source of truth). Treat it as
+	// a missing snapshot, not a transport error. The previous check collapsed
+	// empty-content into "unsupported file encoding", which was misleading and
+	// blocked provisioning for every empty-snapshot workflow.
+	if fr.Content == "" {
+		return nil, nil
+	}
+	if fr.Encoding != "base64" {
 		return nil, fmt.Errorf("%w: unsupported file encoding %q", ErrGiteaUnreachable, fr.Encoding)
 	}
 	// Gitea returns base64 content with embedded newlines every 76 chars
