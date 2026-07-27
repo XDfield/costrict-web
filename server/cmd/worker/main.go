@@ -20,6 +20,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/notification"
 	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/worker"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -103,6 +104,10 @@ func runWorker() {
 	}
 
 	scanJobSvc := &services.ScanJobService{DB: db}
+	storageBackend, err := storage.NewFromEnv(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to initialize storage backend: %v", err)
+	}
 	syncSvc := &services.SyncService{
 		DB:             db,
 		Git:            &services.GitService{TempBaseDir: tmpDir},
@@ -110,6 +115,7 @@ func runWorker() {
 		ScanJobService: scanJobSvc,
 		TagSvc:         &services.TagService{DB: db},
 		CategorySvc:    &services.CategoryService{DB: db},
+		Storage:        storageBackend,
 	}
 
 	concurrency, _ := strconv.Atoi(os.Getenv("WORKER_CONCURRENCY"))

@@ -45,6 +45,18 @@ jobs:
             exit 1
           fi
 
+      - name: Validate API storage modes
+        if: matrix.chart == 'api'
+        run: bash deploy/charts/api/tests/storage_mode_test.sh
+
+      - name: Validate worker storage modes
+        if: matrix.chart == 'worker'
+        run: bash deploy/charts/worker/tests/storage_mode_test.sh
+
+      - name: Validate API and worker storage contract
+        if: matrix.chart == 'worker'
+        run: bash deploy/charts/tests/storage_contract_test.sh
+
       - name: Show rendered manifest
         run: |
           echo "### Rendered manifest for ${{ matrix.chart }}" >> $GITHUB_STEP_SUMMARY

@@ -15,6 +15,7 @@ import (
 // stored row carries non-empty values.
 func TestGetItem_HealthEvaluationPresent(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-he1", Name: "he-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -61,6 +62,7 @@ func TestGetItem_HealthEvaluationPresent(t *testing.T) {
 // Either way the client never sees populated panels for an unscored item.
 func TestGetItem_HealthEvaluationOmittedWhenEmpty(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-he2", Name: "he-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})

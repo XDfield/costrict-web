@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -67,18 +66,19 @@ func UploadArtifact(c *gin.Context) {
 	}
 
 	filename := filepath.Base(header.Filename)
+	artifactID := uuid.New().String()
 	var storageKey string
 	if repoID != "" {
-		storageKey = fmt.Sprintf("%s/%s/v%s/%s", repoID, itemID, version, filename)
+		storageKey = fmt.Sprintf("%s/%s/artifacts/%s/%s", repoID, itemID, artifactID, filename)
 	} else {
-		storageKey = fmt.Sprintf("%s/v%s/%s", itemID, version, filename)
+		storageKey = fmt.Sprintf("%s/artifacts/%s/%s", itemID, artifactID, filename)
 	}
 	fileSize := header.Size
 
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	if err := StorageBackend.Put(ctx, storageKey, tee, fileSize); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store file"})
 		return
@@ -92,13 +92,13 @@ func UploadArtifact(c *gin.Context) {
 			return err
 		}
 		artifact = models.CapabilityArtifact{
-			ID:              uuid.New().String(),
+			ID:              artifactID,
 			ItemID:          itemID,
 			Filename:        filename,
 			FileSize:        fileSize,
 			ChecksumSHA256:  checksum,
 			MimeType:        header.Header.Get("Content-Type"),
-			StorageBackend:  "local",
+			StorageBackend:  storage.KindOf(StorageBackend),
 			StorageKey:      storageKey,
 			ArtifactVersion: version,
 			IsLatest:        true,
@@ -108,7 +108,6 @@ func UploadArtifact(c *gin.Context) {
 		return tx.Create(&artifact).Error
 	})
 	if err != nil {
-		StorageBackend.Delete(context.Background(), storageKey)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create artifact record"})
 		return
 	}
@@ -134,8 +133,12 @@ func DownloadArtifact(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Artifact not found"})
 		return
 	}
+	if err := storage.ValidateRecordedBackend(artifact.StorageBackend, StorageBackend); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Stored file is unavailable with the configured storage backend"})
+		return
+	}
 
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	reader, _, err := StorageBackend.Get(ctx, artifact.StorageKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve file"})
@@ -180,7 +183,7 @@ func ListArtifacts(c *gin.Context) {
 
 // DeleteArtifact godoc
 // @Summary      Delete artifact
-// @Description  Delete an artifact by ID and remove its stored file
+// @Description  Delete an artifact record by ID. Stored objects are retained for offline garbage collection.
 // @Tags         artifacts
 // @Produce      json
 // @Param        id   path      string  true  "Artifact ID"
@@ -196,9 +199,6 @@ func DeleteArtifact(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Artifact not found"})
 		return
 	}
-
-	ctx := context.Background()
-	StorageBackend.Delete(ctx, artifact.StorageKey)
 
 	if result := db.Delete(&artifact); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete artifact"})

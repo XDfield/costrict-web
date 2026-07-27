@@ -126,11 +126,7 @@ func main() {
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes)
 	handlers.InitUserModule(userModule)
 
-	storagePath := os.Getenv("ARTIFACT_STORAGE_PATH")
-	if storagePath == "" {
-		storagePath = "./data/artifacts"
-	}
-	storageBackend, err := storage.NewLocalBackend(storagePath)
+	storageBackend, err := storage.NewFromEnv(ctx)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage backend: %v", err)
 	}
@@ -181,6 +177,7 @@ func main() {
 		TagSvc:         tagSvc,
 		CategorySvc:    categorySvc,
 		ScanJobService: scanJobSvc,
+		Storage:        storageBackend,
 	}
 	adminImportModule := adminimport.New(db, catalogIngestSvc, storageBackend)
 	importRunner := adminImportModule.Runner()

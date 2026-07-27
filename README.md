@@ -162,6 +162,7 @@ bash scripts/download-cs-cloud.sh
 | `INTERNAL_SECRET` | — | 服务间共享密钥（Gateway ↔ Server） |
 | `FRONTEND_URLS` | — | 前端 CORS 白名单（逗号分隔） |
 | `JWT_JWKS_URL` | — | Casdoor JWKS 公钥地址 |
+| `ARTIFACT_STORAGE_BACKEND` | `local` | 非文本存储模式，只支持 `local` 或 `s3`；两种模式的部署配置见 [非文本制品存储部署](docs/deployment/artifact-storage-local-s3.md) |
 | `SECURITY_SCAN_SHORT_CIRCUIT_DISABLED` | 空（启用短路） | 设为 `true` 强制所有 sync/create/update 触发 LLM 扫描 |
 | `WORKER_CONCURRENCY` | `3` | sync worker 并发数 |
 | `WORKER_POLL_INTERVAL_SECONDS` | `5` | sync worker 轮询间隔 |
@@ -214,13 +215,19 @@ bash scripts/download-cs-cloud.sh
 - [`SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md) —— 系统总体设计
 - [`DATABASE_DESIGN.md`](docs/DATABASE_DESIGN.md) —— 数据库设计
 - [`CATALOG_INGEST.md`](docs/CATALOG_INGEST.md) —— Catalog 同步链路
+- [`SKILL_DOWNLOAD_API.md`](docs/SKILL_DOWNLOAD_API.md) —— Skill 主文件与完整文件树下载接口
 - [`SCAN_SKILL.md`](docs/SCAN_SKILL.md) —— 安全扫描机制
 - [`USAGE_ES_INTEGRATION_REQUIREMENTS.md`](docs/USAGE_ES_INTEGRATION_REQUIREMENTS.md) —— 用量数据 ES 集成
 - [`CLAUDE_CODE_PLUGIN_SPEC.md`](docs/CLAUDE_CODE_PLUGIN_SPEC.md) —— Claude Code Plugin 规范
 
 ### 提案（`docs/proposals/`）
 
-- `HTTP_TUNNEL_DESIGN.md` —— HTTP 隧道分层架构
+- [`HTTP_TUNNEL_DESIGN.md`](docs/proposals/HTTP_TUNNEL_DESIGN.md) —— HTTP 隧道分层架构
+- [`RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md`](docs/proposals/RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md) —— Local / 受限 S3 最小非文本存储契约与验收边界
+
+### 部署文档（`docs/deployment/`）
+
+- [`artifact-storage-local-s3.md`](docs/deployment/artifact-storage-local-s3.md) —— Local / S3 二选一配置、迁移、验收与回滚
 
 ### API 文档
 
@@ -262,11 +269,15 @@ helm install costrict-web . --values values.yaml
 - `costrict-proxy`（session proxy）
 - `wecom-bot-proxy`
 
+非文本 asset/artifact 的 Local / S3 配置见
+[`docs/deployment/artifact-storage-local-s3.md`](docs/deployment/artifact-storage-local-s3.md)。
+
 ### CI/CD
 
 GitHub Actions 工作流：
 - `build-images` —— 多服务镜像构建
 - `release-charts` —— Helm Chart 发布
+- `storage-e2e` —— 真实 MinIO 的受限 S3 Put/Get 与服务端下载链路验证；详见 [workflow 文档](.github/workflows/README.md#storage-e2eyaml)
 
 ---
 

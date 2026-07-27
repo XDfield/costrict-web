@@ -6,16 +6,57 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 )
 
 type Backend interface {
 	Put(ctx context.Context, key string, reader io.Reader, size int64) error
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
-	Delete(ctx context.Context, key string) error
-	PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error)
-	Exists(ctx context.Context, key string) (bool, error)
+}
+
+const (
+	KindLocal = "local"
+	KindS3    = "s3"
+)
+
+// ConfiguredBackend keeps the persisted backend discriminator together with
+// the minimal object IO implementation used by the application.
+type ConfiguredBackend struct {
+	Kind    string
+	Backend Backend
+}
+
+func (b *ConfiguredBackend) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+	return b.Backend.Put(ctx, key, reader, size)
+}
+
+func (b *ConfiguredBackend) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	return b.Backend.Get(ctx, key)
+}
+
+// KindOf returns the value stored in storage_backend. Direct test backends and
+// legacy callers are treated as local; production construction always returns
+// a ConfiguredBackend.
+func KindOf(backend Backend) string {
+	if configured, ok := backend.(*ConfiguredBackend); ok {
+		return configured.Kind
+	}
+	return KindLocal
+}
+
+// ValidateRecordedBackend rejects a DB mapping that belongs to a different
+// deployment mode. Empty values are legacy local rows.
+func ValidateRecordedBackend(recorded string, backend Backend) error {
+	if backend == nil {
+		return fmt.Errorf("storage backend is not configured")
+	}
+	if recorded == "" {
+		recorded = KindLocal
+	}
+	configured := KindOf(backend)
+	if recorded != configured {
+		return fmt.Errorf("stored object uses backend %q, configured backend is %q", recorded, configured)
+	}
+	return nil
 }
 
 type LocalBackend struct {
@@ -32,7 +73,8 @@ func NewLocalBackend(basePath string) (*LocalBackend, error) {
 func (l *LocalBackend) resolvePath(key string) (string, error) {
 	fullPath := filepath.Join(l.BasePath, filepath.FromSlash(key))
 	cleanPath := filepath.Clean(fullPath)
-	if !strings.HasPrefix(cleanPath, filepath.Clean(l.BasePath)) {
+	rel, err := filepath.Rel(filepath.Clean(l.BasePath), cleanPath)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) || len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator) {
 		return "", fmt.Errorf("invalid path: path traversal detected")
 	}
 	return cleanPath, nil
@@ -73,28 +115,4 @@ func (l *LocalBackend) Get(ctx context.Context, key string) (io.ReadCloser, int6
 		return nil, 0, err
 	}
 	return f, info.Size(), nil
-}
-
-func (l *LocalBackend) Delete(ctx context.Context, key string) error {
-	fullPath, err := l.resolvePath(key)
-	if err != nil {
-		return err
-	}
-	return os.Remove(fullPath)
-}
-
-func (l *LocalBackend) PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	return "", nil
-}
-
-func (l *LocalBackend) Exists(ctx context.Context, key string) (bool, error) {
-	fullPath, err := l.resolvePath(key)
-	if err != nil {
-		return false, err
-	}
-	_, err = os.Stat(fullPath)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return err == nil, err
 }

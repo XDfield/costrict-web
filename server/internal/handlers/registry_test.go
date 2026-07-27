@@ -12,6 +12,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 	"gorm.io/driver/sqlite"
@@ -154,7 +155,7 @@ func setupTestDB(t *testing.T) func() {
 			version_id      TEXT NOT NULL,
 			rel_path        TEXT NOT NULL,
 			text_content    TEXT,
-			storage_backend TEXT DEFAULT 'local',
+			storage_backend TEXT DEFAULT '',
 			storage_key     TEXT,
 			mime_type       TEXT,
 			file_size       INTEGER DEFAULT 0,
@@ -183,7 +184,7 @@ func setupTestDB(t *testing.T) func() {
 			item_id         TEXT NOT NULL,
 			rel_path        TEXT NOT NULL,
 			text_content    TEXT,
-			storage_backend TEXT DEFAULT 'local',
+			storage_backend TEXT DEFAULT '',
 			storage_key     TEXT,
 			mime_type       TEXT,
 			file_size       INTEGER DEFAULT 0,
@@ -198,7 +199,7 @@ func setupTestDB(t *testing.T) func() {
 			file_size        INTEGER NOT NULL,
 			checksum_sha256  TEXT NOT NULL,
 			mime_type        TEXT,
-			storage_backend  TEXT DEFAULT 'local',
+			storage_backend  TEXT DEFAULT '',
 			storage_key      TEXT NOT NULL,
 			artifact_version TEXT NOT NULL,
 			is_latest        INTEGER DEFAULT 0,
@@ -1038,6 +1039,110 @@ func TestDownloadRegistryFile_BinaryAsset(t *testing.T) {
 	}
 	if !bytes.Equal(w.Body.Bytes(), binaryData) {
 		t.Fatalf("unexpected body: %v", w.Body.Bytes())
+	}
+}
+
+func TestDownloadRegistryFile_BackendMismatchDoesNotRead(t *testing.T) {
+	defer setupTestDB(t)()
+	backend := newMemBackend()
+	backend.data["test-key"] = []byte("must not be read")
+	oldBackend := StorageBackend
+	StorageBackend = &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: backend}
+	defer func() { StorageBackend = oldBackend }()
+
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: PublicRegistryID, Name: "public",
+		SourceType: "internal", RepoID: "public", OwnerID: "system",
+	})
+	database.DB.Create(&models.CapabilityItem{
+		ID: "item-backend-mismatch", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "mismatch-skill", ItemType: "skill",
+		Name: "Mismatch Skill", Status: "active", CreatedBy: "system",
+		Content: "# Mismatch Skill", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-backend-mismatch", ItemID: "item-backend-mismatch",
+		RelPath: "image.png", StorageBackend: storage.KindLocal, StorageKey: "test-key",
+		MimeType: "image/png", FileSize: 16, ContentSHA: "sha-binary",
+	})
+
+	w := get(newRouter(""), "/api/registry/public/skill/mismatch-skill/image.png")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if backend.GetCount() != 0 {
+		t.Fatalf("backend mismatch must not call Get, got %d calls", backend.GetCount())
+	}
+}
+
+func TestDownloadPluginZip_BackendMismatchDoesNotRead(t *testing.T) {
+	defer setupTestDB(t)()
+	backend := newMemBackend()
+	backend.data["plugin-ok-key"] = []byte("matching asset")
+	backend.data["plugin-key"] = []byte("must not be read")
+	oldBackend := StorageBackend
+	StorageBackend = &storage.ConfiguredBackend{Kind: storage.KindS3, Backend: backend}
+	defer func() { StorageBackend = oldBackend }()
+
+	database.DB.Create(&models.CapabilityItem{
+		ID: "plugin-backend-mismatch", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "mismatch-plugin", ItemType: "plugin",
+		Name: "Mismatch Plugin", Status: "active", CreatedBy: "system",
+		Content: "# Mismatch Plugin", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "plugin-asset-matching", ItemID: "plugin-backend-mismatch",
+		RelPath: "first.png", StorageBackend: storage.KindS3, StorageKey: "plugin-ok-key",
+		MimeType: "image/png", FileSize: 14, ContentSHA: "sha-matching",
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "plugin-asset-backend-mismatch", ItemID: "plugin-backend-mismatch",
+		RelPath: "image.png", StorageBackend: storage.KindLocal, StorageKey: "plugin-key",
+		MimeType: "image/png", FileSize: 16, ContentSHA: "sha-binary",
+	})
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/plugins/:slug/download", DownloadPluginZip)
+	w := get(router, "/api/plugins/mismatch-plugin/download")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if backend.GetCount() != 0 {
+		t.Fatalf("backend mismatch must not call Get, got %d calls", backend.GetCount())
+	}
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "" {
+		t.Fatalf("zip response headers must not be written before validation, got %q", disposition)
+	}
+}
+
+func TestDownloadPluginZip_LegacyMappingRequiresConfiguredBackend(t *testing.T) {
+	defer setupTestDB(t)()
+	oldBackend := StorageBackend
+	StorageBackend = nil
+	defer func() { StorageBackend = oldBackend }()
+
+	database.DB.Create(&models.CapabilityItem{
+		ID: "plugin-legacy-no-backend", RegistryID: PublicRegistryID, RepoID: "public",
+		Slug: "legacy-plugin", ItemType: "plugin",
+		Name: "Legacy Plugin", Status: "active", CreatedBy: "system",
+		Content: "# Legacy Plugin", Metadata: datatypes.JSON([]byte("{}")),
+	})
+	database.DB.Create(&models.CapabilityAsset{
+		ID: "plugin-asset-legacy-no-backend", ItemID: "plugin-legacy-no-backend",
+		RelPath: "image.png", StorageKey: "plugin-key",
+		MimeType: "image/png", FileSize: 16, ContentSHA: "sha-binary",
+	})
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/plugins/:slug/download", DownloadPluginZip)
+	w := get(router, "/api/plugins/legacy-plugin/download")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if disposition := w.Header().Get("Content-Disposition"); disposition != "" {
+		t.Fatalf("zip response headers must not be written before validation, got %q", disposition)
 	}
 }
 

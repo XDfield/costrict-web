@@ -35,6 +35,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			source_kind TEXT NOT NULL DEFAULT 'url',
 			source_url TEXT,
 			filename TEXT,
+			storage_backend TEXT NOT NULL DEFAULT '',
 			storage_key TEXT,
 			file_size INTEGER DEFAULT 0,
 			status TEXT NOT NULL DEFAULT 'pending',

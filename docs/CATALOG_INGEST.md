@@ -267,3 +267,7 @@ API 侧 `ItemResponse.description` 字段会按请求 locale resolve：
 - 下游 CLI：`server/cmd/migrate/main.go` → `ingestUpstreamCatalog`
 - 上游 bundle 构造：`costrict-skills-repo/scripts/build_catalog_bundle.py` + `build_catalog_bundle.md`
 - 上游下载流程：`costrict-skills-repo/scripts/download_catalog.py` + `download_catalog.md`
+- 非文本存储契约：[Local / 受限 S3 非文本存储适配（二期）](./proposals/RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md)
+- 部署与验收：[非文本制品存储部署](./deployment/artifact-storage-local-s3.md)
+- 完整文件树下载：[SKILL 下载接口](./SKILL_DOWNLOAD_API.md)
+- 本地真实 MinIO E2E：`bash server/test/storage-e2e/run.sh`

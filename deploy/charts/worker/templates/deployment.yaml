@@ -1,3 +1,20 @@
+{{- $artifactBackend := .Values.artifactStorage.backend | default "local" -}}
+{{- if not (has $artifactBackend (list "local" "s3")) -}}
+{{- fail (printf "artifactStorage.backend must be one of local or s3, got %q" $artifactBackend) -}}
+{{- end -}}
+{{- if eq $artifactBackend "local" -}}
+{{- $_ := required "artifactStorage.local.existingClaim is required when artifactStorage.backend=local" .Values.artifactStorage.local.existingClaim -}}
+{{- $_ := required "artifactStorage.local.mountPath is required when artifactStorage.backend=local" .Values.artifactStorage.local.mountPath -}}
+{{- else -}}
+{{- $_ := required "artifactStorage.s3.endpoint is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.endpoint -}}
+{{- $_ := required "artifactStorage.s3.bucket is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.bucket -}}
+{{- $_ := required "artifactStorage.s3.region is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.region -}}
+{{- $_ := required "artifactStorage.s3.existingSecret is required when artifactStorage.backend=s3" .Values.artifactStorage.s3.existingSecret -}}
+{{- if .Values.artifactStorage.s3.ca.existingSecret -}}
+{{- $_ := required "artifactStorage.s3.ca.key is required when artifactStorage.s3.ca.existingSecret is set" .Values.artifactStorage.s3.ca.key -}}
+{{- $_ := required "artifactStorage.s3.ca.mountPath is required when artifactStorage.s3.ca.existingSecret is set" .Values.artifactStorage.s3.ca.mountPath -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,6 +35,7 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ toJson .Values.config | sha256sum }}
+        checksum/artifact-storage: {{ toJson .Values.artifactStorage | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -69,6 +87,46 @@ spec:
                   name: {{ .Values.redis.existingSecret }}
                   key: {{ .Values.redis.existingSecretKey }}
             {{- end }}
+            - name: ARTIFACT_STORAGE_BACKEND
+              value: {{ $artifactBackend | quote }}
+            {{- if eq $artifactBackend "local" }}
+            - name: ARTIFACT_STORAGE_PATH
+              value: {{ .Values.artifactStorage.local.mountPath | quote }}
+            {{- else }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.artifactStorage.s3.endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.artifactStorage.s3.bucket | quote }}
+            - name: S3_REGION
+              value: {{ .Values.artifactStorage.s3.region | quote }}
+            - name: S3_FORCE_PATH_STYLE
+              value: {{ .Values.artifactStorage.s3.forcePathStyle | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifactStorage.s3.existingSecret }}
+                  key: {{ .Values.artifactStorage.s3.accessKeySecretKey }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifactStorage.s3.existingSecret }}
+                  key: {{ .Values.artifactStorage.s3.secretKeySecretKey }}
+            {{- if .Values.artifactStorage.s3.sessionTokenSecretKey }}
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifactStorage.s3.existingSecret }}
+                  key: {{ .Values.artifactStorage.s3.sessionTokenSecretKey }}
+            {{- end }}
+            - name: AWS_REQUEST_CHECKSUM_CALCULATION
+              value: "when_required"
+            - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+              value: "when_required"
+            {{- if .Values.artifactStorage.s3.ca.existingSecret }}
+            - name: S3_CA_FILE
+              value: {{ printf "%s/%s" (trimSuffix "/" .Values.artifactStorage.s3.ca.mountPath) .Values.artifactStorage.s3.ca.key | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -78,6 +136,34 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if or (eq $artifactBackend "local") (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) }}
+          volumeMounts:
+            {{- if eq $artifactBackend "local" }}
+            - name: artifacts-storage
+              mountPath: {{ .Values.artifactStorage.local.mountPath }}
+            {{- end }}
+            {{- if and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret }}
+            - name: artifact-storage-ca
+              mountPath: {{ .Values.artifactStorage.s3.ca.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or (eq $artifactBackend "local") (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) }}
+      volumes:
+        {{- if eq $artifactBackend "local" }}
+        - name: artifacts-storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.artifactStorage.local.existingClaim }}
+        {{- end }}
+        {{- if and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret }}
+        - name: artifact-storage-ca
+          secret:
+            secretName: {{ .Values.artifactStorage.s3.ca.existingSecret }}
+            items:
+              - key: {{ .Values.artifactStorage.s3.ca.key }}
+                path: {{ .Values.artifactStorage.s3.ca.key }}
+        {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

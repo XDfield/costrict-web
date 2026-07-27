@@ -105,7 +105,9 @@ func (p *WorkerPool) processOne() {
 		DryRun:      payload.DryRun,
 	}
 
-	result, syncErr := p.SyncService.SyncRegistry(context.Background(), job.RegistryID, opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	result, syncErr := p.SyncService.SyncRegistry(ctx, job.RegistryID, opts)
 	if syncErr != nil {
 		logger.Error("sync job failed jobID=%s registryID=%s err=%v", job.ID, job.RegistryID, syncErr)
 	}

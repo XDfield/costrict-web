@@ -3,6 +3,11 @@
 > - 状态：✅ 大部分已完成
 > - 实现位置：`server/internal/models/models.go`（`capability_registries`, `capability_items`, `capability_versions`, `capability_assets`, `capability_artifacts` 表）；`server/internal/handlers/`（artifact、registry、item 相关处理器）
 > - 说明：提案中的技能数据模型已完整落地，核心 CRUD 接口均已实现。部分高级特性（如精细化权限控制、多租户隔离策略）需结合业务需求进一步确认。
+>
+> **现行存储契约：** 本文关于 `PresignURL`、完整对象存储能力等早期设想已被
+> [Local / 受限 S3 非文本存储适配（二期）](./RESTRICTED_S3_OBJECT_STORAGE_DESIGN.md)
+> 取代。当前非文本存储只支持精确 Put/Get，路径映射由 PostgreSQL 维护，
+> 删除为 DB 逻辑删除；以下历史正文不据此重写。
 
 ---
 

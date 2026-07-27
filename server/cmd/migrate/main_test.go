@@ -100,7 +100,7 @@ func newMigrateTestDB(t *testing.T) *gorm.DB {
 			item_id TEXT NOT NULL,
 			rel_path TEXT NOT NULL,
 			text_content TEXT,
-			storage_backend TEXT DEFAULT 'local',
+			storage_backend TEXT DEFAULT '',
 			storage_key TEXT,
 			mime_type TEXT,
 			file_size INTEGER DEFAULT 0,
