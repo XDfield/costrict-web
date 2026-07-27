@@ -12,6 +12,7 @@
 package user
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -39,6 +40,22 @@ func normalizeJWTClaims(claims *models.JWTClaims) *models.JWTClaims {
 		}
 	}
 	return claims
+}
+
+// extractEnterpriseUID pulls the enterprise_uid signal from a JWTClaims. It's
+// the lookup key for the employment_identities reverse-lookup branch in
+// GetOrCreateUser (path 6). Reads from ExternalClaims directly — server /
+// callers are responsible for populating this key when they want pre-provisioned
+// users to be reattached on real OAuth login. Returns "" when absent.
+func extractEnterpriseUID(claims *models.JWTClaims) string {
+	if claims == nil || len(claims.ExternalClaims) == 0 {
+		return ""
+	}
+	raw, ok := claims.ExternalClaims["enterprise_uid"]
+	if !ok || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
 }
 
 // buildExternalKey derives the durable identity handle from a claim set. The

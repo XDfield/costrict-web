@@ -28,6 +28,7 @@ type stubUserService struct {
 	searchUsers            func(context.Context, string, int) ([]*models.User, error)
 	searchUsersByEmpNo     func(context.Context, string, int) ([]*models.User, error)
 	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, bool, error)
+	provisionByEnterprise  func(context.Context, user.ProvisionByEnterpriseParams) (*models.User, bool, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
 	transfer               func(context.Context, string, string, string) error
 	unbind                 func(context.Context, string, string) error
@@ -72,6 +73,12 @@ func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWT
 		panic("stubUserService.getOrCreate not wired")
 	}
 	return s.getOrCreate(ctx, claims)
+}
+func (s stubUserService) ProvisionByEnterprise(ctx context.Context, params user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+	if s.provisionByEnterprise == nil {
+		panic("stubUserService.provisionByEnterprise not wired")
+	}
+	return s.provisionByEnterprise(ctx, params)
 }
 func (s stubUserService) BindIdentityToUser(ctx context.Context, sub string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error {
 	if s.bindIdentity == nil {
@@ -151,6 +158,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	// can exercise the same gin path tree (esp. the :subject_id vs. static
 	// suffix distinction gin enforces).
 	r.POST("/api/internal/users/get-or-create", api.GetOrCreate)
+	r.POST("/api/internal/users/provision", api.Provision)
 	r.POST("/api/internal/users/transfer-identity", api.TransferIdentity)
 	r.POST("/api/internal/users/:subject_id/bind-identity", api.BindIdentity)
 	r.DELETE("/api/internal/users/:subject_id/identities/:provider", api.UnbindIdentity)
@@ -457,6 +465,118 @@ func TestGetOrCreate_NilClaimsRejected(t *testing.T) {
 	w := doJSON(t, r, http.MethodPost, "/api/internal/users/get-or-create", map[string]any{})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProvision_HappyPath(t *testing.T) {
+	var captured user.ProvisionByEnterpriseParams
+	_, r := newUsersAPI(stubUserService{
+		provisionByEnterprise: func(_ context.Context, p user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+			captured = p
+			return &models.User{SubjectID: "usr-pre-1", Username: "ext_EXT-1", TenantID: "acme"}, true, nil
+		},
+	})
+
+	body := provisionRequest{
+		EnterpriseProvider: "idtrust",
+		EnterpriseUID:      "EXT-1",
+		DisplayName:        "张三",
+		Email:              "z@example.com",
+		EmployeeNumber:     "EMP-1",
+		ExternalClaims:     map[string]any{"department": "研发"},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/provision", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if captured.EnterpriseProvider != "idtrust" || captured.EnterpriseUID != "EXT-1" {
+		t.Errorf("params not propagated: %+v", captured)
+	}
+	if captured.EmployeeNumber != "EMP-1" {
+		t.Errorf("EmployeeNumber not propagated: %q", captured.EmployeeNumber)
+	}
+	if captured.ExternalClaims["department"] != "研发" {
+		t.Errorf("ExternalClaims not propagated: %v", captured.ExternalClaims)
+	}
+
+	var resp struct {
+		User      models.User `json:"user"`
+		IsNewUser bool        `json:"is_new_user"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.User.SubjectID != "usr-pre-1" {
+		t.Errorf("SubjectID: got %q, want usr-pre-1", resp.User.SubjectID)
+	}
+	if !resp.IsNewUser {
+		t.Errorf("IsNewUser: got false, want true")
+	}
+}
+
+func TestProvision_MissingFieldsRejected(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{})
+
+	// Empty body — required-field binding fails.
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/provision", map[string]any{})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty body: status = %d, want 400", w.Code)
+	}
+
+	// Missing enterprise_uid.
+	w = doJSON(t, r, http.MethodPost, "/api/internal/users/provision", map[string]any{
+		"enterprise_provider": "idtrust",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing uid: status = %d, want 400", w.Code)
+	}
+}
+
+func TestProvision_ServiceParamErrorMapsTo400(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		provisionByEnterprise: func(_ context.Context, _ user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+			return nil, false, errors.New("ProvisionByEnterprise: empty EnterpriseProvider")
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/provision", map[string]any{
+		"enterprise_provider": "idtrust",
+		"enterprise_uid":      "EXT-1",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProvision_CollisionMapsTo409(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		provisionByEnterprise: func(_ context.Context, _ user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+			return nil, false, user.ErrEnterpriseUIDCollision
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/provision", map[string]any{
+		"enterprise_provider": "idtrust",
+		"enterprise_uid":      "EXT-1",
+	})
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProvision_InternalErrorMapsTo500(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		provisionByEnterprise: func(_ context.Context, _ user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+			return nil, false, errors.New("db connection lost")
+		},
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/provision", map[string]any{
+		"enterprise_provider": "idtrust",
+		"enterprise_uid":      "EXT-1",
+	})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500, body=%s", w.Code, w.Body.String())
 	}
 }
 
