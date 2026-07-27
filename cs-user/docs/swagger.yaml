@@ -184,6 +184,16 @@ definitions:
         type: string
       phone:
         type: string
+      profile_completed_at:
+        description: |-
+          ProfileCompletedAt is NULL until the user finishes the first-time
+          registration flow (custom username + display_name per
+          REGISTRATION_PROFILE_DESIGN). The server's RequireProfileComplete
+          middleware consults this column (via cs-user RPC) to gate API access.
+          Existing rows are backfilled to created_at by the migration that
+          introduces the column, so only users created post-migration can be
+          gated.
+        type: string
       provider_user_id:
         type: string
       status:
@@ -285,6 +295,13 @@ definitions:
       organization:
         type: string
     type: object
+  github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
+    type: object
   github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary:
     properties:
       display_name:
@@ -292,6 +309,15 @@ definitions:
       role:
         type: string
       team_id:
+        type: string
+    type: object
+  internal_handlers.adminUpdateProfileRequest:
+    properties:
+      display_name:
+        type: string
+      operator_id:
+        type: string
+      username:
         type: string
     type: object
   internal_handlers.adminUserListItem:
@@ -387,6 +413,15 @@ definitions:
     required:
     - ids
     type: object
+  internal_handlers.completeRegistrationRequest:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
+    required:
+    - username
+    type: object
   internal_handlers.platformCreateTenantRequest:
     properties:
       display_name:
@@ -425,6 +460,29 @@ definitions:
         type: string
       settings:
         type: string
+    type: object
+  internal_handlers.provisionRequest:
+    properties:
+      display_name:
+        type: string
+      email:
+        type: string
+      employee_number:
+        type: string
+      enterprise_provider:
+        type: string
+      enterprise_uid:
+        type: string
+      external_claims:
+        additionalProperties: {}
+        type: object
+      phone:
+        type: string
+      username:
+        type: string
+    required:
+    - enterprise_provider
+    - enterprise_uid
     type: object
   internal_handlers.reissueTokenRequest:
     properties:
@@ -517,6 +575,13 @@ definitions:
     required:
     - external_key
     - target_user_subject_id
+    type: object
+  internal_handlers.updateProfileRequest:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
     type: object
 host: localhost:8082
 info:
@@ -1375,6 +1440,67 @@ paths:
       summary: Bind an identity to a user
       tags:
       - users
+  /api/internal/users/{subject_id}/complete-registration:
+    post:
+      consumes:
+      - application/json
+      description: Sets username + display_name and marks profile_completed_at = NOW.
+        One-shot — calling again returns 409. Username is tenant-scoped unique.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Username (required) + display_name (optional)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.completeRegistrationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Finish first-time registration
+      tags:
+      - users
   /api/internal/users/{subject_id}/identities/{provider}:
     delete:
       description: Soft-deletes every identity matching the provider on the user and
@@ -1476,6 +1602,129 @@ paths:
       security:
       - InternalToken: []
       summary: Get a user's identity profile (admin)
+      tags:
+      - users
+      - admin
+    post:
+      consumes:
+      - application/json
+      description: User self-edit accepts display_name only. Admin override (R5) may
+        additionally set username. username validation + tenant-scoped uniqueness
+        enforced.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Patches to apply
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.updateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update user profile (display_name self-edit or admin override)
+      tags:
+      - users
+    put:
+      consumes:
+      - application/json
+      description: Admin-side profile override (R5 of REGISTRATION_PROFILE_DESIGN).
+        Unlike the user-self POST /profile (display_name only), this path may mutate
+        BOTH username and display_name and works regardless of profile_completed_at.
+        username changes are tenant-scoped-unique-checked; collisions return 409.
+        operator_id is the admin's subject_id, recorded on the audit row. Used by
+        @server's PUT /api/admin/users/:id/profile.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Fields to override (at least one required)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.adminUpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserProfileDTO'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Override username / display_name (admin)
       tags:
       - users
       - admin
@@ -1811,6 +2060,64 @@ paths:
       tags:
       - users
       - admin
+  /api/internal/users/provision:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent. For external modules holding their own enterprise identity
+        id. Looks up employment_identities.(tenant_id, enterprise_uid); creates a
+        synthetic-claim user when not found. The reverse-lookup branch in GetOrCreateUser
+        reattaches the pre-provisioned subject_id on future OAuth login.
+      parameters:
+      - description: Target tenant
+        in: header
+        name: X-Tenant-Id
+        required: true
+        type: string
+      - description: Enterprise identity + optional profile fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.provisionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              is_new_user:
+                type: boolean
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Pre-create user by enterprise identity (no Casdoor claim required)
+      tags:
+      - users
   /api/internal/users/reissue-token:
     post:
       consumes:
@@ -1916,6 +2223,33 @@ paths:
       summary: Search active users
       tags:
       - users
+  /api/internal/users/suggest-profile:
+    post:
+      consumes:
+      - application/json
+      description: Pure-function hint generator (R4 of REGISTRATION_PROFILE_DESIGN).
+        Given the JWT claims Casdoor minted after brokering the upstream IdP, returns
+        a suggested {username, display_name} the form can pre-fill. Always advisory
+        — caller must still validate.
+      parameters:
+      - description: JWT claims
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion'
+      security:
+      - InternalToken: []
+      summary: Suggest registration profile from IdP claims
+      tags:
+      - users
   /api/internal/users/transfer-identity:
     post:
       consumes:
@@ -1958,6 +2292,49 @@ paths:
       security:
       - InternalToken: []
       summary: Transfer an identity to another user
+      tags:
+      - users
+  /api/internal/users/username-available:
+    get:
+      description: Tenant-scoped uniqueness check + format/reserved-word validation.
+        exclude_subject_id lets callers omit the current user.
+      parameters:
+      - description: Candidate username
+        in: query
+        name: username
+        required: true
+        type: string
+      - description: Subject ID to exclude from collision check
+        in: query
+        name: exclude_subject_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              available:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Check username availability
       tags:
       - users
   /healthz:
