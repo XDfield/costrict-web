@@ -264,6 +264,14 @@ func (c *Client) WriteFile(ctx context.Context, owner, repo, branch, path string
 	reqPath := repoPath(owner, repo) + "/contents/" + url.PathEscape(path)
 	resp, err := c.doJSON(ctx, http.MethodPost, reqPath, body, http.StatusCreated, http.StatusOK)
 	if err != nil {
+		// Idempotent re-provisioning: if the file already exists (409/422), the
+		// snapshot is already written. Treat as success — the definition snapshot
+		// is immutable per workflow version, so re-writing the same content is a
+		// no-op. Without this, every re-provision of an already-provisioned
+		// workspace fails at write-snapshot.
+		if isConflictError(err) {
+			return nil
+		}
 		return err
 	}
 	_ = resp.Body.Close()
