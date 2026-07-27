@@ -169,6 +169,11 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 
 	// Phase 2 write endpoints.
 	users.POST("/get-or-create", usersAPI.GetOrCreate)
+	// Pre-provisioning entry point for external modules holding only an
+	// enterprise identity id (no Casdoor claim). Lives as a static literal
+	// path next to get-or-create so the radix tree doesn't route it to
+	// /:subject_id handlers.
+	users.POST("/provision", usersAPI.Provision)
 	users.POST("/transfer-identity", usersAPI.TransferIdentity)
 	// These two share the :subject_id path param with GetUser; gin's path
 	// tree accepts distinct method+suffix combinations without conflict.
@@ -340,6 +345,9 @@ func (unavailableUserService) SearchUsersByEmployeeNumber(_ context.Context, _ s
 	return nil, errServiceUnavailable
 }
 func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+	return nil, false, errServiceUnavailable
+}
+func (unavailableUserService) ProvisionByEnterprise(_ context.Context, _ user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
 	return nil, false, errServiceUnavailable
 }
 func (unavailableUserService) BindIdentityToUser(_ context.Context, _ string, _ *models.JWTClaims, _ ...models.BindIdentityOptions) error {

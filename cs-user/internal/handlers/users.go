@@ -45,6 +45,9 @@ type UserService interface {
 	SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error)
 	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
 	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error)
+	// ProvisionByEnterprise pre-creates a user keyed by an external enterprise
+	// identity (no Casdoor claim required). Powers POST /api/internal/users/provision.
+	ProvisionByEnterprise(ctx context.Context, params user.ProvisionByEnterpriseParams) (*models.User, bool, error)
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
 	TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error
 	UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error
@@ -257,6 +260,67 @@ func (a *UsersAPI) GetOrCreate(c *gin.Context) {
 	// registration (show profile-complete form) from re-login. Embedded in
 	// the response envelope so we don't change the bare-User shape callers
 	// already parse.
+	c.JSON(http.StatusOK, gin.H{"user": u, "is_new_user": isNew})
+}
+
+// provisionRequest is the body shape for POST /api/internal/users/provision.
+// External business modules (e.g. the enterprise permission binding module)
+// call this with their own enterprise identity handle and no Casdoor claim.
+type provisionRequest struct {
+	EnterpriseProvider string         `json:"enterprise_provider" binding:"required"`
+	EnterpriseUID      string         `json:"enterprise_uid" binding:"required"`
+	Username           string         `json:"username,omitempty"`
+	DisplayName        string         `json:"display_name,omitempty"`
+	Email              string         `json:"email,omitempty"`
+	Phone              string         `json:"phone,omitempty"`
+	EmployeeNumber     string         `json:"employee_number,omitempty"`
+	ExternalClaims     map[string]any `json:"external_claims,omitempty"`
+}
+
+// Provision godoc
+//
+//	@Summary		Pre-create user by enterprise identity (no Casdoor claim required)
+//	@Description	Idempotent. For external modules holding their own enterprise identity id. Looks up employment_identities.(tenant_id, enterprise_uid); creates a synthetic-claim user when not found. The reverse-lookup branch in GetOrCreateUser reattaches the pre-provisioned subject_id on future OAuth login.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			X-Tenant-Id	header		string				true	"Target tenant"
+//	@Param			body			body		provisionRequest	true	"Enterprise identity + optional profile fields"
+//	@Success		200				{object}	object{user=models.User,is_new_user=bool}
+//	@Failure		400				{object}	object{error=string}
+//	@Failure		409				{object}	object{error=string}
+//	@Failure		500				{object}	object{error=string}
+//	@Router			/api/internal/users/provision [post]
+func (a *UsersAPI) Provision(c *gin.Context) {
+	var req provisionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	u, isNew, err := a.Svc.ProvisionByEnterprise(c.Request.Context(), user.ProvisionByEnterpriseParams{
+		EnterpriseProvider: req.EnterpriseProvider,
+		EnterpriseUID:      req.EnterpriseUID,
+		Username:           req.Username,
+		DisplayName:        req.DisplayName,
+		Email:              req.Email,
+		Phone:              req.Phone,
+		EmployeeNumber:     req.EmployeeNumber,
+		ExternalClaims:     req.ExternalClaims,
+	})
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case strings.HasPrefix(msg, "ProvisionByEnterprise:"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		case errors.Is(err, user.ErrEnterpriseUIDCollision):
+			c.JSON(http.StatusConflict, gin.H{"error": msg})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"user": u, "is_new_user": isNew})
 }
 

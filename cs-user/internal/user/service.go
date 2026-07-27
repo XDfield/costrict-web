@@ -380,6 +380,29 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
 		}
 	}
+	// Path 6: employment_identities.enterprise_uid reverse lookup.
+	// Pre-provisioning via /users/provision writes this row ahead of real
+	// OAuth login. When the real OAuth callback arrives, the JWT may carry a
+	// different universal_id / sub, but as long as ExternalClaims contains
+	// "enterprise_uid" (server populates it from IdP userinfo, or the caller
+	// passes it through), we reattach to the pre-provisioned subject_id.
+	// Idempotent: doesn't fire on logins without enterprise_uid, so existing
+	// single-tenant flows are unaffected.
+	if !found {
+		if uid := extractEnterpriseUID(claims); uid != "" {
+			tenantID := tenant.IDFromContext(ctx)
+			var ei models.EmploymentIdentity
+			err := db.Where("tenant_id = ? AND enterprise_uid = ? AND deleted_at IS NULL", tenantID, uid).
+				Take(&ei).Error
+			if err == nil {
+				if err := db.Scopes(tenantScope).Where("subject_id = ?", ei.UserSubjectID).Take(&user).Error; err == nil {
+					found = true
+				}
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, false, fmt.Errorf("failed to query employment_identity by enterprise_uid: %w", err)
+			}
+		}
+	}
 
 	now := time.Now()
 
@@ -467,17 +490,43 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		// gets a usable row. Must scope to ctx tenant — without this, a
 		// casdoor_id collision across tenants would let this race recovery
 		// return another tenant's user (cross-tenant leak under concurrency).
-		var existing models.User
-		query := db.Clauses(clause.Locking{Strength: "UPDATE"}).Scopes(tenantScope)
+		//
+		// Build the WHERE as a single grouped clause so the tenant_id
+		// constraint ANDs against the entire OR-chain. Naive
+		// `Scopes(tenantScope).Where(...).Or(...)` would emit
+		//   WHERE tenant_id=? AND external_key=? OR casdoor_universal_id=?
+		// letting a cross-tenant universal_id match leak another tenant's user.
+		var (
+			conditions []string
+			args       []any
+		)
 		if externalKey != "" {
-			query = query.Where("external_key = ?", externalKey)
+			conditions = append(conditions, "external_key = ?")
+			args = append(args, externalKey)
 			if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
-				query = query.Or("external_key = ?", legacy)
+				conditions = append(conditions, "external_key = ?")
+				args = append(args, legacy)
 			}
 		}
-		query = query.Or("casdoor_universal_id = ?", claims.UniversalID).
-			Or("casdoor_id = ?", claims.ID).
-			Or("casdoor_sub = ?", claims.Sub)
+		if claims.UniversalID != "" {
+			conditions = append(conditions, "casdoor_universal_id = ?")
+			args = append(args, claims.UniversalID)
+		}
+		if claims.ID != "" {
+			conditions = append(conditions, "casdoor_id = ?")
+			args = append(args, claims.ID)
+		}
+		if claims.Sub != "" {
+			conditions = append(conditions, "casdoor_sub = ?")
+			args = append(args, claims.Sub)
+		}
+		var existing models.User
+		query := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Scopes(tenantScope)
+		if len(conditions) > 0 {
+			grouped := "(" + strings.Join(conditions, " OR ") + ")"
+			query = query.Where(grouped, args...)
+		}
 		if err := query.Take(&existing).Error; err == nil {
 			return &existing, false, nil
 		}

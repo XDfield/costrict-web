@@ -1418,6 +1418,93 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/provision": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Idempotent. For external modules holding their own enterprise identity id. Looks up employment_identities.(tenant_id, enterprise_uid); creates a synthetic-claim user when not found. The reverse-lookup branch in GetOrCreateUser reattaches the pre-provisioned subject_id on future OAuth login.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Pre-create user by enterprise identity (no Casdoor claim required)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target tenant",
+                        "name": "X-Tenant-Id",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Enterprise identity + optional profile fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.provisionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "is_new_user": {
+                                    "type": "boolean"
+                                },
+                                "user": {
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/reissue-token": {
             "post": {
                 "security": [
@@ -1565,6 +1652,45 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/suggest-profile": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Pure-function hint generator (R4 of REGISTRATION_PROFILE_DESIGN). Given the JWT claims Casdoor minted after brokering the upstream IdP, returns a suggested {username, display_name} the form can pre-fill. Always advisory — caller must still validate.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Suggest registration profile from IdP claims",
+                "parameters": [
+                    {
+                        "description": "JWT claims",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion"
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/transfer-identity": {
             "post": {
                 "security": [
@@ -1611,6 +1737,73 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/username-available": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Tenant-scoped uniqueness check + format/reserved-word validation. exclude_subject_id lets callers omit the current user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Check username availability",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Candidate username",
+                        "name": "username",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Subject ID to exclude from collision check",
+                        "name": "exclude_subject_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "available": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1841,6 +2034,101 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/internal/users/{subject_id}/complete-registration": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Sets username + display_name and marks profile_completed_at = NOW. One-shot — calling again returns 409. Username is tenant-scoped unique.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Finish first-time registration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target user subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Username (required) + display_name (optional)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.completeRegistrationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/users/{subject_id}/identities/{provider}": {
             "delete": {
                 "security": [
@@ -1968,6 +2256,188 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "Admin-side profile override (R5 of REGISTRATION_PROFILE_DESIGN). Unlike the user-self POST /profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. username changes are tenant-scoped-unique-checked; collisions return 409. operator_id is the admin's subject_id, recorded on the audit row. Used by @server's PUT /api/admin/users/:id/profile.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users",
+                    "admin"
+                ],
+                "summary": "Override username / display_name (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target user subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to override (at least one required)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.adminUpdateProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.adminUserProfileDTO"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "description": "User self-edit accepts display_name only. Admin override (R5) may additionally set username. username validation + tenant-scoped uniqueness enforced.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Update user profile (display_name self-edit or admin override)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target user subject_id",
+                        "name": "subject_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Patches to apply",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.updateProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2491,6 +2961,10 @@ const docTemplate = `{
                 "phone": {
                     "type": "string"
                 },
+                "profile_completed_at": {
+                    "description": "ProfileCompletedAt is NULL until the user finishes the first-time\nregistration flow (custom username + display_name per\nREGISTRATION_PROFILE_DESIGN). The server's RequireProfileComplete\nmiddleware consults this column (via cs-user RPC) to gate API access.\nExisting rows are backfilled to created_at by the migration that\nintroduces the column, so only users created post-migration can be\ngated.",
+                    "type": "string"
+                },
                 "provider_user_id": {
                     "type": "string"
                 },
@@ -2646,6 +3120,17 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary": {
             "type": "object",
             "properties": {
@@ -2656,6 +3141,20 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "team_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.adminUpdateProfileRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "operator_id": {
+                    "type": "string"
+                },
+                "username": {
                     "type": "string"
                 }
             }
@@ -2801,6 +3300,20 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.completeRegistrationRequest": {
+            "type": "object",
+            "required": [
+                "username"
+            ],
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.platformCreateTenantRequest": {
             "type": "object",
             "required": [
@@ -2856,6 +3369,40 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "settings": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.provisionRequest": {
+            "type": "object",
+            "required": [
+                "enterprise_provider",
+                "enterprise_uid"
+            ],
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "employee_number": {
+                    "type": "string"
+                },
+                "enterprise_provider": {
+                    "type": "string"
+                },
+                "enterprise_uid": {
+                    "type": "string"
+                },
+                "external_claims": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "username": {
                     "type": "string"
                 }
             }
@@ -2971,6 +3518,17 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "target_user_subject_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.updateProfileRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "username": {
                     "type": "string"
                 }
             }
