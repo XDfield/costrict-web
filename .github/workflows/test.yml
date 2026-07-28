@@ -61,6 +61,10 @@ jobs:
       - name: Download deps
         run: go mod download
 
+      - name: Test container entrypoint
+        if: matrix.module == './server'
+        run: ./test/docker-entrypoint/run.sh
+
       - name: Build
         run: go build ./...
 

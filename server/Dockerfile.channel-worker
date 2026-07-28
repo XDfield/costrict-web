@@ -25,9 +25,11 @@ RUN addgroup -g 1000 -S appgroup && \
 WORKDIR /app
 
 COPY --from=builder --chmod=755 /app/channel-worker ./channel-worker
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/costrict-entrypoint
 
 RUN chown -R appuser:appgroup /app
 
 USER appuser
 
+ENTRYPOINT ["/usr/local/bin/costrict-entrypoint"]
 CMD ["./channel-worker"]

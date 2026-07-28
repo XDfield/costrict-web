@@ -33,10 +33,12 @@ WORKDIR /app
 
 # Copy binary from builder with execute permission
 COPY --from=builder --chmod=755 /app/worker ./worker
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/costrict-entrypoint
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
 
 USER appuser
 
+ENTRYPOINT ["/usr/local/bin/costrict-entrypoint"]
 CMD ["./worker"]

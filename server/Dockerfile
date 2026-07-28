@@ -46,6 +46,7 @@ WORKDIR /app
 COPY --from=builder --chmod=755 /app/server ./server
 COPY --from=builder --chmod=755 /app/migrate ./migrate
 COPY --from=builder --chmod=755 /app/gitserver-config ./gitserver-config
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/costrict-entrypoint
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app
@@ -56,4 +57,5 @@ USER appuser
 EXPOSE 8080
 
 # Run application
+ENTRYPOINT ["/usr/local/bin/costrict-entrypoint"]
 CMD ["./server"]
