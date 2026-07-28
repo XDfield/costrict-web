@@ -139,6 +139,26 @@ func TestClient_CreateBranch_AlreadyExistsIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestClient_CreateBranch_RaceRejectedIsIdempotent covers the concurrent-
+// CreateBranch race: when two callers race to create the same instance branch,
+// Gitea loses the ref lock and returns 500 with "reference already exists"
+// (not a 409). The loser must treat this as idempotent success, otherwise
+// re-provisioning an existing instance fails intermittently. This is the exact
+// failure that blocked the M1-M5 dispatch E2E re-run (ScaffoldRunDeliverables
+// + DispatchRootNodeRuns both call InitWorkflow concurrently).
+func TestClient_CreateBranch_RaceRejectedIsIdempotent(t *testing.T) {
+	srv := newDispatchServer(t, dispatch{
+		"POST /api/v1/repos/t-abc12345/wf-my-wf/branches": func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"message":"reference already exists"}`, http.StatusInternalServerError)
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+
+	if err := c.CreateBranch(context.Background(), "t-abc12345", "wf-my-wf", "inst-raced", "main"); err != nil {
+		t.Fatalf("expected nil error on 500 'reference already exists' (idempotent), got %v", err)
+	}
+}
+
 func TestClient_GetBranch_HappyPath(t *testing.T) {
 	srv := newDispatchServer(t, dispatch{
 		"GET /api/v1/repos/t-abc12345/wf-my-wf/branches/main": func(w http.ResponseWriter, r *http.Request) {

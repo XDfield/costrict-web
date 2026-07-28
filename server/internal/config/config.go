@@ -10,29 +10,29 @@ import (
 )
 
 type Config struct {
-	Port                      string
-	DatabaseURL               string
-	RedisURL                  string
-	CloudBaseURL              string
-	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
-	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
-	MulticaAPIURL             string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
-	MulticaIntegrationSecret  string // Shared HMAC secret for the inbound Multica notification bridge (POST /api/integrations/multica/events); endpoint disabled when empty
-	ReleaseDownloadBaseURL    string
-	SystemToken               string
-	FrontendURLs              []string // Allowed frontend origins for OAuth redirects; first entry is the default
-	InternalSecret            string
-	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
-	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
-	Casdoor                   CasdoorConfig
-	Channels                  ChannelSystemConfig
-	LLM                       LLMConfig
-	Embedding                 EmbeddingConfig
-	Search                    SearchConfig
-	DeptSync                  DeptSyncConfig
-	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
-	UserService               UserServiceConfig
-	TeamDirectory             TeamDirectoryConfig
+	Port                     string
+	DatabaseURL              string
+	RedisURL                 string
+	CloudBaseURL             string
+	WebhookBaseURL           string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
+	AppURL                   string // Public URL for frontend links in notifications; defaults to CloudBaseURL
+	MulticaAPIURL            string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
+	MulticaIntegrationSecret string // Shared HMAC secret for the inbound Multica notification bridge (POST /api/integrations/multica/events); endpoint disabled when empty
+	ReleaseDownloadBaseURL   string
+	SystemToken              string
+	FrontendURLs             []string // Allowed frontend origins for OAuth redirects; first entry is the default
+	InternalSecret           string
+	CookieSecure             bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CORSAllowedOrigins       []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	Casdoor                  CasdoorConfig
+	Channels                 ChannelSystemConfig
+	LLM                      LLMConfig
+	Embedding                EmbeddingConfig
+	Search                   SearchConfig
+	DeptSync                 DeptSyncConfig
+	UserSyncIntervalMinutes  int // User sync interval in minutes, default 15
+	UserService              UserServiceConfig
+	TeamDirectory            TeamDirectoryConfig
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -234,20 +234,20 @@ func Load() *Config {
 	frontendURLs := getEnvSlice("FRONTEND_URLS", []string{cloudBaseURL})
 
 	return &Config{
-		Port:                      getEnv("PORT", "8080"),
-		DatabaseURL:               getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
-		RedisURL:                  getEnv("REDIS_URL", ""),
-		CloudBaseURL:              cloudBaseURL,
-		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
-		AppURL:                    getEnv("APP_URL", cloudBaseURL),
-		MulticaAPIURL:             getEnv("MULTICA_API_URL", ""),
-		MulticaIntegrationSecret:  getEnv("MULTICA_INTEGRATION_SECRET", ""),
-		ReleaseDownloadBaseURL:    getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
-		SystemToken:               getEnv("SYSTEM_TOKEN", ""),
-		FrontendURLs:              frontendURLs,
-		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
-		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
-		CORSAllowedOrigins:        getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
+		Port:                     getEnv("PORT", "8080"),
+		DatabaseURL:              getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		RedisURL:                 getEnv("REDIS_URL", ""),
+		CloudBaseURL:             cloudBaseURL,
+		WebhookBaseURL:           getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
+		AppURL:                   getEnv("APP_URL", cloudBaseURL),
+		MulticaAPIURL:            getEnv("MULTICA_API_URL", ""),
+		MulticaIntegrationSecret: getEnv("MULTICA_INTEGRATION_SECRET", ""),
+		ReleaseDownloadBaseURL:   getEnv("RELEASE_DOWNLOAD_BASE_URL", ""),
+		SystemToken:              getEnv("SYSTEM_TOKEN", ""),
+		FrontendURLs:             frontendURLs,
+		InternalSecret:           getEnv("INTERNAL_SECRET", ""),
+		CookieSecure:             getEnvBool("COOKIE_SECURE", true),
+		CORSAllowedOrigins:       getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
 			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			InternalEndpoint: getEnv("CASDOOR_INTERNAL_ENDPOINT", ""),
@@ -336,7 +336,7 @@ func Load() *Config {
 		// JWT_SIGN_MODE (off|dual|single) and falls back to the A7b
 		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
 		// OFF — Casdoor JWT stays authoritative until operator flips.
-		JWTSignMode: loadJWTSignMode(),
+		JWTSignMode:        loadJWTSignMode(),
 		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
 	}
 }

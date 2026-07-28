@@ -145,7 +145,14 @@ func (c *Client) CreateBranch(ctx context.Context, owner, repo, newBranch, fromR
 	_, err := c.doJSON(ctx, http.MethodPost, repoPath(owner, repo)+"/branches", body, http.StatusCreated)
 	if err != nil {
 		if isHTTPConflict(err) {
-			return nil // idempotent: branch already exists
+			return nil // idempotent: branch already exists (409)
+		}
+		// Gitea returns 500 PushRejected when a concurrent CreateBranch raced —
+		// the ref exists by now, so treat as idempotent success (same pattern
+		// as the 409 path, just a different Gitea error shape).
+		msg := err.Error()
+		if strings.Contains(msg, "reference already exists") || strings.Contains(msg, "cannot lock ref") {
+			return nil
 		}
 		return err
 	}
@@ -264,6 +271,14 @@ func (c *Client) WriteFile(ctx context.Context, owner, repo, branch, path string
 	reqPath := repoPath(owner, repo) + "/contents/" + url.PathEscape(path)
 	resp, err := c.doJSON(ctx, http.MethodPost, reqPath, body, http.StatusCreated, http.StatusOK)
 	if err != nil {
+		// Idempotent re-provisioning: if the file already exists (409/422), the
+		// snapshot is already written. Treat as success — the definition snapshot
+		// is immutable per workflow version, so re-writing the same content is a
+		// no-op. Without this, every re-provision of an already-provisioned
+		// workspace fails at write-snapshot.
+		if isConflictError(err) {
+			return nil
+		}
 		return err
 	}
 	_ = resp.Body.Close()
@@ -301,7 +316,15 @@ func (c *Client) ReadFile(ctx context.Context, owner, repo, branch, path string)
 	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
 	}
-	if fr.Encoding != "base64" || fr.Content == "" {
+	// Empty content is a legitimate "no snapshot" state (multica M2 leaves the
+	// workflow DefinitionSnapshot empty — DB is the source of truth). Treat it as
+	// a missing snapshot, not a transport error. The previous check collapsed
+	// empty-content into "unsupported file encoding", which was misleading and
+	// blocked provisioning for every empty-snapshot workflow.
+	if fr.Content == "" {
+		return nil, nil
+	}
+	if fr.Encoding != "base64" {
 		return nil, fmt.Errorf("%w: unsupported file encoding %q", ErrGiteaUnreachable, fr.Encoding)
 	}
 	// Gitea returns base64 content with embedded newlines every 76 chars
