@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -25,12 +26,25 @@ type ConfiguredBackend struct {
 	Backend Backend
 }
 
+// Put/Get log failures here — the single choke point every handler and
+// service goes through — because the HTTP layer replies with generic
+// messages and would otherwise swallow the root cause (bad credentials,
+// unreachable endpoint, missing object) entirely.
 func (b *ConfiguredBackend) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
-	return b.Backend.Put(ctx, key, reader, size)
+	if err := b.Backend.Put(ctx, key, reader, size); err != nil {
+		log.Printf("storage put failed (backend=%s, key=%s, size=%d): %v", b.Kind, key, size, err)
+		return err
+	}
+	return nil
 }
 
 func (b *ConfiguredBackend) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
-	return b.Backend.Get(ctx, key)
+	reader, size, err := b.Backend.Get(ctx, key)
+	if err != nil {
+		log.Printf("storage get failed (backend=%s, key=%s): %v", b.Kind, key, err)
+		return nil, 0, err
+	}
+	return reader, size, nil
 }
 
 // KindOf returns the value stored in storage_backend. Direct test backends and
@@ -54,6 +68,11 @@ func ValidateRecordedBackend(recorded string, backend Backend) error {
 	}
 	configured := KindOf(backend)
 	if recorded != configured {
+		// This fires for every read of an object written under the other
+		// backend — the exact situation after a local->s3 switch without
+		// data migration. Callers reply with a generic 5xx, so log the
+		// actionable detail here.
+		log.Printf("storage backend mismatch: object recorded under %q, configured backend is %q — unreadable until data is migrated or config reverted", recorded, configured)
 		return fmt.Errorf("stored object uses backend %q, configured backend is %q", recorded, configured)
 	}
 	return nil
