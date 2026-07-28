@@ -159,7 +159,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if or (and (eq $artifactBackend "local") .Values.persistence.enabled) .Values.logs.enabled (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) }}
+          {{- if or (and (eq $artifactBackend "local") .Values.persistence.enabled) .Values.logs.enabled (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) .Values.envFile.existingConfigMap }}
           volumeMounts:
             {{- if and (eq $artifactBackend "local") .Values.persistence.enabled }}
             - name: artifacts-storage
@@ -174,8 +174,14 @@ spec:
               mountPath: {{ .Values.artifactStorage.s3.ca.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.envFile.existingConfigMap }}
+            - name: app-env-file
+              mountPath: /app/.env
+              subPath: .env
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if or (and (eq $artifactBackend "local") .Values.persistence.enabled) .Values.logs.enabled (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) }}
+      {{- if or (and (eq $artifactBackend "local") .Values.persistence.enabled) .Values.logs.enabled (and (eq $artifactBackend "s3") .Values.artifactStorage.s3.ca.existingSecret) .Values.envFile.existingConfigMap }}
       volumes:
         {{- if and (eq $artifactBackend "local") .Values.persistence.enabled }}
         - name: artifacts-storage
@@ -193,6 +199,14 @@ spec:
             items:
               - key: {{ .Values.artifactStorage.s3.ca.key }}
                 path: {{ .Values.artifactStorage.s3.ca.key }}
+        {{- end }}
+        {{- if .Values.envFile.existingConfigMap }}
+        - name: app-env-file
+          configMap:
+            name: {{ .Values.envFile.existingConfigMap }}
+            items:
+              - key: {{ .Values.envFile.key }}
+                path: .env
         {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}

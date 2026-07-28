@@ -49,6 +49,10 @@ jobs:
         if: matrix.chart == 'api'
         run: bash deploy/charts/api/tests/storage_mode_test.sh
 
+      - name: Validate API env file mount
+        if: matrix.chart == 'api'
+        run: bash deploy/charts/api/tests/env_file_test.sh
+
       - name: Validate worker storage modes
         if: matrix.chart == 'worker'
         run: bash deploy/charts/worker/tests/storage_mode_test.sh
