@@ -5,7 +5,7 @@
 //
 //   - CreateRepo + GetRepo       — type repo bootstrap under team org
 //   - CreateBranch + GetBranch   — instance branch from main HEAD
-//   - SetBranchProtection        — main + inst-* glob rules
+//   - SetBranchProtection        — main branch rule (inst-* intentionally unprotected)
 //   - WriteFile + ReadFile       — definition_snapshot lifecycle + drift
 //
 // All methods route through Client.doJSON; status-code semantics follow the

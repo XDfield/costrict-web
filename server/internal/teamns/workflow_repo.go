@@ -7,8 +7,9 @@
 //  2. Get-or-create the type repo `wf-<escaped_slug>` under the team's org.
 //  3. Get-or-write `definition_snapshot.json` on main; SHA256 mismatch on
 //     existing file returns ErrDefinitionDrift (handler maps to 409).
-//  4. Apply branch protection: `main` (direct push denied) + `inst-*` glob
-//     (instance branches protected by wildcard). Idempotent on already-exists.
+//  4. Apply branch protection on `main` (direct push denied); inst-* is left
+//     unprotected so instance branches can be created/pushed directly.
+//     Idempotent on already-exists.
 //  5. Get-or-create the instance branch `inst-<inst_short>` from main HEAD.
 //
 // Return value carries Created flags so workflow_init's response reports
@@ -152,13 +153,17 @@ func (s *Service) EnsureWorkflowRepo(
 	// 6. Protect main (the snapshot branch — created by repo init / our
 	// WriteFile above; no further direct pushes are expected). Tolerate
 	// already-exists because re-running EnsureWorkflowRepo should be safe.
+	// Only main is protected: inst-* MUST stay unprotected so the orchestrator
+	// can create inst branches and push deliverable content to them directly
+	// (per-node changes still gate via node branches + PRs off inst); some
+	// Gitea versions also reject API branch creation matching a protected glob
+	// (status 500 PushRejected), which would self-block provisioning.
 	if err := applyBranchProtection(ctx, gitcli, owner, repoName, "main", ErrWorkflowRepoProvisioning); err != nil {
 		return nil, err
 	}
+	result.BranchProtectionSet = true
 
-	// 7. Instance branch get-or-create. MUST happen before the inst-* glob
-	// protection rule is applied, otherwise the glob would catch inst-<short>
-	// and reject the API-initiated push Gitea uses internally for CreateBranch.
+	// 7. Instance branch get-or-create from main HEAD.
 	br, err := gitcli.GetBranch(ctx, owner, repoName, instanceBranch)
 	if err != nil {
 		return nil, fmt.Errorf("%w: get branch: %v", ErrWorkflowRepoProvisioning, err)
@@ -169,12 +174,6 @@ func (s *Service) EnsureWorkflowRepo(
 		}
 		result.InstanceBranchCreated = true
 	}
-
-	// 8. Protect the inst-* glob now that inst-<short> exists.
-	if err := applyBranchProtection(ctx, gitcli, owner, repoName, "inst-*", ErrWorkflowRepoProvisioning); err != nil {
-		return nil, err
-	}
-	result.BranchProtectionSet = true
 
 	return result, nil
 }

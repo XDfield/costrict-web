@@ -209,9 +209,9 @@ func TestEnsureWorkflowRepo_HappyPath_AllCreated(t *testing.T) {
 	if res.SnapshotHash == "" {
 		t.Error("expected non-empty SnapshotHash")
 	}
-	// Two protection calls: main + inst-* glob.
-	if len(fake.setBranchProtectionCalls) != 2 {
-		t.Errorf("expected 2 SetBranchProtection calls, got %d", len(fake.setBranchProtectionCalls))
+	// One protection call: main only (inst-* is intentionally unprotected).
+	if len(fake.setBranchProtectionCalls) != 1 {
+		t.Errorf("expected 1 SetBranchProtection call, got %d", len(fake.setBranchProtectionCalls))
 	}
 	if fake.writeFileCalls != 1 {
 		t.Errorf("expected 1 WriteFile call, got %d", fake.writeFileCalls)

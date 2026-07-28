@@ -276,8 +276,8 @@ func TestKBEnsure_SingleTeam_HappyPath(t *testing.T) {
 	if got.BotCredentials == nil || got.BotCredentials.Token != plaintext {
 		t.Errorf("bot creds: %+v", got.BotCredentials)
 	}
-	// Only main protection (no inst-* glob for kb). Workflow uses 2 calls;
-	// kb uses 1.
+	// Only main protection (no inst-* glob for kb). Workflow and kb both use
+	// 1 call (main only) — inst-* is intentionally left unprotected.
 	if len(fake.setBranchProtectionCalls) != 1 {
 		t.Errorf("setBranchProtectionCalls: got %d, want 1", len(fake.setBranchProtectionCalls))
 	} else if fake.setBranchProtectionCalls[0].Opts.RuleName != "main" {

@@ -356,7 +356,7 @@ func TestE2E_SyncTeamMembers_DeltaApply(t *testing.T) {
 //
 //   - type repo `wf-<slug>` is created (private, default_branch=main)
 //   - `definition_snapshot.json` lands on main with caller's content
-//   - branch protection: main (no direct push) + inst-* glob
+//   - branch protection: main (no direct push); inst-* intentionally unprotected
 //   - instance branch `inst-<short>` is cut from main HEAD
 //   - second call is idempotent (Created flags all false)
 //   - drift between caller snapshot and main HEAD → 409
