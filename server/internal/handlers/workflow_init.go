@@ -2,8 +2,8 @@
 //
 // POST /api/internal/workflow/init is the single entry point that the
 // workflow orchestrator hits to (a) ensure the team's wf-<def> type repo
-// exists with main + inst-* branch protection, (b) ensure the per-instance
-// branch exists, and (c) receive the bot plaintext token for git auth.
+// exists with main branch protection, (b) ensure the per-instance branch
+// exists, and (c) receive the bot plaintext token for git auth.
 //
 // This file's handler is thin — it parses the body, calls into teamns +
 // workflow packages, and serializes the response. Path computation lives
@@ -149,7 +149,7 @@ func WorkflowInit(c *gin.Context) {
 	}
 
 	// Provision the Gitea side: type repo + definition_snapshot +
-	// branch protection (main + inst-*) + instance branch. Idempotent —
+	// branch protection (main) + instance branch. Idempotent —
 	// re-running for an already-provisioned repo is a no-op (Created flags
 	// all false). Definition drift between caller's snapshot and main HEAD
 	// is the one non-idempotent error: 409 DEFINITION_DRIFT.

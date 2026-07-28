@@ -174,9 +174,9 @@ func TestWorkflowInit_HappyPath_ReturnsPathsAndBotCreds(t *testing.T) {
 	if len(fake.createBranchCalls) != 1 {
 		t.Errorf("expected 1 CreateBranch call, got %d", len(fake.createBranchCalls))
 	}
-	// Two protection rules: main + inst-* glob.
-	if len(fake.setBranchProtectionCalls) != 2 {
-		t.Errorf("expected 2 SetBranchProtection calls, got %d", len(fake.setBranchProtectionCalls))
+	// One protection rule: main only (inst-* is intentionally unprotected).
+	if len(fake.setBranchProtectionCalls) != 1 {
+		t.Errorf("expected 1 SetBranchProtection call, got %d", len(fake.setBranchProtectionCalls))
 	}
 }
 
