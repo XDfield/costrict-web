@@ -21,6 +21,11 @@ const (
 	EventItemDistributed = "item.distributed"
 	EventItemRevoked     = "item.revoked"
 	EventItemPaused      = "item.paused"
+
+	// EventMulticaIssueStatusChanged is emitted by the Multica integration
+	// bridge (POST /api/integrations/multica/events) when an issue's status
+	// changes. Users subscribe their channels to it like any other event.
+	EventMulticaIssueStatusChanged = "multica.issue.status_changed"
 )
 
 type ProjectInvitationMessage struct {
