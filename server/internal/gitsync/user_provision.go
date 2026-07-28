@@ -55,10 +55,11 @@ type UserProvisionAPI = GitProvider
 
 // UserProvisionParams is the input shape for ProvisionUser.
 type UserProvisionParams struct {
-	SubjectID string
-	TenantID  string
-	Username  string
-	Email     *string
+	SubjectID  string
+	TenantID   string
+	Username   string
+	CasdoorSub string
+	Email      *string
 }
 
 // UserLogger mirrors *zap.Logger — minimal interface for test stubs.
@@ -145,7 +146,7 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	gitUsername := buildGitUsername(params.Username, params.SubjectID, "")
+	gitUsername := buildGitUsername(params.Username, params.SubjectID, params.CasdoorSub)
 
 	// Insert (or fetch) the binding row in 'pending'. If a row already
 	// exists in 'synced', short-circuit — idempotent.
