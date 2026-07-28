@@ -145,7 +145,7 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	gitUsername := buildGitUsername(params.Username, params.SubjectID)
+	gitUsername := buildGitUsername(params.Username, params.SubjectID, "")
 
 	// Insert (or fetch) the binding row in 'pending'. If a row already
 	// exists in 'synced', short-circuit — idempotent.
@@ -305,23 +305,39 @@ func (s *UserProvisionService) markError(ctx context.Context, b *models.UserGitB
 	return nil
 }
 
-// buildGitUsername derives the provider login name from a cs-user username.
-// "u-" + sanitized, truncated to 40 chars (Gitea hard limit; conservative
-// across providers).
-func buildGitUsername(username, subjectID string) string {
-	raw := username
-	if raw == "" {
-		raw = subjectID
+// buildGitUsername derives the Gitea login name with priority
+// 工号(Username) → UUID(SubjectID) → SubjectID(CasdoorSub).
+//
+// Tier 1 (工号) uses the raw sanitized value with NO prefix, so an employee
+// number like "29219" stays "29219". Tiers 2/3 are prefixed with "u-" so a
+// generated ID (UUID / Casdoor sub) never becomes a bare login name.
+// Truncated to 40 chars (Gitea hard limit).
+func buildGitUsername(username, subjectID, casdoorSub string) string {
+	if raw := sanitizeGitName(username); raw != "" {
+		return truncateGitName(raw)
 	}
-	sanitized := gitUsernamePattern.ReplaceAllString(raw, "-")
-	if sanitized == "" {
-		sanitized = "user"
+	if raw := sanitizeGitName(subjectID); raw != "" {
+		return truncateGitName("u-" + raw)
 	}
-	name := "u-" + sanitized
-	if len(name) > 40 {
-		name = name[:40]
+	if raw := sanitizeGitName(casdoorSub); raw != "" {
+		return truncateGitName("u-" + raw)
 	}
-	return name
+	return "u-user"
+}
+
+// sanitizeGitName replaces non-[a-zA-Z0-9._-] chars with "-" and trims leading
+// / trailing separators so the result is a legal Gitea login (must start/end
+// alphanumerically).
+func sanitizeGitName(s string) string {
+	s = gitUsernamePattern.ReplaceAllString(s, "-")
+	return strings.Trim(s, "-_.")
+}
+
+func truncateGitName(s string) string {
+	if len(s) > 40 {
+		return s[:40]
+	}
+	return s
 }
 
 func isDuplicatePK(err error) bool {

@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -236,22 +235,26 @@ func TestProvisionUser_NonConflictErrorMarksError(t *testing.T) {
 	}
 }
 
-func TestBuildGitUsername_Sanitizes(t *testing.T) {
+func TestBuildGitUsername(t *testing.T) {
 	cases := []struct {
-		username, subjectID, want string
+		name                 string
+		username, subjectID, casdoorSub string
+		want                 string
 	}{
-		{"alice", "usr-1", "u-alice"},
-		{"", "usr-2", "u-usr-2"},
-		{"!@#bad chars", "usr-3", "u----bad-chars"},
-		{"this-is-a-very-long-username-that-exceeds-the-limit-of-forty-chars-yes", "usr-4", regexp.MustCompile(`^u-.{0,38}$`).String()},
+		{name: "employee number raw", username: "29219", subjectID: "usr_abc", casdoorSub: "sub-1", want: "29219"},
+		{name: "username raw", username: "alice", subjectID: "usr_abc", casdoorSub: "sub-1", want: "alice"},
+		{name: "tier1 sanitized", username: "zhang san!", subjectID: "usr_abc", casdoorSub: "sub-1", want: "zhang-san"},
+		{name: "empty username falls to subjectID", username: "", subjectID: "usr_abc", casdoorSub: "sub-1", want: "u-usr_abc"},
+		{name: "falls to casdoorSub", username: "", subjectID: "", casdoorSub: "casdoor-sub-9", want: "u-casdoor-sub-9"},
+		{name: "all empty", username: "", subjectID: "", casdoorSub: "", want: "u-user"},
 	}
 	for _, tc := range cases {
-		got := buildGitUsername(tc.username, tc.subjectID)
+		got := buildGitUsername(tc.username, tc.subjectID, tc.casdoorSub)
+		if got != tc.want {
+			t.Errorf("%s: buildGitUsername(%q,%q,%q) = %q, want %q", tc.name, tc.username, tc.subjectID, tc.casdoorSub, got, tc.want)
+		}
 		if len(got) > 40 {
 			t.Errorf("got %q (%d chars), must be ≤40", got, len(got))
-		}
-		if !strings.HasPrefix(got, "u-") {
-			t.Errorf("got %q, must start with 'u-'", got)
 		}
 	}
 }
