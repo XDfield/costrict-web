@@ -39,6 +39,9 @@ spec:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -129,6 +132,39 @@ spec:
             - name: S3_CA_FILE
               value: {{ printf "%s/%s" (trimSuffix "/" .Values.artifactStorage.s3.ca.mountPath) .Values.artifactStorage.s3.ca.key | quote }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.userService }}
+            {{- if eq .backend "rpc" }}
+            - name: USER_SERVICE_BACKEND
+              value: "rpc"
+            - name: USER_SERVICE_URL
+              value: {{ .url | quote }}
+            {{- if .internalToken.value }}
+            - name: USER_SERVICE_INTERNAL_TOKEN
+              value: {{ .internalToken.value | quote }}
+            {{- else if .internalToken.existingSecret }}
+            - name: USER_SERVICE_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .internalToken.existingSecret }}
+                  key: {{ .internalToken.existingSecretKey }}
+            {{- end }}
+            {{- else }}
+            - name: USER_SERVICE_BACKEND
+              value: {{ .backend | quote }}
+            {{- end }}
+            {{- with .writeMode }}
+            - name: USER_SERVICE_WRITE_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.jwtSignMode }}
+            - name: JWT_SIGN_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.profileGateEnabled }}
+            - name: PROFILE_GATE_ENABLED
+              value: "true"
             {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}

@@ -1,0 +1,563 @@
+// Package app wires cs-user's HTTP routes into a gin router.
+//
+// Extracted from cmd/api/main.go so HTTP handler behaviour can be tested
+// without starting a real TCP listener (httptest.NewRecorder + NewRouter).
+package app
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
+	"github.com/costrict/costrict-web/cs-user/internal/auth"
+	"github.com/costrict/costrict-web/cs-user/internal/config"
+	"github.com/costrict/costrict-web/cs-user/internal/handlers"
+	"github.com/costrict/costrict-web/cs-user/internal/logger"
+	"github.com/costrict/costrict-web/cs-user/internal/middleware"
+	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
+	"github.com/costrict/costrict-web/cs-user/internal/tenantconfig"
+	"github.com/costrict/costrict-web/cs-user/internal/user"
+	"github.com/costrict/costrict-web/cs-user/internal/userteams"
+	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+)
+
+// ReadyChecker returns nil when cs-user is ready to serve traffic (DB up,
+// migrations applied, etc). Phase 1 P0-2 wires a real Postgres ping here.
+type ReadyChecker interface {
+	Ready() error
+}
+
+// Deps bundles the optional services NewRouter can wire. Each field is
+// optional; a nil field yields a stub handler that returns HTTP 503, so the
+// swagger spec stays consistent across deployments while letting unit tests
+// construct a minimal router without spinning up real services.
+type Deps struct {
+	ReadyChecker   ReadyChecker
+	Users          handlers.UserService
+	AuthIdentities handlers.AuthIdentityService
+	// EmploymentReader is the read-side subset the A7 reissue-token flow
+	// needs. Typically the same *user.Service as Users; declared separately
+	// to keep the auth handler's dependency surface explicit + minimal.
+	EmploymentReader handlers.EmploymentReader
+	// PermissionReader is the Phase C1 read-side subset the reissue-token
+	// flow uses to populate platform_admin / tenant_roles JWT claims. When
+	// nil, the issued token omits the permission claims (灰度 rollout).
+	PermissionReader handlers.PermissionReader
+	// Signer is the JWT signing primitive (Phase A3). Optional — when nil,
+	// /.well-known/jwks returns 503 and no path issues tokens. A7 (OAuth
+	// callback takeover) will require it.
+	Signer *auth.Signer
+	// TenantResolver is the §5 three-layer resolver (Phase B3b). When nil,
+	// ResolveTenant middleware is not mounted and handlers see no tenant in
+	// the request context (Phase A still works in implicit-default mode).
+	// Also drives the /api/internal/tenants/resolve-by-email RPC endpoint
+	// (B3b.2b-step2) — when nil, that endpoint returns 503.
+	TenantResolver *tenant.Resolver
+	// TenantAdmin is the write/lifecycle surface for the tenants table
+	// (Phase C2). Drives /api/internal/platform/tenants* (7 endpoints:
+	// list / get / create / patch / suspend / restore / delete). When nil,
+	// those endpoints return 503 so the swagger spec stays consistent.
+	TenantAdmin *tenant.Admin
+	// TenantConfig is the per-tenant YAML config CRUD surface (Phase C3.2).
+	// Drives /api/internal/tenant/config (GET + PUT). When nil, those
+	// endpoints return 503 so the swagger spec stays consistent.
+	TenantConfig *tenantconfig.Service
+	// AuditLog is the Phase C4.1 best-effort writer. When nil, the
+	// platform-tenant / tenant-config / provider-mapping handlers skip the
+	// post-success audit-log write (recordAudit is nil-safe). Tests that
+	// need to assert on audit rows inject a real *auditlog.Service bound to
+	// the same sqlite/gorm DB; production wires one bound to the Postgres
+	// pool.
+	AuditLog *auditlog.Service
+}
+
+// NewRouter builds the gin engine with all cs-user routes.
+//
+// Routes:
+//   - GET /healthz  — liveness (always 200 once process is up)
+//   - GET /readyz   — readiness (delegates to deps.ReadyChecker; 503 on err)
+//   - /api/internal/* — gated by X-Internal-Token (ADR D8)
+//   - GET /swagger/*any — Swagger UI (serves generated spec)
+func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
+	if cfg == nil {
+		panic("app.NewRouter: nil config")
+	}
+	if deps.ReadyChecker == nil {
+		deps.ReadyChecker = stubReady{}
+	}
+
+	// Route gin's access logs / error output through the file-backed writers
+	// so HTTP traffic lands in requests.log and gin framework errors land in
+	// error.log — same layout as @server (port of server/internal/app).
+	gin.DefaultWriter = logger.GinWriter()
+	gin.DefaultErrorWriter = logger.GinErrorWriter()
+
+	r := gin.New()
+	// gin.Logger writes gin-formatted access lines to gin.DefaultWriter (set
+	// above to logger.GinWriter → requests.log). Without this middleware
+	// gin.New() mounts only Recovery and no HTTP access logs are emitted.
+	r.Use(gin.Logger())
+	r.Use(gin.Recovery())
+
+	// Tenant resolver runs before any route group so handlers can pull the
+	// resolved tenant via middleware.TenantFromGin (B3b.1). When no resolver
+	// is wired, the middleware is a no-op and Phase A behavior is unchanged
+	// (implicit default tenant).
+	if deps.TenantResolver != nil {
+		r.Use(middleware.ResolveTenant(deps.TenantResolver, cfg.Tenant.ApexDomains))
+	}
+
+	r.GET("/healthz", healthz)
+	r.GET("/readyz", readyz(deps.ReadyChecker))
+
+	// JWKS endpoint — public per RFC 7517. Mounted at the root (not under
+	// /api/internal) so the well-known path matches the OIDC convention
+	// relying parties already expect. cs-user consumer:
+	// server/internal/middleware/jwks.go.
+	jwksAPI := handlers.JWKSAPI{Signer: deps.Signer}
+	r.GET("/.well-known/jwks", jwksAPI.GetJWKS)
+
+	// Internal endpoints — consumed by costrict-web only (shared-secret gated).
+	internal := r.Group("/api/internal", middleware.RequireInternalToken(cfg.Internal.Token))
+	internal.GET("/ping", PingHandler)
+	registerUserRoutes(internal, deps)
+	registerAuthIdentityRoutes(internal, deps)
+	registerAuthRoutes(internal, cfg, deps)
+	registerTenantRoutes(internal, deps)
+	registerPlatformTenantRoutes(internal, deps)
+	registerTenantConfigRoutes(internal, deps)
+	registerTenantProviderMappingRoutes(internal, deps)
+	registerPlatformAuditLogRoutes(internal, deps)
+	registerTenantAuditLogRoutes(internal, deps)
+
+	// Swagger UI. The spec is generated by `make swagger` (swag init) and
+	// registered globally via the blank import of cs-user/docs in main.go.
+	// Without that blank import the UI loads but shows an empty spec.
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	return r
+}
+
+// registerUserRoutes wires GET + POST /users/* endpoints. When deps.Users
+// is nil (e.g. unit tests that only exercise health/ping), routes resolve
+// to a 503 stub so the path always exists in the swagger spec.
+//
+// Phase 1: read endpoints (GET).
+// Phase 2: write endpoints (POST/DELETE) — see handlers/users.go.
+func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
+	usersAPI := handlers.UsersAPI{Svc: deps.Users, Audit: deps.AuditLog}
+	if deps.Users == nil {
+		usersAPI.Svc = unavailableUserService{}
+	}
+
+	users := rg.Group("/users")
+	users.GET("/:subject_id", usersAPI.GetUser)
+	users.POST("/by-ids", usersAPI.GetUsersByIDs)
+	users.GET("/search", usersAPI.SearchUsers)
+	// Admin user-management (admin-user-migration slice). Static literal
+	// paths win over the :subject_id wildcard in gin's radix tree.
+	users.GET("/list", usersAPI.ListUsers)
+	// Organization roll-up — admin filter dropdown. Static literal path
+	// wins over the :subject_id wildcard in gin's radix tree.
+	users.GET("/organizations", usersAPI.ListOrganizations)
+	// Admin per-user profile (identity-only; @server merges activity counts).
+	users.GET("/:subject_id/profile", usersAPI.GetUserProfile)
+
+	// Phase 2 write endpoints.
+	users.POST("/get-or-create", usersAPI.GetOrCreate)
+	// Pre-provisioning entry point for external modules holding only an
+	// enterprise identity id (no Casdoor claim). Lives as a static literal
+	// path next to get-or-create so the radix tree doesn't route it to
+	// /:subject_id handlers.
+	users.POST("/provision", usersAPI.Provision)
+	users.POST("/transfer-identity", usersAPI.TransferIdentity)
+	// These two share the :subject_id path param with GetUser; gin's path
+	// tree accepts distinct method+suffix combinations without conflict.
+	users.POST("/:subject_id/bind-identity", usersAPI.BindIdentity)
+	users.DELETE("/:subject_id/identities/:provider", usersAPI.UnbindIdentity)
+	// Admin status transition — admin-user-migration slice. Returns before/
+	// after status for audit; 409 on self-lock, 404 on unknown subject_id.
+	users.POST("/:subject_id/status", usersAPI.SetUserStatus)
+
+	// Phase A4b: enterprise-mapping refresh hook fired by the server's OAuth
+	// callback after GetOrCreateUser. Lives outside the :subject_id path
+	// subtree so it doesn't collide with the routes above.
+	users.POST("/apply-enterprise-mapping", usersAPI.ApplyEnterpriseMapping)
+
+	// R2 (REGISTRATION_PROFILE_DESIGN): first-time registration +
+	// profile self-edit. username-available is a static literal path so it
+	// wins over the :subject_id wildcard in gin's radix tree.
+	users.GET("/username-available", usersAPI.UsernameAvailable)
+	users.POST("/:subject_id/complete-registration", usersAPI.CompleteRegistration)
+	users.POST("/:subject_id/profile", usersAPI.UpdateProfile)
+	// R5: admin override — mutates username and/or display_name. Distinct
+	// method (PUT) from the user-self POST so gin's radix tree accepts both
+	// without conflict.
+	users.PUT("/:subject_id/profile", usersAPI.AdminUpdateProfile)
+	// R4: provider → suggestion (pure function, no DB).
+	users.POST("/suggest-profile", usersAPI.SuggestProfile)
+
+	// KB ensure backing: list teams for a user. Called by @server's
+	// POST /api/kb/ensure to resolve the caller's team list. Currently
+	// returns 503 ORG_TEAM_SERVICE_UNAVAILABLE — contract is fixed so
+	// @server can wire its TeamResolver now and swap to a real impl when
+	// org-team-service lands. See docs/repo-management/KB_USER_ENSURE_API.md §2.3.
+	userTeamsAPI := handlers.UserTeamsAPI{Svc: userteams.New()}
+	users.GET("/:subject_id/teams", userTeamsAPI.ListUserTeams)
+}
+
+// registerAuthIdentityRoutes wires GET /users/:subject_id/auth-identities.
+func registerAuthIdentityRoutes(rg *gin.RouterGroup, deps Deps) {
+	api := handlers.AuthIdentitiesAPI{Svc: deps.AuthIdentities}
+	if deps.AuthIdentities == nil {
+		api.Svc = unavailableAuthIdentityService{}
+	}
+
+	// Register on the same /users group so the path is /users/:subject_id/auth-identities.
+	// gin doesn't allow redeclaring the group name, so mount via inline group.
+	rg.GET("/users/:subject_id/auth-identities", api.ListIdentities)
+}
+
+// registerAuthRoutes wires POST /users/reissue-token. Mounted inside the
+// /users subtree to match the other users-group endpoints but lives on the
+// AuthAPI handler because it spans user-data + signer orchestration (Phase A7).
+// When deps.EmploymentReader is nil (unit tests), an unavailableAuthReader
+// stub returns 503 so the path exists in the swagger spec without requiring
+// a real service.
+func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
+	reader := deps.EmploymentReader
+	if reader == nil {
+		reader = unavailableAuthReader{}
+	}
+	authAPI := handlers.AuthAPI{
+		Svc:         reader,
+		Signer:      deps.Signer,
+		JWT:         cfg.JWT,
+		Permissions: deps.PermissionReader,
+	}
+	rg.POST("/users/reissue-token", authAPI.ReissueToken)
+}
+
+// registerTenantRoutes wires POST /tenants/resolve-by-email (Phase B3b.2b-step2).
+// When deps.TenantResolver is nil (unit tests), an unavailableTenantResolver
+// stub returns 503 so the path always exists in the swagger spec.
+func registerTenantRoutes(rg *gin.RouterGroup, deps Deps) {
+	resolver := handlers.TenantResolverService(deps.TenantResolver)
+	if deps.TenantResolver == nil {
+		resolver = unavailableTenantResolver{}
+	}
+	tenantsAPI := handlers.TenantsAPI{Resolver: resolver}
+	rg.POST("/tenants/resolve-by-email", tenantsAPI.ResolveByEmail)
+}
+
+// registerPlatformTenantRoutes wires the 7 Phase C2 platform-admin tenant
+// CRUD endpoints (list / get / create / patch / suspend / restore / delete).
+// When deps.TenantAdmin is nil (unit tests), an
+// unavailablePlatformTenantService stub returns 503 so the paths always exist
+// in the swagger spec while refusing traffic.
+func registerPlatformTenantRoutes(rg *gin.RouterGroup, deps Deps) {
+	svc := handlers.PlatformTenantService(deps.TenantAdmin)
+	if deps.TenantAdmin == nil {
+		svc = unavailablePlatformTenantService{}
+	}
+	api := handlers.PlatformTenantsAPI{Svc: svc, Audit: deps.AuditLog}
+	g := rg.Group("/platform/tenants")
+	g.GET("", api.ListTenants)
+	g.POST("", api.CreateTenant)
+	g.GET("/:id", api.GetTenant)
+	g.PATCH("/:id", api.UpdateTenant)
+	g.POST("/:id/suspend", api.SuspendTenant)
+	g.POST("/:id/restore", api.RestoreTenant)
+	g.POST("/:id/delete", api.DeleteTenant)
+}
+
+// healthz godoc
+//
+//	@Summary		Liveness probe
+//	@Description	Always returns 200 once the process is up. Unauthenticated — safe for K8s livenessProbe.
+//	@Tags			health
+//	@Produce		json
+//	@Success		200	{object}	object{status=string}
+//	@Router			/healthz [get]
+func healthz(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// readyz godoc
+//
+//	@Summary		Readiness probe
+//	@Description	Returns 200 when the readiness checker (Postgres ping in P0-2) passes; 503 otherwise. Unauthenticated — safe for K8s readinessProbe. The handler is built by a factory bound to the supplied checker; swag uses the @Router path to register this endpoint.
+//	@Tags			health
+//	@Produce		json
+//	@Success		200	{object}	object{status=string}
+//	@Failure		503	{object}	object{status=string,error=string}
+//	@Router			/readyz [get]
+func readyz(check ReadyChecker) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := check.Ready(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not-ready", "error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+// PingHandler godoc
+//
+//	@Summary		Internal handshake
+//	@Description	Returns pong. Used by costrict-web to verify the X-Internal-Token handshake at startup. Requires the shared secret.
+//	@Tags			internal
+//	@Produce		json
+//	@Security		InternalToken
+//	@Success		200	{object}	object{pong=boolean}
+//	@Failure		401	{object}	object{error=string}
+//	@Failure		500	{object}	object{error=string}
+//	@Router			/api/internal/ping [get]
+func PingHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"pong": true})
+}
+
+// stubReady is the default when no DB checker is wired. It returns nil
+// (HTTP layer is ready). Phase 1 P0-2 replaces it with a real Postgres ping.
+type stubReady struct{}
+
+func (stubReady) Ready() error { return nil }
+
+// unavailableUserService is the fallback when Deps.Users is nil — keeps the
+// swagger spec stable across configurations by making the route exist but
+// refuse traffic.
+type unavailableUserService struct{}
+
+func (unavailableUserService) GetUserByID(_ context.Context, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) GetUsersByIDs(_ context.Context, _ []string) (map[string]*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) SearchUsers(_ context.Context, _ string, _ int) ([]*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) SearchUsersByEmployeeNumber(_ context.Context, _ string, _ int) ([]*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+	return nil, false, errServiceUnavailable
+}
+func (unavailableUserService) ProvisionByEnterprise(_ context.Context, _ user.ProvisionByEnterpriseParams) (*models.User, bool, error) {
+	return nil, false, errServiceUnavailable
+}
+func (unavailableUserService) BindIdentityToUser(_ context.Context, _ string, _ *models.JWTClaims, _ ...models.BindIdentityOptions) error {
+	return errServiceUnavailable
+}
+func (unavailableUserService) TransferIdentityToUser(_ context.Context, _, _, _ string) error {
+	return errServiceUnavailable
+}
+func (unavailableUserService) UnbindIdentityByProvider(_ context.Context, _, _ string) error {
+	return errServiceUnavailable
+}
+func (unavailableUserService) ApplyEnterpriseMapping(_ context.Context, _ user.EmploymentMappingParams) error {
+	return errServiceUnavailable
+}
+
+// R2 (REGISTRATION_PROFILE_DESIGN) — registration/profile stubs.
+func (unavailableUserService) CompleteRegistration(_ context.Context, _, _, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) UpdateProfile(_ context.Context, _, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableUserService) IsUsernameAvailable(_ context.Context, _, _ string) (bool, error) {
+	return false, errServiceUnavailable
+}
+// R5 — admin override.
+func (unavailableUserService) AdminUpdateProfile(_ context.Context, _ string, _ string, _ *string, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+
+// ListUsers surfaces the admin user-management error in the same shape as
+// the production path — 503 via errServiceUnavailable.
+func (unavailableUserService) ListUsers(_ context.Context, _ user.ListUsersParams) ([]*models.User, int64, error) {
+	return nil, 0, errServiceUnavailable
+}
+
+// SetUserStatus mirrors the production error shape (503 service unavailable)
+// when the user service isn't wired.
+func (unavailableUserService) SetUserStatus(_ context.Context, _, _, _ string) (*user.SetUserStatusResult, error) {
+	return nil, errServiceUnavailable
+}
+
+// ListOrganizations mirrors the production error shape (503 service
+// unavailable) when the user service isn't wired.
+func (unavailableUserService) ListOrganizations(_ context.Context) ([]user.OrganizationCount, error) {
+	return nil, errServiceUnavailable
+}
+
+type unavailableAuthIdentityService struct{}
+
+func (unavailableAuthIdentityService) ListIdentities(_ context.Context, _ string) ([]*models.UserAuthIdentity, error) {
+	return nil, errServiceUnavailable
+}
+
+// unavailableAuthReader is the fallback when Deps.EmploymentReader is nil —
+// keeps the reissue-token route resolvable (so swagger spec stays stable)
+// while refusing traffic with 503.
+type unavailableAuthReader struct{}
+
+func (unavailableAuthReader) GetEmploymentIdentity(_ context.Context, _ string) (*models.EmploymentIdentity, error) {
+	return nil, errServiceUnavailable
+}
+
+func (unavailableAuthReader) ApplyEnterpriseMapping(_ context.Context, _ user.EmploymentMappingParams) error {
+	return errServiceUnavailable
+}
+
+func (unavailableAuthReader) GetSubjectIDByExternalKey(_ context.Context, _ string) (string, error) {
+	return "", errServiceUnavailable
+}
+
+// unavailableTenantResolver is the fallback when Deps.TenantResolver is nil —
+// keeps /tenants/resolve-by-email resolvable for swagger while refusing
+// traffic with 503 (production wires a real *tenant.Resolver via main.go).
+type unavailableTenantResolver struct{}
+
+func (unavailableTenantResolver) ResolveByEmail(_ context.Context, _ string) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+
+func (unavailableTenantResolver) ListByEmailDomain(_ context.Context, _ string) ([]*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+
+// registerTenantConfigRoutes wires GET + PUT /tenant/config (Phase C3.2).
+// When deps.TenantConfig is nil (unit tests), an
+// unavailableTenantConfigService stub returns 503 so the paths always exist
+// in the swagger spec while refusing traffic.
+func registerTenantConfigRoutes(rg *gin.RouterGroup, deps Deps) {
+	svc := handlers.TenantConfigService(deps.TenantConfig)
+	if deps.TenantConfig == nil {
+		svc = unavailableTenantConfigService{}
+	}
+	api := handlers.TenantConfigAPI{Svc: svc, Audit: deps.AuditLog}
+	g := rg.Group("/tenant/config")
+	g.GET("", api.GetTenantConfig)
+	g.PUT("", api.UpdateTenantConfig)
+}
+
+// unavailableTenantConfigService is the fallback when Deps.TenantConfig is
+// nil — keeps /tenant/config resolvable for swagger while refusing traffic
+// with 503 (production wires a real *tenantconfig.Service via main.go).
+type unavailableTenantConfigService struct{}
+
+func (unavailableTenantConfigService) Get(_ context.Context, _ string) (*models.TenantConfig, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableTenantConfigService) Update(_ context.Context, _ tenantconfig.UpdateParams) (*models.TenantConfig, error) {
+	return nil, errServiceUnavailable
+}
+
+// registerTenantProviderMappingRoutes wires GET + PUT /tenant/provider-mapping
+// (Phase C3.3). Shares the same *tenantconfig.Service as the raw-blob route;
+// declared separately because the typed surface is a distinct handler /
+// interface. When deps.TenantConfig is nil, an
+// unavailableTenantProviderMappingService stub returns 503 so the paths
+// always exist in the swagger spec while refusing traffic.
+func registerTenantProviderMappingRoutes(rg *gin.RouterGroup, deps Deps) {
+	var svc handlers.TenantProviderMappingService
+	if deps.TenantConfig == nil {
+		svc = unavailableTenantProviderMappingService{}
+	} else {
+		svc = deps.TenantConfig
+	}
+	api := handlers.TenantProviderMappingAPI{Svc: svc, Audit: deps.AuditLog}
+	g := rg.Group("/tenant/provider-mapping")
+	g.GET("", api.GetProviderMapping)
+	g.PUT("", api.UpdateProviderMapping)
+}
+
+// unavailableTenantProviderMappingService is the typed-edit fallback. Pairs
+// with unavailableTenantConfigService — both 503 when *tenantconfig.Service
+// is unset.
+type unavailableTenantProviderMappingService struct{}
+
+func (unavailableTenantProviderMappingService) GetProviderMapping(_ context.Context, _ string) (*tenantconfig.ProviderMapping, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailableTenantProviderMappingService) UpdateProviderMapping(_ context.Context, _ tenantconfig.UpdateProviderMappingParams) (*tenantconfig.ProviderMapping, error) {
+	return nil, errServiceUnavailable
+}
+
+// unavailablePlatformTenantService is the fallback when Deps.TenantAdmin is
+// nil — keeps the 7 platform-tenant routes resolvable for swagger while
+// refusing traffic with 503 (production wires a real *tenant.Admin via
+// main.go).
+type unavailablePlatformTenantService struct{}
+
+func (unavailablePlatformTenantService) CreateTenant(_ context.Context, _ tenant.CreateParams) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) ListTenants(_ context.Context, _ tenant.ListParams) (*tenant.ListResult, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) GetTenant(_ context.Context, _ string) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) UpdateTenant(_ context.Context, _ string, _ tenant.UpdateParams) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) SuspendTenant(_ context.Context, _ string) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) RestoreTenant(_ context.Context, _ string) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+func (unavailablePlatformTenantService) RequestDeletion(_ context.Context, _ string) (*models.Tenant, error) {
+	return nil, errServiceUnavailable
+}
+
+// registerPlatformAuditLogRoutes wires GET /platform/audit-logs (Phase C4.3
+// — platform-admin, cross-tenant). When deps.AuditLog is nil (unit tests /
+// 503 fallback), an unavailableAuditLogService stub returns 503 so the path
+// always exists in the swagger spec while refusing traffic.
+func registerPlatformAuditLogRoutes(rg *gin.RouterGroup, deps Deps) {
+	svc := handlers.AuditLogListService(deps.AuditLog)
+	if deps.AuditLog == nil {
+		svc = unavailableAuditLogService{}
+	}
+	api := handlers.PlatformAuditLogsAPI{Svc: svc}
+	rg.Group("/platform/audit-logs").GET("", api.List)
+}
+
+// registerTenantAuditLogRoutes wires GET /tenants/audit-logs (Phase C4.3
+// — tenant-scoped via middleware.ResolveTenant). When deps.AuditLog is nil,
+// the same unavailableAuditLogService stub returns 503.
+//
+// Note: tenant scope is established by middleware.ResolveTenant (installed
+// at router top-level when Deps.TenantResolver is set); this register
+// function only attaches the route + handler. The handler pulls the
+// resolved tenant_id from request ctx and forces it into the service filter.
+func registerTenantAuditLogRoutes(rg *gin.RouterGroup, deps Deps) {
+	svc := handlers.AuditLogListService(deps.AuditLog)
+	if deps.AuditLog == nil {
+		svc = unavailableAuditLogService{}
+	}
+	api := handlers.TenantAuditLogsAPI{Svc: svc}
+	rg.Group("/tenants/audit-logs").GET("", api.List)
+}
+
+// unavailableAuditLogService is the fallback when Deps.AuditLog is nil —
+// keeps /platform/audit-logs + /tenants/audit-logs resolvable for swagger
+// while refusing traffic with 503 (production wires a real *auditlog.Service
+// via main.go). Returns auditlog.ErrNilDB so handlers.respondAuditLogErr
+// maps it to 503, matching the in-process path when AuditLog is wired but
+// its underlying *gorm.DB is nil.
+type unavailableAuditLogService struct{}
+
+func (unavailableAuditLogService) List(_ context.Context, _ auditlog.ListParams) (*auditlog.ListResult, error) {
+	return nil, auditlog.ErrNilDB
+}
+
+var errServiceUnavailable = errors.New("user service not configured")

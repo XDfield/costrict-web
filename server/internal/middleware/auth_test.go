@@ -57,7 +57,7 @@ func signTestJWT(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapCl
 // newTestJWKSProvider creates a JWKSProvider with pre-cached keys (no HTTP needed).
 func newTestJWKSProvider(keys map[string]*rsa.PublicKey) *JWKSProvider {
 	return &JWKSProvider{
-		jwksURL:    "http://localhost:0/.well-known/jwks", // won't be called
+		sources:    []string{"http://localhost:0/.well-known/jwks"}, // won't be called
 		keys:       keys,
 		minRefresh: 5 * time.Minute,
 		lastFetch:  time.Now(), // mark as recently fetched so refresh is skipped
@@ -420,7 +420,7 @@ func TestJWKSProvider_GetKeyFetchesFromRemoteOnCacheMiss(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey), // empty cache
 		minRefresh: 0,                               // no rate limiting for test
 		httpClient: server.Client(),
@@ -466,7 +466,7 @@ func TestJWKSProvider_RateLimitingPreventsExcessiveFetches(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 1 * time.Hour, // very long interval
 		httpClient: server.Client(),
@@ -551,7 +551,7 @@ func TestJWKSProvider_EmptyKidUsesDefaultKey(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),
@@ -575,7 +575,7 @@ func TestJWKSProvider_RemoteServerError(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),
@@ -747,39 +747,23 @@ func TestRequireAuth_QueryTokenRejectedForPlainHTTP(t *testing.T) {
 	}
 }
 
-func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
+func TestRequireAuth_InvalidJWTReturns401_NoCasdoorFallback(t *testing.T) {
 	SetSubjectResolver(nil)
-	// Mock Casdoor server that returns user info
+	// Casdoor should NOT be contacted in the new auth model — signature
+	// verification is the gateway's responsibility, and the server only
+	// decodes. A malformed token must produce 401 without any network call.
+	casdoorCalled := false
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/userinfo" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		// Verify the token is forwarded
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer invalid-jwt-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(casdoorUserinfoResponse{
-			Sub:  "casdoor-user-999",
-			Name: "Casdoor User",
-		})
+		casdoorCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer casdoorServer.Close()
 
-	// JWKS provider with no matching keys — JWT parsing will fail, triggering fallback
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
-
-	var capturedUserID string
 
 	router := gin.New()
 	router.Use(RequireAuth(casdoorServer.URL, jwks))
 	router.GET("/protected", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
@@ -787,11 +771,11 @@ func TestRequireAuth_InvalidJWTFallsBackToCasdoor(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer invalid-jwt-token")
 	w := performRequest(router, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 (Casdoor fallback), got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
 	}
-	if capturedUserID != "casdoor-user-999" {
-		t.Errorf("expected userId 'casdoor-user-999', got %q", capturedUserID)
+	if casdoorCalled {
+		t.Errorf("Casdoor must not be contacted in the new auth model")
 	}
 }
 
@@ -917,31 +901,29 @@ func TestOptionalAuth_InvalidJWTAndCasdoorFailureStillPassesThrough(t *testing.T
 	}
 }
 
-func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
+func TestOptionalAuth_InvalidJWTSilentlyIgnored_NoCasdoorFallback(t *testing.T) {
 	SetSubjectResolver(nil)
-	// Mock Casdoor server that returns user info
+	// New auth model: server decodes JWT without verifying and never calls
+	// Casdoor. A malformed token on an optional route should pass through
+	// without populating the userID, and Casdoor must not be contacted.
+	casdoorCalled := false
 	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/userinfo" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(casdoorUserinfoResponse{
-			Sub:  "casdoor-opt-user",
-			Name: "Casdoor Opt User",
-		})
+		casdoorCalled = true
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer casdoorServer.Close()
 
 	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
 
 	var capturedUserID string
+	var hasUserID bool
 
 	router := gin.New()
 	router.Use(OptionalAuth(casdoorServer.URL, jwks))
 	router.GET("/optional", func(c *gin.Context) {
 		if uid, ok := c.Get(UserIDKey); ok {
 			capturedUserID = uid.(string)
+			hasUserID = true
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -953,8 +935,11 @@ func TestOptionalAuth_InvalidJWTFallsBackToCasdoorSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if capturedUserID != "casdoor-opt-user" {
-		t.Errorf("expected userId 'casdoor-opt-user', got %q", capturedUserID)
+	if hasUserID {
+		t.Errorf("expected no userId on malformed token, got %q", capturedUserID)
+	}
+	if casdoorCalled {
+		t.Errorf("Casdoor must not be contacted in the new auth model")
 	}
 }
 
@@ -1098,7 +1083,7 @@ func TestJWKSProvider_NoValidRSAKeysInResponse(t *testing.T) {
 	defer server.Close()
 
 	provider := &JWKSProvider{
-		jwksURL:    server.URL,
+		sources:    []string{server.URL},
 		keys:       make(map[string]*rsa.PublicKey),
 		minRefresh: 0,
 		httpClient: server.Client(),
@@ -1135,5 +1120,163 @@ func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
 	token := ExtractToken(c)
 	if token != "fallback-cookie" {
 		t.Errorf("expected 'fallback-cookie' when Authorization is not Bearer, got %q", token)
+	}
+}
+
+// ===========================================================================
+// Phase A/B/C enterprise claims round-trip — locks the cs-user → server
+// contract for non-OIDC claims (tenant_id, tenant_slug, platform_admin,
+// platform_scope, tenant_roles). Without this, silent drift in
+// cs-user/internal/auth/claims.go JSON tags vs the manual reads in
+// parseJWTToken would only surface at runtime in production traffic.
+// ===========================================================================
+
+// TestParseJWTToken_EnterpriseClaimsRoundTrip verifies every Phase A/B/C
+// custom claim emitted by cs-user's EnterpriseClaims surfaces in the
+// resulting CasdoorUserInfo. Mirrors the JSON tag keys cs-user emits.
+func TestParseJWTToken_EnterpriseClaimsRoundTrip(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "cs-user-active"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	// Mirror cs-user/internal/auth/claims.go EnterpriseClaims JSON tags
+	// exactly — drift in either direction fails this test.
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		// Standard + OIDC (handled by NormalizeClaimsMap)
+		"iss":                "cs-user",
+		"sub":                "user-base",
+		"aud":                "costrict-web",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+		"iat":                time.Now().Unix(),
+		"name":               "Alice Admin",
+		"preferred_username": "alice",
+		"email":              "alice@corp.acme.example",
+		"universal_id":       "u-alice-001",
+
+		// Phase A — employment / tenant context
+		"tenant_id":   "t-acme",
+		"tenant_slug": "acme",
+
+		// Phase C1 — platform / tenant-admin permissions
+		"platform_admin": true,
+		"platform_scope": "tenant.read,user.read",
+		"tenant_roles":   []string{"owner", "admin"},
+
+		// Phase B — identity federation (provider side)
+		"provider":         "casdoor",
+		"provider_user_id": "casdoor:alice-001",
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken: %v", err)
+	}
+
+	// Standard + OIDC. cs-user JWT (iss="cs-user") → Sub is the canonical
+	// cs-user subject_id (usr_<uuid>); universal_id carries Casdoor's
+	// original value separately — they are no longer required to match.
+	// parseJWTToken now branches on iss to honor this contract.
+	if info.Sub != "user-base" {
+		t.Errorf("Sub = %q, want user-base (cs-user JWT uses sub as canonical subject_id)", info.Sub)
+	}
+	if info.UniversalID != "u-alice-001" {
+		t.Errorf("UniversalID = %q, want u-alice-001 (silent drift from cs-user JSON tag 'universal_id')", info.UniversalID)
+	}
+	if info.Name != "Alice Admin" {
+		t.Errorf("Name = %q", info.Name)
+	}
+	if info.Email != "alice@corp.acme.example" {
+		t.Errorf("Email = %q", info.Email)
+	}
+	if info.PreferredUsername != "alice" {
+		t.Errorf("PreferredUsername = %q", info.PreferredUsername)
+	}
+
+	// Phase A/B — tenant context
+	if info.TenantID != "t-acme" {
+		t.Errorf("TenantID = %q, want t-acme (Phase A cs-user canonical tenant PK)", info.TenantID)
+	}
+	if info.TenantSlug != "acme" {
+		t.Errorf("TenantSlug = %q, want acme (Phase A7 custom claim)", info.TenantSlug)
+	}
+
+	// Phase C1 — permission claims
+	if !info.PlatformAdmin {
+		t.Errorf("PlatformAdmin = false, want true (drift from 'platform_admin' JSON tag)")
+	}
+	if info.PlatformScope != "tenant.read,user.read" {
+		t.Errorf("PlatformScope = %q", info.PlatformScope)
+	}
+	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
+		t.Errorf("TenantRoles = %+v, want [owner admin]", info.TenantRoles)
+	}
+
+	// Phase B — federation. cs-user emits a top-level provider_user_id
+	// claim (different shape from Casdoor's nested properties.<provider>.id);
+	// server reads the top-level form for cs-user tokens.
+	if info.ProviderUserID != "casdoor:alice-001" {
+		t.Errorf("ProviderUserID = %q, want casdoor:alice-001 (top-level provider_user_id claim from cs-user)", info.ProviderUserID)
+	}
+}
+
+// TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak verifies a legacy
+// Casdoor-issued token (no tenant_slug / tenant_id / platform_admin /
+// platform_scope / tenant_roles) still parses cleanly via the manual-read
+// path — pre-cutover compat. The middleware must not crash or return
+// non-default values when these custom claims are absent.
+func TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "casdoor-legacy"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "user-legacy",
+		"name":               "Legacy User",
+		"preferred_username": "legacy",
+		"email":              "legacy@old.example",
+		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken on legacy Casdoor token: %v", err)
+	}
+	if info.TenantID != "" {
+		t.Errorf("TenantID = %q, want empty for legacy token", info.TenantID)
+	}
+	if info.TenantSlug != "" {
+		t.Errorf("TenantSlug = %q, want empty", info.TenantSlug)
+	}
+	if info.PlatformAdmin {
+		t.Errorf("PlatformAdmin = true, want false")
+	}
+	if info.PlatformScope != "" {
+		t.Errorf("PlatformScope = %q, want empty", info.PlatformScope)
+	}
+	if info.TenantRoles != nil {
+		t.Errorf("TenantRoles = %+v, want nil", info.TenantRoles)
+	}
+}
+
+// TestParseJWTToken_TenantRolesNonStringRejected verifies malformed
+// tenant_roles entries are silently skipped (defensive — a single bad
+// element should not corrupt the whole claim).
+func TestParseJWTToken_TenantRolesNonStringRejected(t *testing.T) {
+	key := generateTestRSAKey(t)
+	kid := "cs-user-active"
+	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+
+	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
+		"sub":          "u-test",
+		"exp":          time.Now().Add(1 * time.Hour).Unix(),
+		"tenant_roles": []any{"owner", 42, "admin"}, // middle element wrong type
+	})
+
+	info, err := parseJWTToken(tokenStr, jwks)
+	if err != nil {
+		t.Fatalf("parseJWTToken: %v", err)
+	}
+	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
+		t.Errorf("TenantRoles = %+v, want [owner admin] (non-string element should be skipped)", info.TenantRoles)
 	}
 }

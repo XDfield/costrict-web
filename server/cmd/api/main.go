@@ -21,6 +21,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -42,12 +44,15 @@ import (
 	wecombot "github.com/costrict/costrict-web/server/internal/channel/adapters/wecom-bot"
 	"github.com/costrict/costrict-web/server/internal/clawagent"
 	"github.com/costrict/costrict-web/server/internal/cloud"
+	cryptopkg "github.com/costrict/costrict-web/server/internal/crypto"
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/deptsync"
 	"github.com/costrict/costrict-web/server/internal/dispatcher"
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/handlers"
 	"github.com/costrict/costrict-web/server/internal/integration"
 	"github.com/costrict/costrict-web/server/internal/kanban"
@@ -63,12 +68,15 @@ import (
 	"github.com/costrict/costrict-web/server/internal/settings"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/costrict/costrict-web/server/internal/teamdir"
+	"github.com/costrict/costrict-web/server/internal/teamns"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -124,8 +132,95 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
-	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes)
+	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
+
+	// Phase E3b.1.1: @server-side Gitea team sync (manual admin trigger),
+	// per-tenant resolved. Constructed only when cs-user RPC is configured
+	// (USER_SERVICE_BACKEND=rpc); nil service → /api/admin/tenants/:tenant_id/
+	// teams/:team_id/sync returns 503. Git server endpoint + admin_token are
+	// resolved per-tenant via cs-user, replacing the legacy global
+	// GITEA_BASE_URL / GITEA_ADMIN_TOKEN / TEAM_SYNC_MAPPINGS env vars.
+	//
+	// Stub provider is the MVP data source; future slice swaps in a real
+	// provider (cs-user team RPC after org-team-service integration per
+	// ADR-10, or E4 webhook payload adapter) behind the same interface.
+	// teamResolver is a placeholder until a DB-backed team metadata table
+	// lands — empty map means sync currently returns 404 for any team_id.
+	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient.Configured() {
+		teamProvider := gitsync.NewStubProvider()          // TODO(E3b.2): replace with real provider
+		teamResolver := gitsync.NewConfigTeamResolver(nil) // TODO: DB-backed team metadata
+		// Git Ownership Refactor Phase 4: @server is now the canonical owner
+		// of git_servers data, so team-sync resolves locally. cs-user's RPC
+		// endpoint + cs-user.git_servers table were deleted in Phase 4.
+		gitResolver := gitsync.NewLocalResolver(gitserver.NewDBResolver(db))
+		teamSyncSvc := gitsync.NewService(teamProvider, gitResolver, teamResolver, logger.L())
+		handlers.InitTeamSyncService(teamSyncSvc)
+
+		// Phase E3c: team-namespace API v1.1 surface. Wires:
+		//   - AES-GCM for bot token at rest (env CS_BOT_TOKEN_KEY base64-32byte)
+		//   - UserRefResolver (cs-user RPC for subject → user; local DB for
+		//     user_git_binding lookups)
+		//   - teamns.Service (orchestration)
+		// Missing CS_BOT_TOKEN_KEY → feature stays disabled; handlers return 503.
+		if aesKey, err := loadBotTokenKey(); err == nil {
+			aes, err := cryptopkg.NewAESGCM(aesKey)
+			if err != nil {
+				log.Printf("teamns: AES-GCM init failed (%v); team-namespace API disabled", err)
+			} else {
+				uref := userpkg.NewUserRefResolver(rpcClient)
+				// Git Ownership Refactor Phase 4: gitea_username lookup is
+				// always local now (user_git_binding table is canonical).
+				uref.SetLocalBindingDB(db)
+				teamnsSvc := teamns.NewService(db, teamSyncSvc, uref, aes, logger.L())
+				handlers.InitTeamNSService(teamnsSvc)
+			}
+		} else {
+			log.Printf("teamns: CS_BOT_TOKEN_KEY not configured (%v); team-namespace API disabled", err)
+		}
+
+		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). The
+		// team-directory resolver forwards the caller's Casdoor JWT to the
+		// team-directory backend (today: multica's GET /api/workspaces; the
+		// long-term plan is a dedicated org-team-service). An empty list
+		// maps to 403 NO_TEAM_MEMBERSHIP; transport/auth failure surfaces
+		// as ErrOrgTeamServiceUnavailable so KBEnsure fails closed 503
+		// (KB_USER_ENSURE_API.md §2.3).
+		teamDirClient := teamdir.NewClient(teamdir.Config{
+			BaseURL:    cfg.TeamDirectory.BaseURL,
+			TimeoutSec: cfg.TeamDirectory.TimeoutSec,
+		})
+		handlers.InitTeamResolver(&handlers.TeamDirectoryResolver{Client: teamDirClient})
+	}
+
+	// Git Ownership Refactor Phase 1: server-side user provisioning service.
+	// Uses the local DB resolver (no RPC back to cs-user). Wired unconditionally
+	// — the consumer (event endpoint, Phase 2) reads this; nil = feature
+	// disabled. The Phase 1 exit test exercises ProvisionUser directly via
+	// the in-process service handle.
+	localGitResolver := gitserver.NewDBResolver(db)
+	userProvisionSvc := gitsync.NewUserProvisionService(db, localGitResolver, logger.L())
+	handlers.InitUserProvisionService(userProvisionSvc)
+
+	// Operator-supplied template seed: if GIT_SERVER_TEMPLATE_ENDPOINT +
+	// GIT_SERVER_TEMPLATE_ADMIN_TOKEN are set and no template row exists yet,
+	// materialize one so tenant binds have something to point at. No-op
+	// otherwise. ErrNoTemplateInput is logged as info (feature simply not
+	// configured).
+	{
+		tplIn := gitserver.TemplateInput{
+			Endpoint:      os.Getenv("GIT_SERVER_TEMPLATE_ENDPOINT"),
+			AdminToken:    os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_TOKEN"),
+			DisplayName:   os.Getenv("GIT_SERVER_TEMPLATE_DISPLAY_NAME"),
+			AdminUser:     os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_USER"),
+			AdminPassword: os.Getenv("GIT_SERVER_TEMPLATE_ADMIN_PASSWORD"),
+		}
+		if tplID, err := gitserver.BootstrapTemplate(context.Background(), db, tplIn); err == nil {
+			logger.L().Info("gitserver: template seeded", zap.String("server_id", tplID))
+		} else if !errors.Is(err, gitserver.ErrNoTemplateInput) {
+			logger.L().Warn("gitserver: bootstrap template failed", zap.Error(err))
+		}
+	}
 
 	storageBackend, err := storage.NewFromEnv(ctx)
 	if err != nil {
@@ -210,8 +305,34 @@ func main() {
 		casdoorEndpoint = cfg.Casdoor.Endpoint
 	}
 
-	// Initialize JWKS provider for JWT signature verification
-	jwksProvider := middleware.NewJWKSProvider(casdoorEndpoint)
+	// Initialize JWKS provider for JWT signature verification.
+	//
+	// Phase A8 灰度 mode controls which JWKS sources feed the verifier:
+	//   - off:    Casdoor only (pre-A8 behavior)
+	//   - dual:   cs-user + Casdoor (crossover window — old sessions with
+	//             Casdoor tokens keep working alongside new cs-user JWTs)
+	//   - single: cs-user only (end-state — Casdoor signing fully retired)
+	//
+	// dual/single require USER_SERVICE_URL set; boot fails fast otherwise so
+	// an operator can't accidentally flip 灰度 with no cs-user endpoint
+	// reachable.
+	var jwksProvider *middleware.JWKSProvider
+	switch cfg.JWTSignMode {
+	case config.JWTSignModeOff:
+		jwksProvider = middleware.NewJWKSProvider(casdoorEndpoint)
+	case config.JWTSignModeDual:
+		if cfg.UserService.BaseURL == "" {
+			logger.Fatal("[A8] JWT_SIGN_MODE=dual requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
+		}
+		jwksProvider = middleware.NewMultiJWKSProvider([]string{cfg.UserService.BaseURL, casdoorEndpoint})
+	case config.JWTSignModeSingle:
+		if cfg.UserService.BaseURL == "" {
+			logger.Fatal("[A8] JWT_SIGN_MODE=single requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
+		}
+		jwksProvider = middleware.NewJWKSProvider(cfg.UserService.BaseURL)
+	default:
+		logger.Fatal("[A8] internal error: unhandled JWTSignMode %q (expected off|dual|single)", cfg.JWTSignMode)
+	}
 	jwksProvider.Preload()
 	middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
 		return userModule.Service.ResolveSubjectID(&userpkg.JWTClaims{
@@ -236,6 +357,20 @@ func main() {
 		return userModule.Service.GetUserStatus(subjectID)
 	})
 
+	// R3 (REGISTRATION_PROFILE_DESIGN): profile-completion gate. Opt-in via
+	// PROFILE_GATE_ENABLED; inert by default so dev environments without the
+	// flag keep working. Lookup is a single-column read on profile_completed_at;
+	// the middleware caches it for 30s per subject and is invalidated by
+	// handlers.CompleteRegistration on success.
+	middleware.SetProfileGateEnabled(cfg.ProfileGateEnabled)
+	middleware.SetProfileChecker(func(subjectID string) (bool, error) {
+		complete, err := userModule.Service.IsProfileComplete(subjectID)
+		if err != nil {
+			return false, err
+		}
+		return complete, nil
+	})
+
 	// Bootstrap platform-admin granting (initial admin without manual SQL):
 	// installed as a post-login hook on GetOrCreateUser, which fires only on a
 	// genuine login by the user themselves (the OAuth callback and the JWKS
@@ -256,6 +391,11 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
+	// Phase B3b.2a: extract tenant slug (X-Tenant-Id / cs_tenant_slug cookie /
+	// Host subdomain) and stash in request ctx so RPC client forwards it to
+	// cs-user. Runs before OptionalAuth so even unauthenticated routes (JWKS,
+	// health, swagger) resolve a slug if the cookie/subdomain is present.
+	r.Use(middleware.ResolveTenantSlug(cfg.UserService.ApexDomains))
 
 	// Device heartbeat uses its own device token authentication.
 	// Register before OptionalAuth to avoid unnecessary Casdoor validation
@@ -264,6 +404,23 @@ func main() {
 	r.POST("/api/devices/:deviceID/heartbeat", handlers.DeviceHeartbeatHandler(deviceSvc))
 
 	r.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
+
+	// Phase B3b.2c: cross-tenant mismatch detection. Compares the
+	// tenant_slug claim embedded in cs-user-signed JWTs (Phase A7) against
+	// the runtime-resolved slug (ResolveTenantSlug above). When both
+	// populated and divergent → 401 + cookie clear. No-op for Casdoor-issued
+	// tokens (no tenant_slug claim) or any request missing either signal.
+	// Must run after OptionalAuth (populates AuthClaims) and after
+	// ResolveTenantSlug (populates ctx slug).
+	r.Use(middleware.TenantMatch())
+
+	// Phase B4: hydrate tenant_id from JWT into request ctx so B5's
+	// tenantScope(ctx) helper can scope queries without re-parsing the JWT.
+	// Falls back to tenant.DefaultTenantID when no token is supplied or the
+	// token predates cs-user self-sign (Casdoor-only). Runs after
+	// OptionalAuth (populates AuthClaims) — ordering vs TenantMatch is
+	// immaterial (disjoint fields).
+	r.Use(middleware.TenantContext())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -320,6 +477,7 @@ func main() {
 		{
 			auth.GET("/callback", handlers.AuthCallback)
 			auth.GET("/login", handlers.Login)
+			auth.GET("/resolve", middleware.RequireAuth(casdoorEndpoint, jwksProvider), handlers.ResolveAuthUser)
 			auth.POST("/logout", handlers.Logout)
 			auth.GET("/bind/callback", handlers.AuthCallback)
 		}
@@ -336,6 +494,13 @@ func main() {
 		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
 		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
+
+		// Phase B3b.2b-step2c: tenant picker suggestion endpoint. Public read
+		// (OptionalAuth) so the pre-login picker page can call it after the
+		// OAuth callback redirects with an ambiguous state. Wrapper over cs-user
+		// ResolveTenantByEmail; returns 503 in local backend mode (no tenant
+		// data on this side per ADR D1).
+		api.GET("/tenants/suggest", handlers.SuggestTenant)
 
 		api.POST("/releases", middleware.SystemTokenAuth(cfg.SystemToken), handlers.CreateReleaseHandler(updateSvc))
 
@@ -381,13 +546,30 @@ func main() {
 		// All routes below require authentication
 		authed := api.Group("")
 		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+		// R3 (REGISTRATION_PROFILE_DESIGN): profile-completion gate.
+		// Mounted AFTER RequireAuth so UserIDKey is populated. No-op when
+		// PROFILE_GATE_ENABLED=false (default). Whitelists the registration
+		// routes themselves (see registration_gate.go).
+		authed.Use(middleware.RequireProfileComplete)
 		{
 			authed.GET("/auth/me", handlers.GetCurrentUser)
+			authed.GET("/me", handlers.GetMe)
 			authed.GET("/auth/identities", handlers.ListBoundIdentities)
 			authed.POST("/auth/bind/start", handlers.StartBindAuth)
 			authed.POST("/auth/bind/confirm-merge", handlers.ConfirmMergeIdentity)
 			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
+
+			// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration +
+			// profile self-edit. Mounted under /api/users/me/* so the
+			// gate middleware (R3) can whitelist them cleanly.
+			usersMe := authed.Group("/users/me")
+			{
+				usersMe.GET("/username-available", handlers.UsernameAvailable)
+				usersMe.POST("/complete-registration", handlers.CompleteRegistration)
+				usersMe.PATCH("/profile", handlers.UpdateMyProfile)
+			usersMe.POST("/suggest-profile", handlers.SuggestProfile)
+			}
 
 			repos := authed.Group("/repositories")
 			{
@@ -474,6 +656,92 @@ func main() {
 				platformAdmin.DELETE("/tags/:id", handlers.DeleteTagHandler(tagSvc))
 			}
 
+			// Phase C2 — platform-admin tenant CRUD. First real wiring of the
+			// C1 middleware.RequirePlatformAdmin (JWT-claim-based; distinct
+			// from the legacy systemrole.RequirePlatformAdmin above, which
+			// stays on /tags). cs-user owns tenant data (ADR D1); RPCClient
+			// proxies. When UserModule.TenantResolver is nil (local backend
+			// mode), handlers return 502.
+			platformTenantSvc := buildPlatformTenantService(userModule)
+			platformTenantAPI := &handlers.PlatformTenantAPI{Svc: platformTenantSvc}
+			platformTenants := authed.Group("/platform/tenants")
+			platformTenants.Use(middleware.RequirePlatformAdmin())
+			{
+				platformTenants.GET("", platformTenantAPI.PlatformListTenants)
+				platformTenants.POST("", platformTenantAPI.PlatformCreateTenant)
+				platformTenants.GET("/:id", platformTenantAPI.PlatformGetTenant)
+				platformTenants.PATCH("/:id", platformTenantAPI.PlatformUpdateTenant)
+				platformTenants.POST("/:id/suspend", platformTenantAPI.PlatformSuspendTenant)
+				platformTenants.POST("/:id/restore", platformTenantAPI.PlatformRestoreTenant)
+				platformTenants.POST("/:id/delete", platformTenantAPI.PlatformDeleteTenant)
+			}
+
+			// Phase C3.1 — tenant-admin user listing. First real wiring
+			// of middleware.RequireTenantAdmin (previously test-only).
+			// tenant_admin JWT carries tenant_id + tenant_roles[]; the
+			// handler derives X-Tenant-Id from AuthClaims.TenantSlug
+			// (fallback TenantID for legacy tokens) and the RPC client
+			// forwards it — cs-user's ResolveTenant middleware pins the
+			// query via tenant.Scope(ctx).
+			tenantUserAPI := &handlers.TenantUserAPI{
+				Svc: buildTenantUserService(userModule),
+			}
+			tenantUsers := authed.Group("/tenant/users")
+			tenantUsers.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantUsers.GET("", tenantUserAPI.ListTenantUsers)
+			// Phase C3.4 — tenant_admin user status management. Mirrors
+			// the platform_admin endpoint (PUT /admin/users/:id/status)
+			// but scoped to the caller's own tenant via the forwarded
+			// X-Tenant-Id header. cs-user enforces row-level scope via
+			// tenant.Scope(ctx) — a tenant_admin from tenant X targeting
+			// a user in tenant Y surfaces as 404 (row invisible).
+			tenantUsers.PUT("/:id/status", tenantUserAPI.SetTenantUserStatus)
+
+			// Phase C3.2: tenant_admin config CRUD (GET + PUT raw YAML blob).
+			tenantConfigAPI := &handlers.TenantConfigAPI{
+				Svc: buildTenantConfigService(userModule),
+			}
+			tenantConfig := authed.Group("/tenant/config")
+			tenantConfig.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantConfig.GET("", tenantConfigAPI.GetTenantConfig)
+			tenantConfig.PUT("", tenantConfigAPI.UpdateTenantConfig)
+
+			// Phase C3.3: tenant_admin typed provider_mapping editor
+			// (GET + PUT typed JSON, PUT = full replace of the
+			// provider_mapping subtree). Shares the RPCClient with C3.2.
+			providerMappingAPI := &handlers.TenantProviderMappingAPI{
+				Svc: buildProviderMappingService(userModule),
+			}
+			providerMapping := authed.Group("/tenant/provider-mapping")
+			providerMapping.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			providerMapping.GET("", providerMappingAPI.GetProviderMapping)
+			providerMapping.PUT("", providerMappingAPI.UpdateProviderMapping)
+
+			// Phase C4.3 — audit-log list endpoints. Two surfaces on the
+			// same *RPCClient: platform-scope (cross-tenant, gated by
+			// RequirePlatformAdmin) and tenant-scope (this tenant only,
+			// gated by RequireTenantAdmin; cs-user forces tenant scope
+			// from X-Tenant-Id header). cs-user owns user_center_audit_log
+			// (ADR D1); local backend mode → 502.
+			platformAuditLogAPI := &handlers.PlatformAuditLogAPI{
+				Svc: buildPlatformAuditLogService(userModule),
+			}
+			platformAuditLogs := authed.Group("/platform/audit-logs")
+			platformAuditLogs.Use(middleware.RequirePlatformAdmin())
+			platformAuditLogs.GET("", platformAuditLogAPI.PlatformListAuditLogs)
+
+			tenantAuditLogAPI := &handlers.TenantAuditLogAPI{
+				Svc: buildTenantAuditLogService(userModule),
+			}
+			tenantAuditLogs := authed.Group("/tenant/audit-logs")
+			tenantAuditLogs.Use(middleware.RequireTenantAdmin("owner", "admin"))
+			tenantAuditLogs.GET("", tenantAuditLogAPI.TenantListAuditLogs)
+
+			// KB ensure — user-side entry, JWT-authed. Mirrors
+			// internalAPI.POST("/workflow/init") but with user JWT and team
+			// auto-derivation. See docs/repo-management/KB_USER_ENSURE_API.md.
+			authed.POST("/kb/ensure", handlers.KBEnsure)
+
 			authed.GET("/users/search", handlers.SearchUsers)
 			authed.GET("/users/me/behavior/summary", recommendHandler.GetUserSummary)
 
@@ -534,13 +802,29 @@ func main() {
 			admin.GET("/distributions", distHandler.ListAllDistributions)
 			admin.GET("/distributions/:id/receipts", distHandler.ListDistributionReceipts)
 
+			// Phase E3b.1.1: manual team-sync trigger (platform admin only).
+			// POST /api/admin/tenants/:tenant_id/teams/:team_id/sync runs a
+			// full reconcile against the tenant's Gitea; returns 503 if
+			// feature is unconfigured.
+			admin.POST("/tenants/:tenant_id/teams/:team_id/sync", handlers.SyncTeam)
+
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.
 			audit.NewModule(db).RegisterRoutes(admin)
 
 			// Admin member management (M1, platform admin only): user list,
-			// profile, status switch, organization roll-up.
-			adminuser.New(userModule.Service).RegisterRoutes(admin)
+			// profile, status switch, organization roll-up. Identity + status
+			// proxy to cs-user via RPCClient (admin-user-migration slice,
+			// option A full migration); activity counts and roles stay local
+			// to @server because the underlying tables (capability_items,
+			// item_distributions, user_system_roles) live in costrict_db.
+			// rpcClient is nil when USER_SERVICE_BACKEND != rpc; handlers
+			// return 503 in that mode.
+			var adminUserRPC *userpkg.RPCClient
+			if rpc, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpc != nil {
+				adminUserRPC = rpc
+			}
+			adminuser.New(adminUserRPC, userModule.Service).RegisterRoutes(admin)
 
 			// Admin department tree (M1 org view, platform admin only): proxies the
 			// external dept-sync service for the real org tree and correlates its
@@ -644,6 +928,43 @@ func main() {
 	authzModule.RegisterInternalRoutes(internalGroup)
 
 	r.POST("/cloud/device/gateway-assign", gateway.GatewayAssignHandler(gatewayRegistry, deviceSvc))
+
+	// Phase E3c: team-namespace API v1.1 internal surface. Mounted at
+	// /api/internal/* per docs/repo-management/TEAM_NAMESPACE_API_REFERENCE.md.
+	// Same X-Internal-Service-Token gate as /internal/* — the API prefix is
+	// what the doc spec mandates.
+	internalAPI := r.Group("/api/internal")
+	internalAPI.Use(middleware.InternalAuth(cfg.InternalSecret))
+	internalAPI.POST("/teams", handlers.CreateTeam)
+	internalAPI.GET("/teams", handlers.ListTeams)
+	internalAPI.GET("/teams/:team_id", handlers.GetTeam)
+	internalAPI.PATCH("/teams/:team_id", handlers.PatchTeam)
+	internalAPI.POST("/teams/:team_id/members:sync", handlers.SyncTeamMembers)
+	internalAPI.POST("/teams/:team_id/dissolve", handlers.DissolveTeam)
+	internalAPI.POST("/teams/:team_id/bot-token:rotate", handlers.RotateBotToken)
+	internalAPI.POST("/workflow/init", handlers.WorkflowInit)
+
+	// Git Ownership Refactor Phase 1: server-side git_servers CRUD +
+	// tenant→git_server binding. Replaces the cs-user RPC surface.
+	gitServerStore := handlers.NewGormGitServerStore(db)
+	tenantBindingStore := handlers.NewGormTenantGitServerBindingStore(db)
+	gitServerAPI := &handlers.GitServerAPI{Store: gitServerStore}
+	tenantBindingAPI := &handlers.TenantGitServerBindingAPI{Store: tenantBindingStore}
+	internalAPI.POST("/git-servers", gitServerAPI.CreateGitServer)
+	internalAPI.GET("/git-servers", gitServerAPI.ListGitServers)
+	internalAPI.GET("/git-servers/:server_id", gitServerAPI.GetGitServer)
+	internalAPI.PUT("/git-servers/:server_id", gitServerAPI.UpdateGitServer)
+	internalAPI.DELETE("/git-servers/:server_id", gitServerAPI.DeleteGitServer)
+	internalAPI.PUT("/tenants/:tenant_id/git-server", tenantBindingAPI.BindTenantGitServer)
+	internalAPI.GET("/tenants/:tenant_id/git-server", tenantBindingAPI.GetTenantGitServerBinding)
+	internalAPI.DELETE("/tenants/:tenant_id/git-server", tenantBindingAPI.UnbindTenantGitServer)
+
+	// Git Ownership Refactor Phase 3: user.created event consumer.
+	// When USER_CREATED_EVENT_PROCESSING_ENABLED is set, dispatches to
+	// UserProvisionService with idempotency tracking (user_created_event_log).
+	// When the flag is off (default), logs + 202 only.
+	userCreatedAPI := handlers.NewUserCreatedEventAPI(logger.L(), db)
+	internalAPI.POST("/users/created", userCreatedAPI.ReceiveUserCreated)
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
@@ -876,4 +1197,101 @@ func (p deptSyncDepartmentProvider) GetUserDepartments(deptSyncUserID string) ([
 
 func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, error) {
 	return p.client.GetDepartmentPath(deptID)
+}
+
+// buildPlatformTenantService returns the platform-admin tenant CRUD service
+// used by Phase C2 handlers. In rpc backend mode it's the same *RPCClient
+// that backs Module.TenantResolver (cs-user owns tenant data per ADR D1);
+// in local backend mode there is no tenant data on this side, so it
+// returns nil and handlers answer 502.
+func buildPlatformTenantService(module *userpkg.Module) handlers.PlatformTenantService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantUserService returns the tenant-admin user listing service
+// for Phase C3.1. Same *RPCClient as platform tenants — single transport
+// per server instance (Module.TenantResolver) handles every cs-user RPC.
+// nil in local backend mode; handlers return 502.
+func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantConfigService wires the RPCClient for the tenant-config CRUD
+// surface (Phase C3.2). Same shape as buildTenantUserService — local
+// backend mode returns nil so handlers cleanly 502.
+func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildProviderMappingService wires the RPCClient for the typed
+// provider_mapping editor (Phase C3.3). Shares the same RPC client as
+// C3.2 — both surfaces are methods on *userpkg.RPCClient.
+func buildProviderMappingService(module *userpkg.Module) handlers.TenantProviderMappingService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildPlatformAuditLogService wires the RPCClient for the platform-scope
+// audit-log list (Phase C4.3). Same single transport as every other cs-user
+// RPC surface. nil in local backend mode; handler returns 502.
+func buildPlatformAuditLogService(module *userpkg.Module) handlers.PlatformAuditLogService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// buildTenantAuditLogService wires the RPCClient for the tenant-scope
+// audit-log list (Phase C4.3). Same *RPCClient; the platform vs tenant
+// distinction is encoded in which method the handler calls
+// (ListAuditLogs vs ListAuditLogsForTenant).
+func buildTenantAuditLogService(module *userpkg.Module) handlers.TenantAuditLogService {
+	if module == nil {
+		return nil
+	}
+	if rpc, ok := module.TenantResolver.(*userpkg.RPCClient); ok && rpc != nil {
+		return rpc
+	}
+	return nil
+}
+
+// loadBotTokenKey reads CS_BOT_TOKEN_KEY (base64-encoded 32-byte AES key)
+// from env. Returns an error when unset OR malformed — caller treats both
+// as "feature disabled" so we get clean 503s without crashing boot.
+func loadBotTokenKey() ([]byte, error) {
+	raw := os.Getenv("CS_BOT_TOKEN_KEY")
+	if raw == "" {
+		return nil, fmt.Errorf("CS_BOT_TOKEN_KEY not set")
+	}
+	key, err := cryptopkg.DecodeBase64Key(raw)
+	if err != nil {
+		return nil, fmt.Errorf("CS_BOT_TOKEN_KEY invalid: %w", err)
+	}
+	return key, nil
 }

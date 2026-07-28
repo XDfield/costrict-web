@@ -1,0 +1,2392 @@
+basePath: /
+definitions:
+  github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult:
+    properties:
+      limit:
+        type: integer
+      logs:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.AuditLog'
+        type: array
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_auth.JWK:
+    properties:
+      alg:
+        description: 'algorithm: "RS256"'
+        type: string
+      e:
+        description: RSA exponent, base64url-no-pad
+        type: string
+      kid:
+        description: 'key id: RFC 7638 thumbprint'
+        type: string
+      kty:
+        description: 'key type: "RSA"'
+        type: string
+      "n":
+        description: RSA modulus, base64url-no-pad
+        type: string
+      use:
+        description: 'public key use: "sig"'
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_auth.JWKS:
+    properties:
+      keys:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWK'
+        type: array
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.AuditLog:
+    properties:
+      action:
+        type: string
+      actor_platform_scope:
+        type: string
+      actor_subject_id:
+        type: string
+      actor_tenant_role:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: integer
+      ip:
+        type: string
+      payload:
+        items:
+          type: integer
+        type: array
+      target_id:
+        type: string
+      target_type:
+        type: string
+      tenant_id:
+        type: string
+      user_agent:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions:
+    properties:
+      force_rebind:
+        type: boolean
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims:
+    properties:
+      email:
+        type: string
+      external_claims:
+        additionalProperties: {}
+        description: |-
+          ExternalClaims carries the raw IdP userinfo fields (e.g. wxwork's
+          UserId/JobNumber, azure_ad's department) harvested by server's OAuth
+          callback. Consumed by ApplyEnterpriseMapping via the tenant's
+          employment_providers.field_map config to populate employment_identities
+          enterprise columns. Empty/nil → stub write path (enterprise fields stay
+          NULL), so legacy callers without enterprise mapping keep working.
+        type: object
+      id:
+        type: string
+      name:
+        type: string
+      owner:
+        type: string
+      phone:
+        type: string
+      picture:
+        type: string
+      preferred_username:
+        type: string
+      provider:
+        type: string
+      provider_user_id:
+        type: string
+      sub:
+        type: string
+      universal_id:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.Tenant:
+    properties:
+      created_at:
+        type: string
+      deleted_at:
+        type: string
+      deletion_requested_at:
+        type: string
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        type: string
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+      slug:
+        type: string
+      status:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig:
+    properties:
+      config_yaml:
+        type: string
+      created_at:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.User:
+    properties:
+      auth_provider:
+        type: string
+      avatar_url:
+        type: string
+      casdoor_id:
+        type: string
+      casdoor_sub:
+        type: string
+      casdoor_universal_id:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      external_key:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      last_login_at:
+        type: string
+      last_sync_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      profile_completed_at:
+        description: |-
+          ProfileCompletedAt is NULL until the user finishes the first-time
+          registration flow (custom username + display_name per
+          REGISTRATION_PROFILE_DESIGN). The server's RequireProfileComplete
+          middleware consults this column (via cs-user RPC) to gate API access.
+          Existing rows are backfilled to created_at by the migration that
+          introduces the column, so only users created post-migration can be
+          gated.
+        type: string
+      provider_user_id:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_models.UserAuthIdentity:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      explicitly_unbound:
+        type: boolean
+      external_key:
+        type: string
+      external_subject:
+        type: string
+      external_user_id:
+        type: string
+      id:
+        type: integer
+      is_primary:
+        type: boolean
+      issuer:
+        type: string
+      last_login_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      provider:
+        type: string
+      provider_user_id:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      user_subject_id:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      tenants:
+        items:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        type: array
+      total:
+        type: integer
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync:
+    properties:
+      interval:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider:
+    properties:
+      enabled:
+        type: boolean
+      enterprise_sync:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.EnterpriseSync'
+      field_map:
+        additionalProperties:
+          type: string
+        type: object
+      rank:
+        type: integer
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping:
+    properties:
+      providers:
+        additionalProperties:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.Provider'
+        type: object
+      version:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount:
+    properties:
+      memberCount:
+        type: integer
+      organization:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
+    type: object
+  github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary:
+    properties:
+      display_name:
+        type: string
+      role:
+        type: string
+      team_id:
+        type: string
+    type: object
+  internal_handlers.adminUpdateProfileRequest:
+    properties:
+      display_name:
+        type: string
+      operator_id:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_handlers.adminUserListItem:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      is_active:
+        type: boolean
+      organization:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_handlers.adminUserListResponse:
+    properties:
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+      users:
+        items:
+          $ref: '#/definitions/internal_handlers.adminUserListItem'
+        type: array
+    type: object
+  internal_handlers.adminUserProfileDTO:
+    properties:
+      auth_provider:
+        type: string
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      is_active:
+        type: boolean
+      last_login_at:
+        type: string
+      organization:
+        type: string
+      phone:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_handlers.applyEnterpriseMappingRequest:
+    properties:
+      provider:
+        type: string
+      tenant_id:
+        type: string
+      user_subject_id:
+        type: string
+    required:
+    - provider
+    - user_subject_id
+    type: object
+  internal_handlers.bindIdentityRequest:
+    properties:
+      claims:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      options:
+        $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.BindIdentityOptions'
+    required:
+    - claims
+    type: object
+  internal_handlers.byIDsRequest:
+    properties:
+      ids:
+        items:
+          type: string
+        maxItems: 500
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
+  internal_handlers.completeRegistrationRequest:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
+    required:
+    - username
+    type: object
+  internal_handlers.platformCreateTenantRequest:
+    properties:
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        items:
+          type: string
+        type: array
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+      slug:
+        type: string
+    required:
+    - display_name
+    - slug
+    type: object
+  internal_handlers.platformUpdateTenantRequest:
+    properties:
+      display_name:
+        type: string
+      edition:
+        type: string
+      email_domains:
+        items:
+          type: string
+        type: array
+      features:
+        type: string
+      limits:
+        type: string
+      settings:
+        type: string
+    type: object
+  internal_handlers.provisionRequest:
+    properties:
+      display_name:
+        type: string
+      email:
+        type: string
+      employee_number:
+        type: string
+      enterprise_provider:
+        type: string
+      enterprise_uid:
+        type: string
+      external_claims:
+        additionalProperties: {}
+        type: object
+      phone:
+        type: string
+      username:
+        type: string
+    required:
+    - enterprise_provider
+    - enterprise_uid
+    type: object
+  internal_handlers.reissueTokenRequest:
+    properties:
+      audience:
+        description: |-
+          Audience overrides the configured default. Empty slice falls back
+          to JWTConfig.DefaultAudience; populated slice replaces it.
+        items:
+          type: string
+        type: array
+      identity:
+        allOf:
+        - $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+        description: |-
+          Identity carries the parsed Casdoor JWT claims. Optional — when nil,
+          only standard JWT claims + enterprise claims (if any) are emitted.
+          Typical Phase A7 callers always pass Identity; the nil path exists
+          for refresh-token flows (Phase B) where identity may be cached.
+      tenant_id:
+        description: |-
+          TenantID is reserved for Phase B. Phase A callers pass "default" or
+          leave empty; the service falls back to "default".
+        type: string
+      tenant_slug:
+        description: |-
+          TenantSlug is the URL-friendly tenant key (Phase B). Forwarded by
+          server's RPCWriter from the request ctx (set by Try 1 subdomain or
+          Try 2 email-domain resolution in the OAuth callback). cs-user embeds
+          this verbatim in the signed JWT so server's TenantMatch middleware
+          can compare against the runtime-resolved slug without a per-request
+          slug→tenant_id lookup. Empty for Phase A callers.
+        type: string
+      user_subject_id:
+        description: UserSubjectID is the cs-user user's stable subject_id. Required.
+        type: string
+    required:
+    - user_subject_id
+    type: object
+  internal_handlers.reissueTokenResponse:
+    properties:
+      expires_at:
+        type: string
+      token:
+        type: string
+    type: object
+  internal_handlers.resolveByEmailRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  internal_handlers.setUserStatusRequest:
+    properties:
+      operator_id:
+        type: string
+      status:
+        type: string
+    required:
+    - status
+    type: object
+  internal_handlers.tenantCandidate:
+    properties:
+      name:
+        type: string
+      slug:
+        type: string
+      tenant_id:
+        type: string
+    type: object
+  internal_handlers.tenantConfigRequest:
+    properties:
+      config_yaml:
+        type: string
+    required:
+    - config_yaml
+    type: object
+  internal_handlers.transferIdentityRequest:
+    properties:
+      external_key:
+        type: string
+      source_user_subject_id:
+        description: |-
+          SourceUserSubjectID is accepted for forwards compatibility with
+          server's signature; cs-user identifies the identity purely by
+          external_key.
+        type: string
+      target_user_subject_id:
+        type: string
+    required:
+    - external_key
+    - target_user_subject_id
+    type: object
+  internal_handlers.updateProfileRequest:
+    properties:
+      display_name:
+        type: string
+      username:
+        type: string
+    type: object
+host: localhost:8082
+info:
+  contact: {}
+  description: 'User identity service for the costrict-cloud platform (Phase 1: user
+    CRUD + read-through RPC).'
+  title: cs-user API
+  version: "1.0"
+paths:
+  /.well-known/jwks:
+    get:
+      description: Exposes cs-user's RSA public signing key(s) so relying parties
+        (server) can verify cs-user-issued JWTs. Public — RFC 7517 permits; public
+        keys aren't secrets. Returns 503 when signing is not configured (CS_USER_JWT_SIGNING_KEY_PATH
+        unset).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auth.JWKS'
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: JWKS endpoint
+      tags:
+      - jwks
+  /api/internal/ping:
+    get:
+      description: Returns pong. Used by costrict-web to verify the X-Internal-Token
+        handshake at startup. Requires the shared secret.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              pong:
+                type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Internal handshake
+      tags:
+      - internal
+  /api/internal/platform/audit-logs:
+    get:
+      description: 'Returns paginated audit-log entries. Platform-admin scope sees
+        all tenants; pass tenant_id to narrow. Filters: action / actor_subject_id
+        / target_type / target_id / from / to (ISO8601) / limit (default 100, cap
+        500) / offset (default 0). Newest first.'
+      parameters:
+      - description: Exact tenant_id match
+        in: query
+        name: tenant_id
+        type: string
+      - description: Exact actor_subject_id match
+        in: query
+        name: actor_subject_id
+        type: string
+      - description: Exact action match (e.g. tenant.create, user.status_changed)
+        in: query
+        name: action
+        type: string
+      - description: Exact target_type match (e.g. tenant, user)
+        in: query
+        name: target_type
+        type: string
+      - description: Exact target_id match
+        in: query
+        name: target_id
+        type: string
+      - description: ISO8601 lower bound on created_at (inclusive)
+        in: query
+        name: from
+        type: string
+      - description: ISO8601 upper bound on created_at (inclusive)
+        in: query
+        name: to
+        type: string
+      - description: Page size (default 100, cap 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List audit-log entries (platform-admin, cross-tenant)
+      tags:
+      - platform-audit-logs
+  /api/internal/platform/tenants:
+    get:
+      description: Returns a paginated list of tenants (newest first). Optional status
+        filter narrows to one of active / suspended / deleted. Limit defaults to 100
+        (capped at 500); offset defaults to 0.
+      parameters:
+      - description: Page size (default 100, max 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      - description: 'Filter by status: active | suspended | deleted'
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenant.ListResult'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List tenants (paginated)
+      tags:
+      - platform-tenants
+    post:
+      consumes:
+      - application/json
+      description: Creates a new tenant. Validates slug format + uniqueness, edition
+        enum, and email_domains non-overlap with existing tenants. status defaults
+        to active; tenant_id is server-minted UUID.
+      parameters:
+      - description: Tenant to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.platformCreateTenantRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Create tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}:
+    get:
+      description: Returns a single tenant. The :id path param accepts either tenant_id
+        OR slug — whichever matches.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get tenant by id or slug
+      tags:
+      - platform-tenants
+    patch:
+      consumes:
+      - application/json
+      description: Updates mutable fields (display_name / edition / email_domains
+        / features / limits / settings). Absent fields are left untouched (true PATCH
+        semantics). slug + tenant_id are immutable and silently ignored if supplied;
+        status changes only via /suspend / /restore / /delete.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.platformUpdateTenantRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Partially update tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/delete:
+    post:
+      description: Transitions status from active|suspended → deleted and stamps deletion_requested_at
+        = now. The actual row purge is performed by a 30-day grace cron (out of scope
+        — separate PR with runbook).
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Request tenant deletion (30-day grace)
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/restore:
+    post:
+      description: Transitions tenant status from suspended → active.
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Restore suspended tenant
+      tags:
+      - platform-tenants
+  /api/internal/platform/tenants/{id}/suspend:
+    post:
+      description: Transitions tenant status from active → suspended. Blocks logins
+        at the resolver layer (status check).
+      parameters:
+      - description: Tenant ID or slug
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.Tenant'
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Suspend tenant
+      tags:
+      - platform-tenants
+  /api/internal/tenant/config:
+    get:
+      description: Returns the caller's tenant_configs row. Missing row returns a
+        synthetic default {"config_yaml":"{}"} — every tenant implicitly has an empty
+        config. Tenant scoping enforced by the ResolveTenant middleware via X-Tenant-Id.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Read tenant config (tenant admin)
+      tags:
+      - tenant-config
+    put:
+      consumes:
+      - application/json
+      description: Replaces the caller's tenant_configs.config_yaml blob. Validates
+        the YAML parses (schema-agnostic — C3.2 accepts any well-formed YAML; C3.3
+        will layer typed provider_mapping checks on top). Empty / whitespace-only
+        body normalizes to "{}". 64 KiB cap. X-Actor-Subject-Id header (forwarded
+        by server from JWT) stamps updated_by.
+      parameters:
+      - description: Raw YAML blob
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.tenantConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.TenantConfig'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "413":
+          description: Request Entity Too Large
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update tenant config (tenant admin)
+      tags:
+      - tenant-config
+  /api/internal/tenant/provider-mapping:
+    get:
+      description: Returns the typed provider_mapping subsection of the caller's tenant_configs.config_yaml.
+        Missing subsection returns {"providers":{}} — every tenant implicitly has
+        an empty mapping. Sibling YAML keys are not echoed here; use /api/internal/tenant/config
+        for the raw blob.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Read provider_mapping (tenant admin)
+      tags:
+      - tenant-provider-mapping
+    put:
+      consumes:
+      - application/json
+      description: PUT (full replace) of the provider_mapping subsection. Sibling
+        YAML sections (employment_providers, features, etc.) are preserved verbatim
+        via yaml.v3 Node-based merge. Provider names must match ^[a-z0-9_]{1,64}$;
+        rank non-negative; enterprise_sync.interval a positive Go duration capped
+        at 30 days. Enabled defaults to true when omitted.
+      parameters:
+      - description: Typed provider_mapping
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_tenantconfig.ProviderMapping'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update provider_mapping (tenant admin)
+      tags:
+      - tenant-provider-mapping
+  /api/internal/tenants/audit-logs:
+    get:
+      description: 'Returns paginated audit-log entries scoped to the request''s tenant
+        (resolved from X-Tenant-Id header). Client-supplied tenant_id is ignored.
+        Filters: action / actor_subject_id / target_type / target_id / from / to (ISO8601)
+        / limit (default 100, cap 500) / offset (default 0). Newest first.'
+      parameters:
+      - description: Exact actor_subject_id match
+        in: query
+        name: actor_subject_id
+        type: string
+      - description: Exact action match (e.g. tenant_config.update, user.status_changed)
+        in: query
+        name: action
+        type: string
+      - description: Exact target_type match
+        in: query
+        name: target_type
+        type: string
+      - description: Exact target_id match
+        in: query
+        name: target_id
+        type: string
+      - description: ISO8601 lower bound on created_at (inclusive)
+        in: query
+        name: from
+        type: string
+      - description: ISO8601 upper bound on created_at (inclusive)
+        in: query
+        name: to
+        type: string
+      - description: Page size (default 100, cap 500)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_auditlog.ListResult'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List audit-log entries (tenant-scoped)
+      tags:
+      - tenant-audit-logs
+  /api/internal/tenants/resolve-by-email:
+    post:
+      consumes:
+      - application/json
+      description: Looks up the active tenant whose email_domains array contains the
+        domain extracted from the supplied email. Returns slug on unique hit, candidates
+        on ambiguity, not_found on miss. Always 200 — semantic state lives in the
+        `status` field so the caller (server RPCWriter) can branch without parsing
+        both status code and body.
+      parameters:
+      - description: Email to resolve
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.resolveByEmailRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              candidates:
+                items:
+                  $ref: '#/definitions/internal_handlers.tenantCandidate'
+                type: array
+              slug:
+                type: string
+              status:
+                type: string
+              tenant_id:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Resolve tenant by email domain (Try 2)
+      tags:
+      - tenants
+  /api/internal/users/{subject_id}:
+    get:
+      description: Returns the user record matching the given subject_id. 404 when
+        not found. Internal-only — requires the shared secret.
+      parameters:
+      - description: User subject_id (stable application-level identifier)
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get a user by subject_id
+      tags:
+      - users
+  /api/internal/users/{subject_id}/auth-identities:
+    get:
+      description: Returns every external login identity bound to the user, ordered
+        so the primary identity surfaces first. Empty list when the user has none.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              identities:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.UserAuthIdentity'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List a user's auth identities
+      tags:
+      - auth-identities
+  /api/internal/users/{subject_id}/bind-identity:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent bind. Recovers soft-deleted identities instead of duplicating.
+        Re-binding an explicitly-unbound identity requires options.force_rebind.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Claims to bind + optional BindIdentityOptions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bindIdentityRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Bind an identity to a user
+      tags:
+      - users
+  /api/internal/users/{subject_id}/complete-registration:
+    post:
+      consumes:
+      - application/json
+      description: Sets username + display_name and marks profile_completed_at = NOW.
+        One-shot — calling again returns 409. Username is tenant-scoped unique.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Username (required) + display_name (optional)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.completeRegistrationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Finish first-time registration
+      tags:
+      - users
+  /api/internal/users/{subject_id}/identities/{provider}:
+    delete:
+      description: Soft-deletes every identity matching the provider on the user and
+        marks them explicitly_unbound. Refuses to unbind the user's last identity.
+        Promotes the next best-rank identity to primary if the unbind removed the
+        primary.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Provider to unbind (e.g. github, phone, idtrust)
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Unbind all identities for a provider
+      tags:
+      - users
+  /api/internal/users/{subject_id}/profile:
+    get:
+      description: 'Returns the identity + status slice of a user''s profile (subject_id,
+        username, contact info, status, login metadata). Privacy-scoped: infra-only
+        identifiers (external_key, casdoor_*, provider_user_id) are NOT returned.
+        @server supplements this with locally-computed activity counts (createdItemCount,
+        distributedCount, receivedCount) before returning the full profile to the
+        admin UI. Used by @server''s GET /api/admin/users/:id/profile (admin-user-migration
+        slice).'
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserProfileDTO'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Get a user's identity profile (admin)
+      tags:
+      - users
+      - admin
+    post:
+      consumes:
+      - application/json
+      description: User self-edit accepts display_name only. Admin override (R5) may
+        additionally set username. username validation + tenant-scoped uniqueness
+        enforced.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Patches to apply
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.updateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Update user profile (display_name self-edit or admin override)
+      tags:
+      - users
+    put:
+      consumes:
+      - application/json
+      description: Admin-side profile override (R5 of REGISTRATION_PROFILE_DESIGN).
+        Unlike the user-self POST /profile (display_name only), this path may mutate
+        BOTH username and display_name and works regardless of profile_completed_at.
+        username changes are tenant-scoped-unique-checked; collisions return 409.
+        operator_id is the admin's subject_id, recorded on the audit row. Used by
+        @server's PUT /api/admin/users/:id/profile.
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: Fields to override (at least one required)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.adminUpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserProfileDTO'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Override username / display_name (admin)
+      tags:
+      - users
+      - admin
+  /api/internal/users/{subject_id}/status:
+    post:
+      consumes:
+      - application/json
+      description: Transitions the user's status to active | disabled | banned. Refuses
+        to change the operator's own status (self-lock guard). Records a user_center_audit_log
+        row keyed action=user.status_changed with from_status / to_status on success.
+        Used by @server's POST /api/admin/users/:id/status (admin-user-migration slice).
+      parameters:
+      - description: Target user subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      - description: New status + operator_id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.setUserStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              from_status:
+                type: string
+              to_status:
+                type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Set a user's account status (admin)
+      tags:
+      - users
+      - admin
+  /api/internal/users/{subject_id}/teams:
+    get:
+      description: Returns the teams the user belongs to, in the tenant resolved by
+        X-Tenant-Id. Currently returns 503 ORG_TEAM_SERVICE_UNAVAILABLE until org-team-service
+        integration lands.
+      parameters:
+      - description: User subject_id
+        in: path
+        name: subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              teams:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_userteams.TeamSummary'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List teams for a user (kb/ensure backing)
+      tags:
+      - users
+      - teams
+  /api/internal/users/apply-enterprise-mapping:
+    post:
+      consumes:
+      - application/json
+      description: 'Loads tenant_configs.employment_providers for the tenant and upserts
+        the user''s employment_identities row when the login provider is enabled.
+        Returns 200 with `{"applied": false}` when the provider is not enabled (treated
+        as a no-op success — login must not break on tenant config); returns 200 with
+        `{"applied": true}` when a row was written or refreshed. Malformed tenant
+        YAML surfaces as 500 (operator-visible); missing tenant_configs row is the
+        same as disabled (200, applied=false).'
+      parameters:
+      - description: User + provider + optional tenant_id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.applyEnterpriseMappingRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              applied:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Refresh employment_identities snapshot (login hook)
+      tags:
+      - users
+  /api/internal/users/by-ids:
+    post:
+      consumes:
+      - application/json
+      description: Returns a subject_id → user map. Missing IDs are silently omitted;
+        callers compare lengths to detect partial misses. Capped at 500 IDs per request.
+      parameters:
+      - description: Subject IDs to resolve
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.byIDsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              users:
+                additionalProperties:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+                type: object
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Batch-resolve users by subject_id
+      tags:
+      - users
+  /api/internal/users/get-or-create:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent upsert driven by the OAuth callback's parsed JWT claims.
+        Multi-lookup strategy (external_key → universal_id → casdoor_id → sub → username).
+        Creates a primary identity row when a new user is created.
+      parameters:
+      - description: JWT claim payload (parsed — cs-user does not verify JWT signatures;
+          the X-Internal-Token middleware authenticates the caller)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Upsert user from JWT claims (login entry point)
+      tags:
+      - users
+  /api/internal/users/list:
+    get:
+      description: Paginated list of all users in the current tenant scope, optionally
+        filtered by keyword / organization / status. Unlike /search, this surface
+        includes disabled + banned accounts so admins can see the full roster. Used
+        by @server's GET /api/admin/users (admin-user-migration slice).
+      parameters:
+      - description: Matched against username / display_name / email (LIKE %keyword%)
+        in: query
+        name: keyword
+        type: string
+      - description: Exact organization match
+        in: query
+        name: organization
+        type: string
+      - description: 'Account status: active | disabled | banned'
+        enum:
+        - active
+        - disabled
+        - banned
+        in: query
+        name: status
+        type: string
+      - description: 1-based page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 200)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.adminUserListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List users for admin console
+      tags:
+      - users
+      - admin
+  /api/internal/users/organizations:
+    get:
+      description: Returns the per-tenant organization roll-up (grouped by users.organization,
+        busiest first). Powers the admin console's organization filter dropdown. NULL/empty
+        organizations are skipped. Used by @server's GET /api/admin/users/organizations
+        (admin-user-migration slice).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              organizations:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount'
+                type: array
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: List organizations with member counts (admin)
+      tags:
+      - users
+      - admin
+  /api/internal/users/provision:
+    post:
+      consumes:
+      - application/json
+      description: Idempotent. For external modules holding their own enterprise identity
+        id. Looks up employment_identities.(tenant_id, enterprise_uid); creates a
+        synthetic-claim user when not found. The reverse-lookup branch in GetOrCreateUser
+        reattaches the pre-provisioned subject_id on future OAuth login.
+      parameters:
+      - description: Target tenant
+        in: header
+        name: X-Tenant-Id
+        required: true
+        type: string
+      - description: Enterprise identity + optional profile fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.provisionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              is_new_user:
+                type: boolean
+              user:
+                $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Pre-create user by enterprise identity (no Casdoor claim required)
+      tags:
+      - users
+  /api/internal/users/reissue-token:
+    post:
+      consumes:
+      - application/json
+      description: 'Strategy (b) re-sign: server validates the Casdoor JWT, then calls
+        this endpoint with the parsed claims + user_subject_id. cs-user loads the
+        user''s employment_identities snapshot (Phase A4), builds enterprise claims
+        (Phase A5), signs via the configured RSA key (Phase A3), and returns the new
+        token. cs-user does NOT re-validate the Casdoor JWT — the X-Internal-Token
+        middleware authenticates the caller as the server, and the server has already
+        validated the original. Returns 503 when no signing key is configured.'
+      parameters:
+      - description: Parsed Casdoor claims + user_subject_id + optional tenant_id
+          / audience override
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.reissueTokenRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.reissueTokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Reissue a cs-user-signed JWT (OAuth callback takeover)
+      tags:
+      - auth
+  /api/internal/users/search:
+    get:
+      description: Returns active users whose username / display_name / email match
+        the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass `employee_number`
+        to short-circuit the keyword path and look up users via employment_identities
+        (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). `keyword`
+        and `employee_number` are mutually exclusive — supplying both yields 400.
+      parameters:
+      - description: Search keyword (matched against username / display_name / email)
+        in: query
+        name: keyword
+        type: string
+      - description: Employee number (工号) — short-circuits keyword path; goes through
+          employment_identities JOIN users
+        in: query
+        name: employee_number
+        type: string
+      - description: Max results (default 50 for keyword / 1 for employee_number,
+          max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              users:
+                items:
+                  $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User'
+                type: array
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Search active users
+      tags:
+      - users
+  /api/internal/users/suggest-profile:
+    post:
+      consumes:
+      - application/json
+      description: Pure-function hint generator (R4 of REGISTRATION_PROFILE_DESIGN).
+        Given the JWT claims Casdoor minted after brokering the upstream IdP, returns
+        a suggested {username, display_name} the form can pre-fill. Always advisory
+        — caller must still validate.
+      parameters:
+      - description: JWT claims
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.JWTClaims'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.ProfileSuggestion'
+      security:
+      - InternalToken: []
+      summary: Suggest registration profile from IdP claims
+      tags:
+      - users
+  /api/internal/users/transfer-identity:
+    post:
+      consumes:
+      - application/json
+      description: Account-merge primitive. Moves the identity identified by external_key
+        to the target user. No-op if the target already owns it.
+      parameters:
+      - description: Transfer target + identity key
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.transferIdentityRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Transfer an identity to another user
+      tags:
+      - users
+  /api/internal/users/username-available:
+    get:
+      description: Tenant-scoped uniqueness check + format/reserved-word validation.
+        exclude_subject_id lets callers omit the current user.
+      parameters:
+      - description: Candidate username
+        in: query
+        name: username
+        required: true
+        type: string
+      - description: Subject ID to exclude from collision check
+        in: query
+        name: exclude_subject_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              available:
+                type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - InternalToken: []
+      summary: Check username availability
+      tags:
+      - users
+  /healthz:
+    get:
+      description: Always returns 200 once the process is up. Unauthenticated — safe
+        for K8s livenessProbe.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              status:
+                type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - health
+  /readyz:
+    get:
+      description: Returns 200 when the readiness checker (Postgres ping in P0-2)
+        passes; 503 otherwise. Unauthenticated — safe for K8s readinessProbe. The
+        handler is built by a factory bound to the supplied checker; swag uses the
+        @Router path to register this endpoint.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              status:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              status:
+                type: string
+            type: object
+      summary: Readiness probe
+      tags:
+      - health
+securityDefinitions:
+  InternalToken:
+    description: Shared secret for service-to-service calls from costrict-web (ADR
+      D8).
+    in: header
+    name: X-Internal-Token
+    type: apiKey
+swagger: "2.0"

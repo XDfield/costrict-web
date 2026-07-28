@@ -59,7 +59,7 @@
 | JWT claims（`sub` / `universal_id` / `provider` / `email` / `phone`） | 🟡 部分 | `server/internal/middleware/auth.go:27-37`、`server/internal/user/service.go:19-31` |
 | `tenants` 表 / `tenant_id` 列 | ❌ 未开始 | grep 无任何 `tenant_id` 列 |
 | `tenant_configs` 表 + provider mapping yaml | ❌ 未开始 | — |
-| `enterprise_identities` 表 / `employment_providers` | ❌ 未开始 | — |
+| `employment_identities` 表 / `employment_providers` | ✅ Slice 1 + 1.5 完成（2026-07-23） | `cs-user/migrations/20260716150000_create_employment_identities.sql` + `20260722400000_add_employment_enterprise_uid.sql`；模型 `cs-user/internal/models/employment_identity.go`；门控 + 字段映射 + 运行时消费 `cs-user/internal/user/employment_mapping.go`（详见 §2.1 / §2.2） |
 | RLS（PostgreSQL Row Security Policy） | ❌ 未开始 | — |
 | 三级权限（platform / tenant_admin / member） | ❌ 未开始 | — |
 | `primary_provider` claim / 雇佣上下文 JWT claim | ❌ 未开始 | — |
@@ -71,6 +71,112 @@
 | Gitea `team_user` 同步（GitServerAdapter） | ❌ 未开始 | 归属 @server（`server/internal/gitsync/`）；见 `TEAM_ORG_UNIFICATION.md` ADR-3 v3 |
 
 **核心判断**：当前代码停在「**多 IdP 单租户**」阶段，距离「多租户 + 雇佣上下文 + 服务抽离」的终态大约还有 70% 工作量。
+
+### 2.1 Slice 1（field_map 建模 + enterprise_uid 索引）落地范围
+
+**目标**：让"配置指定身份来源作为企业身份 + 字段映射"这条线进入可配置阶段，为 Slice 2 接入真实 provider client 铺路。
+
+**配置 schema**（`tenant_configs.config_yaml` 内）：
+```yaml
+employment_providers:
+  enabled: [wxwork]                # 哪些 provider 视为"企业身份来源"
+  field_map:                       # Slice 1 新增
+    wxwork:
+      enterprise_uid: "UserId"     # internal column ← external IdP field
+      employee_number: "JobNumber"
+      cost_center: "Department"
+      org_path: "FullPath"
+      hire_date: "JoinTime"
+```
+
+**Go 类型**（`cs-user/internal/user/employment_mapping.go`）：
+```go
+type employmentProvidersConfig struct {
+    Enabled  []string                  `yaml:"enabled"`
+    FieldMap map[string]FieldMapConfig `yaml:"field_map,omitempty"`
+}
+type FieldMapConfig map[string]string  // YAML key=internal column, value=external field
+```
+
+**Whitelist 校验**：`allowedEmploymentColumns` 锁定 12 个允许的 internal column（`enterprise_uid` / `employee_number` / `cost_center` / `org_path` / `direct_manager_subject_id` / `direct_manager_external_ref` / `job_title` / `job_level` / `employment_type` / `hire_date` / `regular_date` / `work_location`）。配置时 unknown internal column 立即报 parse error，避免运行时静默 no-op。
+
+**Migration**（`cs-user/migrations/20260722400000_add_employment_enterprise_uid.sql`）：
+- `ALTER TABLE employment_identities ADD COLUMN enterprise_uid VARCHAR(191)`
+- `CREATE UNIQUE INDEX uq_employment_identities_tenant_enterprise_uid ON employment_identities (tenant_id, enterprise_uid) WHERE enterprise_uid IS NOT NULL` —— partial unique，stub write path 阶段 enterprise_uid 为 NULL，多行可共存；Slice 2 填字段后自动启用 per-tenant 唯一性。
+
+**Slice 1 不做的事**（留给 Slice 2）：
+- 真实 provider client（idtrust API / Azure AD Graph / 企微）接入
+- OAuth callback 里 `ApplyEnterpriseMapping` 的实际触发串通
+- A5 扩展 JWT claims 直接带 enterprise 字段
+
+### 2.2 Slice 1.5（field_map 运行时消费）落地范围
+
+**目标**：让 field_map 真正驱动 employment_identities 写入，不必等 Slice 2 的真实 provider client。OAuth callback 解码 IdP userinfo 后，把外部 claims 作为 `map[string]any` 传进来即可生效。
+
+**API 扩展**（`cs-user/internal/user/employment_mapping.go`）：
+```go
+type EmploymentMappingParams struct {
+    TenantID       string
+    UserSubjectID  string
+    Provider       string
+    ExternalClaims map[string]any  // Slice 1.5 新增：caller 负责填充
+}
+```
+
+**运行时映射**：`applyFieldMap(fieldMap, claims) map[string]any` 按 field_map 把 external claims 转成 internal_column → typed value：
+- 日期列（`hire_date` / `regular_date`）走 `parseClaimDate`，支持 RFC 3339 字符串、int64/int/float64 Unix 秒、`time.Time`；解析失败静默跳过（不 500 登录）
+- 字符串列走 `fmt.Sprint`（数字/布尔自动 stringify）
+- 缺失 / nil 的 external field → 该列保持 NULL
+
+**Write path 串通**：
+- Create 路径：`applyMappedToRow` 把 mapped map 按 column-name 分派到 EmploymentIdentity 字段
+- Update 路径：mapped 合并进 `Updates` map，刷新存量行时同步覆盖 enterprise 字段
+
+**Slice 1.5 不做的事**（仍留给 Slice 2）：
+- 真实 IdP API 调用（OAuth callback 仍未串通 ApplyEnterpriseMapping）
+- field_map 内 `interval` / `on_login: refresh_if_stale` 配置建模（slice 2 配合真实 provider client 落地）
+- A5 扩展 JWT claims 直接带 enterprise 字段
+
+**Partial unique index 验证**（2026-07-23）：手工 probe（SQLite 支持 partial index，与 PG 同语义）确认：
+- `enterprise_uid` NULL 多行可共存（stub 阶段安全）
+- 同 tenant 内同 `enterprise_uid` 拒绝写入
+- 跨 tenant 同 `enterprise_uid` 允许（per-tenant 隔离正确）
+
+### 2.3 Slice 2（OAuth callback 串通 + ExternalClaims 数据源）落地范围
+
+**目标**：让 field_map 真正在登录时跑起来 — 不再需要 Slice 2 之外的手动触发。Multi-IdP OAuth callback 拿到的 IdP userinfo 自动流到 cs-user 的 `ApplyEnterpriseMapping`，按 tenant 的 field_map 写 employment_identities。
+
+**链路**（4 处改动）：
+
+1. **server `user.JWTClaims`** + **cs-user `models.JWTClaims`** 同步加 `ExternalClaims map[string]any` 字段（`json:"external_claims,omitempty"`）。两边的 wire contract 由 `cs-user/internal/models/jwt_claims_test.go` 的 round-trip test 锁定。
+
+2. **server `auth_multi_idp.go` callback**（`runMultiIdPCallback`）：构造 JWTClaims 时把 `profile.Raw`（OAuth client 已经 hold 的完整 IdP userinfo map）塞进 `ExternalClaims`。无需新增 IdP client — `generic_client.go:63` 的 `Raw` 字段早就 hold 了这个数据，只是之前没传出去。
+
+3. **cs-user `Service.GetOrCreateUser`**：两个 success path（新建用户 + 更新已有用户）return 之前自动调 `applyEnterpriseMappingOnLogin(ctx, subjectID, claims)` helper。helper 是 best-effort swallow：所有错误（feature 未启用、tenant_configs 缺失、YAML malformed、DB 错误）都不阻塞登录 — 企业身份映射是 bonus feature。`claims.Provider == ""` 短路（legacy Casdoor path 不触发）。
+
+4. **server callback 显式调用 `writer.ApplyEnterpriseMapping` 删除**（`auth_multi_idp.go` + `handlers.go`）：之前 Phase A4b 在 server 端显式调一次，但没传 ExternalClaims（只传 subjectID+provider），是降级 stub。Slice 2 后 cs-user 内部 GetOrCreateUser 自动触发完整版，server 那次冗余 RPC 删除。`UserWriter.ApplyEnterpriseMapping` 接口保留供未来运维手动触发。
+
+**端到端示例**（wxwork 登录）：
+```
+用户 → Casdoor (wxwork provider) → server callback
+  ↓
+FetchUserInfo → profile.Raw = {"UserId":"wx_001","JobNumber":"E-42","Department":"R&D",...}
+  ↓
+JWTClaims{Provider:"wxwork", ExternalClaims: profile.Raw, ...}
+  ↓ RPC POST /api/internal/users/get-or-create
+cs-user GetOrCreateUser
+  ↓ 创建/更新 users 行
+  ↓ applyEnterpriseMappingOnLogin:
+  ↓   loadEmploymentProvidersConfig → enabled=[wxwork], field_map set
+  ↓   applyFieldMap(claims.ExternalClaims) → {enterprise_uid:"wx_001", employee_number:"E-42", ...}
+  ↓   upsert employment_identities row（映射字段写入）
+  ↓ return user
+```
+
+**Slice 2 不做的事**（留给 Slice 3+）：
+- A5 扩展 JWT claims 直接带 enterprise 字段（让 access_token 自带企业身份，不必每次回查 employment_identities）
+- `interval` / `on_login: refresh_if_stale` 配置建模（避免每次登录都跑映射，按 TTL 短路）
+- 多 IdP `external_claims` 字段名冲突的 tenant 级配置（当前假设各 provider 的 IdP 字段名 tenant 全局通用）
 
 ---
 
@@ -115,21 +221,54 @@
 
 ---
 
-## 4. 实施路线图（5 个阶段，每阶段独立可上线）
+## 4. 实施路线图（6 个阶段，每阶段独立可上线）
 
 > **关键原则**：每个阶段都是**完整的、可上线的、有用户价值的**。任何一个阶段卡住都不阻塞前一阶段的产出。
+>
+> **路径基线变更（2026-07-16 ADR）**：原 ROADMAP 把 cs-user 服务抽离放在 Stage D（可无限期推迟）。经 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md) 决策，**提前到 Phase 0**——先搭 cs-user 服务壳 + 接管 user 数据 ownership（user CRUD only），再做 Phase A 的 JWT 自签。Phase A 起所有认证 / 身份相关代码物理路径在 `cs-user/...`。
 
-### 阶段 A：JWT 自签 + 雇佣上下文最小集（**MVP，最高优先级**）
+### 阶段 0：cs-user 服务抽离（user 数据 ownership，**先于 Phase A**）
 
-**目标**：让 JWT 不再依赖 Casdoor，并补齐 `enterprise_identities` 表 + `employment_providers` 配置。这一步是后续所有阶段的基础。
+**目标**：搭独立 cs-user 服务（Monorepo `costrict-web/cs-user/`），接管 user 数据 ownership（users / user_auth_identities 表 CRUD），costrict-web 通过 read-through RPC 调用。**不含** JWT 自签、OAuth callback 接管、employment_identities——这些留到 Phase A 及之后。
 
 **任务清单**：
 
-> **物理路径说明**：本阶段所有迁移与代码**暂位于 `costrict-web/server/...`**（cs-user 尚未抽离，见 Stage D）；**职责归属 cs-user**（认证 / 身份 / 租户相关）。Stage D 剥离后路径前缀批量改为 `cs-user/...`，schema 与代码逻辑不变。
+| # | 任务 | 涉及文件 | 来源 |
+|---|---|---|---|
+| P0-1 | cs-user 服务骨架（gin + /healthz + 配置加载） | `cs-user/cmd/api/main.go`、`cs-user/internal/config/` | ADR D1, D9 |
+| P0-2 | 独立 PostgreSQL 实例 + cs-user schema | `cs-user/migrations/`（从 server/migrations 复制 user 相关） | ADR D3 |
+| P0-3 | User / UserAuthIdentity 模型 + CRUD service 迁移 | `cs-user/internal/models/`、`cs-user/internal/user/`、`cs-user/internal/handlers/` | ADR D1 |
+| P0-4 | 内部 API 共享密钥认证中间件（`X-Internal-Token` header） | `cs-user/internal/middleware/internal_auth.go` | ADR D8 |
+| P0-5 | Helm chart（cluster-internal only，network policy 限制） | `deploy/charts/cs-user/` | ADR D9 |
+| P0-6 | ETL 脚本（dry-run + idempotent UPSERT by subject_id） | `cs-user/cmd/etl/main.go` | ADR D6 |
+| P0-7 | read-through RPC client：`server/internal/user/rpc_client.go`，复用 CachedUserService | `server/internal/user/` | ADR D4, D5, D6 |
+| P0-8 | costrict-web users 表进入 READONLY（写入路由到 cs-user） | 应用层 gate + DB trigger 兜底 | ADR D6 |
+
+**完成标准**：
+- cs-user Dockerfile 构建通过，本地 docker-compose 起得来，`/healthz` 返 200
+- ETL dry-run 在生产数据快照：行数一致 + 0 字段 drift
+- costrict-web 任意 user API（如 `GET /api/users/:id`）走 RPC 路径返回正确数据
+- CachedUserService 命中率 > 90%（连续 1 小时压测）
+- cs-user DB 独立备份恢复测试通过
+- costrict-web users 表进入 READONLY（grep 验证无写入路径）
+
+**不在本阶段**：JWT 自签、OAuth callback 接管、employment_identities、tenant_configs、tenant_id 列、RLS、webhook。
+
+**协议**：REST only（HTTP/JSON），不引入 gRPC（见 ADR D5）。
+
+---
+
+### 阶段 A：JWT 自签 + 雇佣上下文最小集（**MVP，最高优先级**）
+
+**目标**：让 JWT 不再依赖 Casdoor，并补齐 `employment_identities` 表 + `employment_providers` 配置。这一步是后续所有阶段的基础。
+
+**任务清单**：
+
+> **物理路径说明**：Phase 0 完成后，本阶段所有认证 / 身份相关代码物理路径在 `cs-user/...`（独立服务）。原 ROADMAP 描述的 `server/internal/auth/` 等路径已迁移到 `cs-user/internal/auth/`。`server/internal/middleware/auth.go` 仅保留 JWT 验签逻辑（依赖 cs-user 的 JWKS endpoint）。
 
 | # | 任务 | 涉及文件 | 来源提案 |
 |---|---|---|---|
-| A1 | 新建 `enterprise_identities` 表迁移 | `server/migrations/202607XX_create_enterprise_identities.sql`（cs-user 范围，Stage D 前物理在 server/） | MULTI_TENANCY §6.5.1, §8 |
+| A1 | 新建 `employment_identities` 表迁移 | `server/migrations/202607XX_create_employment_identities.sql`（cs-user 范围，Stage D 前物理在 server/） | MULTI_TENANCY §6.5.1, §8 |
 | A2 | 新建 `tenant_configs` 表（最小 schema：`tenant_id` + `yaml` 列） | `server/migrations/202607XX_create_tenant_configs.sql` | MULTI_TENANCY §9.2 |
 | A3 | 实现 JWT 自签（RS256 + JWKS endpoint），保留 Casdoor JWT 30 天兼容窗口 | `server/internal/auth/jwt_signer.go`（新）、`server/internal/middleware/auth.go`（改） | USER_CENTER Part II、MULTI_TENANCY §12、§9 下游兼容矩阵 |
 | A4 | OAuth callback 中加 `ApplyEnterpriseMapping` 步骤，按 `employment_providers.enabled` 门控 | `server/internal/user/service.go`、`server/internal/handlers/users.go` | MULTI_TENANCY §11.1[5]、§11.4.2 |
@@ -157,7 +296,7 @@
 | # | 任务 | 来源提案 |
 |---|---|---|
 | B1 | `tenants` + `tenant_admins` 表迁移 | MULTI_TENANCY §7 |
-| B2 | 给 `users` / `user_auth_identities` / `user_profile` / `enterprise_identities` 加 `tenant_id` 列 + 索引 | MULTI_TENANCY §8 |
+| B2 | 给 `users` / `user_auth_identities` / `user_profile` / `employment_identities` 加 `tenant_id` 列 + 索引 | MULTI_TENANCY §8 |
 | B3 | tenant resolution：subdomain → email domain → 显式选择 | MULTI_TENANCY §5 |
 | B4 | 中间件从 JWT 提取 `tenant_id` 注入 request context | MULTI_TENANCY §15、§22 |
 | B5 | 应用层所有 query 经 `tenantScope(ctx)` helper | MULTI_TENANCY §10 |
@@ -187,11 +326,13 @@
 
 ---
 
-### 阶段 D：cs-user 微服务抽离（**可推迟到性能 / 团队规模有需求时**）
+### 阶段 D：cs-user 微服务抽离（**已提前到 Phase 0，本节保留作历史参考**）
 
-**目标**：把用户身份相关代码从 `costrict-web` 单体剥离为独立 `cs-user` 服务。
+> **2026-07-16 ADR 反转**：本阶段原设计为「可无限期推迟，团队 < 10 人 / QPS < 100 不做」。经 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md) 决策，**已提前到 Phase 0 实施**（先做 user 数据 ownership + read-through RPC，不含 JWT 自签）。本节描述保留作历史参考，实际执行以 Phase 0 任务清单为准。
 
-**判断**：单体内代码（阶段 A/B/C 的产出）已经能用，**抽离是组织扩展需求**，不是功能需求。如果团队 < 10 人 / QPS < 100，可以**无限期推迟**本阶段。
+**原目标**：把用户身份相关代码从 `costrict-web` 单体剥离为独立 `cs-user` 服务。
+
+**原判断**：单体内代码（阶段 A/B/C 的产出）已经能用，**抽离是组织扩展需求**，不是功能需求。
 
 **任务清单**：见 `CS_USER_SERVICE_DESIGN.md` Part II-VI，本文不重复。
 
@@ -395,9 +536,9 @@ JWT 自签后，这个端点的处理逻辑必须迁移到 costrict-web（或保
 ## 10. TL;DR
 
 - 5 份提案**不重复**，是依赖栈；**不要删任何一份**。
-- 当前代码实现到「多 IdP 单 tenant」阶段（阶段 A 起点之前）。
-- **只做一件事就做阶段 A**：JWT 自签 + 雇佣上下文最小集。
+- 当前代码实现到「多 IdP 单 tenant」阶段（阶段 0 起点之前）。
+- **第一件事是阶段 0**：cs-user 服务抽离（user 数据 ownership + read-through RPC），见 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md)。Phase 0 完成后做阶段 A（JWT 自签 + 雇佣上下文最小集）。
 - 多 tenant 不是必需：单 tenant 模式（`tenant_id=default`）也能跑。
-- cs-user 微服务抽离（阶段 D）可**无限期推迟**，按团队规模触发。
+- cs-user 微服务抽离**已提前到 Phase 0**（原 ROADMAP 把它放在 Stage D 可推迟，2026-07-16 ADR 反转）。
 - 详细设计查原提案，本文是**执行清单 + 阶段切分 + 下游兼容矩阵**。
 - JWT 自签对 cs-cloud / costrict-web 是**双格式 reader 改动**（§9.6 已落地，旧/新 JWT 都能解析）；对 csc / assistant-ui / quota-manager **零侵入**——只需保留现有 claim 名称（`universal_id` / `provider` / `exp` 等）+ 维持 `/oidc-auth/api/v1/plugin/login` 端点。

@@ -1,12 +1,14 @@
 package user
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/authidentity"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
@@ -17,17 +19,21 @@ import (
 
 // JWTClaims represents the parsed JWT token claims from Casdoor
 type JWTClaims struct {
-	ID                string
-	Sub               string
-	UniversalID       string
-	Name              string
-	PreferredUsername string
-	Email             string
-	Picture           string
-	Owner             string
-	Provider          string
-	ProviderUserID    string
-	Phone             string
+	ID                string `json:"id,omitempty"`
+	Sub               string `json:"sub,omitempty"`
+	UniversalID       string `json:"universal_id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Email             string `json:"email,omitempty"`
+	Picture           string `json:"picture,omitempty"`
+	Owner             string `json:"owner,omitempty"`
+	Provider          string `json:"provider,omitempty"`
+	ProviderUserID    string `json:"provider_user_id,omitempty"`
+	Phone             string `json:"phone,omitempty"`
+	// ExternalClaims carries the raw IdP userinfo map (Profile.Raw from the
+	// Casdoor OAuth callback) so cs-user can run field_map extraction on the
+	// tenant's employment_providers config.
+	ExternalClaims map[string]any `json:"external_claims,omitempty"`
 }
 
 // UserService provides user data operations
@@ -35,6 +41,10 @@ type UserService struct {
 	db            *gorm.DB
 	syncInterval  time.Duration
 	onUserUpdated func(userSubjectID string)
+	// writeMode gates write methods. Defaults to WriteModeLocal (writes go through).
+	// When WriteModeReadonly, every write method returns ErrWriteBlocked before
+	// touching the DB — kill switch for the P0-8 READONLY cutover.
+	writeMode string
 	// postLoginHook runs after a user is successfully fetched or created via
 	// GetOrCreateUser, which is reserved for genuine login paths (the OAuth
 	// callback and the JWKS auth-middleware path) where the bearer has proven they
@@ -49,7 +59,7 @@ type UserService struct {
 
 // NewUserService creates a new UserService instance
 func NewUserService(db *gorm.DB) *UserService {
-	return &UserService{db: db, syncInterval: 15 * time.Minute}
+	return &UserService{db: db, syncInterval: 15 * time.Minute, writeMode: WriteModeLocal}
 }
 
 func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService {
@@ -57,7 +67,14 @@ func NewUserServiceWithConfig(db *gorm.DB, syncIntervalMinutes int) *UserService
 	if syncIntervalMinutes <= 0 {
 		interval = 15 * time.Minute
 	}
-	return &UserService{db: db, syncInterval: interval}
+	return &UserService{db: db, syncInterval: interval, writeMode: WriteModeLocal}
+}
+
+// SetWriteMode toggles the write gate. Wire from Module.NewWithConfig based on
+// UserServiceConfig.WriteMode. Default is local (writes go through); readonly
+// makes every write method return ErrWriteBlocked.
+func (s *UserService) SetWriteMode(mode string) {
+	s.writeMode = mode
 }
 
 func (s *UserService) SetOnUserUpdated(fn func(userSubjectID string)) {
@@ -84,9 +101,9 @@ func (s *UserService) runPostLoginHook(u *models.User) {
 }
 
 // GetUserByID retrieves a user by ID
-func (s *UserService) GetUserByID(userID string) (*models.User, error) {
+func (s *UserService) GetUserByID(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
-	err := s.db.Where("subject_id = ?", userID).Take(&user).Error
+	err := s.db.WithContext(ctx).Where("subject_id = ?", userID).Take(&user).Error
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +111,13 @@ func (s *UserService) GetUserByID(userID string) (*models.User, error) {
 }
 
 // GetUsersByIDs retrieves multiple users by their IDs
-func (s *UserService) GetUsersByIDs(userIDs []string) (map[string]*models.User, error) {
+func (s *UserService) GetUsersByIDs(ctx context.Context, userIDs []string) (map[string]*models.User, error) {
 	if len(userIDs) == 0 {
 		return make(map[string]*models.User), nil
 	}
 
 	var users []*models.User
-	err := s.db.Where("subject_id IN ?", userIDs).Find(&users).Error
+	err := s.db.WithContext(ctx).Where("subject_id IN ?", userIDs).Find(&users).Error
 	if err != nil {
 		return nil, err
 	}
@@ -137,14 +154,21 @@ func (s *UserService) GetUsersByUniversalIDs(universalIDs []string) (map[string]
 // ResolveSubjectID resolves JWT/Casdoor claims to the stable local subject_id.
 // This is a read-only lookup and does NOT trigger user creation or identity binding.
 func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error) {
+	if claims != nil {
+		logger.Info("[auth-debug] ResolveSubjectID in: id=%q sub=%q universal_id=%q name=%q provider=%q",
+			claims.ID, claims.Sub, claims.UniversalID, claims.Name, claims.Provider)
+	}
 	user, err := s.FindUserByClaims(claims)
 	if err != nil {
+		logger.Warn("[auth-debug] ResolveSubjectID FindUserByClaims err=%v", err)
 		return "", "", err
 	}
 	name := user.Username
 	if user.DisplayName != nil && *user.DisplayName != "" {
 		name = *user.DisplayName
 	}
+	logger.Info("[auth-debug] ResolveSubjectID out: subject_id=%q username=%q display_name=%q external_key=%q casdoor_universal_id=%q",
+		user.SubjectID, user.Username, name, user.ExternalKey, user.CasdoorUniversalID)
 	return user.SubjectID, name, nil
 }
 
@@ -225,13 +249,16 @@ func (s *UserService) UpdateUserLastLogin(subjectID string) error {
 		Update("last_login_at", now).Error
 }
 
-func (s *UserService) ListUserIdentities(userSubjectID string) ([]*models.UserAuthIdentity, error) {
+func (s *UserService) ListUserIdentities(ctx context.Context, userSubjectID string) ([]*models.UserAuthIdentity, error) {
 	var identities []*models.UserAuthIdentity
-	err := s.db.Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
+	err := s.db.WithContext(ctx).Where("user_subject_id = ?", userSubjectID).Order("is_primary DESC, id ASC").Find(&identities).Error
 	return identities, err
 }
 
-func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+func (s *UserService) BindIdentityToUser(ctx context.Context, userSubjectID string, claims *JWTClaims, opts ...BindIdentityOptions) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	if strings.TrimSpace(userSubjectID) == "" {
 		return fmt.Errorf("user_subject_id is required")
 	}
@@ -354,7 +381,10 @@ func (s *UserService) BindIdentityToUser(userSubjectID string, claims *JWTClaims
 // TransferIdentityToUser transfers an identity (identified by externalKey) from its current
 // owner to targetUserSubjectID. This is used for account merging when a user explicitly
 // confirms that they want to claim an identity already bound to another account.
-func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externalKey string, _ string) error {
+func (s *UserService) TransferIdentityToUser(ctx context.Context, targetUserSubjectID string, externalKey string, _ string) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	if targetUserSubjectID == "" || externalKey == "" {
 		return fmt.Errorf("target_user_subject_id and external_key are required")
 	}
@@ -408,7 +438,10 @@ func (s *UserService) TransferIdentityToUser(targetUserSubjectID string, externa
 	})
 }
 
-func (s *UserService) UnbindIdentityByProvider(userSubjectID string, provider string) error {
+func (s *UserService) UnbindIdentityByProvider(ctx context.Context, userSubjectID string, provider string) error {
+	if s.writeMode == WriteModeReadonly {
+		return ErrWriteBlocked
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
 		return fmt.Errorf("provider is required")
@@ -500,9 +533,9 @@ func (s *UserService) deleteWecomChannelStateOnIDTrustUnbind(tx *gorm.DB, userSu
 }
 
 // SearchUsers searches users by username or email keyword
-func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, error) {
+func (s *UserService) SearchUsers(ctx context.Context, keyword string, limit int) ([]*models.User, error) {
 	var users []*models.User
-	query := s.db.Where("is_active = ?", true)
+	query := s.db.WithContext(ctx).Where("is_active = ?", true)
 
 	if keyword != "" {
 		pattern := "%" + keyword + "%"
@@ -533,18 +566,21 @@ func (s *UserService) SearchUsers(keyword string, limit int) ([]*models.User, er
 // For read-only reconciliation (e.g. user-search backfill, where the caller is
 // not the user being synced) use SyncUser instead, which performs the same upsert
 // without firing the hook.
-func (s *UserService) GetOrCreateUser(claims *JWTClaims) (*models.User, error) {
-	u, err := s.getOrCreateUser(claims)
+func (s *UserService) GetOrCreateUser(ctx context.Context, claims *JWTClaims) (*models.User, bool, error) {
+	if s.writeMode == WriteModeReadonly {
+		return nil, false, ErrWriteBlocked
+	}
+	u, isNew, err := s.getOrCreateUser(claims)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.runPostLoginHook(u)
-	return u, nil
+	return u, isNew, nil
 }
 
-func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
+func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, error) {
 	if claims == nil {
-		return nil, fmt.Errorf("nil JWT claims")
+		return nil, false, fmt.Errorf("nil JWT claims")
 	}
 	claims = normalizeJWTClaims(claims)
 
@@ -553,7 +589,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
-		return nil, fmt.Errorf("no valid user identifier in JWT claims")
+		return nil, false, fmt.Errorf("no valid user identifier in JWT claims")
 	}
 
 	// 2. Try to get existing user by external identities first.
@@ -575,7 +611,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				found = true
 			}
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query identity by external_key: %w", err)
+			return nil, false, fmt.Errorf("failed to query identity by external_key: %w", err)
 		}
 	}
 	if !found {
@@ -587,7 +623,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			if err == nil {
 				found = true
 			} else if err != gorm.ErrRecordNotFound {
-				return nil, fmt.Errorf("failed to query user by external_key: %w", err)
+				return nil, false, fmt.Errorf("failed to query user by external_key: %w", err)
 			}
 		}
 	}
@@ -596,7 +632,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by universal_id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by universal_id: %w", err)
 		}
 	}
 	if !found && claims.ID != "" {
@@ -604,7 +640,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by id: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by id: %w", err)
 		}
 	}
 	if !found && claims.Sub != "" {
@@ -612,7 +648,7 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by sub: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by sub: %w", err)
 		}
 	}
 	if !found && claims.Name != "" {
@@ -620,33 +656,19 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 		if err == nil {
 			found = true
 		} else if err != gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("failed to query user by username: %w", err)
+			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
 		}
 	}
 
 	now := time.Now()
 
 	if found {
-		// User exists, check if we need to update
-		// Only update if it's been more than syncInterval since last sync to reduce DB writes
+		// Existing user login refresh. Only sync provider-tracking and
+		// Casdoor-linking fields — user-facing profile (DisplayName, Email,
+		// Phone, AvatarURL, Organization) is user-owned now and must not be
+		// clobbered by re-login or by binding additional identities. Initial
+		// values for those fields are populated at CREATE time below.
 		shouldUpdate := false
-		if user.LastSyncAt == nil || now.Sub(*user.LastSyncAt) > s.syncInterval {
-			shouldUpdate = true
-		}
-
-
-		// Check if any critical fields need updating
-		// Determine the best provider rank from existing identities for DisplayName protection.
-		// This must be computed before any field mutations so the baseline is stable.
-		bestExistingRank := 0
-		var existingIdentities []models.UserAuthIdentity
-		if err := s.db.Where("user_subject_id = ?", user.SubjectID).Find(&existingIdentities).Error; err == nil {
-			for _, id := range existingIdentities {
-				if r := providerRank(id.Provider); r > bestExistingRank {
-					bestExistingRank = r
-				}
-			}
-		}
 
 		if user.SubjectID == "" {
 			user.SubjectID = subjectID
@@ -680,68 +702,6 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			user.CasdoorSub = &claims.Sub
 			shouldUpdate = true
 		}
-		if claims.Owner != "" && (user.Organization == nil || *user.Organization != claims.Owner) {
-			user.Organization = &claims.Owner
-			shouldUpdate = true
-		}
-		if claims.PreferredUsername != "" && (user.DisplayName == nil || *user.DisplayName != claims.PreferredUsername) {
-			// Only overwrite DisplayName if no value exists yet, or the current
-			// login provider ranks >= the best existing identity. This prevents a
-			// lower-ranked provider (e.g. phone) from clobbering a name set by
-			// a higher-ranked one (e.g. IDTrust).
-			if user.DisplayName == nil || *user.DisplayName == "" || providerRank(claims.Provider) >= bestExistingRank {
-				user.DisplayName = &claims.PreferredUsername
-				shouldUpdate = true
-			}
-		}
-		if claims.Email != "" && (user.Email == nil || *user.Email != claims.Email) {
-			user.Email = &claims.Email
-			shouldUpdate = true
-		}
-		if claims.Phone != "" && (user.Phone == nil || *user.Phone != claims.Phone) {
-			user.Phone = &claims.Phone
-			shouldUpdate = true
-		}
-		if claims.Picture != "" && (user.AvatarURL == nil || *user.AvatarURL != claims.Picture) {
-			user.AvatarURL = &claims.Picture
-			shouldUpdate = true
-		}
-
-		// Calibrate display fields against the best existing identity to fix
-		// historical dirty data caused by the previous AuthProvider-based protection bug.
-		if len(existingIdentities) > 0 {
-			var existingPtrs []*models.UserAuthIdentity
-			for idx := range existingIdentities {
-				existingPtrs = append(existingPtrs, &existingIdentities[idx])
-			}
-			bestIdentity := selectBestPrimary(existingPtrs)
-			if bestIdentity != nil {
-				if bestDN := ptrString(bestIdentity.DisplayName); bestDN != "" {
-					if providerRank(claims.Provider) < bestExistingRank && (user.DisplayName == nil || *user.DisplayName != bestDN) {
-						user.DisplayName = &bestDN
-						shouldUpdate = true
-					}
-				}
-				if bestEmail := ptrString(bestIdentity.Email); bestEmail != "" && strings.Contains(bestEmail, "@") {
-					if user.Email == nil || *user.Email != bestEmail {
-						user.Email = &bestEmail
-						shouldUpdate = true
-					}
-				}
-				if bestPhone := ptrString(bestIdentity.Phone); bestPhone != "" {
-					if user.Phone == nil || *user.Phone != bestPhone {
-						user.Phone = &bestPhone
-						shouldUpdate = true
-					}
-				}
-				if bestAvatar := ptrString(bestIdentity.AvatarURL); bestAvatar != "" {
-					if user.AvatarURL == nil || *user.AvatarURL != bestAvatar {
-						user.AvatarURL = &bestAvatar
-						shouldUpdate = true
-					}
-				}
-			}
-		}
 
 		if shouldUpdate {
 			user.LastSyncAt = &now
@@ -754,15 +714,15 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 					var reloaded models.User
 					if reloadErr := s.db.Where("id = ?", user.ID).Take(&reloaded).Error; reloadErr == nil {
 						s.notifyUserUpdated(reloaded.SubjectID)
-						return &reloaded, nil
+						return &reloaded, false, nil
 					}
 				}
-				return nil, fmt.Errorf("failed to update user: %w", err)
+				return nil, false, fmt.Errorf("failed to update user: %w", err)
 			}
 		}
 
 		s.notifyUserUpdated(user.SubjectID)
-		return &user, nil
+		return &user, false, nil
 	}
 
 	// 3. User doesn't exist, create new user
@@ -804,10 +764,10 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 			err := query.Take(&existing).Error
 			if err == nil {
 				s.notifyUserUpdated(existing.SubjectID)
-				return &existing, nil
+				return &existing, true, nil
 			}
 		}
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, false, fmt.Errorf("failed to create user: %w", err)
 	}
 		if err := s.db.Create(&user).Error; err != nil {
 			if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
@@ -828,22 +788,22 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, error) {
 				err := query.Take(&existing).Error
 				if err == nil {
 					s.notifyUserUpdated(existing.SubjectID)
-					return &existing, nil
+					return &existing, true, nil
 				}
 			}
-			return nil, fmt.Errorf("failed to create user: %w", err)
+			return nil, false, fmt.Errorf("failed to create user: %w", err)
 		}
 		// Bind identity for newly created user
-		if err := s.BindIdentityToUser(user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+		if err := s.BindIdentityToUser(context.Background(), user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
 			// Log but don't fail user creation if identity binding fails
 			fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
 		}
 		s.notifyUserUpdated(user.SubjectID)
-		if refreshed, err := s.GetUserByID(user.SubjectID); err == nil {
-			return refreshed, nil
+		if refreshed, err := s.GetUserByID(context.Background(), user.SubjectID); err == nil {
+			return refreshed, true, nil
 		}
 
-		return &user, nil
+		return &user, false, nil
 	}
 
 // ParseJWTClaimsFromMiddleware extracts JWT claims from gin.Context
@@ -915,6 +875,18 @@ func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
 		return nil, fmt.Errorf("no user identifiers found in access token")
 	}
 
+	// Surface the raw Casdoor token payload (properties, signupApplication,
+	// user, ...) as ExternalClaims so cs-user's employment_providers.field_map
+	// can extract per-provider enterprise fields without server hard-coding
+	// each IdP's property namespace. Lets field_map configs like
+	//   properties.oauth_Custom.id → enterprise_uid
+	// work for IdPs routed through Casdoor (idtrust, custom OAuth apps, ...).
+	// We pass the whole raw map rather than cherry-picking keys so future
+	// field_map configs can reach any token field without another server-side
+	// change. cs-user's applyFieldMap walks dotted paths to get inside nested
+	// sub-maps.
+	result.ExternalClaims = rawClaims
+
 	return result, nil
 }
 
@@ -937,7 +909,14 @@ func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	if merged.Sub == "" {
 		merged.Sub = override.Sub
 	}
-	if merged.UniversalID == "" {
+	// UniversalID: prefer override (raw Casdoor JWT) when present — the
+	// signed JWT is the authoritative source for the user's stable id;
+	// /api/getUserInfo (base) is best-effort and may omit or mismatch
+	// universal_id for OAuth-brokered users (idtrust etc.). Downstream
+	// (cs-user) treats universal_id as a hard dependency per MULTI_TENANCY
+	// §12.1 — letting the JWT value win avoids the API path silently
+	// dropping it.
+	if override.UniversalID != "" {
 		merged.UniversalID = override.UniversalID
 	}
 	if merged.Owner == "" {
@@ -964,6 +943,24 @@ func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	}
 	if override.Picture != "" {
 		merged.Picture = override.Picture
+	}
+
+	// ExternalClaims is the raw token-payload bag (properties.oauth_Custom_*,
+	// signupApplication, ...). Always prefer override's when present — base
+	// is the manually-constructed claims struct from AuthCallback and never
+	// carries ExternalClaims itself. Shallow-assign on nil-base is enough;
+	// deep-merge when both sides have entries so a future caller that
+	// pre-populates ExternalClaims (e.g. trusted upstream) keeps its keys.
+	if override.ExternalClaims != nil {
+		if merged.ExternalClaims == nil {
+			merged.ExternalClaims = override.ExternalClaims
+		} else {
+			for k, v := range override.ExternalClaims {
+				if _, present := merged.ExternalClaims[k]; !present {
+					merged.ExternalClaims[k] = v
+				}
+			}
+		}
 	}
 
 	return normalizeJWTClaims(&merged)
@@ -1145,30 +1142,20 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 		}
 	}
 
-	// Compute new values from primary identity
+	// Refresh only provider-tracking fields to mirror the current primary
+	// identity. User-facing profile fields (DisplayName, AvatarURL, Email,
+	// Phone, Organization, Username) are intentionally NOT synced from
+	// identity data — those are now considered user-owned, with enterprise
+	// identity info living separately (cs-user employment_identities). The
+	// follow-up plan is to let users self-edit display_name; auto-clobbering
+	// it on every bind would race that flow.
 	newAuthProvider := stringPtr(primary.Provider)
 	newExternalKey := stringPtr(primary.ExternalKey)
 	newProviderUserID := primary.ProviderUserID
-	newDisplayName := firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
-	newAvatarURL := firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
-	newEmail := validEmailPtr(primary.Email, identities)
-	newPhone := preferredPhonePtr(primary, identities)
-	newOrganization := firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
-	var newUsername string
-	if primaryUsername := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); primaryUsername != "" {
-		newUsername = primaryUsername
-	}
 
-	// Check if any field actually changed before writing
 	changed := !equalStringPtr(user.AuthProvider, newAuthProvider) ||
 		!equalStringPtr(user.ExternalKey, newExternalKey) ||
-		!equalStringPtr(user.ProviderUserID, newProviderUserID) ||
-		!equalStringPtr(user.DisplayName, newDisplayName) ||
-		!equalStringPtr(user.AvatarURL, newAvatarURL) ||
-		!equalStringPtr(user.Email, newEmail) ||
-		!equalStringPtr(user.Phone, newPhone) ||
-		!equalStringPtr(user.Organization, newOrganization) ||
-		(newUsername != "" && user.Username != newUsername)
+		!equalStringPtr(user.ProviderUserID, newProviderUserID)
 
 	if !changed {
 		return nil
@@ -1177,14 +1164,6 @@ func (s *UserService) refreshUserProfileFromIdentitiesTx(tx *gorm.DB, userSubjec
 	user.AuthProvider = newAuthProvider
 	user.ExternalKey = newExternalKey
 	user.ProviderUserID = newProviderUserID
-	user.DisplayName = newDisplayName
-	user.AvatarURL = newAvatarURL
-	user.Email = newEmail
-	user.Phone = newPhone
-	user.Organization = newOrganization
-	if newUsername != "" {
-		user.Username = newUsername
-	}
 	now := time.Now()
 	user.LastSyncAt = &now
 	// Omit columns with UNIQUE constraints (immutable after creation)
@@ -1219,72 +1198,6 @@ func ptrString(v *string) string {
 	}
 	return strings.TrimSpace(*v)
 }
-
-func firstNonNilStringPtr(values ...*string) *string {
-	for _, v := range values {
-		if v != nil && strings.TrimSpace(*v) != "" {
-			trimmed := strings.TrimSpace(*v)
-			return &trimmed
-		}
-	}
-	return nil
-}
-
-func bestIdentityString(identities []*models.UserAuthIdentity, getter func(*models.UserAuthIdentity) *string) *string {
-	var best *models.UserAuthIdentity
-	for _, identity := range identities {
-		candidate := getter(identity)
-		if candidate == nil || strings.TrimSpace(*candidate) == "" {
-			continue
-		}
-		if best == nil || providerRank(identity.Provider) > providerRank(best.Provider) {
-			best = identity
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return getter(best)
-}
-
-func githubAvatar(identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "github") && identity.AvatarURL != nil && strings.TrimSpace(*identity.AvatarURL) != "" {
-			return identity.AvatarURL
-		}
-	}
-	return nil
-}
-
-func validEmailPtr(primary *string, identities []*models.UserAuthIdentity) *string {
-	if primary != nil && strings.Contains(strings.TrimSpace(*primary), "@") {
-		return firstNonNilStringPtr(primary)
-	}
-	for _, identity := range identities {
-		if identity.Email != nil && strings.Contains(strings.TrimSpace(*identity.Email), "@") {
-			return firstNonNilStringPtr(identity.Email)
-		}
-	}
-	return nil
-}
-
-func preferredPhonePtr(primary *models.UserAuthIdentity, identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "phone") && identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
-	}
-	if primary != nil && primary.Phone != nil && strings.TrimSpace(*primary.Phone) != "" {
-		return firstNonNilStringPtr(primary.Phone)
-	}
-	for _, identity := range identities {
-		if identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
-	}
-	return nil
-}
-
 
 // stringPtr returns a pointer to string if non-empty, otherwise nil
 func stringPtr(s string) *string {

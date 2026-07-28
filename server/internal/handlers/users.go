@@ -192,7 +192,7 @@ func GetUserBasicInfo(c *gin.Context) {
 	if UserModule.CachedService != nil {
 		user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), userID)
 	} else if UserModule.Service != nil {
-		user, err = UserModule.Service.GetUserByID(userID)
+		user, err = UserModule.Service.GetUserByID(c.Request.Context(), userID)
 	} else {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user service unavailable"})
 		return
@@ -253,8 +253,8 @@ func SearchUsers(c *gin.Context) {
 	limit := 20
 	var results []userSearchResult
 
-	if UserModule != nil && UserModule.Service != nil {
-		users, err := UserModule.Service.SearchUsers(keyword, limit)
+	if UserModule != nil && UserModule.CachedService != nil {
+		users, err := UserModule.CachedService.SearchUsers(c.Request.Context(), keyword, limit)
 		if err == nil && len(users) > 0 {
 			for _, u := range users {
 				results = append(results, userSearchResult{
@@ -291,13 +291,13 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	if UserModule != nil && UserModule.Service != nil {
-		go backfillUsers(context.Background(), users)
+		go backfillUsers(users)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": results})
 }
 
-func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
+func backfillUsers(users []casdoor.CasdoorUser) {
 	if UserModule == nil || UserModule.Service == nil {
 		return
 	}
@@ -319,9 +319,14 @@ func backfillUsers(ctx context.Context, users []casdoor.CasdoorUser) {
 		// NOT fire the post-login hook: backfill runs when someone *searches* for a
 		// user, not when that user logs in, so it must not trigger login-only side
 		// effects such as bootstrap platform-admin granting.
+		//
+		// Background ctx is intentional: this runs as a fire-and-forget goroutine
+		// (`go backfillUsers(users)`) and must outlive the HTTP request that
+		// spawned it — a request-scoped ctx would cancel the backfill mid-flight
+		// when the response is sent.
 		if user, err := UserModule.Service.FindUserByClaims(claims); err == nil && user != nil {
 			// User exists, sync if needed
-			_, _ = UserModule.Service.SyncUser(claims)
+			_, _ = UserModule.Writer.SyncUser(context.Background(), claims)
 		}
 	}
 }

@@ -27,6 +27,11 @@ type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsernam
 type AuthClaims struct {
 	ID                string
 	Sub               string
+	// Issuer mirrors CasdoorUserInfo.Issuer — the JWT `iss` claim.
+	// Consumed by setAuthContext to skip the legacy subjectResolver for
+	// cs-user-issued JWTs (their `sub` is already canonical). See
+	// CasdoorUserInfo.Issuer for the full rationale.
+	Issuer            string
 	UniversalID       string
 	Name              string
 	PreferredUsername string
@@ -34,6 +39,35 @@ type AuthClaims struct {
 	Provider          string
 	ProviderUserID    string
 	Phone             string
+	// TenantID (Phase B4): the canonical tenants.tenant_id PK extracted
+	// from the JWT's `tenant_id` claim. cs-user-signed tokens (Phase A7)
+	// always carry this — defaults to "default" at reissue time when the
+	// request omits it. Empty for Casdoor-issued tokens (pre-cutover); the
+	// TenantContext middleware falls back to tenant.DefaultTenantID before
+	// storing in ctx so downstream query scoping never sees "".
+	TenantID string
+	// TenantSlug (Phase B): populated ONLY when the JWT carries the
+	// `tenant_slug` claim — i.e. cs-user-signed tokens (Phase A7).
+	// Empty for Casdoor-issued tokens (pre-cutover). The TenantMatch
+	// middleware compares this against the runtime-resolved slug for
+	// cross-tenant detection (B3b.2c). Empty claim → middleware skips
+	// comparison (graceful pre-cutover behavior).
+	TenantSlug string
+	// PlatformAdmin (Phase C1): populated ONLY when the JWT carries the
+	// `platform_admin` claim — i.e. cs-user-signed tokens issued after the
+	// Phase C1 reissue-token wiring. False for Casdoor-issued tokens and
+	// cs-user tokens for non-platform-admin users. When true, PlatformScope
+	// carries the granularity (full / support / read_only). Consumed by
+	// RequirePlatformAdmin middleware (§15.1 auth chain).
+	PlatformAdmin bool
+	// PlatformScope (Phase C1): granularity of the platform-admin grant.
+	// Only meaningful when PlatformAdmin is true. Empty otherwise.
+	PlatformScope string
+	// TenantRoles (Phase C1): the user's active roles on AuthClaims.TenantID
+	// (e.g. ["owner"]). Empty for regular tenant members. Consumed by
+	// RequireTenantAdmin middleware. Sourced from the `tenant_roles` JWT
+	// claim which cs-user populates from tenant_admins WHERE revoked_at IS NULL.
+	TenantRoles []string
 }
 
 var subjectResolver SubjectResolver
@@ -249,6 +283,10 @@ func acceptsQueryToken(c *gin.Context) bool {
 	return false
 }
 
+// OptionalAuth decodes the JWT without verifying the signature — gateway
+// layer is responsible for signature verification. Tokens that fail to
+// decode are silently ignored (no auth context populated), matching the
+// prior "invalid token on optional route" behavior.
 func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
@@ -257,22 +295,11 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token, jwks)
+		userInfo, err := decodeJWTToken(token)
 		if err != nil {
-			// Only fall back to Casdoor if the token looks like a JWT.
-			// Device tokens (hex strings) and other non-JWT formats will
-			// always fail Casdoor validation, so skip the network call.
-			if looksLikeJWT(token) {
-				userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-				if err != nil {
-					logger.Warn("[OptionalAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-					c.Next()
-					return
-				}
-			} else {
-				c.Next()
-				return
-			}
+			logger.Warn("[OptionalAuth] token decode failed: %v", err)
+			c.Next()
+			return
 		}
 
 		setAuthContext(c, userInfo)
@@ -281,6 +308,10 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	}
 }
 
+// RequireAuth decodes the JWT without verifying the signature — gateway
+// layer is responsible for signature verification before the request
+// reaches this server. The decoded claims populate the auth context.
+// Account-status gate (banned/disabled) runs after the decode succeeds.
 func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
@@ -289,17 +320,12 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := parseJWTToken(token, jwks)
+		userInfo, err := decodeJWTToken(token)
 		if err != nil {
-			// Fallback to Casdoor API verification
-			userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-			if err != nil {
-				// Clear invalid cookie to prevent repeated failed requests
-				ClearAuthCookie(c)
-				logger.Warn("[RequireAuth] token validation failed: %v, endpoint=%s", err, casdoorEndpoint)
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-				return
-			}
+			ClearAuthCookie(c)
+			logger.Warn("[RequireAuth] token decode failed: %v", err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
 		}
 
 		setAuthContext(c, userInfo)
@@ -320,6 +346,15 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 type CasdoorUserInfo struct {
 	ID                string `json:"id"`
 	Sub               string `json:"sub"`
+	// Issuer carries the JWT's `iss` claim. Used by setAuthContext to
+	// decide whether the local users-table resolver should run: cs-user
+	// JWTs (iss="cs-user") already carry the canonical subject_id in
+	// `sub`, so resolver lookup is unnecessary AND can return a stale
+	// local subject_id from the pre-cs-user era (when users.subject_id
+	// was set to Casdoor's universal_id). For Casdoor JWTs (iss=anything
+	// else, typically the Casdoor issuer URL), the resolver is the only
+	// way to bridge universal_id → local subject_id.
+	Issuer            string `json:"iss,omitempty"`
 	UniversalID       string `json:"universal_id"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
@@ -327,6 +362,30 @@ type CasdoorUserInfo struct {
 	Provider          string `json:"provider"`
 	ProviderUserID    string `json:"provider_user_id"`
 	Phone             string `json:"phone"`
+	// TenantID (Phase B4): canonical tenants.tenant_id PK. Read directly
+	// from MapClaims ("tenant_id") — NormalizeClaimsMap only handles
+	// standard Casdoor fields. cs-user-signed tokens (Phase A7) always
+	// carry this (defaults to "default" at reissue). Empty for Casdoor
+	// tokens — the TenantContext middleware falls back to "default".
+	TenantID string `json:"tenant_id,omitempty"`
+	// TenantSlug (Phase B / A7): populated ONLY when the JWT carries the
+	// custom `tenant_slug` claim — i.e. tokens signed by cs-user's
+	// /api/internal/users/reissue-token (Phase A7). Empty for Casdoor-issued
+	// tokens (pre-cutover). Read directly from the MapClaims map because
+	// authidentity.NormalizeClaimsMap only handles standard Casdoor fields.
+	TenantSlug string `json:"tenant_slug,omitempty"`
+	// PlatformAdmin (Phase C1): true when the JWT carries
+	// `platform_admin:true` — only emitted by cs-user for users with a row
+	// in platform_admins. Read straight from the map (NormalizeClaimsMap
+	// doesn't handle Phase C1 fields). Consumed by RequirePlatformAdmin.
+	PlatformAdmin bool `json:"platform_admin,omitempty"`
+	// PlatformScope (Phase C1): the granularity string (full / support /
+	// read_only). Only meaningful when PlatformAdmin is true.
+	PlatformScope string `json:"platform_scope,omitempty"`
+	// TenantRoles (Phase C1): user's active roles on TenantID. Sourced from
+	// the `tenant_roles` JWT array claim emitted by cs-user. nil/empty for
+	// regular tenant members.
+	TenantRoles []string `json:"tenant_roles,omitempty"`
 }
 
 type casdoorUserinfoResponse struct {
@@ -339,8 +398,17 @@ type casdoorUserinfoResponse struct {
 	Email       string `json:"email"`
 }
 
+// csUserIssuer is the iss claim value cs-user stamps on its JWTs. Sourced
+// here as a string rather than imported from the cs-user module (separate
+// go.mod) to keep middleware's dependency surface minimal.
+const csUserIssuer = "cs-user"
+
 // parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
 // If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
+//
+// NOTE: currently only referenced by tests; the production auth path
+// (RequireAuth/OptionalAuth/ParseToken) decodes without verifying — the
+// signature check is delegated to the gateway layer.
 func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS provider not configured")
@@ -365,28 +433,112 @@ func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, er
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
+	return claimsToUserInfo(claims)
+}
+
+// decodeJWTToken decodes the JWT claims WITHOUT verifying the signature.
+// This is safe only because the gateway layer is responsible for signature
+// verification before the request reaches the server. Doing the decode
+// locally avoids both the JWKS fetch and the Casdoor /api/userinfo network
+// round-trip on every request.
+func decodeJWTToken(tokenString string) (*CasdoorUserInfo, error) {
+	parser := jwt.Parser{}
+	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("JWT decode failed: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+	return claimsToUserInfo(claims)
+}
+
+// claimsToUserInfo maps a Casdoor/cs-user JWT claims map to CasdoorUserInfo.
+// Shared by parseJWTToken (verified) and decodeJWTToken (unverified).
+func claimsToUserInfo(claims jwt.MapClaims) (*CasdoorUserInfo, error) {
 	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
-	sub := normalized.UniversalID
-	if sub == "" {
+
+	// Subject resolution diverges by issuer:
+	//   - cs-user JWT (iss="cs-user"): `sub` is the canonical cs-user
+	//     subject_id (usr_<uuid>). `universal_id` carries Casdoor's
+	//     original universal_id (a separate identifier kept for cross-
+	//     system alignment per MULTI_TENANCY §12.1 — they are no longer
+	//     guaranteed equal). Use `sub` directly.
+	//   - Casdoor JWT (legacy fallback path / pre-cutover tokens):
+	//     `universal_id` is Casdoor's stable user PK; `sub` may be empty
+	//     or unstable for some IdPs. Prefer `universal_id`.
+	// Issuer check happens on the raw claims map (NormalizeClaimsMap does
+	// not surface `iss`).
+	iss, _ := claims["iss"].(string)
+	var sub string
+	if iss == csUserIssuer {
 		sub = normalized.Sub
+		if sub == "" {
+			sub = normalized.UniversalID
+		}
+	} else {
+		sub = normalized.UniversalID
+		if sub == "" {
+			sub = normalized.Sub
+		}
 	}
 	if sub == "" {
 		sub = normalized.ID
 	}
+	logger.Info("[auth-debug] parseJWTToken iss=%q sub=%q universal_id=%q id=%q resolved_sub=%q provider=%q",
+		iss, normalized.Sub, normalized.UniversalID, normalized.ID, sub, normalized.Provider)
 	if sub == "" {
 		return nil, fmt.Errorf("no id, sub or universal_id in token")
+	}
+
+	// tenant_slug is a custom claim issued only by cs-user (Phase A7) —
+	// NormalizeClaimsMap does not handle it. Read straight from the map.
+	tenantSlug, _ := claims["tenant_slug"].(string)
+	// tenant_id: same — cs-user's canonical PK claim. Empty for Casdoor
+	// tokens (pre-cutover); the TenantContext middleware falls back to
+	// tenant.DefaultTenantID before storing in ctx.
+	tenantID, _ := claims["tenant_id"].(string)
+	// Phase C1: platform_admin / platform_scope / tenant_roles — emitted by
+	// cs-user's reissue-token handler post Phase C1 wiring. Read straight
+	// from the map; NormalizeClaimsMap doesn't cover Phase C1 fields.
+	platformAdmin, _ := claims["platform_admin"].(bool)
+	platformScope, _ := claims["platform_scope"].(string)
+	var tenantRoles []string
+	if raw, ok := claims["tenant_roles"].([]any); ok {
+		for _, r := range raw {
+			if s, ok := r.(string); ok {
+				tenantRoles = append(tenantRoles, s)
+			}
+		}
+	}
+
+	// Phase B — provider_user_id. cs-user emits a top-level claim (different
+	// shape from Casdoor's nested properties.<provider>.id which
+	// NormalizeClaimsMap handles). Prefer the explicitly-emitted top-level
+	// value when present; fall back to the nested-extracted one for legacy
+	// Casdoor tokens.
+	providerUserID := normalized.ProviderUserID
+	if v, ok := claims["provider_user_id"].(string); ok && v != "" {
+		providerUserID = v
 	}
 
 	return &CasdoorUserInfo{
 		ID:                normalized.ID,
 		Sub:               sub,
+		Issuer:            iss,
 		UniversalID:       normalized.UniversalID,
 		Name:              normalized.Name,
 		PreferredUsername: normalized.PreferredUsername,
 		Email:             normalized.Email,
 		Provider:          normalized.Provider,
-		ProviderUserID:    normalized.ProviderUserID,
+		ProviderUserID:    providerUserID,
 		Phone:             normalized.Phone,
+		TenantID:          tenantID,
+		TenantSlug:        tenantSlug,
+		PlatformAdmin:     platformAdmin,
+		PlatformScope:     platformScope,
+		TenantRoles:       tenantRoles,
 	}, nil
 }
 
@@ -438,16 +590,12 @@ func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
 	}, nil
 }
 
-// ParseToken verifies a token using JWKS first, falling back to Casdoor userinfo API.
+// ParseToken decodes a JWT without verifying the signature — the gateway
+// layer is responsible for signature verification. The casdoorEndpoint and
+// jwks params are retained for signature compatibility with existing
+// callers (e.g. authz.Service.VerifyTokenWithUser) but are no longer used.
 func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
-	userInfo, err := parseJWTToken(token, jwks)
-	if err != nil {
-		userInfo, err = fetchUserInfo(casdoorEndpoint, token)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return userInfo, nil
+	return decodeJWTToken(token)
 }
 
 func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
@@ -456,6 +604,7 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	authClaims := AuthClaims{
 		ID:                userInfo.ID,
 		Sub:               userInfo.Sub,
+		Issuer:            userInfo.Issuer,
 		UniversalID:       userInfo.UniversalID,
 		Name:              userInfo.Name,
 		PreferredUsername: userInfo.PreferredUsername,
@@ -463,9 +612,25 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 		Provider:          userInfo.Provider,
 		ProviderUserID:    userInfo.ProviderUserID,
 		Phone:             userInfo.Phone,
+		TenantID:          userInfo.TenantID,
+		TenantSlug:        userInfo.TenantSlug,
+		PlatformAdmin:     userInfo.PlatformAdmin,
+		PlatformScope:     userInfo.PlatformScope,
+		TenantRoles:       userInfo.TenantRoles,
 	}
-	if subjectResolver != nil {
+	// cs-user JWTs already carry the canonical subject_id in `sub` —
+	// skip the local users-table resolver entirely. The resolver exists
+	// to bridge Casdoor JWTs (which lack a local subject_id) to the
+	// local table; running it on cs-user JWTs can return stale local
+	// rows whose subject_id predates cs-user (e.g. legacy rows where
+	// users.subject_id was set to Casdoor's universal_id), which then
+	// 404 against cs-user's GET /api/internal/users/:subject_id.
+	if userInfo.Issuer == csUserIssuer {
+		logger.Info("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly (resolver skipped)", userID)
+	} else if subjectResolver != nil {
 		resolvedID, resolvedName, err := subjectResolver(authClaims)
+		logger.Info("[auth-debug] setAuthContext resolver in: id=%q sub=%q universal_id=%q provider=%q",
+			authClaims.ID, authClaims.Sub, authClaims.UniversalID, authClaims.Provider)
 		if err == nil {
 			if resolvedID != "" {
 				userID = resolvedID
@@ -473,7 +638,10 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 			if resolvedName != "" {
 				userName = resolvedName
 			}
+		} else {
+			logger.Warn("[auth-debug] setAuthContext resolver err=%v", err)
 		}
+		logger.Info("[auth-debug] setAuthContext resolver out: resolved_id=%q resolved_name=%q final_userID=%q", resolvedID, resolvedName, userID)
 	}
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)

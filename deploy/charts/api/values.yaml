@@ -14,6 +14,11 @@ fullnameOverride: ""
 
 podAnnotations: {}
 
+# Extra labels applied to the Pod template (not the Deployment). Useful for
+# network policy selectors — e.g. set `costrict.io/cs-user-consumer: "true"`
+# so cs-user's ingress NetworkPolicy allows this pod to reach :8081.
+podLabels: {}
+
 podSecurityContext:
   fsGroup: 1000
 
@@ -99,6 +104,37 @@ persistence:
   provisioner: "nfs-subdir-external-provisioner"
   # Reclaim policy for dynamically provisioned volumes (Retain or Delete)
   reclaimPolicy: Retain
+
+# cs-user RPC backend — leave backend=local to use server's own user table
+# (legacy behavior). Switch to backend=rpc to route user reads/writes through
+# the cs-user internal API over X-Internal-Token shared secret.
+userService:
+  backend: local
+  url: ""      # cs-user base URL; required when backend=rpc (e.g. http://cs-user.<ns>.svc:8081)
+  # Write authority posture. Leave empty to fall back to the binary default
+  # (local — DualWriter canary when backend=rpc). Set explicitly to:
+  #   local    — DualWriter canary: server's local users table is written
+  #              first, cs-user is best-effort replicated. Returned identity
+  #              still comes from cs-user so JWT `sub` aligns with cs-user's
+  #              employment snapshot.
+  #   readonly — cs-user is the sole write authority; server has no local
+  #              users writes. Production cutover posture.
+  writeMode: ""
+  internalToken:
+    value: ""            # dev: plaintext token (must match cs-user internalToken)
+    existingSecret: ""   # prod: externally provisioned Secret name
+    existingSecretKey: internal-token
+
+# JWT sign mode for gradual cs-user JWT rollout.
+#   off    — server issues all JWTs (legacy, default)
+#   dual   — accept both server-issued and cs-user-issued JWTs
+#   single — only cs-user-issued JWTs are accepted
+jwtSignMode: ""
+
+# Registration Profile gate (R0–R6 design). When true, the
+# PROFILE_GATE_ENABLED middleware enforces admin-approved profiles
+# before allowing user creation.
+profileGateEnabled: false
 
 env: []
 envFrom: []

@@ -18,6 +18,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
+	"github.com/costrict/costrict-web/server/internal/tenant"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,6 +32,13 @@ var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fa
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 var bindStateSecret string
+
+// jwtSignMode gates the Phase A8 OAuth-callback takeover. Anything other than
+// config.JWTSignModeOff makes the callback ask cs-user to reissue a
+// self-signed JWT carrying enterprise claims (Phase A5). Set from
+// cfg.JWTSignMode via InitCookieConfig. Default off — Casdoor JWT remains
+// authoritative.
+var jwtSignMode string
 
 var exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
 	return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
@@ -57,6 +65,26 @@ type authUserDTO struct {
 	Auth               map[string]any `json:"auth,omitempty"`
 }
 
+// meUserDTO is the privacy-scoped view of the current user. Unlike
+// authUserDTO (legacy /api/auth/me), it carries ONLY basic identity +
+// account activity metadata — deliberately omits Casdoor infrastructure
+// IDs (CasdoorUniversalID, CasdoorID, CasdoorSub), external identity
+// keys (ExternalKey, ProviderUserID), organization, system roles, and
+// the auth{} map. The user querying /me is reading their own data, so
+// email/phone are surfaced; everything else is filtered as PII.
+type meUserDTO struct {
+	ID          string     `json:"id"`
+	SubjectID   string     `json:"subjectId"`
+	Username    string     `json:"username"`
+	DisplayName string     `json:"displayName"`
+	Email       *string    `json:"email,omitempty"`
+	Phone       *string    `json:"phone,omitempty"`
+	AvatarURL   string     `json:"avatarUrl"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	LastSyncAt  *time.Time `json:"lastSyncAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+}
+
 type authIdentityDTO struct {
 	Provider    string     `json:"provider"`
 	DisplayName *string    `json:"displayName,omitempty"`
@@ -81,6 +109,11 @@ func InitCookieConfig(cfg *config.Config) {
 	if strings.TrimSpace(bindStateSecret) == "" {
 		bindStateSecret = cfg.Casdoor.Secret
 	}
+
+	// Phase A8: surface JWT self-sign mode to the OAuth callback without
+	// plumbing cfg through every handler call. Default OFF — Casdoor JWT
+	// stays authoritative until 灰度 activates dual / single.
+	jwtSignMode = cfg.JWTSignMode
 
 	// Build the allowed origins whitelist from FRONTEND_URLS.
 	allowedOrigins = make(map[string]bool)
@@ -129,13 +162,13 @@ type oauthState struct {
 }
 
 type bindState struct {
-	Action       string `json:"action"`
+	Action        string `json:"action"`
 	UserSubjectID string `json:"userSubjectId"`
-	Provider     string `json:"provider"`
-	RedirectTo   string `json:"redirectTo"`
-	CallbackURL  string `json:"callbackUrl"`
-	ExpiresAt    int64  `json:"expiresAt"`
-	Nonce        string `json:"nonce"`
+	Provider      string `json:"provider"`
+	RedirectTo    string `json:"redirectTo"`
+	CallbackURL   string `json:"callbackUrl"`
+	ExpiresAt     int64  `json:"expiresAt"`
+	Nonce         string `json:"nonce"`
 }
 
 func encodeOAuthState(s oauthState) string {
@@ -346,6 +379,29 @@ func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
 	}
 }
 
+// buildMeUserDTO projects a *models.User into the privacy-scoped meUserDTO.
+// DisplayName falls back to "" when missing (caller may merge with Username).
+// AvatarURL is dereferenced to empty string for the common "no avatar"
+// case; Email/Phone pointers are passed through so JSON omitempty drops nulls.
+func buildMeUserDTO(user *models.User) meUserDTO {
+	displayName := ""
+	if user.DisplayName != nil && *user.DisplayName != "" {
+		displayName = *user.DisplayName
+	}
+	return meUserDTO{
+		ID:          user.SubjectID,
+		SubjectID:   user.SubjectID,
+		Username:    user.Username,
+		DisplayName: displayName,
+		Email:       user.Email,
+		Phone:       user.Phone,
+		AvatarURL:   derefString(user.AvatarURL),
+		LastLoginAt: user.LastLoginAt,
+		LastSyncAt:  user.LastSyncAt,
+		CreatedAt:   user.CreatedAt,
+	}
+}
+
 // splitOriginPath splits a full URL into origin (scheme://host) and path.
 // For non-URL strings it returns ("", original).
 func splitOriginPath(rawURL string) (string, string) {
@@ -418,6 +474,18 @@ func AuthCallback(c *gin.Context) {
 		return
 	}
 
+	// cookieToken holds the value that ends up in the zgsmAdminToken cookie.
+	// Default is the Casdoor access token; Phase A8 overwrites it with a
+	// cs-user-signed JWT when jwtSignMode != off and ReissueToken succeeds.
+	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
+	// (Phase A8) is intentionally non-blocking.
+	cookieToken := tokenResp.AccessToken
+	// isNewUser is set when GetOrCreateUser creates the user row for the
+	// first time. Surfaced to the frontend via the short-lived reg_pending
+	// cookie so app-ai-native can bounce to /register/complete. The
+	// server-side RequireProfileComplete gate is the actual source of
+	// truth — this cookie is only a hint for the very first redirect.
+	isNewUser := false
 	if UserModule != nil {
 		if userInfo, userErr := getUserInfoFunc(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
 			claims := &userpkg.JWTClaims{
@@ -433,8 +501,68 @@ func AuthCallback(c *gin.Context) {
 			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
 				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
 			}
-			if _, err := UserModule.Service.GetOrCreateUser(claims); err != nil {
+			// Phase B3b.2b-step2b: §5 Try 2 — when middleware's subdomain
+			// lookup (Try 1) missed, resolve by email domain via cs-user.
+			// Unique hit → set cs_tenant_slug cookie + re-inject slug into
+			// the request context so the upcoming write ops (GetOrCreateUser,
+			// ApplyEnterpriseMapping, ReissueToken) forward the right
+			// X-Tenant-Id to cs-user. Ambiguous → picker redirect
+			// (Phase B3b.2b-step2c — until the picker frontend lands we
+			// log + fall through so login is never blocked). Miss / error
+			// → fall through to default tenant.
+			//
+			// Local-mode (Module.TenantResolver == nil) skips this block —
+			// there's no tenant data on this side (ADR D1).
+			try2Ctx := c.Request.Context()
+			if existingSlug := tenant.SlugFromContext(try2Ctx); existingSlug == "" &&
+				claims.Email != "" && UserModule != nil && UserModule.TenantResolver != nil {
+				res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, claims.Email)
+				if resErr != nil {
+					fmt.Printf("[WARN] ResolveTenantByEmail failed during auth callback (falling through to default tenant): %v\n", resErr)
+				} else if res != nil {
+					switch res.Status {
+					case "ok":
+						if res.Slug != "" {
+							c.Request = c.Request.WithContext(tenant.WithSlug(try2Ctx, res.Slug))
+							// Sticky cookie: future requests carry the slug
+							// through Layer 2 without re-resolving. Same
+							// Secure flag as the auth cookie.
+							c.SetCookie(middleware.TenantSlugCookie, res.Slug,
+								int(365*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+						}
+					case "ambiguous":
+						// TODO(B3b.2b-step2c): redirect to /tenant/picker
+						// with state token + candidates. Until the picker
+						// UI ships, log + fall through so login succeeds
+						// against the default tenant rather than dead-ending.
+						fmt.Printf("[INFO] tenant resolution ambiguous for email=%s, %d candidate(s); picker not yet implemented, falling through to default tenant\n",
+							claims.Email, len(res.Candidates))
+					}
+				}
+			}
+			if created, isNew, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
 				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
+			} else if created != nil {
+				isNewUser = isNew
+				// Phase A4b/Slice 2: enterprise mapping is auto-triggered
+				// inside cs-user's GetOrCreateUser using claims.ExternalClaims
+				// (which the Casdoor callback harvests from profile.Raw).
+				// Best-effort — employment mapping is a bonus feature and must
+				// never block login.
+				// Phase A8: when mode is dual or single, ask cs-user to mint
+				// a fresh JWT carrying enterprise claims. Best-effort: on any
+				// failure (transport, ErrSelfSignUnavailable from local-mode
+				// misconfig, cs-user 4xx/5xx) we fall back to the Casdoor
+				// token rather than failing login. The difference between
+				// dual and single lives in the verifier (JWKS chain), not
+				// here — the cookie value is the cs-user JWT either way.
+				if jwtSignMode != config.JWTSignModeOff {
+					if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), created.SubjectID, claims, nil); err != nil {
+						fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
+					} else {
+						cookieToken = newToken
+					}
+				}
 			}
 		} else if userErr != nil {
 			fmt.Printf("[WARN] GetUserInfo failed during auth callback: %v\n", userErr)
@@ -442,7 +570,16 @@ func AuthCallback(c *gin.Context) {
 	}
 
 	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
-	c.SetCookie("zgsmAdminToken", tokenResp.AccessToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
+	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
+
+	// Surface the is_new_user signal from GetOrCreateUser to the frontend so
+	// app-ai-native's registration gate can decide whether to bounce to
+	// /register/complete. Short-lived (5 min) — once the form is submitted,
+	// RequireProfileComplete (server-side gate) consults profile_completed_at
+	// directly and this cookie becomes irrelevant. See REGISTRATION_PROFILE_DESIGN §7.1.
+	if isNewUser {
+		c.SetCookie("reg_pending", "1", 300, "/", "", cookieSecure, false)
+	}
 
 	// Determine where to send the user after login.
 	// Validate the redirect target against the allowed origins whitelist.
@@ -531,7 +668,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
 		return
 	}
-	currentUser, err := UserModule.Service.GetOrCreateUser(currentClaims)
+	currentUser, _, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), currentClaims)
 	if err != nil || currentUser == nil || currentUser.SubjectID != state.UserSubjectID {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid binding session"})
 		return
@@ -562,7 +699,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		return
 	}
 	fmt.Printf("[bindAuthCallback] branch=proceed_to_bind provider_match_ok=%v\n", strings.EqualFold(claims.Provider, state.Provider))
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
+	if err := UserModule.Writer.BindIdentityToUser(c.Request.Context(), currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
 			fmt.Printf("[bindAuthCallback] branch=identity_already_bound claims.Provider=%q\n", claims.Provider)
 			externalKey := userpkg.BuildExternalKey(claims)
@@ -641,6 +778,92 @@ func Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
 
+// ResolveAuthUser godoc
+// @Summary      Resolve auth user for gateway
+// @Description  Resolves the current user from auth cookie/JWT and returns user_id + email + primary_identity. Used by gateway auth_request for Gitea reverse proxy authentication.
+// @Tags         auth
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{user_id=string,email=string,primary_identity=string}
+// @Header       200  {string} X-CS-User "User subject ID for gateway"
+// @Header       200  {string} X-CS-Email "User email for gateway"
+// @Failure      401  {object}  object{error=string}
+// @Router       /auth/resolve [get]
+func ResolveAuthUser(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		// Clear invalid cookie to prevent repeated failed requests
+		middleware.ClearAuthCookie(c)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	if UserModule != nil {
+		var (
+			user *models.User
+			err  error
+		)
+		if UserModule.CachedService != nil {
+			user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
+		} else if UserModule.Service != nil {
+			user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
+		}
+		if err == nil && user != nil {
+			// Build primary_identity string (provider format)
+			primaryIdentity := ""
+			if user.AuthProvider != nil && *user.AuthProvider != "" {
+				primaryIdentity = *user.AuthProvider
+				if user.ExternalKey != nil && *user.ExternalKey != "" {
+					primaryIdentity += "|" + *user.ExternalKey
+				}
+			} else {
+				primaryIdentity = "unknown"
+			}
+
+			// Set headers for gateway auth_request (nginx reads these via $upstream_http_x_cs_user)
+			c.Header("X-CS-User", user.SubjectID)
+			email := ""
+			if user.Email != nil {
+				email = *user.Email
+			}
+			c.Header("X-CS-Email", email)
+
+			c.JSON(http.StatusOK, gin.H{
+				"user_id":          user.SubjectID,
+				"email":            email,
+				"primary_identity": primaryIdentity,
+			})
+			return
+		}
+	}
+
+	// Fallback to claims if user lookup fails
+	authClaims, exists := c.Get(middleware.AuthClaimsKey)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	claims, ok := authClaims.(middleware.AuthClaims)
+	if !ok || claims.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid auth claims"})
+		return
+	}
+
+	primaryIdentity := claims.Provider
+	if claims.Sub != "" {
+		primaryIdentity += "|" + claims.Sub
+	}
+
+	c.Header("X-CS-User", claims.Sub)
+	c.Header("X-CS-Email", claims.Email)
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":          claims.Sub,
+		"email":            claims.Email,
+		"primary_identity": primaryIdentity,
+	})
+}
+
 // GetCurrentUser godoc
 // @Summary      Get current user
 // @Description  Get information of the authenticated user
@@ -668,7 +891,7 @@ func GetCurrentUser(c *gin.Context) {
 		if UserModule.CachedService != nil {
 			user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
 		} else if UserModule.Service != nil {
-			user, err = UserModule.Service.GetUserByID(currentUserID)
+			user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
 		}
 		if err == nil && user != nil {
 			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
@@ -713,6 +936,51 @@ func GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
 }
 
+// GetMe godoc
+// @Summary      Get current user (privacy-scoped)
+// @Description  Returns the authenticated user's basic identity and account activity metadata. Deliberately excludes Casdoor infrastructure IDs, external identity keys, organization, system roles, and the auth{} map surfaced by the legacy /api/auth/me — only basic profile fields plus last-login / last-sync / created-at timestamps. Falls back to /api/auth/me for richer fields when the caller needs them.
+// @Tags         me
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  object{user=object}
+// @Failure      401  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
+// @Failure      500  {object}  object{error=string}
+// @Router       /me [get]
+func GetMe(c *gin.Context) {
+	currentUserID := c.GetString(middleware.UserIDKey)
+	if currentUserID == "" {
+		middleware.ClearAuthCookie(c)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// /me is intentionally strict: unlike /api/auth/me, it has NO
+	// Casdoor fallback path. If the user is authenticated (JWT validated)
+	// but not in our local store, that's a state-mismatch we surface as
+	// 404 — callers needing the fallback path should use /api/auth/me.
+	if UserModule == nil || (UserModule.CachedService == nil && UserModule.Service == nil) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "User service unavailable"})
+		return
+	}
+
+	var (
+		user *models.User
+		err  error
+	)
+	if UserModule.CachedService != nil {
+		user, err = UserModule.CachedService.GetUserByID(c.Request.Context(), currentUserID)
+	} else {
+		user, err = UserModule.Service.GetUserByID(c.Request.Context(), currentUserID)
+	}
+	if err != nil || user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": buildMeUserDTO(user)})
+}
+
 // ListBoundIdentities godoc
 // @Summary      List bound auth identities
 // @Description  Lists all auth identities bound to the current user
@@ -724,11 +992,11 @@ func GetCurrentUser(c *gin.Context) {
 // @Router       /auth/identities [get]
 func ListBoundIdentities(c *gin.Context) {
 	currentUserID := c.GetString(middleware.UserIDKey)
-	if currentUserID == "" || UserModule == nil || UserModule.Service == nil {
+	if currentUserID == "" || UserModule == nil || UserModule.CachedService == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	identities, err := UserModule.Service.ListUserIdentities(currentUserID)
+	identities, err := UserModule.CachedService.ListUserIdentities(c.Request.Context(), currentUserID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list identities"})
 		return
@@ -762,7 +1030,7 @@ func UnbindIdentity(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 		return
 	}
-	if err := UserModule.Service.UnbindIdentityByProvider(currentUserID, provider); err != nil {
+	if err := UserModule.Writer.UnbindIdentityByProvider(c.Request.Context(), currentUserID, provider); err != nil {
 		if err.Error() == "cannot unbind last identity" || err.Error() == "identity not found" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -829,7 +1097,7 @@ func ConfirmMergeIdentity(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "merge_token_user_mismatch"})
 		return
 	}
-	if err := UserModule.Service.TransferIdentityToUser(currentUserID, ms.ExternalKey, ms.Provider); err != nil {
+	if err := UserModule.Writer.TransferIdentityToUser(c.Request.Context(), currentUserID, ms.ExternalKey, ms.Provider); err != nil {
 		if err.Error() == "identity_not_found" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "identity_not_found"})
 			return

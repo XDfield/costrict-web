@@ -1,0 +1,158 @@
+# Default values for costrict-web-cs-user
+# See ADR_CS_USER_PHASE1_DECISIONS.md for design rationale.
+#
+# Secret handling: each credential block exposes three sibling fields:
+#   value            — plaintext, used for dev / CI convenience
+#   existingSecret   — name of an externally-provisioned Secret (prod)
+#   existingSecretKey — key inside that Secret
+# When `value` is non-empty the chart renders a `<release>-secrets` Secret
+# holding all plaintext values and the Deployment references it. When
+# `existingSecret` is set the chart references it directly instead. Both
+# empty = the field is omitted from pod env (cs-user will fail loudly at
+# startup if a required credential is missing).
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/xdfield/costrict-web-cs-user
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # ClusterIP only — cs-user is cluster-internal, must NOT be exposed publicly
+  # (see ADR D8: network isolation + shared-secret auth).
+  type: ClusterIP
+  port: 8081
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+# cs-user has its own PostgreSQL instance (ADR D3: independent DB).
+database:
+  host: postgres-cs-user
+  port: 5432
+  name: cs_user
+  user: cs_user
+  sslMode: disable
+  password: ""               # dev: plaintext PG password (auto-wrapped in Secret)
+  existingSecret: ""         # prod: externally provisioned Secret name
+  existingSecretKey: password
+
+# Shared secret for costrict-web → cs-user internal API auth (ADR D8).
+# At least one of `value` / `existingSecret` must be set (config.Load() rejects empty).
+internalToken:
+  value: ""
+  existingSecret: ""
+  existingSecretKey: internal-token
+
+# Phase A — self-signed JWT (RS256). cs-user mints its own JWT for relying
+# parties (cs-cloud, app-ai-native, csc) when JWT_SIGN_MODE on the server
+# side is moved to dual/single. The signing key is an RSA private key in
+# PEM format; mount it via Secret (chart-managed or existingSecret).
+jwt:
+  # Container path where the PEM is mounted. CS_USER_JWT_SIGNING_KEY_PATH
+  # is wired to this value; the file must be readable by the csuser UID.
+  signingKeyPath: /etc/cs-user/jwt.pem
+  signingKey:
+    # dev: paste `openssl genrsa -out jwt.pem 4096` output here (PEM stringData).
+    # prod: provision out-of-band, point existingSecret at it.
+    value: ""
+    existingSecret: ""
+    existingSecretKey: jwt.pem
+  issuer: cs-user
+  ttl: 1h
+  # Comma-separated audience claim. List the relying parties that will
+  # accept cs-user-issued tokens (cs-cloud, app-ai-native, csc). Empty
+  # omits the claim entirely (acceptable during dual-mode rollout).
+  audience: ""
+
+# Phase B3b — apex domains used for subdomain-based tenant resolution.
+# When a request arrives at <tenant>.<apex>, cs-user resolves the tenant
+# slug from the leftmost label. Empty list disables subdomain resolution
+# (tenant must come from JWT claim or X-Tenant-Id header).
+tenant:
+  apexDomains: []
+
+# Git Ownership Refactor Phase 2 — outbox emitting user.created events
+# to the server's /api/internal/users/created consumer. Leave targetUrl
+# empty to disable the outbox (cs-user won't attempt delivery).
+eventBus:
+  targetUrl: ""
+  # Auth token sent as X-Internal-Secret header to the server consumer.
+  # Must equal server's INTERNAL_SECRET.
+  targetToken:
+    value: ""
+    existingSecret: ""
+    existingSecretKey: internal-secret
+  pollInterval: 1s
+  batchSize: 50
+  maxAttempts: 0        # 0 = unlimited retries (configured backoff)
+  backoffBase: 2s
+  backoffMax: 5m
+  httpTimeout: 5s
+
+# Helm test pod — invoked by `helm test <release>`. The curl image is
+# configurable so air-gapped clusters can point at a mirror.
+tests:
+  curlImage: "curlimages/curl:8.10.1"
+
+# Runtime log directory — the binary calls os.MkdirAll("./logs") at startup
+# and fatals out if the dir is not writable by UID 1000 (csuser). Mount an
+# emptyDir here so the dir always exists with correct ownership. Disable
+# only if you have a Dockerfile that pre-creates /app/logs as csuser-owned.
+logs:
+  enabled: true
+  mountPath: /app/logs
+
+# Runtime env vars (CS_USER_ prefix applied in deployment template).
+extraEnv: []
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Restrict ingress to pods labeled costrict.io/cs-user-consumer=true in the same
+# namespace (defense in depth on top of X-Internal-Token).
+#
+# Default OFF so dev / staging deployments don't silently blackhole server
+# traffic (server pod must carry the consumer label, or it gets 10s-timeout).
+# Production should set this to true and add `costrict.io/cs-user-consumer: "true"`
+# to every consumer pod (the api chart exposes this via its podLabels field).
+networkPolicy:
+  enabled: false

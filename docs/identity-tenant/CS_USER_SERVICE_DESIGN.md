@@ -5,7 +5,7 @@
 | 状态 | Draft · 评审中（v2，2026-07-15 v3 决策同步：Part VII team 同步迁出） |
 | 作者 | CoStrict 团队 |
 | 创建日期 | 2026-07-10 |
-| 最近修订 | 2026-07-15（v3 决策同步：Part VII 设计保留作参考，team_user 同步实施迁移到 @server；cs-user 收缩为仅 user-level Gitea 协作。详见 [`TEAM_ORG_UNIFICATION.md`](./TEAM_ORG_UNIFICATION.md) ADR-3 v3） |
+| 最近修订 | 2026-07-22（Git Ownership Refactor：user-level Gitea 开户职责**反转迁回 server**——见下方"GIT_OWNERSHIP 重构"段。cs-user 现在通过 outbox 事件通知 server，不再持有 git_servers / user_gitea_binding / giteasync；详见 [`../repo-management/GIT_OWNERSHIP_REFACTOR_PROPOSAL.md`](../repo-management/GIT_OWNERSHIP_REFACTOR_PROPOSAL.md) + [`../../todo/GIT_OWNERSHIP_REFACTOR_PROGRESS.md`](../../todo/GIT_OWNERSHIP_REFACTOR_PROGRESS.md)）。<br>2026-07-16（v4 决策同步：依 [`ADR_CS_USER_PHASE1_DECISIONS.md`](./ADR_CS_USER_PHASE1_DECISIONS.md)，服务间协议确定为 **REST only**——本提案原描述的 "REST + gRPC" 中 gRPC 部分降级为「未来按需扩展」，proto / SDK / gRPC 端口相关章节保留作参考但非 Phase 1 实施项。Phase 1 范围收缩为 user 数据 ownership + read-through RPC。）<br>2026-07-15（v3 决策同步：Part VII 设计保留作参考，team_user 同步实施迁移到 @server；cs-user 收缩为仅 user-level Gitea 协作。详见 [`TEAM_ORG_UNIFICATION.md`](./TEAM_ORG_UNIFICATION.md) ADR-3 v3） |
 | 评审范围 | server（承担 team-level GitServerAdapter + 业务侧 repo 操作）/ cs-user（新，承担 user-level Gitea 开户）/ costrict-web（瘦身后）/ casdoor / gitea fork / app-ai-native / csc / cs-cloud |
 | 关联文档 | [`USER_CENTER_DESIGN.md`](./USER_CENTER_DESIGN.md)（用户中心主权架构基线）、[`CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md`](../repo-management/CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md)（§6 用户中心 + JWT 中间件）、[`IDENTITY_FEDERATION_DECISION.md`](./IDENTITY_FEDERATION_DECISION.md)（v3 身份联邦决策）、[`USER_TABLE_DESIGN.md`](../proposals/USER_TABLE_DESIGN.md)（现有 users 表）、[`MULTI_PROVIDER_ACCOUNT_BINDING_DESIGN.md`](../proposals/MULTI_PROVIDER_ACCOUNT_BINDING_DESIGN.md)（多 provider 绑定方案 B）、[`CLOUD_TEAM_ARCHITECTURE.md`](../proposals/CLOUD_TEAM_ARCHITECTURE.md)（团队/成员关系）、[`TEAM_ORG_UNIFICATION.md`](./TEAM_ORG_UNIFICATION.md)（ADR-3 v3：team 同步归属） |
 
@@ -17,7 +17,7 @@
 
 **三件事**：
 
-1. **拆 `cs-user` 服务**：把 costrict-web 中所有用户/身份/profile/角色相关代码（`models.User*` / `casdoor/` / `authidentity/` / `user/` / `systemrole/` / `adminuser/` / `middleware/auth*` / `handlers/auth.go` 等）抽到独立 Go 服务 `cs-user`，对外暴露 REST + gRPC API；costrict-web 通过 client 调用，不再持有用户表读写权。
+1. **拆 `cs-user` 服务**：把 costrict-web 中所有用户/身份/profile/角色相关代码（`models.User*` / `casdoor/` / `authidentity/` / `user/` / `systemrole/` / `adminuser/` / `middleware/auth*` / `handlers/auth.go` 等）抽到独立 Go 服务 `cs-user`，对外暴露 **REST API**（gRPC 为未来按需扩展，见 ADR D5）；costrict-web 通过 client 调用，不再持有用户表读写权。
 
 2. **标准化用户信息结构**：定义 `UserInfo` 标准契约（4 层）—— base（不可变 `user_id` + 可变 `username`/`email`/`display_name`/`avatar`）+ identities（已绑定的多 provider 列表）+ profile（业务属性：业务线/部门/角色/配额）+ **enterprise**（可选企业身份：员工号/工号/组织路径/直线经理等）。所有下游服务（costrict-web / cs-cloud / app-ai-native / csc）统一消费该契约。
 
@@ -155,8 +155,8 @@ costrict-web/server/internal/
 
 | 类别 | 现位置 | 内容 |
 |---|---|---|
-| **数据表** | costrict-web DB | `users` / `user_auth_identities` / `user_system_roles` / `user_profile` / `user_gitea_binding` / `enterprise_identities` / `username_history`（迁移到 cs-user 独立 schema） |
-| **模型 / GORM** | `server/internal/models/models.go` | `User` / `UserAuthIdentity` / `UserSystemRole` / `UserProfile` / `UserGiteaBinding`（迁到 `cs-user/internal/models/`；`EnterpriseIdentity` / `UsernameHistory` 为本提案新增） |
+| **数据表** | costrict-web DB | `users` / `user_auth_identities` / `user_system_roles` / `user_profile` / `user_gitea_binding` / `employment_identities` / `username_history`（迁移到 cs-user 独立 schema） |
+| **模型 / GORM** | `server/internal/models/models.go` | `User` / `UserAuthIdentity` / `UserSystemRole` / `UserProfile` / `UserGiteaBinding`（迁到 `cs-user/internal/models/`；`EmploymentIdentity` / `UsernameHistory` 为本提案新增） |
 | **Migrations** | `server/migrations/` | 所有 `*user*` / `*auth_identit*` / `*system_role*` / `*gitea_binding*` 迁移文件 |
 | **Casdoor client** | `server/internal/casdoor/` | OAuth exchange + userinfo 拉取，整个 package 迁出 |
 | **Identity 归一化** | `server/internal/authidentity/normalize.go` | JWT claims 归一化、provider 识别、`external_key` 生成 |
@@ -242,7 +242,7 @@ costrict-web/server/internal/
 │                                                              │
 │   独立 PostgreSQL schema：cs_user                             │
 │     users / user_auth_identities / user_profile              │
-│     user_system_roles / username_history / enterprise_identities│
+│     user_system_roles / username_history / employment_identities│
 │                                                              │
 │   独立 secret：JWT RS256 私钥、Casdoor client secret          │
 │   配置：provider-mapping.yaml（企业身份字段映射）            │
@@ -279,7 +279,7 @@ cs-user ──► dept-sync                      cs-user 拉 dept 树做 profile
 | 项 | 值 |
 |---|---|
 | 服务名 | `cs-user` |
-| 对内端点 | `cs-user:8080`（HTTP/REST）+ `cs-user:9090`（gRPC） |
+| 对内端点 | `cs-user:8080`（HTTP/REST，cluster-internal only） |
 | 对外端点 | 经 gateway 暴露 `/api/auth/*` 与 `/api/users/*` |
 | 服务发现 | DNS（docker-compose）/ Consul（k8s） |
 | mTLS | 内部网络启用 mTLS（cs-user ↔ costrict-web ↔ cs-cloud） |
@@ -298,7 +298,7 @@ cs-user ──► dept-sync                      cs-user 拉 dept 树做 profile
 | `user_profile`（business_line / dept / role / preferences / quota） | cs-user | cs-user only | 全生态只读 |
 | `user_system_roles` | cs-user | cs-user only | 全生态只读 |
 | `username_history` | cs-user | cs-user only | cs-user 内部 |
-| `enterprise_identities`（企业身份归一化后） | cs-user | cs-user only | 全生态只读 |
+| `employment_identities`（企业身份归一化后） | cs-user | cs-user only | 全生态只读 |
 | `user_gitea_binding`（cs-user user ↔ Gitea user 映射） | cs-user | cs-user only | cs-user 内部（fork Gitea 中间件通过 `/api/internal/users/:id/gitea-binding` 回调写入） |
 | **业务表 user_id 外键**（devices.user_id 等） | 业务库 | 业务服务 | 业务服务 |
 | **业务表 user 快照**（devices.owner_username 冗余字段） | 业务库 | 业务服务 | 业务服务（cache invalidation by webhook） |
@@ -346,7 +346,7 @@ CREATE TABLE cs_user.user_auth_identities (...);
 CREATE TABLE cs_user.user_profile (...);
 CREATE TABLE cs_user.user_system_roles (...);
 CREATE TABLE cs_user.username_history (...);
-CREATE TABLE cs_user.enterprise_identities (...);
+CREATE TABLE cs_user.employment_identities (...);
 
 -- 业务表保留在 public schema
 -- devices / capability_items / ... 的 user_id 仅做应用层校验，不做 SQL FK
@@ -392,7 +392,7 @@ message UserInfo {
   Profile profile = 40;
 
   // ───── Layer 4: enterprise ─────
-  EnterpriseIdentity enterprise = 60;  // 可选；无企业身份时为空
+  EmploymentIdentity enterprise = 60;  // 可选；无企业身份时为空
 
   // ───── 元数据 ─────
   google.protobuf.Timestamp created_at = 100;
@@ -425,7 +425,7 @@ message Profile {
   google.protobuf.Timestamp hired_at = 8;
 }
 
-message EnterpriseIdentity {
+message EmploymentIdentity {
   // 见 §9 详细 schema
   string employee_number = 1;          // 员工号
   string cost_center = 2;              // 成本中心
@@ -653,7 +653,7 @@ Content-Type: application/json
 
 ### 9.1 统一 enterprise schema
 
-cs-user 对外暴露统一的 `EnterpriseIdentity` 结构（见 §6.1 proto），但不同企业 IdP 字段命名差异巨大：
+cs-user 对外暴露统一的 `EmploymentIdentity` 结构（见 §6.1 proto），但不同企业 IdP 字段命名差异巨大：
 
 | 统一字段 | LDAP | idtrust | Azure AD | 飞书 | 钉钉 |
 |---|---|---|---|---|---|
@@ -668,10 +668,10 @@ cs-user 对外暴露统一的 `EnterpriseIdentity` 结构（见 §6.1 proto）�
 
 **关键决策**：**不在代码中硬编码任何 IdP 字段名**。所有字段映射走 yaml 配置。
 
-### 9.2 enterprise_identities 表（归一化后存储）
+### 9.2 employment_identities 表（归一化后存储）
 
 ```sql
-CREATE TABLE cs_user.enterprise_identities (
+CREATE TABLE cs_user.employment_identities (
     user_id              UUID PRIMARY KEY REFERENCES cs_user.users(id) ON DELETE CASCADE,
     provider             VARCHAR(64) NOT NULL,        -- 最近一次同步来源 provider
     employee_number      VARCHAR(64),
@@ -696,12 +696,12 @@ CREATE TABLE cs_user.enterprise_identities (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_enterprise_identities_provider
-  ON cs_user.enterprise_identities (provider);
-CREATE INDEX idx_enterprise_identities_cost_center
-  ON cs_user.enterprise_identities (cost_center);
-CREATE INDEX idx_enterprise_identities_manager
-  ON cs_user.enterprise_identities (direct_manager_id);
+CREATE INDEX idx_employment_identities_provider
+  ON cs_user.employment_identities (provider);
+CREATE INDEX idx_employment_identities_cost_center
+  ON cs_user.employment_identities (cost_center);
+CREATE INDEX idx_employment_identities_manager
+  ON cs_user.employment_identities (direct_manager_id);
 ```
 
 ### 9.3 字段分类
@@ -895,8 +895,8 @@ transformer 实现位置：`cs-user/internal/enterprise/transformers/`；每个 
                2. 对每个 standard_field：
                   - 简单映射（string）：raw_claims[field_name]
                   - 复合映射（object）：raw_claims[source] → transform 求值
-               3. 求值结果填入 EnterpriseIdentity struct
-               4. INSERT ON CONFLICT UPDATE enterprise_identities
+               3. 求值结果填入 EmploymentIdentity struct
+               4. INSERT ON CONFLICT UPDATE employment_identities
                5. raw_payload_hash 校验：若 IdP 数据未变，跳过更新（避免无效写）
                6. 更新 next_sync_due_at = now() + interval
            └─► 触发 user.enterprise_updated webhook（如关键字段变更）
@@ -961,7 +961,7 @@ field_map:
 | work_location | `work_location` | `"Beijing-HQ"` | — | `"Beijing-HQ"` |
 | attributes.project_code | `project_code` | `"PRJ-CS-USER"` | — | `{"project_code": "PRJ-CS-USER"}` |
 
-**输出**（EnterpriseIdentity）：
+**输出**（EmploymentIdentity）：
 
 ```json
 {
@@ -988,12 +988,12 @@ cs-user 启动后台 worker `EnterpriseSyncWorker`：
 
 ```
 每 5min 扫一次：
-  SELECT user_id FROM cs_user.enterprise_identities
+  SELECT user_id FROM cs_user.employment_identities
   WHERE next_sync_due_at < now() AND sync_status != 'error'
   LIMIT 100;
 
 对每个 user_id：
-  - 加载该用户 primary enterprise provider（enterprise_identities.provider）
+  - 加载该用户 primary enterprise provider（employment_identities.provider）
   - 调 provider 对应 IdP API（如 LDAP search by DN / idtrust /users/:emp_id）
   - 重新求值 field_map
   - ON CONFLICT UPDATE
@@ -1013,7 +1013,7 @@ provider API 适配器在 `cs-user/internal/enterprise/providers/`，每个 prov
 ### 12.2 策略：**单一 source of truth，不合并**
 
 ```
-一个用户的 enterprise_identities 行只有 1 条
+一个用户的 employment_identities 行只有 1 条
 source_provider = highest_rank_provider_with_enterprise_data
 ```
 
@@ -1028,7 +1028,7 @@ source_provider = highest_rank_provider_with_enterprise_data
 
 **当用户绑了多个企业 provider**：
 
-- 选 rank 最高的作为 source of truth，写入 enterprise_identities
+- 选 rank 最高的作为 source of truth，写入 employment_identities
 - 其他 provider 的企业数据**丢弃**（不合并、不存历史）
 - 用户解绑当前 source provider → 触发重选（剩余中 rank 最高的）
 
@@ -1037,10 +1037,10 @@ source_provider = highest_rank_provider_with_enterprise_data
 ```
 Alice 绑了 idtrust（rank 300）+ AAD（rank 200）+ GitHub（rank 200 无企业）
 
-初始：source = idtrust；enterprise_identities 一行用 idtrust 数据
+初始：source = idtrust；employment_identities 一行用 idtrust 数据
    └─► 用户解绑 idtrust
        └─► 重选：剩余有企业数据的 = AAD
-           └─► 同步触发：source = AAD；enterprise_identities 整行被 AAD 数据覆盖
+           └─► 同步触发：source = AAD；employment_identities 整行被 AAD 数据覆盖
            └─► webhook user.enterprise_source_changed
 ```
 
@@ -1320,8 +1320,8 @@ user, err := userClient.Get(ctx, &userpb.GetRequest{
 | **transformer 实现不全 → 部分字段无法解析** | 中 | 内置 10 个 transformer 覆盖 90% 场景；新增 transformer 走代码 PR + 单元测试 |
 | **数据迁移期 FK 约束去除 → 数据不一致** | 高 | 迁移期加应用层校验（写时调 cs-user 验证 user_id 存在）；定时对账（每小时扫一致性） |
 | **SDK 版本漂移**（costrict-web 用旧 SDK，cs-user 升级） | 中 | proto 强类型 + gRPC 兼容性规则（只加字段不删字段）；SDK 自动化版本管理 |
-| **企业身份 source 切换数据丢失**（如 idtrust → AAD 切换） | 中 | 切换前 webhook 预通知；旧 source 数据归档到 `enterprise_identities_history` 表（可选） |
-| **多 IdP 同步 race condition**（同一 user 多 provider 并发同步） | 低 | enterprise_identities 行级锁（SELECT FOR UPDATE）；按 user_id 串行化 |
+| **企业身份 source 切换数据丢失**（如 idtrust → AAD 切换） | 中 | 切换前 webhook 预通知；旧 source 数据归档到 `employment_identities_history` 表（可选） |
+| **多 IdP 同步 race condition**（同一 user 多 provider 并发同步） | 低 | employment_identities 行级锁（SELECT FOR UPDATE）；按 user_id 串行化 |
 | **webhook 风暴**（用户大量改资料 → 下游被压垮） | 中 | webhook 投递限流 + 批量事件（如 `user.profile_changed.batch`）；下游幂等 |
 | **transformer 中 lookup_by_employee_number 反查慢** | 中 | employee_number 加索引；反查结果 cache（5min TTL） |
 | **Casdoor raw claims schema 变更**（IdP 升级） | 中 | raw_payload_hash 检测变更告警；mapping yaml 热加载；管理员告警通道 |
@@ -1357,7 +1357,7 @@ user, err := userClient.Get(ctx, &userpb.GetRequest{
 | 3 | webhook 广播基础设施归属？ | 独立 `cs-webhook` 服务（长期）/ cs-user 内嵌（短期） | 短期先内嵌，长期可拆出 |
 | 4 | 共享 DB vs 独立 DB？ | 共享 DB + 独立 schema（迁移期）；独立 DB（规模化） | 看私有化 vs 公有云形态 |
 | 5 | 跨服务调用协议：gRPC vs REST？ | 内部 gRPC；对外 REST | gRPC 性能 + REST 易用 |
-| 6 | 企业身份历史归档？ | 默认不归档（覆盖式更新）；可加 `enterprise_identities_history` 表 | 视合规需求 |
+| 6 | 企业身份历史归档？ | 默认不归档（覆盖式更新）；可加 `employment_identities_history` 表 | 视合规需求 |
 | 7 | transformer 是否允许自定义（用户写 Go plugin）？ | 第一阶段不允许；客户走 attributes JSONB 逃生 | 后续评估 plugin 机制 |
 | 8 | 多租户是否预留？ | 不预留（单 tenant） | 多租户需求未明确 |
 | 9 | 用户密码是否迁 cs-user？ | 否（继续透传 Casdoor） | 密码管理非 cs-user 主目标 |
@@ -1394,7 +1394,7 @@ user, err := userClient.Get(ctx, &userpb.GetRequest{
     "primary_identity": { "$ref": "#/definitions/Identity" },
 
     "profile": { "$ref": "#/definitions/Profile" },
-    "enterprise": { "oneOf": [{ "$ref": "#/definitions/EnterpriseIdentity" }, { "type": "null" }] },
+    "enterprise": { "oneOf": [{ "$ref": "#/definitions/EmploymentIdentity" }, { "type": "null" }] },
 
     "created_at": { "type": "string", "format": "date-time" },
     "updated_at": { "type": "string", "format": "date-time" },
@@ -1418,7 +1418,7 @@ user, err := userClient.Get(ctx, &userpb.GetRequest{
         "employee_id": { "type": "string" }
       }
     },
-    "EnterpriseIdentity": {
+    "EmploymentIdentity": {
       "type": "object",
       "properties": {
         "employee_number": { "type": "string" },

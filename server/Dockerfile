@@ -25,6 +25,7 @@ COPY . .
 # Build application - cross-compile for target architecture
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o server ./cmd/api
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o migrate ./cmd/migrate
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o gitserver-config ./cmd/gitserver-config
 
 # Final stage
 FROM alpine:latest
@@ -33,7 +34,7 @@ FROM alpine:latest
 ARG HTTPS_PROXY
 ARG HTTP_PROXY
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates curl jq
 
 # Create non-root user for security
 RUN addgroup -g 1000 -S appgroup && \
@@ -44,6 +45,7 @@ WORKDIR /app
 # Copy binaries from builder with execute permission
 COPY --from=builder --chmod=755 /app/server ./server
 COPY --from=builder --chmod=755 /app/migrate ./migrate
+COPY --from=builder --chmod=755 /app/gitserver-config ./gitserver-config
 
 # Change ownership to non-root user
 RUN chown -R appuser:appgroup /app

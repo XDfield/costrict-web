@@ -1,0 +1,41 @@
+# employment_providers + provider_mapping for idtrust (production template).
+#
+# Copy out of the repo and edit per-tenant before applying via
+# cs-user/scripts/configure-employment-mapping.sh.
+#
+# See scripts/examples/idtrust-employment-dev.yaml for the architecture
+# comments (two-layer identity model, flat-path Casdoor JWT layout). This
+# template only differs in keeping the optional columns uncommented so
+# operators can wire them by editing paths.
+
+employment_providers:
+  enabled:
+    - idtrust
+
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+
+  field_map:
+    idtrust:
+      # --- Required: 工号 + 姓名 ---
+      enterprise_uid:              "properties.oauth_Custom_id"
+      employee_number:             "properties.oauth_Custom_id"
+      display_name:                "properties.oauth_Custom_displayName"
+
+      # --- Optional: enable if your idtrust tenant returns these ---
+      job_title:                   "properties.oauth_Custom_jobTitle"
+      job_level:                   "properties.oauth_Custom_jobLevel"
+      cost_center:                 "properties.oauth_Custom_costCenter"
+      org_path:                    "properties.oauth_Custom_department"
+      employment_type:             "properties.oauth_Custom_employmentType"
+      work_location:               "properties.oauth_Custom_workPlace"
+      hire_date:                   "properties.oauth_Custom_hireDate"
+      regular_date:                "properties.oauth_Custom_regularDate"
+
+provider_mapping:
+  idtrust:
+    enabled: true
+    rank: 10
+    enterprise_sync:
+      interval: 24h

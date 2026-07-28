@@ -31,6 +31,8 @@ type Config struct {
 	Search                    SearchConfig
 	DeptSync                  DeptSyncConfig
 	UserSyncIntervalMinutes   int // User sync interval in minutes, default 15
+	UserService               UserServiceConfig
+	TeamDirectory             TeamDirectoryConfig
 	// BootstrapPlatformAdmins lists Casdoor universal_id values (case-sensitive,
 	// NOT lowercased) that are automatically granted the platform_admin role when
 	// they log in. universal_id is the stable global identity anchor Casdoor issues
@@ -40,7 +42,88 @@ type Config struct {
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
 	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
+	// JWTSignMode controls the A8 灰度 (gradual rollout) state for JWT
+	// self-signing. Three states (off → dual → single) per ROADMAP §9.4:
+	//
+	//   - JWTSignModeOff:    Casdoor JWT authoritative; OAuth callback
+	//                        does NOT call ReissueToken. Default. Matches
+	//                        pre-A8 behavior exactly.
+	//   - JWTSignModeDual:   cs-user-signed JWT becomes the cookie value
+	//                        (OAuth callback calls ReissueToken), but
+	//                        the verifier still accepts BOTH cs-user and
+	//                        Casdoor JWKS. Use during the 30-day
+	//                        crossover window so existing sessions with
+	//                        Casdoor tokens keep working.
+	//   - JWTSignModeSingle: cs-user JWT only. Casdoor JWKS dropped from
+	//                        the verifier chain. End-state after the 30-day
+	//                        灰度 closes.
+	//
+	// When mode != off, requires USER_SERVICE_BACKEND=rpc (RPCWriter) so
+	// the OAuth callback can reach cs-user's reissue-token endpoint, AND
+	// USER_SERVICE_URL must be set so the JWKS provider can fetch
+	// cs-user's /.well-known/jwks.
+	//
+	// Migration: JWT_SELF_SIGN_ENABLED=true (A7b vocabulary) maps to
+	// "dual"; false/unset maps to "off". JWT_SIGN_MODE wins when both
+	// are set.
+	JWTSignMode string
+	// ProfileGateEnabled (R3 of REGISTRATION_PROFILE_DESIGN): when true,
+	// first-time users without profile_completed_at get 403 profile_incomplete
+	// on all non-whitelisted routes until they finish /register/complete.
+	// Default false for staged rollout (dev → canary → prod). When false,
+	// middleware.RequireProfileComplete is a no-op.
+	ProfileGateEnabled bool
 }
+
+// JWTSignMode values for Config.JWTSignMode.
+const (
+	JWTSignModeOff    = "off"
+	JWTSignModeDual   = "dual"
+	JWTSignModeSingle = "single"
+)
+
+// UserServiceConfig selects and configures the read backend for user data.
+// Phase 0/P0-7: default is local (read from server's own DB). Setting
+// Backend to "rpc" routes point reads through cs-user via HTTP. Writes always
+// stay on the local UserService — Phase 1 cs-user has no write API.
+type UserServiceConfig struct {
+	Backend       string // "local" (default) or "rpc"
+	BaseURL       string // cs-user base URL when Backend == "rpc", e.g. http://cs-user:8080
+	InternalToken string // X-Internal-Token value sent to cs-user
+	TimeoutSec    int    // per-request HTTP timeout in seconds, default 10
+	WriteMode     string // "local" (default, writes go through UserService) or "readonly" (writes return ErrWriteBlocked)
+	// ApexDomains enables Host-subdomain tenant-slug resolution (Phase B3b.2a).
+	// Empty (default) disables the subdomain layer — local dev mode. Prod
+	// sets e.g. USER_SERVICE_APEX_DOMAINS=example.com,example.cn.
+	ApexDomains []string
+}
+
+// Backend values for UserServiceConfig.Backend.
+const (
+	UserServiceBackendLocal = "local"
+	UserServiceBackendRPC   = "rpc"
+)
+
+// TeamDirectoryConfig configures the team-directory HTTP backend — the
+// authoritative source of "which teams/workspaces a user belongs to".
+// Today the backend is multica (temporary); the long-term plan is a
+// dedicated org-team-service. Auth is per-request via Casdoor JWT
+// forwarding, so there is no shared internal token here.
+type TeamDirectoryConfig struct {
+	BaseURL    string // e.g. http://multica:8080
+	TimeoutSec int    // per-request HTTP timeout, default 10
+}
+
+// AuthMultiIdPConfig removed — Phase E2.6 multi-IdP bypass deprecated.
+// OAuth is brokered exclusively via Casdoor; per-provider credentials live
+// inside Casdoor only. The legacy /api/auth/login + /api/auth/callback
+// routes talk directly to Casdoor.
+
+// WriteMode values for UserServiceConfig.WriteMode.
+const (
+	UserServiceWriteModeLocal    = "local"
+	UserServiceWriteModeReadonly = "readonly"
+)
 
 // ClawAgentConfig holds configuration for the ClawAgent personal AI assistant.
 type ClawAgentConfig struct {
@@ -57,7 +140,7 @@ type ClawAgentSessionConfig struct {
 	MaxSessionsPerUser           int // Max archived sessions per user (default 200)
 	MaxSessionTokens             int // Token threshold for session compaction (default 8000)
 	CompactionKeepRecentMessages int // Number of recent messages to keep during compaction (default 10)
-	NotificationDelaySeconds    int // Delay before sending AI notification to user (default 30)
+	NotificationDelaySeconds     int // Delay before sending AI notification to user (default 30)
 }
 
 // DeptSyncConfig holds connection settings for the external dept-sync service
@@ -201,12 +284,24 @@ func Load() *Config {
 			CacheTTLSec: getEnvInt("DEPT_SYNC_CACHE_TTL_SECONDS", 60),
 		},
 		UserSyncIntervalMinutes: getEnvInt("USER_SYNC_INTERVAL_MINUTES", 15),
+		UserService: UserServiceConfig{
+			Backend:       getEnv("USER_SERVICE_BACKEND", UserServiceBackendLocal),
+			BaseURL:       getEnv("USER_SERVICE_URL", ""),
+			InternalToken: getEnv("USER_SERVICE_INTERNAL_TOKEN", ""),
+			TimeoutSec:    getEnvInt("USER_SERVICE_TIMEOUT_SECONDS", 10),
+			WriteMode:     getEnv("USER_SERVICE_WRITE_MODE", UserServiceWriteModeLocal),
+			ApexDomains:   getEnvSlice("USER_SERVICE_APEX_DOMAINS", nil),
+		},
+		TeamDirectory: TeamDirectoryConfig{
+			BaseURL:    getEnv("TEAM_DIRECTORY_URL", ""),
+			TimeoutSec: getEnvInt("TEAM_DIRECTORY_TIMEOUT_SECONDS", 10),
+		},
 		// universal_id is case-sensitive, so use getEnvSlice (NOT getEnvSliceLower).
 		BootstrapPlatformAdmins: getEnvSlice("BOOTSTRAP_PLATFORM_ADMIN_UNIVERSAL_IDS", nil),
 		Channels: ChannelSystemConfig{
 			EnabledTypes:        getEnvSlice("CHANNEL_ENABLED_TYPES", nil),
 			WeComEnabled:        getEnvBool("CHANNEL_WECOM_ENABLED", false),
-				WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
+			WebhookEnabled:      getEnvBool("CHANNEL_WEBHOOK_ENABLED", false),
 			WeComWebhookEnabled: getEnvBool("CHANNEL_WECOM_WEBHOOK_ENABLED", false),
 			WeChatEnabled:       getEnvBool("CHANNEL_WECHAT_ENABLED", false),
 			WeComBotEnabled:     getEnvBool("CHANNEL_WECOM_BOT_ENABLED", false),
@@ -234,10 +329,49 @@ func Load() *Config {
 				MaxSessionsPerUser:           getEnvInt("CLAWAGENT_SESSION_MAX_PER_USER", 200),
 				MaxSessionTokens:             getEnvInt("CLAWAGENT_SESSION_MAX_TOKENS", 8000),
 				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
-					NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
+				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
+		// Phase A8: three-state JWT self-sign mode. Loader prefers
+		// JWT_SIGN_MODE (off|dual|single) and falls back to the A7b
+		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
+		// OFF — Casdoor JWT stays authoritative until operator flips.
+		JWTSignMode: loadJWTSignMode(),
+		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
 	}
+}
+
+// splitCommaList splits a comma-separated env value. Reuses the same
+// semantics as getEnvSlice but without the default-value plumbing.
+func splitCommaList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}
+
+// loadJWTSignMode resolves the JWT self-sign mode from environment.
+//
+// Resolution order:
+//  1. JWT_SIGN_MODE (preferred, A8 vocabulary): must be off|dual|single,
+//     case-insensitive. Invalid values are fatal — silent fallback would
+//     mask a typo as "off" and accidentally disable 灰度 mid-cutover.
+//  2. JWT_SELF_SIGN_ENABLED (A7b vocabulary, retained for migration):
+//     strconv.ParseBool true → dual, anything else → off.
+//  3. Default: off.
+func loadJWTSignMode() string {
+	if raw := strings.ToLower(strings.TrimSpace(getEnv("JWT_SIGN_MODE", ""))); raw != "" {
+		switch raw {
+		case JWTSignModeOff, JWTSignModeDual, JWTSignModeSingle:
+			return raw
+		default:
+			log.Fatalf("invalid JWT_SIGN_MODE %q: must be one of off|dual|single", raw)
+		}
+	}
+	if getEnvBool("JWT_SELF_SIGN_ENABLED", false) {
+		return JWTSignModeDual
+	}
+	return JWTSignModeOff
 }
 
 func getEnv(key, defaultValue string) string {
@@ -284,6 +418,7 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
+// getEnvBool reads a boolean env var. Used by R3's PROFILE_GATE_ENABLED.
 func getEnvBool(key string, defaultValue bool) bool {
 	// Check if environment variable is explicitly set (even if empty)
 	viperValue := viper.GetString(key)

@@ -1,0 +1,202 @@
+{{/*
+Resolve a credential block into either:
+  - inline value (dev path)         → (value, "") returned
+  - chart-managed <release>-secrets (when value non-empty triggers it)
+  - externally-provisioned Secret   → ( "", "<secretName>" ) returned
+Helper pattern repeated for database / internalToken / eventBus.targetToken.
+*/}}
+{{- $chartManagedSecret := printf "%s-secrets" .Release.Name -}}
+{{- $hasPlaintext := or .Values.database.password .Values.internalToken.value .Values.jwt.signingKey.value .Values.eventBus.targetToken.value -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: default
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: CS_USER_HTTP_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: CS_USER_HTTP_MODE
+              value: "release"
+            {{- if .Values.logs.enabled }}
+            - name: LOG_DIR
+              value: {{ .Values.logs.mountPath | quote }}
+            {{- end }}
+            - name: CS_USER_POSTGRES_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: CS_USER_POSTGRES_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: CS_USER_POSTGRES_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: CS_USER_POSTGRES_USER
+              value: {{ .Values.database.user | quote }}
+            - name: CS_USER_POSTGRES_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
+            {{- /* PG password: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .Values.database.password }}
+            - name: CS_USER_POSTGRES_PASSWORD
+              value: {{ .Values.database.password | quote }}
+            {{- else if or .Values.database.existingSecret $hasPlaintext }}
+            - name: CS_USER_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | default $chartManagedSecret }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- end }}
+            {{- /* Internal token: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .Values.internalToken.value }}
+            - name: CS_USER_INTERNAL_TOKEN
+              value: {{ .Values.internalToken.value | quote }}
+            {{- else if or .Values.internalToken.existingSecret $hasPlaintext }}
+            - name: CS_USER_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.internalToken.existingSecret | default $chartManagedSecret }}
+                  key: {{ .Values.internalToken.existingSecretKey }}
+            {{- end }}
+            {{- with .Values.jwt }}
+            - name: CS_USER_JWT_SIGNING_KEY_PATH
+              value: {{ .signingKeyPath | quote }}
+            - name: CS_USER_JWT_ISSUER
+              value: {{ .issuer | quote }}
+            - name: CS_USER_JWT_TTL
+              value: {{ .ttl | quote }}
+            - name: CS_USER_JWT_AUDIENCE
+              value: {{ .audience | quote }}
+            {{- end }}
+            {{- with .Values.tenant }}
+            - name: CS_USER_APEX_DOMAINS
+              value: {{ .apexDomains | join "," | quote }}
+            {{- end }}
+            {{- with .Values.eventBus }}
+            - name: CS_USER_EVENT_TARGET_URL
+              value: {{ .targetUrl | quote }}
+            {{- /* Event bus token: value (inline) > Secret (external or chart-managed) */}}
+            {{- if .targetToken.value }}
+            - name: CS_USER_EVENT_TARGET_TOKEN
+              value: {{ .targetToken.value | quote }}
+            {{- else if or .targetToken.existingSecret $hasPlaintext }}
+            - name: CS_USER_EVENT_TARGET_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .targetToken.existingSecret | default $chartManagedSecret }}
+                  key: {{ .targetToken.existingSecretKey }}
+            {{- end }}
+            - name: CS_USER_EVENT_POLL_INTERVAL
+              value: {{ .pollInterval | quote }}
+            - name: CS_USER_EVENT_BATCH_SIZE
+              value: {{ .batchSize | quote }}
+            - name: CS_USER_EVENT_MAX_ATTEMPTS
+              value: {{ .maxAttempts | quote }}
+            - name: CS_USER_EVENT_BACKOFF_BASE
+              value: {{ .backoffBase | quote }}
+            - name: CS_USER_EVENT_BACKOFF_MAX
+              value: {{ .backoffMax | quote }}
+            - name: CS_USER_EVENT_HTTP_TIMEOUT
+              value: {{ .httpTimeout | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.httpGet.path }}
+              port: {{ .Values.livenessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.httpGet.path }}
+              port: {{ .Values.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- /* JWT PEM: always file-mounted; secret name comes from
+                 existingSecret, or chart-managed when value is set. */}}
+          {{- $jwtSecretName := .Values.jwt.signingKey.existingSecret }}
+          {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
+          {{- $jwtSecretName = $chartManagedSecret }}
+          {{- end }}
+          {{- $hasLogsMount := .Values.logs.enabled }}
+          {{- if or $jwtSecretName $hasLogsMount }}
+          volumeMounts:
+            {{- if $jwtSecretName }}
+            - name: jwt-signing-key
+              mountPath: {{ dir .Values.jwt.signingKeyPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $hasLogsMount }}
+            - name: logs
+              mountPath: {{ .Values.logs.mountPath }}
+            {{- end }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $jwtSecretName := .Values.jwt.signingKey.existingSecret }}
+      {{- if and (not $jwtSecretName) .Values.jwt.signingKey.value }}
+      {{- $jwtSecretName = $chartManagedSecret }}
+      {{- end }}
+      {{- if or $jwtSecretName .Values.logs.enabled }}
+      volumes:
+        {{- if $jwtSecretName }}
+        - name: jwt-signing-key
+          secret:
+            secretName: {{ $jwtSecretName }}
+            items:
+              - key: {{ .Values.jwt.signingKey.existingSecretKey }}
+                path: {{ base .Values.jwt.signingKeyPath }}
+            defaultMode: 0o400
+        {{- end }}
+        {{- if .Values.logs.enabled }}
+        - name: logs
+          emptyDir: {}
+        {{- end }}
+      {{- end }}

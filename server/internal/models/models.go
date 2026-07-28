@@ -689,6 +689,11 @@ type User struct {
 	// 状态字段
 	IsActive    bool       `gorm:"not null;default:true" json:"is_active"` // 是否激活
 	Status      string     `gorm:"size:32;not null;default:'active';index" json:"status"` // 账户状态: active|disabled|banned（admin 封禁，独立于 is_active）
+	// ProfileCompletedAt 为 NULL 表示用户尚未完成首次注册(自定义 username +
+	// display_name)。RequireProfileComplete 中间件据此拦截未完成用户的非白名单
+	// API 请求(REGISTRATION_PROFILE_DESIGN §4.2 / §7.2)。存量用户由 migration
+	// 回填至 created_at,只有迁移后新建的用户才能被 gate 拦截。
+	ProfileCompletedAt *time.Time `json:"profile_completed_at"`
 	LastLoginAt *time.Time `json:"last_login_at"`                          // 最后登录时间
 	LastSyncAt  *time.Time `json:"last_sync_at"`                           // 最后同步时间
 

@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -17,8 +18,13 @@ import (
 // login paths (OAuth callback + JWKS auth), where the bearer has proven they own
 // the identity. Granting roles during a third party's search of a user would
 // violate the "granted on the user's own verified login" invariant.
-func (s *UserService) SyncUser(claims *JWTClaims) (*models.User, error) {
-	return s.getOrCreateUser(claims)
+func (s *UserService) SyncUser(ctx context.Context, claims *JWTClaims) (*models.User, error) {
+	if s.writeMode == WriteModeReadonly {
+		return nil, ErrWriteBlocked
+	}
+	_ = ctx // local writer ignores ctx — kept for interface compat (B3b.2b)
+	u, _, err := s.getOrCreateUser(claims)
+	return u, err
 }
 
 // RoleGranter is the minimal surface the bootstrap granter needs from the

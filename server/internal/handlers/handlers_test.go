@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -66,7 +67,9 @@ func newAuthRouter(userID string) *gin.Engine {
 		c.Next()
 	}
 	r.GET("/api/auth/me", injectUser, GetCurrentUser)
+	r.GET("/api/me", injectUser, GetMe)
 	r.GET("/api/auth/identities", injectUser, ListBoundIdentities)
+	r.GET("/api/auth/resolve", injectUser, ResolveAuthUser)
 	r.POST("/api/auth/bind/start", injectUser, StartBindAuth)
 	r.POST("/api/auth/identities/:provider/unbind", injectUser, UnbindIdentity)
 	r.GET("/api/auth/callback", injectUser, AuthCallback)
@@ -166,7 +169,9 @@ func TestListBoundIdentities(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var body struct{ Identities []map[string]any `json:"identities"` }
+	var body struct {
+		Identities []map[string]any `json:"identities"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -221,12 +226,18 @@ func TestStartBindAuthReturnsSignedURL(t *testing.T) {
 	getLoginURLWithCallbackFunc = func(state, callbackURL string) string {
 		return "https://casdoor.example/login?state=" + state
 	}
-	defer func() { getLoginURLWithCallbackFunc = func(state, callbackURL string) string { return CasdoorClient.GetLoginURLWithCallback(state, callbackURL) } }()
+	defer func() {
+		getLoginURLWithCallbackFunc = func(state, callbackURL string) string {
+			return CasdoorClient.GetLoginURLWithCallback(state, callbackURL)
+		}
+	}()
 	w := postJSON(newAuthRouter("usr_local_1"), "/api/auth/bind/start", map[string]any{"provider": "github", "redirectTo": "https://zgsm.sangfor.com/cloud/settings/account"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var body struct{ AuthURL string `json:"authUrl"` }
+	var body struct {
+		AuthURL string `json:"authUrl"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -255,7 +266,7 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
@@ -267,8 +278,12 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 		AuthCallback(c)
 	})
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 	exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
 		boundToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "bound-id", "sub": "bound-sub", "universal_id": "bound-uuid", "name": "bound_user", "provider": "idtrust", "properties": map[string]any{"oauth_Custom_id": "custom-user-001", "oauth_Custom_username": "custom_user", "oauth_Custom_displayName": "Display Custom User"}})
@@ -302,17 +317,21 @@ func TestBindCallbackSuccess(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
 	// Explicitly bind phone identity since GetOrCreateUser might not auto-bind
-	if err := UserModule.Service.BindIdentityToUser(currentUser.SubjectID, &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"}); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(context.Background(), currentUser.SubjectID, &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"}); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
 
@@ -342,7 +361,7 @@ func TestBindCallbackSuccess(t *testing.T) {
 	if location := w.Header().Get("Location"); location != "https://example.test/account?bind=success" {
 		t.Fatalf("expected redirect to account page with bind=success, got %q", location)
 	}
-	identities, err := UserModule.Service.ListUserIdentities(currentUser.SubjectID)
+	identities, err := UserModule.Service.ListUserIdentities(context.Background(), currentUser.SubjectID)
 	if err != nil {
 		t.Fatalf("list identities: %v", err)
 	}
@@ -357,20 +376,24 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	bindStateSecret = "test-secret"
 	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) { return CasdoorClient.ExchangeCodeForToken(code, callbackURL) }
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) { return CasdoorClient.GetUserInfo(accessToken) }
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
 	}()
 
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
-	currentUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
+	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed current user: %v", err)
 	}
-	otherUser, err := UserModule.Service.GetOrCreateUser(&userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
+	otherUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "other-id", Sub: "other-sub", UniversalID: "other-uuid", Name: "acct_beta", PreferredUsername: "Account Beta", Provider: "github", ProviderUserID: "provider-gh-occupied"})
 	if err != nil {
 		t.Fatalf("seed other user: %v", err)
 	}
-	if err := UserModule.Service.BindIdentityToUser(otherUser.SubjectID, &userpkg.JWTClaims{ID: "bound-gh-id", Sub: "bound-gh-sub", UniversalID: "bound-gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
+	if err := UserModule.Service.BindIdentityToUser(context.Background(), otherUser.SubjectID, &userpkg.JWTClaims{ID: "bound-gh-id", Sub: "bound-gh-sub", UniversalID: "bound-gh-uuid", Name: "acct_github_user", PreferredUsername: "Display Github User", Provider: "github", ProviderUserID: "provider-gh-001"}); err != nil {
 		t.Fatalf("seed occupied identity: %v", err)
 	}
 
@@ -407,470 +430,221 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListRepositories
+// TestResolveAuthUser — /api/auth/resolve endpoint for gateway
 // ---------------------------------------------------------------------------
 
-func TestListRepositories_Empty(t *testing.T) {
+// TestResolveAuthUser_ReturnsUserHeaders tests the /api/auth/resolve endpoint
+// used by gateway auth_request for Gitea reverse proxy authentication.
+func TestResolveAuthUser_ReturnsUserHeaders(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
 
-	w := get(newRepoRouter(""), "/api/repositories")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	email := "alice@example.com"
+	provider := "github"
+	externalKey := "casdoor:uuid-1"
+	if err := database.DB.Create(&models.User{
+		SubjectID:    "usr_resolve_1",
+		Username:     "alice",
+		Email:        &email,
+		AuthProvider: &provider,
+		ExternalKey:  &externalKey,
+		IsActive:     true,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
 	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 0 {
-		t.Fatalf("expected 0 repos, got %d", len(repos))
-	}
-}
 
-func TestListRepositories_WithData(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-l1", Name: "alpha", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.Repository{ID: "repo-l2", Name: "beta", OwnerID: "u2", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 2 {
-		t.Fatalf("expected 2 repos, got %d", len(repos))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CreateRepository
-// ---------------------------------------------------------------------------
-
-func TestCreateRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "my-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "my-repo" {
-		t.Fatalf("unexpected name: %v", repo["name"])
-	}
-	if repo["repoType"] != "normal" {
-		t.Fatalf("expected repoType=normal, got %v", repo["repoType"])
-	}
-	if repo["visibility"] != "private" {
-		t.Fatalf("expected visibility=private, got %v", repo["visibility"])
-	}
-}
-
-func TestCreateRepository_MissingRequired(t *testing.T) {
-	defer setupTestDB(t)()
-
-	// name is the only required field now; ownerId comes from auth context
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestCreateRepository_DefaultsVisibilityAndType(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "defaults-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["visibility"] != "private" {
-		t.Fatalf("expected default visibility=private, got %v", repo["visibility"])
-	}
-	if repo["repoType"] != "normal" {
-		t.Fatalf("expected default repoType=normal, got %v", repo["repoType"])
-	}
-}
-
-func TestCreateRepository_OwnerAddedAsMember(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "member-repo", "ownerId": "u1",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	repoID := repo["id"].(string)
-
-	var count int64
-	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ? AND role = 'owner'", repoID, "u1").Count(&count)
-	if count != 1 {
-		t.Fatalf("expected owner to be added as member, got count=%d", count)
-	}
-}
-
-func TestCreateRepository_SyncType_MissingExternalURL(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "sync-repo", "ownerId": "u1", "repoType": "sync",
-		"syncRegistry": map[string]interface{}{},
-	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestCreateRepository_SyncType_Success(t *testing.T) {
-	defer setupTestDB(t)()
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories", map[string]interface{}{
-		"name": "sync-repo2", "ownerId": "u1", "repoType": "sync",
-		"syncRegistry": map[string]interface{}{
-			"externalUrl": "https://github.com/example/repo",
-		},
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	if body["repository"] == nil {
-		t.Fatal("expected repository field in response")
-	}
-	if body["registries"] == nil {
-		t.Fatal("expected registries field in response")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetRepository
-// ---------------------------------------------------------------------------
-
-func TestGetRepository_Found(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-g1", Name: "get-repo", OwnerID: "u1", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-g1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["id"] != "repo-g1" {
-		t.Fatalf("unexpected id: %v", repo["id"])
-	}
-}
-
-func TestGetRepository_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	w := get(newRepoRouter(""), "/api/repositories/no-such-repo")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UpdateRepository
-// ---------------------------------------------------------------------------
-
-func TestUpdateRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-u1", Name: "old-name", OwnerID: "u1", Visibility: "private"})
-	database.DB.Create(&models.RepoMember{ID: "mem-u1", RepoID: "repo-u1", UserID: "u1", Role: "owner"})
-
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u1", map[string]interface{}{
-		"name": "new-name", "visibility": "public",
-	})
+	w := get(newAuthRouter("usr_resolve_1"), "/api/auth/resolve")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "new-name" {
-		t.Fatalf("expected name=new-name, got %v", repo["name"])
-	}
-	if repo["visibility"] != "public" {
-		t.Fatalf("expected visibility=public, got %v", repo["visibility"])
-	}
-}
 
-func TestUpdateRepository_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/no-such", map[string]interface{}{
-		"name": "x",
-	})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", w.Code)
+	// Check response headers (gateway reads these via $upstream_http_x_cs_user)
+	csUser := w.Header().Get("X-CS-User")
+	csEmail := w.Header().Get("X-CS-Email")
+	if csUser != "usr_resolve_1" {
+		t.Errorf("X-CS-User header: got %q, want usr_resolve_1", csUser)
 	}
-}
+	if csEmail != email {
+		t.Errorf("X-CS-Email header: got %q, want %s", csEmail, email)
+	}
 
-func TestUpdateRepository_PartialUpdate(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-u2", Name: "partial-repo", DisplayName: "Old Display", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-u2", RepoID: "repo-u2", UserID: "u1", Role: "owner"})
-
-	w := putJSON(newRepoRouter("u1"), "/api/repositories/repo-u2", map[string]interface{}{
-		"displayName": "New Display",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	// Check response body
+	var body struct {
+		UserID          string `json:"user_id"`
+		Email           string `json:"email"`
+		PrimaryIdentity string `json:"primary_identity"`
 	}
-	var repo map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&repo)
-	if repo["name"] != "partial-repo" {
-		t.Fatalf("name should not change, got %v", repo["name"])
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
 	}
-	if repo["displayName"] != "New Display" {
-		t.Fatalf("expected displayName=New Display, got %v", repo["displayName"])
+	if body.UserID != "usr_resolve_1" {
+		t.Errorf("user_id: got %q, want usr_resolve_1", body.UserID)
+	}
+	if body.Email != email {
+		t.Errorf("email: got %q, want %s", body.Email, email)
+	}
+	if body.PrimaryIdentity != "github|casdoor:uuid-1" {
+		t.Errorf("primary_identity: got %q, want github|casdoor:uuid-1", body.PrimaryIdentity)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// DeleteRepository
-// ---------------------------------------------------------------------------
-
-func TestDeleteRepository_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-d1", Name: "del-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-d1", RepoID: "repo-d1", UserID: "u1", Role: "owner"})
-
-	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-d1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var count int64
-	database.DB.Model(&models.Repository{}).Where("id = ?", "repo-d1").Count(&count)
-	if count != 0 {
-		t.Fatal("repository should have been deleted")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ListRepositoryMembers
-// ---------------------------------------------------------------------------
-
-func TestListRepositoryMembers_Empty(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-no-members", Name: "no-members-repo", OwnerID: "u1", Visibility: "public"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-no-members/members")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	members := body["members"].([]interface{})
-	if len(members) != 0 {
-		t.Fatalf("expected 0 members, got %d", len(members))
-	}
-}
-
-func TestListRepositoryMembers_WithMembers(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-m1", Name: "member-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.RepoMember{ID: "mem-m1", RepoID: "repo-m1", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-m2", RepoID: "repo-m1", UserID: "u2", Role: "member"})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-m1/members")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	members := body["members"].([]interface{})
-	if len(members) != 2 {
-		t.Fatalf("expected 2 members, got %d", len(members))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// AddRepositoryMember
-// ---------------------------------------------------------------------------
-
-func TestAddRepositoryMember_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am1", Name: "add-member-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am1-owner", RepoID: "repo-am1", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am1/members", map[string]interface{}{
-		"userId": "u-new", "username": "newuser", "role": "member",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var member map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&member)
-	if member["userId"] != "u-new" {
-		t.Fatalf("unexpected userId: %v", member["userId"])
-	}
-	if member["role"] != "member" {
-		t.Fatalf("expected role=member, got %v", member["role"])
-	}
-}
-
-func TestAddRepositoryMember_DefaultRole(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am2", Name: "default-role-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am2-owner", RepoID: "repo-am2", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am2/members", map[string]interface{}{
-		"userId": "u-default",
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var member map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&member)
-	if member["role"] != "member" {
-		t.Fatalf("expected default role=member, got %v", member["role"])
-	}
-}
-
-func TestAddRepositoryMember_MissingUserID(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am3", Name: "missing-uid-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am3-owner", RepoID: "repo-am3", UserID: "u1", Role: "owner"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am3/members", map[string]interface{}{
-		"username": "no-user-id",
-	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestAddRepositoryMember_Duplicate(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-am4", Name: "dup-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-am4-owner", RepoID: "repo-am4", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-dup1", RepoID: "repo-am4", UserID: "u-dup", Role: "member"})
-
-	w := postJSON(newRepoRouter("u1"), "/api/repositories/repo-am4/members", map[string]interface{}{
-		"userId": "u-dup",
-	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RemoveRepositoryMember
-// ---------------------------------------------------------------------------
-
-func TestRemoveRepositoryMember_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-rm1", Name: "remove-repo", OwnerID: "u1"})
-	database.DB.Create(&models.RepoMember{ID: "mem-rm1-owner", RepoID: "repo-rm1", UserID: "u1", Role: "owner"})
-	database.DB.Create(&models.RepoMember{ID: "mem-rm1", RepoID: "repo-rm1", UserID: "u-remove", Role: "member"})
-
-	w := deleteReq(newRepoRouter("u1"), "/api/repositories/repo-rm1/members/u-remove")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var count int64
-	database.DB.Model(&models.RepoMember{}).Where("repo_id = ? AND user_id = ?", "repo-rm1", "u-remove").Count(&count)
-	if count != 0 {
-		t.Fatal("member should have been removed")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetRepositoryRegistry
-// ---------------------------------------------------------------------------
-
-func TestGetRepositoryRegistry_Found(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr1", Name: "reg-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "reg-for-repo", Name: "reg-repo", SourceType: "internal", RepoID: "repo-gr1", OwnerID: "u1",
-	})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-gr1/registry")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var reg map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&reg)
-	if reg["id"] != "reg-for-repo" {
-		t.Fatalf("unexpected id: %v", reg["id"])
-	}
-}
-
-func TestGetRepositoryRegistry_NotFound(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "no-such-repo", Name: "no-repo", OwnerID: "u1", Visibility: "public"})
-	w := get(newRepoRouter(""), "/api/repositories/no-such-repo/registry")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
-}
-
-func TestGetRepositoryRegistry_ExternalRegistryNotReturned(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-gr2", Name: "ext-reg-repo", OwnerID: "u1", Visibility: "public"})
-	database.DB.Create(&models.CapabilityRegistry{
-		ID: "ext-reg-for-repo", Name: "ext-reg-repo", SourceType: "external", RepoID: "repo-gr2", OwnerID: "u1",
-	})
-
-	w := get(newRepoRouter(""), "/api/repositories/repo-gr2/registry")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (external registry returned first), got %d", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetMyRepositories
-// ---------------------------------------------------------------------------
-
-func TestGetMyRepositories_Success(t *testing.T) {
-	defer setupTestDB(t)()
-	database.DB.Create(&models.Repository{ID: "repo-my1", Name: "my-repo-1", OwnerID: "u1"})
-	database.DB.Create(&models.Repository{ID: "repo-my2", Name: "my-repo-2", OwnerID: "u2"})
-	database.DB.Create(&models.RepoMember{ID: "mem-my1", RepoID: "repo-my1", UserID: "u-me", Role: "member"})
-	database.DB.Create(&models.RepoMember{ID: "mem-my2", RepoID: "repo-my2", UserID: "u-me", Role: "admin"})
-
-	w := get(newRepoRouter("u-me"), "/api/repositories/my")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos := body["repositories"].([]interface{})
-	if len(repos) != 2 {
-		t.Fatalf("expected 2 repos, got %d", len(repos))
-	}
-}
-
-func TestGetMyRepositories_Unauthenticated(t *testing.T) {
-	defer setupTestDB(t)()
-	w := get(newRepoRouter(""), "/api/repositories/my")
+// TestResolveAuthUser_UnauthenticatedReturns401 tests that /api/auth/resolve
+// returns 401 when no user is authenticated (gateway expects this for auth_request).
+func TestResolveAuthUser_UnauthenticatedReturns401(t *testing.T) {
+	w := get(newAuthRouter(""), "/api/auth/resolve")
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
+		t.Errorf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestGetMyRepositories_NoMemberships(t *testing.T) {
+// TestGetMe_HappyPath verifies /api/me returns the full basic-identity +
+// activity-metadata DTO when the user is authenticated and exists locally.
+func TestGetMe_HappyPath(t *testing.T) {
 	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
 
-	w := get(newRepoRouter("u-nobody"), "/api/repositories/my")
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	displayName := "Alice Wonder"
+	email := "alice@example.com"
+	phone := "+86-13800000000"
+	avatar := "https://example.com/a.png"
+	lastLogin := time.Now().Add(-1 * time.Hour).UTC()
+	syncAt := time.Now().Add(-10 * time.Minute).UTC()
+	if err := database.DB.Create(&models.User{
+		SubjectID:   "usr_local_me",
+		Username:    "alice",
+		DisplayName: &displayName,
+		Email:       &email,
+		Phone:       &phone,
+		AvatarURL:   &avatar,
+		IsActive:    true,
+		LastLoginAt: &lastLogin,
+		LastSyncAt:  &syncAt,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
 	}
-	var body map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&body)
-	repos, _ := body["repositories"].([]interface{})
-	if len(repos) != 0 {
-		t.Fatalf("expected 0 repos, got %d", len(repos))
+
+	w := get(newAuthRouter("usr_local_me"), "/api/me")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		User struct {
+			ID          string     `json:"id"`
+			SubjectID   string     `json:"subjectId"`
+			Username    string     `json:"username"`
+			DisplayName string     `json:"displayName"`
+			Email       *string    `json:"email"`
+			Phone       *string    `json:"phone"`
+			AvatarURL   string     `json:"avatarUrl"`
+			LastLoginAt *time.Time `json:"lastLoginAt"`
+			LastSyncAt  *time.Time `json:"lastSyncAt"`
+			CreatedAt   time.Time  `json:"createdAt"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.User.SubjectID != "usr_local_me" || body.User.Username != "alice" {
+		t.Errorf("unexpected identity: %+v", body.User)
+	}
+	if body.User.DisplayName != displayName {
+		t.Errorf("displayName mismatch: got %q want %q", body.User.DisplayName, displayName)
+	}
+	if body.User.Email == nil || *body.User.Email != email {
+		t.Errorf("email mismatch: %+v", body.User)
+	}
+	if body.User.Phone == nil || *body.User.Phone != phone {
+		t.Errorf("phone mismatch: %+v", body.User)
+	}
+	if body.User.LastLoginAt == nil {
+		t.Errorf("lastLoginAt should be present")
+	}
+	if body.User.CreatedAt.IsZero() {
+		t.Errorf("createdAt should be non-zero")
+	}
+}
+
+// TestGetMe_NoAuthReturns401 covers the missing-auth branch: empty
+// UserIDKey -> ClearAuthCookie + 401, before any service call.
+func TestGetMe_NoAuthReturns401(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	w := get(newAuthRouter(""), "/api/me")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetMe_UserNotFoundReturns404 covers the strict no-Casdoor-fallback
+// contract: authenticated JWT but no local user row -> 404 (unlike
+// /api/auth/me which would fall through to claims).
+func TestGetMe_UserNotFoundReturns404(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	w := get(newAuthRouter("usr_does_not_exist"), "/api/me")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetMe_DoesNotLeakInfraIDs is the core privacy regression test.
+// It seeds a user with every Casdoor/external field populated and then
+// asserts the response JSON contains NONE of them. This locks the
+// contract: /me must never expose infrastructure identifiers to the
+// frontend even if they exist in the DB row.
+func TestGetMe_DoesNotLeakInfraIDs(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	universalID := "uuid-leak"
+	casdoorID := "cd-leak"
+	casdoorSub := "sub-leak"
+	org := "built-in"
+	extKey := "casdoor:uuid-leak"
+	providerUserID := "prov-leak"
+	provider := "casdoor"
+	if err := database.DB.Create(&models.User{
+		SubjectID:          "usr_leak_test",
+		Username:           "leakuser",
+		CasdoorUniversalID: &universalID,
+		CasdoorID:          &casdoorID,
+		CasdoorSub:         &casdoorSub,
+		Organization:       &org,
+		ExternalKey:        &extKey,
+		ProviderUserID:     &providerUserID,
+		AuthProvider:       &provider,
+		IsActive:           true,
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	w := get(newAuthRouter("usr_leak_test"), "/api/me")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	raw := w.Body.String()
+	for _, banned := range []string{
+		"casdoorUniversalId",
+		"casdoorId",
+		"casdoorSub",
+		"organization",
+		"externalKey",
+		"providerUserId",
+		"authProvider",
+		"systemRoles",
+		"\"auth\"",
+	} {
+		if strings.Contains(raw, "\""+banned+"\"") {
+			t.Errorf("response leaks forbidden field %q: %s", banned, raw)
+		}
 	}
 }

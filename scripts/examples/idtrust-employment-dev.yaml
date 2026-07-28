@@ -1,0 +1,76 @@
+# Dev-profile employment_providers + provider_mapping for idtrust.
+#
+# Consumed by scripts/bootstrap-dev-env.sh via
+# cs-user/scripts/configure-employment-mapping.sh — uploads this YAML to
+# cs-user's tenant_configs.config_yaml for the bootstrapped tenant.
+#
+# Casdoor is the only OAuth entry point. Per-provider OAuth credentials
+# (idtrust client_id/secret, endpoints) live INSIDE Casdoor — this file
+# contains NO secrets, only:
+#   * provider_detection — how cs-user recognizes idtrust from the Casdoor
+#     JWT (Plan B: by signupApplication value).
+#   * field_map          — how cs-user extracts enterprise columns from the
+#     Casdoor JWT properties (the raw idtrust userinfo payload, brokered
+#     through Casdoor's Custom OAuth adapter and surfaced under
+#     `properties.oauth_Custom_*`).
+#   * provider_mapping   — multi-identity rank/sync hints.
+#
+# === Two-layer identity model =====================================
+# This file maps ENTERPRISE IDENTITY only — the immutable, IdP-synced
+# snapshot stored in employment_identities and re-issued into every JWT.
+# Basic user info (display name, avatar, phone, ...) lives in the users
+# table, is mutable by the user (except username), and is initialized
+# separately at registration time from the same Casdoor claims.
+#
+# Required minimum per design: 工号 (employee_number) + 姓名 (display_name).
+# Other employment columns (job_title, department, cost_center, ...) are
+# supported by the schema but commented out — enable only when the IdP
+# actually returns them, otherwise they stay NULL.
+#
+# === field_map ====================================================
+# Casdoor flattens the idtrust Custom-OAuth userinfo into JWT `properties`
+# using FLAT underscore-joined keys (verified against real Casdoor JWT
+# fixtures — see cs-user/testdata/idtrust_jwt_token.txt +
+# employment_mapping_realtoken_test.go):
+#
+#   properties.oauth_Custom_id          = "42766"
+#   properties.oauth_Custom_email       = "42766@sangfor.com"
+#   properties.oauth_Custom_displayName = "测试"
+#   properties.oauth_Custom_username    = "测试"
+#
+# cs-user's dotted-path resolver walks each `.` segment as a map key, so
+# `properties.oauth_Custom_id` walks claims["properties"]["oauth_Custom_id"].
+
+employment_providers:
+  enabled:
+    - idtrust
+
+  provider_detection:
+    - signup_application: "idtrust"
+      provider: idtrust
+
+  field_map:
+    idtrust:
+      # --- Required: 工号 + 姓名 ---
+      # In Sangfor's idtrust, the IdP-assigned id doubles as the employee
+      # number (工号), so both columns read from the same source.
+      enterprise_uid:              "properties.oauth_Custom_id"
+      employee_number:             "properties.oauth_Custom_id"
+      display_name:                "properties.oauth_Custom_displayName"
+
+      # --- Optional: enable only if your idtrust tenant returns these ---
+      # job_title:                   "properties.oauth_Custom_jobTitle"
+      # job_level:                   "properties.oauth_Custom_jobLevel"
+      # cost_center:                 "properties.oauth_Custom_costCenter"
+      # org_path:                    "properties.oauth_Custom_department"
+      # employment_type:             "properties.oauth_Custom_employmentType"
+      # work_location:               "properties.oauth_Custom_workPlace"
+      # hire_date:                   "properties.oauth_Custom_hireDate"
+      # regular_date:                "properties.oauth_Custom_regularDate"
+
+provider_mapping:
+  idtrust:
+    enabled: true
+    rank: 10
+    enterprise_sync:
+      interval: 24h
