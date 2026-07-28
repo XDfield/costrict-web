@@ -139,6 +139,21 @@ profileGateEnabled: false
 env: []
 envFrom: []
 
+# Optional: mount an existing ConfigMap as the .env file in the container
+# working directory (/app/.env). The API server loads it via viper; precedence
+# stays: environment variables > .env file > defaults.
+# Note: subPath mounts do not receive ConfigMap updates automatically;
+# restart the pod after updating the ConfigMap.
+# Example:
+#   kubectl create configmap costrict-api-env --from-file=.env=./prod.env
+#   helm install api ./deploy/charts/api --set envFile.existingConfigMap=costrict-api-env
+envFile:
+  # Name of an existing ConfigMap containing the env content. Empty disables
+  # the mount (default behaviour unchanged).
+  existingConfigMap: ""
+  # Key within the ConfigMap that holds the .env content.
+  key: .env
+
 livenessProbe:
   enabled: true
   httpGet:
