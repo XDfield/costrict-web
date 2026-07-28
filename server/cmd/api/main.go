@@ -385,7 +385,18 @@ func main() {
 		systemrole.NewSystemRoleService(db),
 		cfg.BootstrapPlatformAdmins,
 	)
-	userModule.Service.SetPostLoginHook(bootstrapGranter.ApplyOnLogin)
+	userModule.Service.SetPostLoginHook(func(u *models.User) {
+		// Existing: bootstrap platform_admin grant for allowlisted universal_ids.
+		bootstrapGranter.ApplyOnLogin(u)
+		// New: ensure the Gitea account exists (created on first login, named
+		// 工号→UUID→SubjectID). Idempotent; best-effort, never blocks login.
+		if svc := handlers.GetUserProvisionService(); svc != nil {
+			if err := svc.ProvisionLoginUser(u); err != nil {
+				logger.L().Warn("post-login gitea provision failed",
+					zap.String("subject_id", u.SubjectID), zap.Error(err))
+			}
+		}
+	})
 
 	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
 	r.Use(middleware.Logger())

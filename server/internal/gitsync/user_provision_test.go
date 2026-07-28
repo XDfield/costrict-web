@@ -258,3 +258,46 @@ func TestBuildGitUsername(t *testing.T) {
 		}
 	}
 }
+
+func TestProvisionLoginUser_DerivesNameFromUser(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "https://g.example", AdminToken: "tok"}}
+	stub := &stubProvisioner{}
+	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	sub := "usr-xyz"
+	u := &models.User{SubjectID: sub, Username: "29219", Email: ptrString("e@x")}
+	if err := svc.ProvisionLoginUser(u); err != nil {
+		t.Fatalf("ProvisionLoginUser: %v", err)
+	}
+	if len(stub.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateUser call, got %d", len(stub.createCalls))
+	}
+	if stub.createCalls[0].Login != "29219" {
+		t.Errorf("login = %q, want 29219 (raw 工号, no u- prefix)", stub.createCalls[0].Login)
+	}
+	var b models.UserGitBinding
+	if err := db.First(&b, "user_subject_id = ?", sub).Error; err != nil {
+		t.Fatalf("query binding: %v", err)
+	}
+	if b.SyncStatus != models.GitSyncStatusSynced {
+		t.Errorf("status = %q, want synced", b.SyncStatus)
+	}
+}
+
+func TestProvisionLoginUser_Idempotent(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+	u := &models.User{SubjectID: "usr-1", Username: "alice"}
+	for i := 0; i < 3; i++ {
+		if err := svc.ProvisionLoginUser(u); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if len(stub.createCalls) != 1 {
+		t.Errorf("expected 1 CreateUser call (idempotent), got %d", len(stub.createCalls))
+	}
+}
+
+func ptrString(s string) *string { return &s }
+

@@ -236,6 +236,29 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	return provErr
 }
 
+// ProvisionLoginUser provisions (idempotently) the Gitea account for a user on
+// login. Called from the post-login hook. Best-effort: callers MUST ignore the
+// returned error so a Gitea outage never blocks login.
+//
+// Username priority: Username(工号) → SubjectID(UUID) → CasdoorSub(SubjectID).
+// Idempotent on SubjectID ⇒ re-login never creates a second account.
+func (s *UserProvisionService) ProvisionLoginUser(u *models.User) error {
+	if s == nil || u == nil || strings.TrimSpace(u.SubjectID) == "" {
+		return nil
+	}
+	casdoorSub := ""
+	if u.CasdoorSub != nil {
+		casdoorSub = *u.CasdoorSub
+	}
+	return s.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID:  u.SubjectID,
+		TenantID:   "default",
+		Username:   u.Username,
+		CasdoorSub: casdoorSub,
+		Email:      u.Email,
+	})
+}
+
 // upsertPendingBinding inserts a 'pending' row if none exists, or returns
 // the existing row. freshlyInserted=false on existing-row path.
 func (s *UserProvisionService) upsertPendingBinding(ctx context.Context, subjectID, tenantID, gitUsername string) (*models.UserGitBinding, bool, error) {
