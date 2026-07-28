@@ -49,6 +49,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/enterprise"
 	"github.com/costrict/costrict-web/server/internal/gateway"
 	"github.com/costrict/costrict-web/server/internal/handlers"
+	"github.com/costrict/costrict-web/server/internal/integration"
 	"github.com/costrict/costrict-web/server/internal/kanban"
 	"github.com/costrict/costrict-web/server/internal/leader"
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -646,6 +647,15 @@ func main() {
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
+
+	// Inbound Multica notification bridge. Auth is the shared HMAC secret
+	// (not a user session), so it is registered outside the authenticated
+	// groups and only when the secret is configured.
+	if cfg.MulticaIntegrationSecret != "" {
+		r.POST("/api/integrations/multica/events",
+			integration.MulticaEventsHandler(db, notificationSvc, cfg.MulticaIntegrationSecret))
+		log.Printf("multica integration bridge enabled: POST /api/integrations/multica/events")
+	}
 
 	notificationStore := notification.NewStore(db)
 

@@ -426,6 +426,7 @@ func (s *NotificationService) GetSupportedTriggerEvents() []string {
 		EventItemDistributed,
 		EventItemRevoked,
 		EventItemPaused,
+		EventMulticaIssueStatusChanged,
 	}
 }
 
