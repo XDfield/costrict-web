@@ -145,7 +145,14 @@ func (c *Client) CreateBranch(ctx context.Context, owner, repo, newBranch, fromR
 	_, err := c.doJSON(ctx, http.MethodPost, repoPath(owner, repo)+"/branches", body, http.StatusCreated)
 	if err != nil {
 		if isHTTPConflict(err) {
-			return nil // idempotent: branch already exists
+			return nil // idempotent: branch already exists (409)
+		}
+		// Gitea returns 500 PushRejected when a concurrent CreateBranch raced —
+		// the ref exists by now, so treat as idempotent success (same pattern
+		// as the 409 path, just a different Gitea error shape).
+		msg := err.Error()
+		if strings.Contains(msg, "reference already exists") || strings.Contains(msg, "cannot lock ref") {
+			return nil
 		}
 		return err
 	}
