@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,6 +47,11 @@ func statusLabel(s string) string {
 	return s
 }
 
+// maxEnvelopeBytes caps the inbound body. An envelope carries one issue
+// status change; 1MB is generous headroom and bounds memory use from a
+// misbehaving (or compromised) sender.
+const maxEnvelopeBytes = 1 << 20
+
 // MulticaEventsHandler receives status-change envelopes from a Multica server
 // and fans them out to the matched users' subscribed channels (WeCom app /
 // WeCom group bot / webhook) via the existing notification pipeline.
@@ -53,11 +59,21 @@ func statusLabel(s string) string {
 // Auth is the shared HMAC secret, not a user session, so this route must be
 // registered OUTSIDE the authenticated groups. Register only when
 // MULTICA_INTEGRATION_SECRET is configured.
+//
+// Delivery semantics are at-most-once: TriggerMessage is fire-and-forget, so
+// a crash after queueing cannot be recovered. Transient failures BEFORE
+// queueing (recipient lookup) roll back the idempotency record and return
+// 500, letting the sender's retry reprocess the event.
 func MulticaEventsHandler(db *gorm.DB, trigger MessageTrigger, secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		body, err := io.ReadAll(c.Request.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxEnvelopeBytes))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "read body failed"})
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "body too large"})
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "read body failed"})
+			}
 			return
 		}
 		if !verifySignature(secret, body, c.GetHeader("X-Multica-Signature")) {
@@ -72,6 +88,13 @@ func MulticaEventsHandler(db *gorm.DB, trigger MessageTrigger, secret string) gi
 		}
 		if env.EventID == "" || env.Type == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "event_id and type are required"})
+			return
+		}
+		if env.Version != 1 {
+			// Unknown contract version: fail fast. The sender does not retry
+			// 4xx, and silently parsing a newer envelope as v1 could
+			// misinterpret its semantics.
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported envelope version"})
 			return
 		}
 
@@ -102,17 +125,51 @@ func MulticaEventsHandler(db *gorm.DB, trigger MessageTrigger, secret string) gi
 		}
 
 		msg := buildStatusChangedMessage(env)
-		delivered := 0
-		for _, email := range env.Recipients {
-			var user models.User
-			if err := db.Where("email = ?", email).First(&user).Error; err != nil {
-				continue // unknown on this side — skip silently
+		queued := 0
+		if emails := normalizedEmails(env.Recipients); len(emails) > 0 {
+			// One batch lookup for all recipients. Email match is
+			// case-insensitive; banned/disabled users are excluded. GORM
+			// also filters soft-deleted rows by default.
+			var users []models.User
+			if err := db.Where("LOWER(email) IN ? AND is_active = ? AND status = ?", emails, true, "active").
+				Find(&users).Error; err != nil {
+				// Roll back the idempotency record so the sender's retry
+				// reprocesses the event instead of being ACKed as a
+				// duplicate.
+				if delErr := db.Delete(&record).Error; delErr != nil {
+					slog.Error("integration: rollback idempotency record failed",
+						"event_id", env.EventID, "error", delErr)
+				}
+				slog.Error("integration: recipient lookup failed", "event_id", env.EventID, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "recipient lookup failed"})
+				return
 			}
-			trigger.TriggerMessage(user.SubjectID, env.Type, msg)
-			delivered++
+			for _, u := range users {
+				trigger.TriggerMessage(u.SubjectID, env.Type, msg)
+				queued++
+			}
 		}
-		c.JSON(http.StatusOK, gin.H{"delivered": delivered})
+		c.JSON(http.StatusOK, gin.H{"queued": queued})
 	}
+}
+
+// normalizedEmails lowercases, trims, and dedupes recipient emails for the
+// case-insensitive batch lookup.
+func normalizedEmails(recipients []string) []string {
+	seen := make(map[string]struct{}, len(recipients))
+	out := make([]string, 0, len(recipients))
+	for _, e := range recipients {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if _, dup := seen[e]; dup {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	return out
 }
 
 // verifySignature checks the "sha256=<hex>" HMAC header in constant time.

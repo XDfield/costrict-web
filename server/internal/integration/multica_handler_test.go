@@ -64,6 +64,27 @@ func seedUser(t *testing.T, db *gorm.DB, subjectID, email string) {
 	}
 }
 
+// seedBannedUser seeds a user whose account is banned; the zero-value-safe
+// path is a plain create followed by an explicit update (GORM omits zero
+// values for columns with defaults).
+func seedBannedUser(t *testing.T, db *gorm.DB, subjectID, email string) {
+	t.Helper()
+	seedUser(t, db, subjectID, email)
+	if err := db.Model(&models.User{}).Where("subject_id = ?", subjectID).
+		Update("status", "banned").Error; err != nil {
+		t.Fatalf("ban user: %v", err)
+	}
+}
+
+func seedInactiveUser(t *testing.T, db *gorm.DB, subjectID, email string) {
+	t.Helper()
+	seedUser(t, db, subjectID, email)
+	if err := db.Model(&models.User{}).Where("subject_id = ?", subjectID).
+		Update("is_active", false).Error; err != nil {
+		t.Fatalf("deactivate user: %v", err)
+	}
+}
+
 func signBody(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
@@ -143,6 +164,13 @@ func TestMulticaEvents_ValidEnvelopeTriggersNotification(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(call.msg.Body), []byte("https://multica.example.com/acme/issues/MUL-123")) {
 		t.Fatalf("body missing issue link: %q", call.msg.Body)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	if resp["queued"] != float64(1) {
+		t.Fatalf("queued = %v, want 1", resp["queued"])
 	}
 }
 
@@ -256,5 +284,118 @@ func TestMulticaEvents_MultipleRecipientsPartialMatch(t *testing.T) {
 	}
 	if trigger.calls[0].userID != "subject-alice" {
 		t.Fatalf("userID = %q", trigger.calls[0].userID)
+	}
+}
+
+func TestMulticaEvents_EmailMatchCaseInsensitive(t *testing.T) {
+	db := setupTestDB(t)
+	seedUser(t, db, "subject-alice", "Alice@Corp.COM")
+	trigger := &fakeTrigger{}
+
+	body := envelopeBody(t, func(e *Envelope) { e.Recipients = []string{"alice@corp.com"} })
+	w := postEnvelope(t, MulticaEventsHandler(db, trigger, testSecret), body, signBody(testSecret, body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if len(trigger.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1 (case-insensitive match)", len(trigger.calls))
+	}
+}
+
+func TestMulticaEvents_BannedUserSkipped(t *testing.T) {
+	db := setupTestDB(t)
+	seedBannedUser(t, db, "subject-banned", "banned@corp.com")
+	trigger := &fakeTrigger{}
+
+	body := envelopeBody(t, func(e *Envelope) { e.Recipients = []string{"banned@corp.com"} })
+	w := postEnvelope(t, MulticaEventsHandler(db, trigger, testSecret), body, signBody(testSecret, body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(trigger.calls) != 0 {
+		t.Fatalf("trigger called for banned user")
+	}
+}
+
+func TestMulticaEvents_InactiveUserSkipped(t *testing.T) {
+	db := setupTestDB(t)
+	seedInactiveUser(t, db, "subject-inactive", "inactive@corp.com")
+	trigger := &fakeTrigger{}
+
+	body := envelopeBody(t, func(e *Envelope) { e.Recipients = []string{"inactive@corp.com"} })
+	w := postEnvelope(t, MulticaEventsHandler(db, trigger, testSecret), body, signBody(testSecret, body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(trigger.calls) != 0 {
+		t.Fatalf("trigger called for inactive user")
+	}
+}
+
+func TestMulticaEvents_RejectsUnsupportedVersion(t *testing.T) {
+	db := setupTestDB(t)
+	seedUser(t, db, "subject-alice", "alice@corp.com")
+	trigger := &fakeTrigger{}
+
+	body := envelopeBody(t, func(e *Envelope) { e.Version = 2 })
+	w := postEnvelope(t, MulticaEventsHandler(db, trigger, testSecret), body, signBody(testSecret, body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if len(trigger.calls) != 0 {
+		t.Fatalf("trigger called for unsupported version")
+	}
+}
+
+func TestMulticaEvents_RejectsOversizedBody(t *testing.T) {
+	db := setupTestDB(t)
+	trigger := &fakeTrigger{}
+
+	// Well-formed signature over a body larger than the 1MB cap.
+	body := envelopeBody(t, func(e *Envelope) {
+		e.Issue.Title = string(make([]byte, 2<<20))
+	})
+	w := postEnvelope(t, MulticaEventsHandler(db, trigger, testSecret), body, signBody(testSecret, body))
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", w.Code)
+	}
+}
+
+func TestMulticaEvents_RecipientLookupFailureReturns500AndAllowsRetry(t *testing.T) {
+	db := setupTestDB(t)
+	trigger := &fakeTrigger{}
+	handler := MulticaEventsHandler(db, trigger, testSecret)
+
+	// Break the users table after migration so the recipient lookup fails
+	// while the idempotency insert still succeeds.
+	if err := db.Exec("DROP TABLE users").Error; err != nil {
+		t.Fatalf("drop users: %v", err)
+	}
+
+	body := envelopeBody(t, func(e *Envelope) { e.EventID = "evt-retry" })
+	sig := signBody(testSecret, body)
+
+	if w := postEnvelope(t, handler, body, sig); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 on lookup failure", w.Code)
+	}
+
+	// The idempotency record must have been rolled back: after the table is
+	// restored, the same event_id reprocesses instead of being ACKed as a
+	// duplicate.
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatalf("restore users: %v", err)
+	}
+	seedUser(t, db, "subject-alice", "alice@corp.com")
+
+	if w := postEnvelope(t, handler, body, sig); w.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200", w.Code)
+	}
+	if len(trigger.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1 after retry", len(trigger.calls))
 	}
 }
