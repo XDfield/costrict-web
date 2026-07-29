@@ -25,9 +25,13 @@ import "context"
 //   - GetUserByName returns the same provider-side not-found error
 //     *Client already uses (ErrGiteaTeamNotFound — kept under that name
 //     for now since team / bot paths share it).
+//   - CreateUserToken mints a PAT for the given username. Uses admin
+//     Basic Auth (not admin PAT) — callers MUST ensure the Client was
+//     constructed with AdminUser + AdminPassword configured.
 type GitProvider interface {
 	CreateUser(ctx context.Context, opts CreateUserOptions) (*ProviderUser, error)
 	GetUserByName(ctx context.Context, username string) (*ProviderUser, error)
+	CreateUserToken(ctx context.Context, username string, opts CreateUserTokenOptions) (*GiteaToken, error)
 }
 
 // ProviderUser is the provider-agnostic slice of a remote user record.

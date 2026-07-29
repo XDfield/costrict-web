@@ -70,6 +70,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/costrict/costrict-web/server/internal/teamdir"
 	"github.com/costrict/costrict-web/server/internal/teamns"
+	"github.com/costrict/costrict-web/server/internal/userspace"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -147,6 +148,9 @@ func main() {
 	// ADR-10, or E4 webhook payload adapter) behind the same interface.
 	// teamResolver is a placeholder until a DB-backed team metadata table
 	// lands — empty map means sync currently returns 404 for any team_id.
+	var aesKey []byte
+	var aesKeyErr error
+
 	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient.Configured() {
 		teamProvider := gitsync.NewStubProvider()          // TODO(E3b.2): replace with real provider
 		teamResolver := gitsync.NewConfigTeamResolver(nil) // TODO: DB-backed team metadata
@@ -162,8 +166,10 @@ func main() {
 		//   - UserRefResolver (cs-user RPC for subject → user; local DB for
 		//     user_git_binding lookups)
 		//   - teamns.Service (orchestration)
-		// Missing CS_BOT_TOKEN_KEY → feature stays disabled; handlers return 503.
-		if aesKey, err := loadBotTokenKey(); err == nil {
+		// Missing CS_BOT_TOKEN_KEY → teamns and userspace stay disabled;
+		// handlers return 503.
+		aesKey, aesKeyErr = loadBotTokenKey()
+		if aesKeyErr == nil {
 			aes, err := cryptopkg.NewAESGCM(aesKey)
 			if err != nil {
 				log.Printf("teamns: AES-GCM init failed (%v); team-namespace API disabled", err)
@@ -176,7 +182,7 @@ func main() {
 				handlers.InitTeamNSService(teamnsSvc)
 			}
 		} else {
-			log.Printf("teamns: CS_BOT_TOKEN_KEY not configured (%v); team-namespace API disabled", err)
+			log.Printf("teamns: CS_BOT_TOKEN_KEY not configured (%v); team-namespace API disabled", aesKeyErr)
 		}
 
 		// Phase E3d: user-side KB ensure (POST /api/kb/ensure). The
@@ -198,9 +204,23 @@ func main() {
 	// — the consumer (event endpoint, Phase 2) reads this; nil = feature
 	// disabled. The Phase 1 exit test exercises ProvisionUser directly via
 	// the in-process service handle.
+	// Phase E3c extension: AES key passed so ProvisionUser can mint PATs
+	// for personal-space users. When the key is unavailable, user creation
+	// still works but PAT creation is gracefully skipped.
 	localGitResolver := gitserver.NewDBResolver(db)
-	userProvisionSvc := gitsync.NewUserProvisionService(db, localGitResolver, logger.L())
+	var aesForProvision *cryptopkg.AESGCM
+	if aesKeyErr == nil {
+		aesForProvision, _ = cryptopkg.NewAESGCM(aesKey)
+	}
+	userProvisionSvc := gitsync.NewUserProvisionService(db, localGitResolver, aesForProvision, logger.L())
 	handlers.InitUserProvisionService(userProvisionSvc)
+
+	// Personal-space KB ensure (Phase E3c extension).
+	// Requires AES key for credential storage; nil → disabled.
+	if aesForProvision != nil && userProvisionSvc != nil {
+		userspaceSvc := userspace.NewService(db, localGitResolver, userProvisionSvc, aesForProvision, logger.L())
+		handlers.InitUserSpaceService(userspaceSvc)
+	}
 
 	// Operator-supplied template seed: if GIT_SERVER_TEMPLATE_ENDPOINT +
 	// GIT_SERVER_TEMPLATE_ADMIN_TOKEN are set and no template row exists yet,

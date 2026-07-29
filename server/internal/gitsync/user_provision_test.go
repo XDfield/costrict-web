@@ -59,6 +59,10 @@ func (s *stubProvisioner) GetUserByName(ctx context.Context, username string) (*
 	return s.lookupResult, s.lookupErr
 }
 
+func (s *stubProvisioner) CreateUserToken(ctx context.Context, username string, opts CreateUserTokenOptions) (*GiteaToken, error) {
+	return nil, errors.New("not implemented in stub")
+}
+
 func setupProvisionDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -89,7 +93,7 @@ func setupProvisionDB(t *testing.T) *gorm.DB {
 func newSvcForTest(t *testing.T, resolver gitserver.Resolver, factory func(GitServerConfig) GitProvider) (*UserProvisionService, *gorm.DB) {
 	t.Helper()
 	db := setupProvisionDB(t)
-	svc := NewUserProvisionService(db, resolver, zap.NewNop())
+	svc := NewUserProvisionService(db, resolver, nil, zap.NewNop())
 	svc.providerFactory = factory
 	return svc, db
 }

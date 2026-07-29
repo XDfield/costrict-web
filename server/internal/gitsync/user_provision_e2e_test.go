@@ -180,7 +180,7 @@ func TestE2E_ProvisionUser_HappyPath(t *testing.T) {
 	db := setupE2EDB(t)
 	seedBindingE2E(t, db, "t-e2e-1", "gs-e2e-1", giteaSrv.URL, "test-admin-token")
 
-	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
 		SubjectID: "usr-e2e-1", TenantID: "t-e2e-1", Username: "alice",
@@ -226,7 +226,7 @@ func TestE2E_ProvisionUser_409Recovery(t *testing.T) {
 	db := setupE2EDB(t)
 	seedBindingE2E(t, db, "t-e2e-2", "gs-e2e-2", giteaSrv.URL, "test-admin-token")
 
-	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
 		SubjectID: "usr-e2e-2", TenantID: "t-e2e-2", Username: "bob",
@@ -256,7 +256,7 @@ func TestE2E_ProvisionUser_MissingBindingSoftSkips(t *testing.T) {
 
 	db := setupE2EDB(t)
 	// No binding seeded — tenant "t-orphan" has no git_server.
-	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
 		SubjectID: "usr-orphan", TenantID: "t-orphan", Username: "carol",

@@ -226,7 +226,7 @@ func TestDispatch_HappyPath(t *testing.T) {
 
 	seedTenantForProvision(t, db, "t1", giteaSrv.URL, "tok")
 
-	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 	InitUserProvisionService(svc)
 	defer InitUserProvisionService(nil)
 
@@ -287,7 +287,7 @@ func TestDispatch_DuplicateEventIdIsIdempotent(t *testing.T) {
 
 	seedTenantForProvision(t, db, "t1", giteaSrv.URL, "tok")
 
-	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 	InitUserProvisionService(svc)
 	defer InitUserProvisionService(nil)
 
@@ -359,7 +359,7 @@ func TestDispatch_FlagOffIsLogOnly(t *testing.T) {
 
 	seedTenantForProvision(t, db, "t1", giteaSrv.URL, "tok")
 
-	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 	InitUserProvisionService(svc)
 	defer InitUserProvisionService(nil)
 
@@ -411,7 +411,7 @@ func TestDispatch_SoftSkipStillMarksProcessed(t *testing.T) {
 	giteaSrv := httptest.NewServer(gitea)
 	defer giteaSrv.Close()
 
-	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
+	svc := gitsync.NewUserProvisionService(db, gitserver.NewDBResolver(db), nil, zap.NewNop())
 	InitUserProvisionService(svc)
 	defer InitUserProvisionService(nil)
 
