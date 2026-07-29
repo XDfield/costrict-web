@@ -55,7 +55,6 @@ func firstAuditRow(t *testing.T, db *gorm.DB, action string) models.AuditLog {
 // newPlatformTenantsAPIWithAudit mirrors newPlatformTenantsAPI but injects
 // a real *auditlog.Service so audit assertions can run.
 func newPlatformTenantsAPIWithAudit(svc PlatformTenantService, audit *auditlog.Service) (*PlatformTenantsAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &PlatformTenantsAPI{Svc: svc, Audit: audit}
 	g := r.Group("/api/internal/platform/tenants")
@@ -80,7 +79,6 @@ func stubTenantContextMW(tenantID string) gin.HandlerFunc {
 // newTenantConfigAPIWithAudit mirrors newTenantConfigAPI but injects audit +
 // stubs the resolved-tenant middleware so requireTenantID sees a tenant.
 func newTenantConfigAPIWithAudit(svc TenantConfigService, audit *auditlog.Service, tenantID string) (*TenantConfigAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(stubTenantContextMW(tenantID))
 	api := &TenantConfigAPI{Svc: svc, Audit: audit}
@@ -92,7 +90,6 @@ func newTenantConfigAPIWithAudit(svc TenantConfigService, audit *auditlog.Servic
 
 // newTenantProviderMappingAPIWithAudit mirrors the provider_mapping variant.
 func newTenantProviderMappingAPIWithAudit(svc TenantProviderMappingService, audit *auditlog.Service, tenantID string) (*TenantProviderMappingAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(stubTenantContextMW(tenantID))
 	api := &TenantProviderMappingAPI{Svc: svc, Audit: audit}

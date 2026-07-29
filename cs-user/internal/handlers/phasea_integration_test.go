@@ -64,7 +64,6 @@ func newPhaseAFixture(t *testing.T, employment EmploymentReader, permissions Per
 		JWT:         config.JWTConfig{Issuer: "https://cs-user.test", TTL: time.Hour, DefaultAudience: []string{"costrict-web"}},
 		Permissions: permissions,
 	}
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/.well-known/jwks", jwksAPI.GetJWKS)
 	r.POST("/api/internal/users/reissue-token", authAPI.ReissueToken)

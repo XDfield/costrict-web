@@ -44,7 +44,6 @@ func (s *stubTenantConfigService) Update(ctx context.Context, p tenantconfig.Upd
 // routes. A gin middleware shim injects the resolved tenant via c.Set("tenant",
 // ...) — mirroring what middleware.ResolveTenant does in production.
 func newTenantConfigAPI(svc TenantConfigService, resolvedTenant *models.Tenant) *gin.Engine {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		if resolvedTenant != nil {

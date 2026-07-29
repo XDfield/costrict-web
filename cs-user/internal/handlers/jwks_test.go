@@ -16,10 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func init() {
-	gin.SetMode(gin.TestMode)
-}
-
 // newSignerWithFreshKey builds a Signer with a freshly generated RSA-2048
 // keypair. Used by every JWKS handler test so each test is independent
 // (no shared fixture, no on-disk key file).

@@ -82,7 +82,6 @@ func (s stubPermissionReader) ListActiveTenantRoles(ctx context.Context, userSub
 // route. Returns the api + engine so each test injects its own
 // stubEmploymentReader + signer.
 func newAuthAPI(svc EmploymentReader, signer *auth.Signer, jwtCfg config.JWTConfig) (*AuthAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	api := &AuthAPI{Svc: svc, Signer: signer, JWT: jwtCfg}
 	r := gin.New()
 	r.POST("/api/internal/users/reissue-token", api.ReissueToken)
