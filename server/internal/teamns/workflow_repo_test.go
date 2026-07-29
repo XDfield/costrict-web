@@ -183,8 +183,6 @@ func TestEnsureWorkflowRepo_HappyPath_AllCreated(t *testing.T) {
 	fake := &fakeGitServer{
 		// Repo doesn't exist → ensure created.
 		getRepoResult: nil,
-		// File doesn't exist → ensure written.
-		readFileResult: nil,
 		// Branch doesn't exist → ensure created.
 		getBranchResult: nil,
 	}
@@ -193,7 +191,7 @@ func TestEnsureWorkflowRepo_HappyPath_AllCreated(t *testing.T) {
 	seedTeamNS(t, db, teamID, "tenant-1")
 
 	res, err := svc.EnsureWorkflowRepo(context.Background(), teamID,
-		"my-wf", `{"version":1}`, validUUID("11111111"))
+		"my-wf", validUUID("11111111"), false)
 	if err != nil {
 		t.Fatalf("EnsureWorkflowRepo: %v", err)
 	}
@@ -206,23 +204,18 @@ func TestEnsureWorkflowRepo_HappyPath_AllCreated(t *testing.T) {
 	if !res.BranchProtectionSet {
 		t.Error("expected BranchProtectionSet=true")
 	}
-	if res.SnapshotHash == "" {
-		t.Error("expected non-empty SnapshotHash")
-	}
 	// One protection call: main only (inst-* is intentionally unprotected).
 	if len(fake.setBranchProtectionCalls) != 1 {
 		t.Errorf("expected 1 SetBranchProtection call, got %d", len(fake.setBranchProtectionCalls))
 	}
-	if fake.writeFileCalls != 1 {
-		t.Errorf("expected 1 WriteFile call, got %d", fake.writeFileCalls)
+	if fake.writeFileCalls != 0 {
+		t.Errorf("expected 0 WriteFile calls (snapshot removed), got %d", fake.writeFileCalls)
 	}
 }
 
 func TestEnsureWorkflowRepo_Idempotent_AllExist(t *testing.T) {
-	existingContent := `{"version":1}`
 	fake := &fakeGitServer{
 		getRepoResult:   &gitsync.Repo{ID: 42, Name: "wf-my-wf", FullName: "t-abcdef01/wf-my-wf"},
-		readFileResult:  []byte(existingContent),
 		getBranchResult: &gitsync.Branch{Name: "inst-11111111", CommitSHA: "abc"},
 	}
 	svc, db := newSvcWithFakeGit(t, fake)
@@ -230,7 +223,7 @@ func TestEnsureWorkflowRepo_Idempotent_AllExist(t *testing.T) {
 	seedTeamNS(t, db, teamID, "tenant-1")
 
 	res, err := svc.EnsureWorkflowRepo(context.Background(), teamID,
-		"my-wf", existingContent, validUUID("11111111"))
+		"my-wf", validUUID("11111111"), false)
 	if err != nil {
 		t.Fatalf("EnsureWorkflowRepo idempotent: %v", err)
 	}
@@ -243,34 +236,37 @@ func TestEnsureWorkflowRepo_Idempotent_AllExist(t *testing.T) {
 	if fake.createRepoCalls != 0 {
 		t.Errorf("expected 0 CreateRepo calls, got %d", fake.createRepoCalls)
 	}
-	if fake.writeFileCalls != 0 {
-		t.Errorf("expected 0 WriteFile calls (hashes match), got %d", fake.writeFileCalls)
-	}
 	if fake.createBranchCalls != 0 {
 		t.Errorf("expected 0 CreateBranch calls, got %d", fake.createBranchCalls)
 	}
 }
 
-func TestEnsureWorkflowRepo_DefinitionDrift_Returns409(t *testing.T) {
+// TestEnsureWorkflowRepo_SkipInstanceBranch asserts that workspace/workflow
+// activation (skipInstanceBranch=true) provisions the repo + main protection
+// but creates no instance branch — the per-run branch is created at issue/run
+// time instead.
+func TestEnsureWorkflowRepo_SkipInstanceBranch_NoBranchCreated(t *testing.T) {
 	fake := &fakeGitServer{
-		getRepoResult:  &gitsync.Repo{ID: 42, Name: "wf-my-wf", FullName: "t-abcdef01/wf-my-wf"},
-		readFileResult: []byte(`{"version":"OLD"}`), // different from input
+		getRepoResult:   &gitsync.Repo{ID: 42, Name: "wf-my-wf", FullName: "t-abcdef01/wf-my-wf"},
+		getBranchResult: nil, // would be created — but skip suppresses the call entirely
 	}
 	svc, db := newSvcWithFakeGit(t, fake)
 	teamID := validUUID("abcdef01")
 	seedTeamNS(t, db, teamID, "tenant-1")
 
-	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID,
-		"my-wf", `{"version":"NEW"}`, validUUID("11111111"))
-	if !errors.Is(err, ErrDefinitionDrift) {
-		t.Fatalf("expected ErrDefinitionDrift, got %v", err)
+	res, err := svc.EnsureWorkflowRepo(context.Background(), teamID,
+		"my-wf", validUUID("11111111"), true)
+	if err != nil {
+		t.Fatalf("EnsureWorkflowRepo skip: %v", err)
 	}
-	// Should not have written or set protection on drift.
-	if fake.writeFileCalls != 0 {
-		t.Errorf("expected no WriteFile call on drift, got %d", fake.writeFileCalls)
+	if res.InstanceBranchCreated {
+		t.Error("expected InstanceBranchCreated=false when skipped")
 	}
-	if len(fake.setBranchProtectionCalls) != 0 {
-		t.Errorf("expected no SetBranchProtection call on drift, got %d", len(fake.setBranchProtectionCalls))
+	if fake.getBranchCalls != 0 || fake.createBranchCalls != 0 {
+		t.Errorf("expected no branch ops when skipped: get=%d create=%d", fake.getBranchCalls, fake.createBranchCalls)
+	}
+	if !res.BranchProtectionSet {
+		t.Error("expected main protection still applied when skipping inst")
 	}
 }
 
@@ -279,7 +275,6 @@ func TestEnsureWorkflowRepo_BranchProtectionAlreadyExists_Tolerated(t *testing.T
 	// ErrGiteaUsernameTaken; applyBranchProtection must swallow it.
 	fake := &fakeGitServer{
 		getRepoResult:          &gitsync.Repo{ID: 42, Name: "wf-my-wf"},
-		readFileResult:         nil, // missing → will write
 		getBranchResult:        nil, // missing → will create
 		setBranchProtectionErr: gitsync.ErrGiteaUsernameTaken,
 	}
@@ -288,7 +283,7 @@ func TestEnsureWorkflowRepo_BranchProtectionAlreadyExists_Tolerated(t *testing.T
 	seedTeamNS(t, db, teamID, "tenant-1")
 
 	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID,
-		"my-wf", `{"v":1}`, validUUID("11111111"))
+		"my-wf", validUUID("11111111"), false)
 	if err != nil {
 		t.Fatalf("expected nil error on already-exists protection, got %v", err)
 	}
@@ -303,7 +298,7 @@ func TestEnsureWorkflowRepo_GitServerNil_ReturnsErrTenantGitServerUnresolved(t *
 	teamID := validUUID("abcdef01")
 	seedTeamNS(t, db, teamID, "tenant-1")
 
-	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "my-wf", `{}`, validUUID("11111111"))
+	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "my-wf", validUUID("11111111"), false)
 	if !errors.Is(err, ErrTenantGitServerUnresolved) {
 		t.Fatalf("expected ErrTenantGitServerUnresolved, got %v", err)
 	}
@@ -314,7 +309,7 @@ func TestEnsureWorkflowRepo_TeamNotFound_Returns404(t *testing.T) {
 	svc, _ := newSvcWithFakeGit(t, fake)
 	// No seed — team_ns row missing.
 	_, err := svc.EnsureWorkflowRepo(context.Background(),
-		validUUID("deadbeef"), "my-wf", `{}`, validUUID("11111111"))
+		validUUID("deadbeef"), "my-wf", validUUID("11111111"), false)
 	if !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("expected ErrTeamNotFound, got %v", err)
 	}
@@ -328,7 +323,7 @@ func TestEnsureWorkflowRepo_InvalidSlug_Returns400(t *testing.T) {
 
 	// Slug with leading dot — workflow.EscapeDefSlug should still produce
 	// a valid path, but passing an empty slug is an explicit invalid input.
-	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "", `{}`, validUUID("11111111"))
+	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "", validUUID("11111111"), false)
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest for empty slug, got %v", err)
 	}
@@ -342,7 +337,7 @@ func TestEnsureWorkflowRepo_GetRepoError_Propagates(t *testing.T) {
 	teamID := validUUID("abcdef01")
 	seedTeamNS(t, db, teamID, "tenant-1")
 
-	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "my-wf", `{}`, validUUID("11111111"))
+	_, err := svc.EnsureWorkflowRepo(context.Background(), teamID, "my-wf", validUUID("11111111"), false)
 	if !errors.Is(err, ErrWorkflowRepoProvisioning) {
 		t.Fatalf("expected ErrWorkflowRepoProvisioning, got %v", err)
 	}
