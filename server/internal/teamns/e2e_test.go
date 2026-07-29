@@ -402,46 +402,26 @@ func TestE2E_EnsureWorkflowRepo_FullPath(t *testing.T) {
 
 	svc := env.newService(t)
 	defSlug := "bug-fix-flow"
-	snapshot := `{"version":1,"name":"bug-fix-flow","steps":[]}`
 	instanceID := uuid.NewString()
 
 	// First call — everything should be created.
 	res1, err := svc.EnsureWorkflowRepo(env.withTenant(context.Background()),
-		teamID, defSlug, snapshot, instanceID)
+		teamID, defSlug, instanceID, false)
 	if err != nil {
 		t.Fatalf("EnsureWorkflowRepo (first): %v", err)
 	}
 	if !res1.TypeRepoCreated || !res1.InstanceBranchCreated || !res1.BranchProtectionSet {
 		t.Fatalf("expected all Created flags true on first call: %+v", res1)
 	}
-	if res1.SnapshotHash == "" {
-		t.Errorf("expected non-empty SnapshotHash")
-	}
-
-	// Verify the snapshot file landed on main via raw Gitea API.
-	gotSnapshot, err := env.giteaReadFile(t, orgName, "wf-"+defSlug, "main", DefinitionSnapshotPath)
-	if err != nil {
-		t.Fatalf("read back snapshot: %v", err)
-	}
-	if string(gotSnapshot) != snapshot {
-		t.Errorf("snapshot on main drifted: got=%q want=%q", string(gotSnapshot), snapshot)
-	}
 
 	// Second call — idempotent; Created flags all false.
 	res2, err := svc.EnsureWorkflowRepo(env.withTenant(context.Background()),
-		teamID, defSlug, snapshot, instanceID)
+		teamID, defSlug, instanceID, false)
 	if err != nil {
 		t.Fatalf("EnsureWorkflowRepo (second): %v", err)
 	}
 	if res2.TypeRepoCreated || res2.InstanceBranchCreated {
 		t.Errorf("expected Created flags false on idempotent re-call: %+v", res2)
-	}
-
-	// Drift case — caller sends a different snapshot.
-	_, err = svc.EnsureWorkflowRepo(env.withTenant(context.Background()),
-		teamID, defSlug, `{"version":2}`, uuid.NewString())
-	if err != ErrDefinitionDrift {
-		t.Fatalf("expected ErrDefinitionDrift on third call, got %v", err)
 	}
 }
 

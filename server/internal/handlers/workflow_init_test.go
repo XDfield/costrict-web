@@ -123,12 +123,10 @@ func TestWorkflowInit_HappyPath_ReturnsPathsAndBotCreds(t *testing.T) {
 	})
 	r := newWorkflowInitRouter(t, svc)
 
-	defSnap := `{"version":1}`
 	body := WorkflowInitRequest{
-		WorkflowDefSlug:    "bug-fix-flow",
-		TeamID:             teamID,
-		InstanceID:         padUUIDHandler(4),
-		DefinitionSnapshot: defSnap,
+		WorkflowDefSlug: "bug-fix-flow",
+		TeamID:          teamID,
+		InstanceID:      padUUIDHandler(4),
 	}
 	w := doJSONWithTenant(t, r, http.MethodPost, "/api/internal/workflow/init", tenant.DefaultTenantID, body)
 	if w.Code != http.StatusOK {
@@ -168,8 +166,8 @@ func TestWorkflowInit_HappyPath_ReturnsPathsAndBotCreds(t *testing.T) {
 	if len(fake.createRepoCalls) != 1 {
 		t.Errorf("expected 1 CreateRepo call, got %d", len(fake.createRepoCalls))
 	}
-	if len(fake.writeFileCalls) != 1 {
-		t.Errorf("expected 1 WriteFile call, got %d", len(fake.writeFileCalls))
+	if len(fake.writeFileCalls) != 0 {
+		t.Errorf("expected 0 WriteFile calls (snapshot removed), got %d", len(fake.writeFileCalls))
 	}
 	if len(fake.createBranchCalls) != 1 {
 		t.Errorf("expected 1 CreateBranch call, got %d", len(fake.createBranchCalls))
@@ -180,7 +178,7 @@ func TestWorkflowInit_HappyPath_ReturnsPathsAndBotCreds(t *testing.T) {
 	}
 }
 
-func TestWorkflowInit_DefinitionDrift_Returns409(t *testing.T) {
+func TestWorkflowInit_SkipInstanceBranch_NoInstBranch(t *testing.T) {
 	db := setupTeamnsDB(t)
 	aes := mustAESHandler(t)
 	plaintext := "pat-XYZ"
@@ -208,10 +206,10 @@ func TestWorkflowInit_DefinitionDrift_Returns409(t *testing.T) {
 		t.Fatalf("seed creds: %v", err)
 	}
 
-	// Stub: repo exists, snapshot on main differs from caller's → drift.
+	// Repo exists, branch missing — but skip_instance_branch suppresses
+	// creation entirely (workspace/workflow activation path).
 	fake := &fakeGitServerHandler{
-		getRepoResult:  &gitsync.Repo{ID: 42, Name: "wf-bug-fix-flow"},
-		readFileResult: []byte(`{"version":"OLD"}`),
+		getRepoResult: &gitsync.Repo{ID: 42, Name: "wf-bug-fix-flow"},
 	}
 	svc := teamns.NewService(db, nil, nil, aes, nil)
 	svc.SetGitServerFactoryForTest(func(ctx context.Context, tenantID string) (gitsync.GitServer, error) {
@@ -223,21 +221,21 @@ func TestWorkflowInit_DefinitionDrift_Returns409(t *testing.T) {
 		WorkflowDefSlug:    "bug-fix-flow",
 		TeamID:             teamID,
 		InstanceID:         padUUIDHandler(6),
-		DefinitionSnapshot: `{"version":"NEW"}`,
+		SkipInstanceBranch: true,
 	}
 	w := doJSONWithTenant(t, r, http.MethodPost, "/api/internal/workflow/init", tenant.DefaultTenantID, body)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("got %d, want 409; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if !containsStr(w.Body.String(), "DEFINITION_DRIFT") {
-		t.Errorf("expected DEFINITION_DRIFT in body: %s", w.Body.String())
+	var got WorkflowInitResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	// Drift must short-circuit before protection / branch ops.
-	if len(fake.setBranchProtectionCalls) != 0 {
-		t.Errorf("expected no SetBranchProtection on drift, got %d", len(fake.setBranchProtectionCalls))
+	if got.Created.InstanceBranch {
+		t.Errorf("expected Created.InstanceBranch=false when skipped")
 	}
 	if len(fake.createBranchCalls) != 0 {
-		t.Errorf("expected no CreateBranch on drift, got %d", len(fake.createBranchCalls))
+		t.Errorf("expected no CreateBranch when skipped, got %d", len(fake.createBranchCalls))
 	}
 }
 
