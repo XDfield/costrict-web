@@ -51,11 +51,19 @@ func selectBestPrimary(identities []*models.UserAuthIdentity) *models.UserAuthId
 	return best
 }
 
-// refreshUserProfileFromIdentitiesTx recomputes the user row's denormalized
-// fields (auth_provider / external_key / display_name / email / phone / etc.)
-// from the best-primary identity and writes back iff something actually
-// changed. Server:1147 — the change detection avoids touching updated_at on
-// repeat logins, which would mask real drift in ops dashboards.
+// refreshUserProfileFromIdentitiesTx recomputes the user row's
+// provider-tracking fields (auth_provider / external_key / provider_user_id)
+// from the best-primary identity and promotes the best-rank identity to
+// is_primary when needed. Writes back iff something actually changed —
+// server:1147's change detection avoids touching updated_at on repeat
+// operations, which would mask real drift in ops dashboards.
+//
+// User-facing profile (display_name / email / phone / avatar_url /
+// organization / username) is deliberately NOT touched here. Those fields
+// are user-owned — same boundary as GetOrCreateUser's existing-user branch
+// (service.go §1 / §7). Auto-clobbering them on bind/unbind/transfer would
+// race the self-edit (UpdateProfile) and registration-complete
+// (CompleteRegistration) flows.
 //
 // The tx argument is the caller's open transaction; the function commits
 // nothing itself. Returns nil if the user has no identities or no field
@@ -92,30 +100,15 @@ func refreshUserProfileFromIdentitiesTx(ctx context.Context, tx *gorm.DB, userSu
 		}
 	}
 
-	// Compute new values from primary identity.
+	// Compute new provider-tracking values from primary identity only.
 	newAuthProvider := stringPtr(primary.Provider)
 	newExternalKey := stringPtr(primary.ExternalKey)
 	newProviderUserID := primary.ProviderUserID
-	newDisplayName := firstNonNilStringPtr(primary.DisplayName, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.DisplayName }))
-	newAvatarURL := firstNonNilStringPtr(primary.AvatarURL, githubAvatar(identities), bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.AvatarURL }))
-	newEmail := validEmailPtr(primary.Email, identities)
-	newPhone := preferredPhonePtr(primary, identities)
-	newOrganization := firstNonNilStringPtr(primary.Organization, bestIdentityString(identities, func(i *models.UserAuthIdentity) *string { return i.Organization }))
-	var newUsername string
-	if primaryUsername := firstNonEmptyString(ptrString(primary.ProviderUserID), ptrString(primary.DisplayName)); primaryUsername != "" {
-		newUsername = primaryUsername
-	}
 
 	// Check if any field actually changed before writing.
 	changed := !equalStringPtr(user.AuthProvider, newAuthProvider) ||
 		!equalStringPtr(user.ExternalKey, newExternalKey) ||
-		!equalStringPtr(user.ProviderUserID, newProviderUserID) ||
-		!equalStringPtr(user.DisplayName, newDisplayName) ||
-		!equalStringPtr(user.AvatarURL, newAvatarURL) ||
-		!equalStringPtr(user.Email, newEmail) ||
-		!equalStringPtr(user.Phone, newPhone) ||
-		!equalStringPtr(user.Organization, newOrganization) ||
-		(newUsername != "" && user.Username != newUsername)
+		!equalStringPtr(user.ProviderUserID, newProviderUserID)
 
 	if !changed {
 		return nil
@@ -124,14 +117,6 @@ func refreshUserProfileFromIdentitiesTx(ctx context.Context, tx *gorm.DB, userSu
 	user.AuthProvider = newAuthProvider
 	user.ExternalKey = newExternalKey
 	user.ProviderUserID = newProviderUserID
-	user.DisplayName = newDisplayName
-	user.AvatarURL = newAvatarURL
-	user.Email = newEmail
-	user.Phone = newPhone
-	user.Organization = newOrganization
-	if newUsername != "" {
-		user.Username = newUsername
-	}
 	now := time.Now()
 	user.LastSyncAt = &now
 	// Omit columns with UNIQUE constraints (immutable after creation) — same
@@ -140,90 +125,6 @@ func refreshUserProfileFromIdentitiesTx(ctx context.Context, tx *gorm.DB, userSu
 	// re-write them with the same value under Postgres.
 	if err := tx.Scopes(scope).Omit("subject_id", "username", "external_key").Save(&user).Error; err != nil {
 		return err
-	}
-	return nil
-}
-
-// --- string-ptr helpers used by refreshUserProfileFromIdentitiesTx ---
-
-// firstNonNilStringPtr returns the first non-nil, non-empty (after trim)
-// pointer. The returned pointer is a fresh allocation holding the trimmed
-// value — never aliases the input — so callers can mutate without surprise.
-func firstNonNilStringPtr(values ...*string) *string {
-	for _, v := range values {
-		if v != nil && strings.TrimSpace(*v) != "" {
-			trimmed := strings.TrimSpace(*v)
-			return &trimmed
-		}
-	}
-	return nil
-}
-
-// bestIdentityString picks the string from the highest-rank identity that has
-// a non-empty value for `getter`. Used to fall back to secondary identities
-// when the primary lacks a field (e.g. phone primary has no avatar → fall
-// back to github's).
-func bestIdentityString(identities []*models.UserAuthIdentity, getter func(*models.UserAuthIdentity) *string) *string {
-	var best *models.UserAuthIdentity
-	for _, identity := range identities {
-		candidate := getter(identity)
-		if candidate == nil || strings.TrimSpace(*candidate) == "" {
-			continue
-		}
-		if best == nil || providerRank(identity.Provider) > providerRank(best.Provider) {
-			best = identity
-		}
-	}
-	if best == nil {
-		return nil
-	}
-	return getter(best)
-}
-
-// githubAvatar returns the first github-identity avatar URL, ignoring empties.
-// Github avatars are stable across the user's lifetime — preferred over
-// casdoor's ephemeral one when both are present.
-func githubAvatar(identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "github") && identity.AvatarURL != nil && strings.TrimSpace(*identity.AvatarURL) != "" {
-			return identity.AvatarURL
-		}
-	}
-	return nil
-}
-
-// validEmailPtr returns the primary's email if it contains "@", else the
-// first identity with a valid email shape. Prevents junk like "alice" from
-// being persisted when a provider sends a placeholder.
-func validEmailPtr(primary *string, identities []*models.UserAuthIdentity) *string {
-	if primary != nil && strings.Contains(strings.TrimSpace(*primary), "@") {
-		return firstNonNilStringPtr(primary)
-	}
-	for _, identity := range identities {
-		if identity.Email != nil && strings.Contains(strings.TrimSpace(*identity.Email), "@") {
-			return firstNonNilStringPtr(identity.Email)
-		}
-	}
-	return nil
-}
-
-// preferredPhonePtr returns the phone-identity's phone if present, else the
-// primary's, else any identity's. Phone-identity rows own the canonical phone
-// even when they aren't the primary (phone login is often secondary to a
-// github primary).
-func preferredPhonePtr(primary *models.UserAuthIdentity, identities []*models.UserAuthIdentity) *string {
-	for _, identity := range identities {
-		if strings.EqualFold(identity.Provider, "phone") && identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
-	}
-	if primary != nil && primary.Phone != nil && strings.TrimSpace(*primary.Phone) != "" {
-		return firstNonNilStringPtr(primary.Phone)
-	}
-	for _, identity := range identities {
-		if identity.Phone != nil && strings.TrimSpace(*identity.Phone) != "" {
-			return firstNonNilStringPtr(identity.Phone)
-		}
 	}
 	return nil
 }
