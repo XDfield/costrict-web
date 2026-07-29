@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -66,6 +67,16 @@ func NewFromConfig(ctx context.Context, cfg Config) (*ConfiguredBackend, error) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Deployments have been bitten by config-precedence surprises (an in-container
+	// .env silently losing to injected env vars), so state the effective backend
+	// unambiguously at startup. Never log credentials here.
+	switch cfg.Kind {
+	case KindLocal:
+		log.Printf("Artifact storage backend: local (path=%s)", cfg.LocalPath)
+	case KindS3:
+		log.Printf("Artifact storage backend: s3 (endpoint=%s, bucket=%s, region=%s, forcePathStyle=%v)",
+			cfg.S3.Endpoint, cfg.S3.Bucket, cfg.S3.Region, cfg.S3.ForcePathStyle)
 	}
 	return &ConfiguredBackend{Kind: cfg.Kind, Backend: backend}, nil
 }
