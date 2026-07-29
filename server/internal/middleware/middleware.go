@@ -2,7 +2,9 @@ package middleware
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -70,10 +72,22 @@ func Recovery() gin.HandlerFunc {
 	return gin.Recovery()
 }
 
+// maxLoggedBodyBytes caps how much of a request body reaches the log on a
+// failure. Bodies larger than this are never buffered at all.
+const maxLoggedBodyBytes = 64 << 10
+
 func ErrorLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Buffering the body is only worth it for small textual payloads.
+		// A multipart archive upload is neither: dumping 2000 bytes of zip
+		// into the log produced ~40 lines of mojibake that buried the actual
+		// error, and reading the whole body just to throw it away doubled
+		// peak memory on every 50MB upload.
 		var bodyBytes []byte
-		if c.Request.Body != nil {
+		bodySummary := ""
+		if skip, reason := skipBodyCapture(c.Request); skip {
+			bodySummary = reason
+		} else if c.Request.Body != nil {
 			bodyBytes, _ = io.ReadAll(c.Request.Body)
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		}
@@ -82,12 +96,16 @@ func ErrorLogger() gin.HandlerFunc {
 
 		status := c.Writer.Status()
 		if status >= http.StatusBadRequest {
+			body := bodySummary
+			if body == "" {
+				body = logger.Truncate(string(bodyBytes), 2000)
+			}
 			msg := "%s %s => %d | body: %s | errors: %s"
 			args := []any{
 				c.Request.Method,
 				c.Request.RequestURI,
 				status,
-				logger.Truncate(string(bodyBytes), 2000),
+				body,
 				c.Errors.String(),
 			}
 
@@ -100,6 +118,52 @@ func ErrorLogger() gin.HandlerFunc {
 			}
 		}
 	}
+}
+
+// skipBodyCapture reports whether a request body should be left unbuffered,
+// along with the placeholder to log in its place. Skipping keeps the upload
+// streaming straight through to the handler instead of being materialised
+// twice in memory.
+func skipBodyCapture(r *http.Request) (bool, string) {
+	if r == nil || r.Body == nil {
+		return false, ""
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = contentType
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "multipart/"),
+		mediaType == "application/octet-stream",
+		mediaType == "application/zip",
+		mediaType == "application/gzip",
+		mediaType == "application/x-zip-compressed":
+		return true, fmt.Sprintf("<not logged: %s, %s>", describeMediaType(mediaType), describeLength(r.ContentLength))
+	}
+
+	// An oversized body is not worth buffering even when it is textual.
+	if r.ContentLength > maxLoggedBodyBytes {
+		return true, fmt.Sprintf("<not logged: %s, %s exceeds %d byte log limit>",
+			describeMediaType(mediaType), describeLength(r.ContentLength), maxLoggedBodyBytes)
+	}
+
+	return false, ""
+}
+
+func describeMediaType(mediaType string) string {
+	if mediaType == "" {
+		return "unknown content type"
+	}
+	return mediaType
+}
+
+func describeLength(contentLength int64) string {
+	if contentLength < 0 {
+		return "unknown length"
+	}
+	return fmt.Sprintf("%d bytes", contentLength)
 }
 
 // isDeviceProxyPath checks whether the URI is a device proxy request

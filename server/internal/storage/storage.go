@@ -4,10 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/costrict/costrict-web/server/internal/logger"
 )
+
+// logErrorf routes storage failures to the application error log. It is a
+// variable so tests can capture the formatted output without standing up the
+// global logger.
+//
+// Deliberately NOT the standard library log.Printf: logger.Init redirects that
+// to zap at InfoLevel, so every storage failure was being recorded as INFO and
+// missed by level-based filters and error.log entirely.
+var logErrorf = logger.Error
 
 type Backend interface {
 	Put(ctx context.Context, key string, reader io.Reader, size int64) error
@@ -30,9 +40,14 @@ type ConfiguredBackend struct {
 // service goes through — because the HTTP layer replies with generic
 // messages and would otherwise swallow the root cause (bad credentials,
 // unreachable endpoint, missing object) entirely.
+//
+// The error comes FIRST in the format string. Keys carry a 36-char item UUID
+// plus a 64-char content SHA, so a key-first line runs past 150 characters and
+// log viewers truncate exactly the part worth reading — that cost three rounds
+// of "please paste the full line" on a DNS failure that was in the log all along.
 func (b *ConfiguredBackend) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
 	if err := b.Backend.Put(ctx, key, reader, size); err != nil {
-		log.Printf("storage put failed (backend=%s, key=%s, size=%d): %v", b.Kind, key, size, err)
+		logErrorf("storage put failed: %v (backend=%s, size=%d, key=%s)", err, b.Kind, size, key)
 		return err
 	}
 	return nil
@@ -41,7 +56,7 @@ func (b *ConfiguredBackend) Put(ctx context.Context, key string, reader io.Reade
 func (b *ConfiguredBackend) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
 	reader, size, err := b.Backend.Get(ctx, key)
 	if err != nil {
-		log.Printf("storage get failed (backend=%s, key=%s): %v", b.Kind, key, err)
+		logErrorf("storage get failed: %v (backend=%s, key=%s)", err, b.Kind, key)
 		return nil, 0, err
 	}
 	return reader, size, nil
@@ -72,7 +87,7 @@ func ValidateRecordedBackend(recorded string, backend Backend) error {
 		// backend — the exact situation after a local->s3 switch without
 		// data migration. Callers reply with a generic 5xx, so log the
 		// actionable detail here.
-		log.Printf("storage backend mismatch: object recorded under %q, configured backend is %q — unreadable until data is migrated or config reverted", recorded, configured)
+		logErrorf("storage backend mismatch: object recorded under %q, configured backend is %q — unreadable until data is migrated or config reverted", recorded, configured)
 		return fmt.Errorf("stored object uses backend %q, configured backend is %q", recorded, configured)
 	}
 	return nil

@@ -75,7 +75,11 @@ func (b *S3Backend) Put(ctx context.Context, key string, reader io.Reader, size 
 		ContentLength: aws.Int64(size),
 	})
 	if err != nil {
-		return fmt.Errorf("put S3 object %q: %w", key, err)
+		// No key in this wrapper: the SDK error already carries the full
+		// request URL (which contains the key) on transport failures, and
+		// ConfiguredBackend.Put logs the key on every failure. Repeating it
+		// here doubled the length of an already-truncated log line.
+		return fmt.Errorf("put S3 object: %w", err)
 	}
 	return nil
 }
@@ -86,7 +90,7 @@ func (b *S3Backend) Get(ctx context.Context, key string) (io.ReadCloser, int64, 
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("get S3 object %q: %w", key, err)
+		return nil, 0, fmt.Errorf("get S3 object: %w", err)
 	}
 	size := int64(0)
 	if output.ContentLength != nil {
