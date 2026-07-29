@@ -193,6 +193,9 @@ func sha256String(content []byte) string {
 }
 
 func TestS3CatalogSkillDistribution(t *testing.T) {
+	if backendKind := strings.ToLower(strings.TrimSpace(requireS3E2EEnv(t, "ARTIFACT_STORAGE_BACKEND"))); backendKind != storage.KindS3 {
+		t.Fatalf("ARTIFACT_STORAGE_BACKEND = %q, want %q", backendKind, storage.KindS3)
+	}
 	endpoint := requireS3E2EEnv(t, "S3_ENDPOINT")
 	bucket := requireS3E2EEnv(t, "S3_BUCKET")
 	requireS3E2EEnv(t, "S3_REGION")
@@ -204,7 +207,6 @@ func TestS3CatalogSkillDistribution(t *testing.T) {
 	proxyServer := httptest.NewServer(recorder)
 	defer proxyServer.Close()
 
-	t.Setenv("ARTIFACT_STORAGE_BACKEND", storage.KindS3)
 	t.Setenv("S3_ENDPOINT", proxyServer.URL)
 	backend, err := storage.NewFromEnv(context.Background())
 	if err != nil {

@@ -23,6 +23,8 @@ readonly NETWORK_NAME="costrict-s3e2e-${RUN_SUFFIX}"
 readonly MINIO_CONTAINER="costrict-s3e2e-minio-${RUN_SUFFIX}"
 readonly INIT_CONTAINER="costrict-s3e2e-init-${RUN_SUFFIX}"
 readonly PERMISSION_CONTAINER="costrict-s3e2e-permission-${RUN_SUFFIX}"
+ENV_FILE="$(mktemp)"
+readonly ENV_FILE
 
 cleanup() {
   local status=$?
@@ -38,6 +40,7 @@ cleanup() {
   docker rm -f "${PERMISSION_CONTAINER}" >/dev/null 2>&1 || true
   docker rm -f "${MINIO_CONTAINER}" >/dev/null 2>&1 || true
   docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
+  rm -f "${ENV_FILE}"
   exit "${status}"
 }
 trap cleanup EXIT
@@ -125,16 +128,18 @@ if [[ ! "${MINIO_PORT}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-env \
-  ARTIFACT_STORAGE_BACKEND=s3 \
-  S3_ENDPOINT="http://127.0.0.1:${MINIO_PORT}" \
-  S3_BUCKET="${BUCKET}" \
-  S3_REGION="${REGION}" \
-  S3_FORCE_PATH_STYLE=true \
-  AWS_ACCESS_KEY_ID="${APP_ACCESS_KEY}" \
-  AWS_SECRET_ACCESS_KEY="${APP_SECRET_KEY}" \
-  AWS_SESSION_TOKEN= \
-  AWS_EC2_METADATA_DISABLED=true \
+printf '%s\n' \
+  'ARTIFACT_STORAGE_BACKEND=s3' \
+  "S3_ENDPOINT=http://127.0.0.1:${MINIO_PORT}" \
+  "S3_BUCKET=${BUCKET}" \
+  "S3_REGION=${REGION}" \
+  'S3_FORCE_PATH_STYLE=true' \
+  "AWS_ACCESS_KEY_ID=${APP_ACCESS_KEY}" \
+  "AWS_SECRET_ACCESS_KEY=${APP_SECRET_KEY}" \
+  'AWS_SESSION_TOKEN=' \
+  'AWS_EC2_METADATA_DISABLED=true' >"${ENV_FILE}"
+
+COSTRICT_ENV_FILE="${ENV_FILE}" "${SERVER_DIR}/docker-entrypoint.sh" \
   go test -tags=s3e2e ./internal/handlers \
     -run "^${TEST_NAME}$" \
     -count=1 \

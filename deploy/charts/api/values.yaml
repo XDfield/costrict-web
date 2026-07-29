@@ -140,8 +140,8 @@ env: []
 envFrom: []
 
 # Optional: mount an existing ConfigMap as the .env file in the container
-# working directory (/app/.env). The API server loads it via viper; precedence
-# stays: environment variables > .env file > defaults.
+# working directory (/app/.env). The container entrypoint exports it before
+# starting the API; .env values override same-name container environment values.
 # Note: subPath mounts do not receive ConfigMap updates automatically;
 # restart the pod after updating the ConfigMap.
 # Example:
