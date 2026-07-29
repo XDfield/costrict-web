@@ -19,6 +19,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/itemdelete"
+	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/services"
@@ -1614,7 +1615,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		}
 		storageKey := archiveAssetStorageKey(itemID, newRevision, asset)
 		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
+			c.JSON(http.StatusInternalServerError, storageFailureResponse("Failed to store archive assets", err))
 			return
 		}
 		assetStorageKeys[asset.Path] = storageKey
@@ -1637,7 +1638,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
+		c.JSON(http.StatusInternalServerError, storageFailureResponse("Failed to store uploaded archive", err))
 		return
 	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
@@ -3125,6 +3126,21 @@ func archiveAssetContentSHA(asset services.ArchiveAsset) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// storageFailureResponse builds the 500 body for an object-storage failure.
+//
+// The cause is included deliberately. Without it the UI shows only "Failed to
+// store archive assets" and every diagnosis requires cluster log access — a DNS
+// misconfiguration took three rounds of log archaeology to surface for exactly
+// this reason. The underlying error carries the endpoint host and bucket but no
+// credentials; on an authenticated internal platform that trade is worth it.
+func storageFailureResponse(message string, err error) gin.H {
+	body := gin.H{"error": message}
+	if err != nil {
+		body["detail"] = logger.Truncate(err.Error(), 300)
+	}
+	return body
+}
+
 func archiveAssetStorageKey(itemID string, revision int, asset services.ArchiveAsset) string {
 	return fmt.Sprintf("%s/assets/r%d/%s/%s", itemID, revision, archiveAssetContentSHA(asset), asset.Path)
 }
@@ -3674,7 +3690,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		}
 		storageKey := archiveAssetStorageKey(itemID, 1, asset)
 		if err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), asset.Size); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store archive assets"})
+			c.JSON(http.StatusInternalServerError, storageFailureResponse("Failed to store archive assets", err))
 			return
 		}
 		assetStorageKeys[asset.Path] = storageKey
@@ -3696,7 +3712,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	hasher := sha256.New()
 	tee := io.TeeReader(file, hasher)
 	if err := StorageBackend.Put(ctx, zipKey, tee, header.Size); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store uploaded archive"})
+		c.JSON(http.StatusInternalServerError, storageFailureResponse("Failed to store uploaded archive", err))
 		return
 	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
