@@ -119,7 +119,7 @@ func (s *Service) ProvisionBot(ctx context.Context, tenantID, teamID, teamShort,
 	// 3. Mint the PAT. Scopes match the doc v1.1 §6.4 spec.
 	tok, err := client.CreateUserToken(ctx, botUsername, CreateUserTokenOptions{
 		Name:   "team-bot-" + teamShort,
-		Scopes: []string{"write:repository", "read:user"},
+		Scopes: []string{"write:repository", "read:user", "read:organization"},
 	})
 	if err != nil {
 		return nil, err
@@ -175,7 +175,7 @@ func (s *Service) RotateBot(ctx context.Context, tenantID, botUsername string, p
 	// Mint new PAT first so we minimize the window without valid creds.
 	tok, err := client.CreateUserToken(ctx, botUsername, CreateUserTokenOptions{
 		Name:   "team-bot-rotated",
-		Scopes: []string{"write:repository", "read:user"},
+		Scopes: []string{"write:repository", "read:user", "read:organization"},
 	})
 	if err != nil {
 		return nil, err

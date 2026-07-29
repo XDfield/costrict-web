@@ -95,7 +95,7 @@ type GiteaToken struct {
 
 // CreateUserTokenOptions is the body for POST /users/{name}/tokens. Scopes
 // is the list of permission scopes the new PAT grants. For team bot we
-// use ["write:repository", "read:user"].
+// use ["write:repository", "read:user", "read:organization"].
 type CreateUserTokenOptions struct {
 	Name   string   `json:"name"`
 	Scopes []string `json:"scopes"`
