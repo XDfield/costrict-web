@@ -9,6 +9,7 @@ import (
 
 	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/tenant"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )
@@ -672,6 +673,41 @@ func (s *Service) GetEmploymentIdentity(ctx context.Context, userSubjectID strin
 		return nil, fmt.Errorf("query employment_identity: %w", err)
 	}
 	return &row, nil
+}
+
+// GetEmploymentIdentitiesBySubjectIDs batch-loads employment_identities for
+// the given user_subject_ids. Tenant-scoped (B5). When a user has multiple
+// rows (different providers), the one with the latest last_synced_at wins —
+// consistent with SearchUsersByEmployeeNumber's tie-break.
+//
+// Returns (empty map, nil) for empty input. Missing rows simply don't appear
+// in the map; callers should treat absence as "no enterprise context".
+func (s *Service) GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, subjectIDs []string) (map[string]*models.EmploymentIdentity, error) {
+	out := make(map[string]*models.EmploymentIdentity)
+	if s == nil || s.db == nil {
+		return out, errors.New("user.Service: nil db")
+	}
+	if len(subjectIDs) == 0 {
+		return out, nil
+	}
+
+	var rows []*models.EmploymentIdentity
+	err := s.db.WithContext(ctx).
+		Scopes(tenant.Scope(ctx)).
+		Where("user_subject_id IN ?", subjectIDs).
+		Order("last_synced_at DESC").
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("query employment_identities batch: %w", err)
+	}
+	for _, r := range rows {
+		// rows are ordered by last_synced_at DESC, so the first row seen for
+		// a given subject_id is the most recent sync — skip later duplicates.
+		if _, ok := out[r.UserSubjectID]; !ok {
+			out[r.UserSubjectID] = r
+		}
+	}
+	return out, nil
 }
 
 // GetSubjectIDByExternalKey resolves a user's subject_id from the durable

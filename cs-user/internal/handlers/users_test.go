@@ -27,6 +27,7 @@ type stubUserService struct {
 	getByIDs               func(context.Context, []string) (map[string]*models.User, error)
 	searchUsers            func(context.Context, string, int) ([]*models.User, error)
 	searchUsersByEmpNo     func(context.Context, string, int) ([]*models.User, error)
+	getEmployments         func(context.Context, []string) (map[string]*models.EmploymentIdentity, error)
 	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, bool, error)
 	provisionByEnterprise  func(context.Context, user.ProvisionByEnterpriseParams) (*models.User, bool, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
@@ -67,6 +68,13 @@ func (s stubUserService) SearchUsersByEmployeeNumber(ctx context.Context, empNo 
 		panic("stubUserService.searchUsersByEmpNo not wired")
 	}
 	return s.searchUsersByEmpNo(ctx, empNo, lim)
+}
+func (s stubUserService) GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, ids []string) (map[string]*models.EmploymentIdentity, error) {
+	if s.getEmployments == nil {
+		// Default: no employment rows. Tests that care wire this field.
+		return map[string]*models.EmploymentIdentity{}, nil
+	}
+	return s.getEmployments(ctx, ids)
 }
 func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error) {
 	if s.getOrCreate == nil {
@@ -148,7 +156,6 @@ func (s stubUserService) ListOrganizations(ctx context.Context) ([]user.Organiza
 }
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &UsersAPI{Svc: svc}
 	r.GET("/api/internal/users/:subject_id", api.GetUser)
@@ -319,6 +326,81 @@ func TestSearchUsers_HappyPath(t *testing.T) {
 	}
 	if !called {
 		t.Error("SearchUsers not invoked")
+	}
+}
+
+// TestSearchUsers_AttachesEmploymentSnapshot proves the response tacks on
+// the most-recent employment_identities row per user, with operational
+// fields stripped.
+func TestSearchUsers_AttachesEmploymentSnapshot(t *testing.T) {
+	empNum := "1001"
+	jobTitle := "Engineer"
+	rawHash := "hash-xyz"
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	_, r := newUsersAPI(stubUserService{
+		searchUsers: func(_ context.Context, _ string, _ int) ([]*models.User, error) {
+			return []*models.User{{SubjectID: "a", Username: "alice"}}, nil
+		},
+		getEmployments: func(_ context.Context, ids []string) (map[string]*models.EmploymentIdentity, error) {
+			if len(ids) != 1 || ids[0] != "a" {
+				t.Errorf("subject_ids: got %v want [a]", ids)
+			}
+			return map[string]*models.EmploymentIdentity{
+				"a": {
+					UserSubjectID:    "a",
+					Provider:         "idtrust",
+					EmployeeNumber:   &empNum,
+					JobTitle:         &jobTitle,
+					LastSyncedAt:     now,
+					SyncStatus:       "fresh",
+					RawPayloadHash:   &rawHash,
+					NextSyncDueAt:    now,
+				},
+			}, nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?keyword=ali", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`"employee_number":"1001"`,
+		`"job_title":"Engineer"`,
+		`"provider":"idtrust"`,
+		`"last_synced_at":"2026-07-01T12:00:00Z"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %s: %s", want, body)
+		}
+	}
+	for _, banned := range []string{"sync_status", "next_sync_due_at", "raw_payload_hash", "hash-xyz"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("employment snapshot must not leak %s: %s", banned, body)
+		}
+	}
+}
+
+// TestSearchUsers_NoEmploymentOmitsField proves users without an
+// employment_identities row return without the employment key (not null).
+func TestSearchUsers_NoEmploymentOmitsField(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		searchUsers: func(_ context.Context, _ string, _ int) ([]*models.User, error) {
+			return []*models.User{{SubjectID: "a", Username: "alice"}}, nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?keyword=ali", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"employment"`) {
+		t.Errorf("employment key must be omitted when no row: %s", body)
+	}
+	if !strings.Contains(body, `"username":"alice"`) {
+		t.Errorf("user fields must still be present: %s", body)
 	}
 }
 
@@ -987,7 +1069,6 @@ func TestApplyEnterpriseMapping_OptionalTenantID(t *testing.T) {
 // newListUsersAPI wires the UsersAPI with a stub service for the
 // ListUsers-only test surface.
 func newListUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &UsersAPI{Svc: svc}
 	r.GET("/api/internal/users/list", api.ListUsers)

@@ -344,6 +344,9 @@ func (unavailableUserService) SearchUsers(_ context.Context, _ string, _ int) ([
 func (unavailableUserService) SearchUsersByEmployeeNumber(_ context.Context, _ string, _ int) ([]*models.User, error) {
 	return nil, errServiceUnavailable
 }
+func (unavailableUserService) GetEmploymentIdentitiesBySubjectIDs(_ context.Context, _ []string) (map[string]*models.EmploymentIdentity, error) {
+	return nil, errServiceUnavailable
+}
 func (unavailableUserService) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
 	return nil, false, errServiceUnavailable
 }

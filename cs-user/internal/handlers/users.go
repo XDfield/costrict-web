@@ -43,6 +43,10 @@ type UserService interface {
 	// §5.2): join employment_identities on users by employee_number, scoped
 	// to ctx's tenant. Missing employee_number → empty slice (server maps to 404).
 	SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error)
+	// GetEmploymentIdentitiesBySubjectIDs batch-loads each user's most-recent
+	// employment_identities row. Powers the employment sub-object in the
+	// /search response. Missing users simply don't appear in the map.
+	GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, subjectIDs []string) (map[string]*models.EmploymentIdentity, error)
 	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
 	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error)
 	// ProvisionByEnterprise pre-creates a user keyed by an external enterprise
@@ -151,17 +155,75 @@ func (a *UsersAPI) GetUsersByIDs(c *gin.Context) {
 // SearchUsers godoc
 //
 //	@Summary		Search active users
-//	@Description	Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass `employee_number` to short-circuit the keyword path and look up users via employment_identities (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). `keyword` and `employee_number` are mutually exclusive — supplying both yields 400.
+//	@Description	Returns active users whose username / display_name / email match the keyword (LIKE %keyword%). Limit defaults to 50, capped at 200. Pass `employee_number` to short-circuit the keyword path and look up users via employment_identities (used by team-namespace workflow UserRef resolution per doc v1.1 §5.2). `keyword` and `employee_number` are mutually exclusive — supplying both yields 400. Each hit carries an `employment` sub-object (most-recent employment_identities row, operator-visible fields only) when one exists; users without an employment_identities row omit the key.
 //	@Tags			users
 //	@Produce		json
 //	@Security		InternalToken
 //	@Param			keyword			query		string	false	"Search keyword (matched against username / display_name / email)"
 //	@Param			employee_number	query		string	false	"Employee number (工号) — short-circuits keyword path; goes through employment_identities JOIN users"
 //	@Param			limit			query		int		false	"Max results (default 50 for keyword / 1 for employee_number, max 200)"
-//	@Success		200				{object}	object{users=[]models.User}
+//	@Success		200				{object}	object{users=[]searchHitDTO}
 //	@Failure		400				{object}	object{error=string}
 //	@Failure		500				{object}	object{error=string}
 //	@Router			/api/internal/users/search [get]
+// employmentSnapshotDTO is the operator-visible slice of
+// models.EmploymentIdentity returned by /search. Operational fields
+// (sync_status, next_sync_due_at, raw_payload_hash, ...) are deliberately
+// dropped — they describe the sync pipeline, not the person.
+type employmentSnapshotDTO struct {
+	EnterpriseUID          *string `json:"enterprise_uid,omitempty"`
+	DisplayName            *string `json:"display_name,omitempty"`
+	EmployeeNumber         *string `json:"employee_number,omitempty"`
+	CostCenter             *string `json:"cost_center,omitempty"`
+	OrgPath                *string `json:"org_path,omitempty"`
+	DirectManagerSubjectID *string `json:"direct_manager_subject_id,omitempty"`
+	JobTitle               *string `json:"job_title,omitempty"`
+	JobLevel               *string `json:"job_level,omitempty"`
+	EmploymentType         *string `json:"employment_type,omitempty"`
+	HireDate               *string `json:"hire_date,omitempty"`
+	RegularDate            *string `json:"regular_date,omitempty"`
+	WorkLocation           *string `json:"work_location,omitempty"`
+	Provider               string  `json:"provider"`
+	LastSyncedAt           string  `json:"last_synced_at"`
+}
+
+func newEmploymentSnapshot(e *models.EmploymentIdentity) employmentSnapshotDTO {
+	dto := employmentSnapshotDTO{
+		EnterpriseUID:          e.EnterpriseUID,
+		DisplayName:            e.DisplayName,
+		EmployeeNumber:         e.EmployeeNumber,
+		CostCenter:             e.CostCenter,
+		OrgPath:                e.OrgPath,
+		DirectManagerSubjectID: e.DirectManagerSubjectID,
+		JobTitle:               e.JobTitle,
+		JobLevel:               e.JobLevel,
+		EmploymentType:         e.EmploymentType,
+		Provider:               e.Provider,
+	}
+	if e.HireDate != nil {
+		s := e.HireDate.Format("2006-01-02")
+		dto.HireDate = &s
+	}
+	if e.RegularDate != nil {
+		s := e.RegularDate.Format("2006-01-02")
+		dto.RegularDate = &s
+	}
+	if e.WorkLocation != nil {
+		dto.WorkLocation = e.WorkLocation
+	}
+	dto.LastSyncedAt = e.LastSyncedAt.Format("2006-01-02T15:04:05Z")
+	return dto
+}
+
+// searchHitDTO flattens models.User fields and tacks on an optional
+// employment snapshot. Embedding the pointer promotes User's JSON fields to
+// the top level, so callers that previously received {users: [User...]} now
+// see the same User fields plus an employment key when present.
+type searchHitDTO struct {
+	*models.User
+	Employment *employmentSnapshotDTO `json:"employment,omitempty"`
+}
+
 func (a *UsersAPI) SearchUsers(c *gin.Context) {
 	keyword := c.Query("keyword")
 	employeeNumber := c.Query("employee_number")
@@ -202,7 +264,30 @@ func (a *UsersAPI) SearchUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"users": users})
+
+	subjectIDs := make([]string, 0, len(users))
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		subjectIDs = append(subjectIDs, u.SubjectID)
+	}
+	employments, err := a.Svc.GetEmploymentIdentitiesBySubjectIDs(c.Request.Context(), subjectIDs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	hits := make([]searchHitDTO, 0, len(users))
+	for _, u := range users {
+		hit := searchHitDTO{User: u}
+		if e, ok := employments[u.SubjectID]; ok && e != nil {
+			snap := newEmploymentSnapshot(e)
+			hit.Employment = &snap
+		}
+		hits = append(hits, hit)
+	}
+	c.JSON(http.StatusOK, gin.H{"users": hits})
 }
 
 // --- Phase 2: Write API ---
