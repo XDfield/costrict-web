@@ -28,9 +28,9 @@ type User struct {
 	AuthProvider       *string        `gorm:"index:idx_user_auth_provider;size:64" json:"auth_provider"`
 	ExternalKey        *string        `gorm:"uniqueIndex:idx_user_external_key;size:255" json:"external_key"`
 	ProviderUserID     *string        `gorm:"index:idx_user_provider_user_id;size:191" json:"provider_user_id"`
-	CasdoorID          *string        `gorm:"index:idx_user_casdoor_id;size:191" json:"casdoor_id"`
-	CasdoorUniversalID *string        `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"casdoor_universal_id"`
-	CasdoorSub         *string        `gorm:"index:idx_user_casdoor_sub;size:191" json:"casdoor_sub"`
+	CasdoorID          *string        `gorm:"index:idx_user_casdoor_id;size:191" json:"-"`
+	CasdoorUniversalID *string        `gorm:"index:idx_user_casdoor_universal_id;size:191" json:"-"`
+	CasdoorSub         *string        `gorm:"index:idx_user_casdoor_sub;size:191" json:"-"`
 	Organization       *string        `gorm:"index:idx_user_organization;size:191" json:"organization"`
 	IsActive           bool           `gorm:"not null;default:true" json:"is_active"`
 	Status             string         `gorm:"size:32;not null;default:'active';index" json:"status"`
