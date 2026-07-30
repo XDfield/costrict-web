@@ -157,6 +157,42 @@ func TestCasdoorVerifier_Expired(t *testing.T) {
 	}
 }
 
+// TestCasdoorVerifier_LeewayToleratesSmallClockSkew locks the leeway contract:
+// a token whose exp / iat fall within casdoorLeeway (10s) of now MUST verify,
+// so minor clock drift between Casdoor and cs-user hosts does not fail login.
+// The token below carries iat in the future + exp in the past — both within
+// leeway — and must still succeed. Anything beyond leeway still rejects.
+func TestCasdoorVerifier_LeewayToleratesSmallClockSkew(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, kid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+
+	// Within leeway on both sides: iat 3s in the future, exp 3s in the past.
+	now := time.Now()
+	withinLeeway := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x",
+		"iat": now.Add(3 * time.Second).Unix(),
+		"exp": now.Add(-3 * time.Second).Unix(),
+	})
+	if _, err := v.Verify(context.Background(), withinLeeway); err != nil {
+		t.Fatalf("within-leeway token: want nil err, got %v", err)
+	}
+
+	// Just past leeway on exp: rejected. (60s > 10s leeway.)
+	pastLeeway := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x", "exp": now.Add(-60 * time.Second).Unix(),
+	})
+	_, err := v.Verify(context.Background(), pastLeeway)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("past-leeway token: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
 // TestCasdoorVerifier_WrongIssuer locks the optional iss check. A token
 // from the wrong IdP (or a misconfigured Casdoor pointing at a different
 // issuer) must fail even if signed correctly.

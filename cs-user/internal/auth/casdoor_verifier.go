@@ -39,6 +39,14 @@ import (
 // not "reject".
 var ErrCasdoorVerifierDisabled = errors.New("casdoor verifier disabled: JWKSURL not configured")
 
+// casdoorLeeway is the clock-skew tolerance applied to exp / nbf / iat during
+// Casdoor JWT verification. 10s matches the IdP convention (Auth0, Keycloak,
+// FusionAuth all default to similar) — large enough to absorb typical NTP
+// drift between containers, small enough that a stolen token's window does
+// not extend meaningfully past its declared expiry. Not configurable per-
+// request; raise here if a deployment shows systematic clock skew.
+const casdoorLeeway = 10 * time.Second
+
 // ErrCasdoorJWTInvalid is the umbrella error for any verification failure
 // (bad signature, expired, wrong iss/aud, malformed). The handler maps it
 // to 401 — callers MUST NOT distinguish sub-cases when surfacing to
@@ -102,6 +110,11 @@ func (v *CasdoorVerifier) Verify(ctx context.Context, rawJWT string) (*models.JW
 	// well-known fields into models.JWTClaims. models.JWTClaims does not
 	// implement jwt.Claims (no GetExpirationTime etc.) so direct use would
 	// skip registered-claim enforcement.
+	//
+	// WithLeeway(casdoorLeeway) tolerates small clock skew between Casdoor
+	// and cs-user hosts for exp / nbf / iat. IdP verification convention is
+	// to not be stricter than wall-clock resolution — a token issued 2s
+	// "in the future" by a slightly-ahead Casdoor must not be rejected.
 	mapClaims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(rawJWT, mapClaims, func(t *jwt.Token) (interface{}, error) {
 		// Pin RS256 — Phase A scope deliberately rejects other algs to
@@ -119,6 +132,7 @@ func (v *CasdoorVerifier) Verify(ctx context.Context, rawJWT string) (*models.JW
 	},
 		jwt.WithValidMethods([]string{"RS256"}),
 		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(casdoorLeeway),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrCasdoorJWTInvalid, err.Error())
