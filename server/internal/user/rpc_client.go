@@ -88,6 +88,28 @@ func (c *RPCClient) GetUserByID(ctx context.Context, userID string) (*models.Use
 	return &user, nil
 }
 
+// GetUserByIdentity calls GET /api/internal/users/by-identity?provider=...&universal_id=...
+// to resolve the canonical user from a Casdoor identity handle. Used by the
+// auth middleware during the legacy-Casdoor-JWT compatibility window so the
+// server doesn't need a local casdoor_universal_id copy. HTTP 404 →
+// gorm.ErrRecordNotFound so callers can distinguish "identity never seen"
+// from cs-user outages.
+func (c *RPCClient) GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
+	q := url.Values{}
+	q.Set("universal_id", universalID)
+	if provider != "" {
+		q.Set("provider", provider)
+	}
+	var user models.User
+	if err := c.do(ctx, http.MethodGet, "/api/internal/users/by-identity?"+q.Encode(), nil, &user, decodeBareUser); err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 // GetUsersByIDs calls POST /api/internal/users/by-ids with {"ids": [...]}.
 // Returns the bare map cs-user emits; missing IDs simply don't appear.
 func (c *RPCClient) GetUsersByIDs(ctx context.Context, userIDs []string) (map[string]*models.User, error) {

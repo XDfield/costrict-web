@@ -1373,33 +1373,62 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/internal/users/organizations": {
+        "/api/internal/users/by-identity": {
             "get": {
                 "security": [
                     {
                         "InternalToken": []
                     }
                 ],
-                "description": "Returns the per-tenant organization roll-up (grouped by users.organization, busiest first). Powers the admin console's organization filter dropdown. NULL/empty organizations are skipped. Used by @server's GET /api/admin/users/organizations (admin-user-migration slice).",
+                "description": "Resolves the canonical user record from a login-source identity handle (provider + universal_id). The pair is mapped to the durable external_key (casdoor:<provider>:<universal_id>) and looked up against user_auth_identities — the single source of truth for login-source identifiers. Empty provider falls back to the legacy casdoor:<universal_id> form for tokens issued before provider tracking. Used by @server's auth middleware during the legacy-Casdoor-JWT compatibility window so the server doesn't need a local casdoor_universal_id copy.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "users",
-                    "admin"
+                    "users"
                 ],
-                "summary": "List organizations with member counts (admin)",
+                "summary": "Resolve a user by Casdoor identity",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Login-source provider (e.g. github, phone). Empty falls back to the legacy unscoped external_key form.",
+                        "name": "provider",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Casdoor-side stable identifier for the identity (JWT universal_id claim)",
+                        "name": "universal_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_models.User"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
                             "type": "object",
                             "properties": {
-                                "organizations": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount"
-                                    }
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
                                 }
                             }
                         }
@@ -3105,17 +3134,6 @@ const docTemplate = `{
                     }
                 },
                 "version": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_cs-user_internal_user.OrganizationCount": {
-            "type": "object",
-            "properties": {
-                "memberCount": {
-                    "type": "integer"
-                },
-                "organization": {
                     "type": "string"
                 }
             }

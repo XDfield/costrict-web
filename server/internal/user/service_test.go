@@ -170,15 +170,6 @@ func TestUserServiceGetOrCreateUserCreate(t *testing.T) {
 	if len(user.SubjectID) < 5 || user.SubjectID[:4] != "usr_" {
 		t.Fatalf("expected local subject_id with usr_ prefix, got %+v", user)
 	}
-	if user.CasdoorID == nil || *user.CasdoorID != "u1" {
-		t.Fatalf("casdoor_id not set: %+v", user)
-	}
-	if user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != "uuid-u1" {
-		t.Fatalf("casdoor_universal_id not set: %+v", user)
-	}
-	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
-		t.Fatalf("casdoor_sub not set: %+v", user)
-	}
 	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:uuid-u1" {
 		t.Fatalf("external_key not set: %+v", user)
 	}
@@ -191,11 +182,13 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	oldName := "Old Name"
 	oldEmail := "old@example.com"
 	now := time.Now().Add(-time.Hour)
+	externalKey := "casdoor:uuid-u1"
 	seed := models.User{
 		SubjectID:   "legacy-u1",
 		Username:    "alice",
 		DisplayName: &oldName,
 		Email:       &oldEmail,
+		ExternalKey: &externalKey,
 		IsActive:    false,
 		LastLoginAt: &now,
 	}
@@ -229,18 +222,6 @@ func TestUserServiceGetOrCreateUserUpdate(t *testing.T) {
 	}
 	if !user.IsActive {
 		t.Fatal("expected user to be active")
-	}
-	if user.CasdoorID == nil || *user.CasdoorID != "u1" {
-		t.Fatalf("casdoor_id not backfilled: %+v", user)
-	}
-	if user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != "uuid-u1" {
-		t.Fatalf("casdoor_universal_id not backfilled: %+v", user)
-	}
-	if user.CasdoorSub == nil || *user.CasdoorSub != "org/alice" {
-		t.Fatalf("casdoor_sub not backfilled: %+v", user)
-	}
-	if user.Organization != nil {
-		t.Fatalf("organization should NOT be overwritten on re-login (user-owned): got %+v", user.Organization)
 	}
 	if user.ExternalKey == nil || *user.ExternalKey != "casdoor:uuid-u1" {
 		t.Fatalf("external_key not backfilled: %+v", user)
@@ -606,7 +587,17 @@ func TestUnbindIdentityReassignsPrimary(t *testing.T) {
 	}
 }
 
-func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
+// TestGetOrCreateUser_SameUniversalID_DifferentProvider_CreatesSeparateUsers
+// pins the new identity contract: universal_id is provider-scoped, so two
+// identities with the same universal_id but different providers resolve to
+// different external_keys (`casdoor:github:<uuid>` vs `casdoor:phone:<uuid>`)
+// and therefore to different users. The old universal_id-only fallback that
+// auto-bound them to the same user was removed when the legacy
+// casdoor_universal_id column was dropped from cs-user, because that
+// behavior violated the "identity is provider-scoped" invariant and would
+// silently merge unrelated accounts whenever two providers happened to reuse
+// the same universal_id.
+func TestGetOrCreateUser_SameUniversalID_DifferentProvider_CreatesSeparateUsers(t *testing.T) {
 	db := setupUserTestDB(t)
 	svc := NewUserService(db)
 
@@ -622,15 +613,12 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		Picture:           "https://avatars.example.com/gh.png",
 	}
 
-	ghUser, _, err := svc.GetOrCreateUser(context.Background(),githubClaims)
+	ghUser, _, err := svc.GetOrCreateUser(context.Background(), githubClaims)
 	if err != nil {
 		t.Fatalf("create github user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(context.Background(),ghUser.SubjectID, githubClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), ghUser.SubjectID, githubClaims); err != nil {
 		t.Fatalf("bind github identity: %v", err)
-	}
-	if ghUser.CasdoorUniversalID == nil || *ghUser.CasdoorUniversalID != "shared-uuid" {
-		t.Fatalf("expected universal_id shared-uuid, got %+v", ghUser)
 	}
 
 	identities, _ := svc.ListUserIdentities(context.Background(), ghUser.SubjectID)
@@ -651,36 +639,25 @@ func TestGetOrCreateUserAutoBindSameUniversalIDDifferentProvider(t *testing.T) {
 		Phone:             "15500000001",
 	}
 
-	phoneUser, _, err := svc.GetOrCreateUser(context.Background(),phoneClaims)
+	phoneUser, _, err := svc.GetOrCreateUser(context.Background(), phoneClaims)
 	if err != nil {
 		t.Fatalf("get or create phone user: %v", err)
 	}
-	if err := svc.BindIdentityToUser(context.Background(),phoneUser.SubjectID, phoneClaims); err != nil {
+	if err := svc.BindIdentityToUser(context.Background(), phoneUser.SubjectID, phoneClaims); err != nil {
 		t.Fatalf("bind phone identity: %v", err)
 	}
-	if phoneUser.SubjectID != ghUser.SubjectID {
-		t.Fatalf("expected same subject_id for same universal_id, got github=%s phone=%s", ghUser.SubjectID, phoneUser.SubjectID)
+	if phoneUser.SubjectID == ghUser.SubjectID {
+		t.Fatalf("different providers must NOT auto-merge even when universal_id matches: github=%s phone=%s", ghUser.SubjectID, phoneUser.SubjectID)
 	}
 
-	identities, err = svc.ListUserIdentities(context.Background(), ghUser.SubjectID)
-	if err != nil {
-		t.Fatalf("list identities: %v", err)
+	// Each user should have exactly one identity (their own provider).
+	ghIdentities, _ := svc.ListUserIdentities(context.Background(), ghUser.SubjectID)
+	if len(ghIdentities) != 1 || ghIdentities[0].Provider != "github" {
+		t.Fatalf("github user should have only github identity, got %+v", ghIdentities)
 	}
-	if len(identities) != 2 {
-		t.Fatalf("expected 2 identities (github + phone), got %d", len(identities))
-	}
-
-	providerSet := map[string]bool{}
-	for _, id := range identities {
-		providerSet[id.Provider] = true
-	}
-	if !providerSet["github"] || !providerSet["phone"] {
-		t.Fatalf("expected both github and phone identities, got %+v", identities)
-	}
-
-	refreshed, _ := svc.GetUserByID(context.Background(), ghUser.SubjectID)
-	if refreshed.Phone != nil {
-		t.Fatalf("user.Phone must NOT be auto-merged from a newly-bound identity (user-owned field); got %+v", refreshed.Phone)
+	phoneIdentities, _ := svc.ListUserIdentities(context.Background(), phoneUser.SubjectID)
+	if len(phoneIdentities) != 1 || phoneIdentities[0].Provider != "phone" {
+		t.Fatalf("phone user should have only phone identity, got %+v", phoneIdentities)
 	}
 }
 

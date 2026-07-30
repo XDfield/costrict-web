@@ -76,9 +76,11 @@ type UserService interface {
 	// SetUserStatus applies an admin status transition. operatorID is
 	// used for the self-lock check (cannot change own status).
 	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*user.SetUserStatusResult, error)
-	// ListOrganizations groups users by organization, busiest first.
-	// Powers the admin filter dropdown; NULL/empty orgs are skipped.
-	ListOrganizations(ctx context.Context) ([]user.OrganizationCount, error)
+	// GetUserByIdentity resolves a user from a Casdoor identity handle
+	// (provider + universal_id) via user_auth_identities.external_key.
+	// Used by server's auth middleware during the legacy-Casdoor-JWT
+	// compatibility window.
+	GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error)
 }
 
 // byIDsRequest is the body shape for POST /api/internal/users/by-ids.
@@ -114,6 +116,43 @@ func (a *UsersAPI) GetUser(c *gin.Context) {
 		switch {
 		case errors.Is(err, user.ErrEmptySubjectID):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "subject_id is required"})
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, u)
+}
+
+// GetUserByIdentity godoc
+//
+//	@Summary		Resolve a user by Casdoor identity
+//	@Description	Resolves the canonical user record from a login-source identity handle (provider + universal_id). The pair is mapped to the durable external_key (`casdoor:<provider>:<universal_id>`) and looked up against user_auth_identities — the single source of truth for login-source identifiers. Empty provider falls back to the legacy `casdoor:<universal_id>` form for tokens issued before provider tracking. Used by @server's auth middleware during the legacy-Casdoor-JWT compatibility window so the server doesn't need a local casdoor_universal_id copy.
+//	@Tags			users
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			provider		query		string	true	"Login-source provider (e.g. github, phone). Empty falls back to the legacy unscoped external_key form."
+//	@Param			universal_id	query		string	true	"Casdoor-side stable identifier for the identity (JWT `universal_id` claim)"
+//	@Success		200				{object}	models.User
+//	@Failure		400				{object}	object{error=string}
+//	@Failure		404				{object}	object{error=string}
+//	@Failure		500				{object}	object{error=string}
+//	@Router			/api/internal/users/by-identity [get]
+func (a *UsersAPI) GetUserByIdentity(c *gin.Context) {
+	provider := strings.TrimSpace(c.Query("provider"))
+	universalID := strings.TrimSpace(c.Query("universal_id"))
+	if universalID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "universal_id is required"})
+		return
+	}
+
+	u, err := a.Svc.GetUserByIdentity(c.Request.Context(), provider, universalID)
+	if err != nil {
+		switch {
+		case errors.Is(err, user.ErrEmptySubjectID):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "universal_id is required"})
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		default:

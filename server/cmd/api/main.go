@@ -334,19 +334,57 @@ func main() {
 		logger.Fatal("[A8] internal error: unhandled JWTSignMode %q (expected off|dual|single)", cfg.JWTSignMode)
 	}
 	jwksProvider.Preload()
-	middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
-		return userModule.Service.ResolveSubjectID(&userpkg.JWTClaims{
-			ID:                claims.ID,
-			Sub:               claims.Sub,
-			UniversalID:       claims.UniversalID,
-			Name:              claims.Name,
-			PreferredUsername: claims.PreferredUsername,
-			Email:             claims.Email,
-			Provider:          claims.Provider,
-			ProviderUserID:    claims.ProviderUserID,
-			Phone:             claims.Phone,
+	// Subject-id resolution for Casdoor JWTs (iss != "cs-user"). cs-user is
+	// the single source of truth for identity → subject_id mapping; when the
+	// RPC client is configured we resolve via cs-user's by-identity endpoint
+	// (provider + universal_id → user_auth_identities.external_key). Falls
+	// back to the legacy local-table resolver only when the RPC client isn't
+	// wired (USER_SERVICE_BACKEND != rpc) so dev / single-binary modes keep
+	// working.
+	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient != nil && rpcClient.Configured() {
+		middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
+			if claims.UniversalID == "" {
+				// No universal_id in the JWT → can't build an external_key.
+				// Return the raw sub as-is and let downstream 401 on missing
+				// user; this preserves the prior fail-open behaviour for
+				// tokens that lack universal_id entirely.
+				return claims.Sub, claims.PreferredUsername, nil
+			}
+			ctx := context.Background()
+			u, err := rpcClient.GetUserByIdentity(ctx, claims.Provider, claims.UniversalID)
+			if err != nil {
+				return "", "", err
+			}
+			name := claims.PreferredUsername
+			if u != nil {
+				if u.Username != "" {
+					name = u.Username
+				}
+				if u.DisplayName != nil && *u.DisplayName != "" {
+					name = *u.DisplayName
+				}
+			}
+			subjectID := claims.Sub
+			if u != nil && u.SubjectID != "" {
+				subjectID = u.SubjectID
+			}
+			return subjectID, name, nil
 		})
-	})
+	} else {
+		middleware.SetSubjectResolver(func(claims middleware.AuthClaims) (string, string, error) {
+			return userModule.Service.ResolveSubjectID(&userpkg.JWTClaims{
+				ID:                claims.ID,
+				Sub:               claims.Sub,
+				UniversalID:       claims.UniversalID,
+				Name:              claims.Name,
+				PreferredUsername: claims.PreferredUsername,
+				Email:             claims.Email,
+				Provider:          claims.Provider,
+				ProviderUserID:    claims.ProviderUserID,
+				Phone:             claims.Phone,
+			})
+		})
+	}
 
 	// Account-status gate (M1 · 成员管理): RequireAuth consults this hook for the
 	// resolved subject and rejects banned/disabled members. Conservative by

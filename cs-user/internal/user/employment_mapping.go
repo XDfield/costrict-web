@@ -743,6 +743,72 @@ func (s *Service) GetSubjectIDByExternalKey(ctx context.Context, externalKey str
 	return u.SubjectID, nil
 }
 
+// GetUserByIdentity resolves a user from a Casdoor-side identity handle
+// (provider + universal_id) during the legacy-Casdoor-JWT compatibility
+// window. The provider + universal_id are concatenated into the durable
+// external_key (`casdoor:<provider>:<universal_id>` — see BuildExternalKey)
+// and looked up against user_auth_identities, which is the only durable
+// location for login-source identifiers after the legacy users.casdoor_*
+// columns were dropped.
+//
+// Returns gorm.ErrRecordNotFound when no identity row matches so the caller
+// (server's auth middleware) can map it cleanly to 404. An empty provider is
+// tolerated and falls back to the legacy unscoped form
+// `casdoor:<universal_id>` — necessary for tokens issued before providers
+// were tracked. An empty universalID is a 400-style caller error.
+//
+// Cross-tenant safety: the lookup runs through tenant.Scope(ctx) so a
+// universal_id collision across tenants resolves only to the ctx-tenant's
+// user. Without this scope a cross-tenant identity could leak; the unique
+// index on user_auth_identities.external_key alone does not enforce
+// tenant-scoping.
+func (s *Service) GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("user.Service: nil db")
+	}
+	if universalID == "" {
+		return nil, ErrEmptySubjectID
+	}
+	claims := &models.JWTClaims{
+		Provider:    provider,
+		UniversalID: universalID,
+	}
+	externalKey := BuildExternalKey(claims)
+	if externalKey == "" {
+		return nil, ErrEmptySubjectID
+	}
+	var ident models.UserAuthIdentity
+	err := s.db.WithContext(ctx).
+		Scopes(tenant.Scope(ctx)).
+		Where("external_key = ?", externalKey).
+		Take(&ident).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Fall back to the legacy external_key form
+		// (`casdoor:<universal_id>` without provider scoping) used before
+		// provider tracking landed. Some long-lived identities still carry
+		// this shape; resolving them lets old tokens complete auth without
+		// forcing a re-bind.
+		legacy := legacyExternalKey(claims)
+		if legacy != "" && legacy != externalKey {
+			err = s.db.WithContext(ctx).
+				Scopes(tenant.Scope(ctx)).
+				Where("external_key = ?", legacy).
+				Take(&ident).Error
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	var u models.User
+	if err := s.db.WithContext(ctx).
+		Scopes(tenant.Scope(ctx)).
+		Where("subject_id = ?", ident.UserSubjectID).
+		Take(&u).Error; err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 // containsString reports whether v contains s. Enabled-provider lists are
 // tiny (1-5 entries typically) so a linear scan beats a map allocation.
 func containsString(v []string, s string) bool {

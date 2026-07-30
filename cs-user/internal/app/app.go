@@ -161,9 +161,12 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// Admin user-management (admin-user-migration slice). Static literal
 	// paths win over the :subject_id wildcard in gin's radix tree.
 	users.GET("/list", usersAPI.ListUsers)
-	// Organization roll-up — admin filter dropdown. Static literal path
-	// wins over the :subject_id wildcard in gin's radix tree.
-	users.GET("/organizations", usersAPI.ListOrganizations)
+	// Subject-id resolution from a Casdoor identity (provider + universal_id).
+	// Used by the server's auth middleware during the legacy-Casdoor-JWT
+	// compatibility window to look up the canonical subject_id without
+	// keeping a local casdoor_universal_id copy. Static literal path wins
+	// over the :subject_id wildcard in gin's radix tree.
+	users.GET("/by-identity", usersAPI.GetUserByIdentity)
 	// Admin per-user profile (identity-only; @server merges activity counts).
 	users.GET("/:subject_id/profile", usersAPI.GetUserProfile)
 
@@ -393,9 +396,9 @@ func (unavailableUserService) SetUserStatus(_ context.Context, _, _, _ string) (
 	return nil, errServiceUnavailable
 }
 
-// ListOrganizations mirrors the production error shape (503 service
+// GetUserByIdentity mirrors the production error shape (503 service
 // unavailable) when the user service isn't wired.
-func (unavailableUserService) ListOrganizations(_ context.Context) ([]user.OrganizationCount, error) {
+func (unavailableUserService) GetUserByIdentity(_ context.Context, _, _ string) (*models.User, error) {
 	return nil, errServiceUnavailable
 }
 

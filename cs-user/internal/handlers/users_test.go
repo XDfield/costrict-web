@@ -36,7 +36,7 @@ type stubUserService struct {
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
-	listOrganizations      func(context.Context) ([]user.OrganizationCount, error)
+	getUserByIdentity      func(context.Context, string, string) (*models.User, error)
 	// R2 (REGISTRATION_PROFILE_DESIGN).
 	completeRegistration func(context.Context, string, string, string) (*models.User, error)
 	updateProfile        func(context.Context, string, string) (*models.User, error)
@@ -148,11 +148,11 @@ func (s stubUserService) SetUserStatus(ctx context.Context, subjectID, status, o
 	}
 	return s.setUserStatus(ctx, subjectID, status, operatorID)
 }
-func (s stubUserService) ListOrganizations(ctx context.Context) ([]user.OrganizationCount, error) {
-	if s.listOrganizations == nil {
-		panic("stubUserService.listOrganizations not wired")
+func (s stubUserService) GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error) {
+	if s.getUserByIdentity == nil {
+		panic("stubUserService.getUserByIdentity not wired")
 	}
-	return s.listOrganizations(ctx)
+	return s.getUserByIdentity(ctx, provider, universalID)
 }
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
@@ -173,7 +173,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
-	r.GET("/api/internal/users/organizations", api.ListOrganizations)
+	r.GET("/api/internal/users/by-identity", api.GetUserByIdentity)
 	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
 	r.GET("/api/internal/users/:subject_id/profile", api.GetUserProfile)
 	// R2 routes.
@@ -1076,13 +1076,12 @@ func newListUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 }
 
 func TestListUsers_HappyPathReturnsPaginatedResult(t *testing.T) {
-	org := "eng"
 	email := "alice@example.com"
 	display := "Alice"
 	avatar := "https://example.com/a.png"
 	now := time.Now().UTC()
 	users := []*models.User{
-		{SubjectID: "usr_alice", Username: "alice", DisplayName: &display, Email: &email, AvatarURL: &avatar, Organization: &org, Status: "active", IsActive: true, CreatedAt: now},
+		{SubjectID: "usr_alice", Username: "alice", DisplayName: &display, Email: &email, AvatarURL: &avatar, Status: "active", IsActive: true, CreatedAt: now},
 	}
 	var capturedParams user.ListUsersParams
 	svc := stubUserService{
@@ -1093,14 +1092,14 @@ func TestListUsers_HappyPathReturnsPaginatedResult(t *testing.T) {
 	}
 	_, r := newListUsersAPI(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?keyword=ali&organization=eng&status=active&page=2&page_size=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?keyword=ali&status=active&page=2&page_size=10", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if capturedParams.Keyword != "ali" || capturedParams.Organization != "eng" || capturedParams.Status != "active" {
+	if capturedParams.Keyword != "ali" || capturedParams.Status != "active" {
 		t.Errorf("filter passthrough mismatch: %+v", capturedParams)
 	}
 	if capturedParams.Page != 2 || capturedParams.PageSize != 10 {
@@ -1352,74 +1351,11 @@ func TestSetUserStatus_InvalidBodyReturns400(t *testing.T) {
 	}
 }
 
-// --- ListOrganizations (admin-user-migration slice) ---
-
-func TestListOrganizations_HappyPath(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return []user.OrganizationCount{
-				{Organization: "Eng", MemberCount: 42},
-				{Organization: "Ops", MemberCount: 7},
-			}, nil
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"organization":"Eng"`) || !strings.Contains(w.Body.String(), `"memberCount":42`) {
-		t.Errorf("response missing org/count fields: %s", w.Body.String())
-	}
-}
-
-func TestListOrganizations_EmptySerializesAsArray(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return nil, nil
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"organizations":[]`) {
-		t.Errorf("nil slice should serialize as [] not null: %s", w.Body.String())
-	}
-}
-
-func TestListOrganizations_ServiceErrorReturns500(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return nil, errors.New("db down")
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "db down") {
-		t.Errorf("internal error must not leak: %s", w.Body.String())
-	}
-}
-
 // --- GetUserProfile (admin-user-migration slice) ---
 
 func TestGetUserProfile_HappyPath(t *testing.T) {
 	disp := "Alice"
 	email := "alice@example.com"
-	org := "Eng"
 	avatar := "https://cdn/x.png"
 	lastLogin := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1431,7 +1367,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 				DisplayName:  &disp,
 				Email:        &email,
 				AvatarURL:    &avatar,
-				Organization: &org,
 				Status:       user.UserStatusActive,
 				IsActive:     true,
 				LastLoginAt:  &lastLogin,
@@ -1453,7 +1388,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 		`"username":"alice"`,
 		`"display_name":"Alice"`,
 		`"email":"alice@example.com"`,
-		`"organization":"Eng"`,
 		`"status":"active"`,
 		`"is_active":true`,
 		`"last_login_at":"2026-07-01T12:00:00Z"`,
@@ -1467,7 +1401,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 
 func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 	extKey := "ext-secret"
-	casdoorID := "cas-abc"
 	provUserID := "prov-xyz"
 	svc := stubUserService{
 		getByID: func(_ context.Context, _ string) (*models.User, error) {
@@ -1475,7 +1408,6 @@ func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 				SubjectID:      "subj-1",
 				Username:       "alice",
 				ExternalKey:    &extKey,
-				CasdoorID:      &casdoorID,
 				ProviderUserID: &provUserID,
 				Status:         user.UserStatusActive,
 				IsActive:       true,
@@ -1492,12 +1424,12 @@ func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, banned := range []string{"external_key", "casdoor_id", "provider_user_id", "casdoor_sub", "casdoor_universal_id"} {
+	for _, banned := range []string{"external_key", "provider_user_id"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("profile must not leak %s: %s", banned, body)
 		}
 	}
-	if strings.Contains(body, "ext-secret") || strings.Contains(body, "cas-abc") || strings.Contains(body, "prov-xyz") {
+	if strings.Contains(body, "ext-secret") || strings.Contains(body, "prov-xyz") {
 		t.Errorf("infra identifiers leaked: %s", body)
 	}
 }

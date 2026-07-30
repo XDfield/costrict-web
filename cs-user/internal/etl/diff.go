@@ -41,8 +41,10 @@ type FieldDiff struct {
 //
 // ID / CreatedAt are intentionally excluded: target's auto-increment ID and
 // original creation timestamp must be preserved across updates. SubjectID is
-// the join key and is always equal by definition. DeletedAt is included so
-// soft-deletes propagate.
+// the join key and is always equal by definition. ShortID is excluded because
+// it's deterministically derived from SubjectID on target insert — there is
+// no source-side value to reconcile. DeletedAt is included so soft-deletes
+// propagate.
 func UserDiff(src, tgt *models.User) ([]FieldDiff, bool) {
 	if src == nil || tgt == nil {
 		return nil, false
@@ -59,10 +61,6 @@ func UserDiff(src, tgt *models.User) ([]FieldDiff, bool) {
 	diffs = appendPtrStringDiff(diffs, "auth_provider", src.AuthProvider, tgt.AuthProvider)
 	diffs = appendPtrStringDiff(diffs, "external_key", src.ExternalKey, tgt.ExternalKey)
 	diffs = appendPtrStringDiff(diffs, "provider_user_id", src.ProviderUserID, tgt.ProviderUserID)
-	diffs = appendPtrStringDiff(diffs, "casdoor_id", src.CasdoorID, tgt.CasdoorID)
-	diffs = appendPtrStringDiff(diffs, "casdoor_universal_id", src.CasdoorUniversalID, tgt.CasdoorUniversalID)
-	diffs = appendPtrStringDiff(diffs, "casdoor_sub", src.CasdoorSub, tgt.CasdoorSub)
-	diffs = appendPtrStringDiff(diffs, "organization", src.Organization, tgt.Organization)
 
 	if src.IsActive != tgt.IsActive {
 		diffs = append(diffs, FieldDiff{Field: "is_active", SourceValue: src.IsActive, TargetValue: tgt.IsActive})

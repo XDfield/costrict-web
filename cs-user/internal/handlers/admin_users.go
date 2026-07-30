@@ -29,8 +29,6 @@ type AdminUsersService interface {
 	// SetUserStatus applies an admin status transition. operatorID is used
 	// for the self-lock check (admin cannot lock themselves out).
 	SetUserStatus(ctx context.Context, subjectID, status, operatorID string) (*userpkg.SetUserStatusResult, error)
-	// ListOrganizations returns the per-tenant organization roll-up.
-	ListOrganizations(ctx context.Context) ([]userpkg.OrganizationCount, error)
 }
 
 // Ensure *UsersAPI can also serve admin endpoints by composing the admin
@@ -42,15 +40,14 @@ type AdminUsersService interface {
 // adminUserResponse structurally so @server's RPC client can pass the
 // payload through with no field reshaping.
 type adminUserListItem struct {
-	SubjectID    string  `json:"subject_id"`
-	Username     string  `json:"username"`
-	DisplayName  *string `json:"display_name,omitempty"`
-	Email        *string `json:"email,omitempty"`
-	AvatarURL    *string `json:"avatar_url,omitempty"`
-	Organization *string `json:"organization,omitempty"`
-	Status       string  `json:"status"`
-	IsActive     bool    `json:"is_active"`
-	CreatedAt    string  `json:"created_at"`
+	SubjectID   string  `json:"subject_id"`
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name,omitempty"`
+	Email       *string `json:"email,omitempty"`
+	AvatarURL   *string `json:"avatar_url,omitempty"`
+	Status      string  `json:"status"`
+	IsActive    bool    `json:"is_active"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 type adminUserListResponse struct {
@@ -63,12 +60,11 @@ type adminUserListResponse struct {
 // ListUsers godoc
 //
 //	@Summary		List users for admin console
-//	@Description	Paginated list of all users in the current tenant scope, optionally filtered by keyword / organization / status. Unlike /search, this surface includes disabled + banned accounts so admins can see the full roster. Used by @server's GET /api/admin/users (admin-user-migration slice).
+//	@Description	Paginated list of all users in the current tenant scope, optionally filtered by keyword / status. Unlike /search, this surface includes disabled + banned accounts so admins can see the full roster. Used by @server's GET /api/admin/users (admin-user-migration slice).
 //	@Tags			users,admin
 //	@Produce		json
 //	@Security		InternalToken
 //	@Param			keyword			query		string	false	"Matched against username / display_name / email (LIKE %keyword%)"
-//	@Param			organization	query		string	false	"Exact organization match"
 //	@Param			status			query		string	false	"Account status: active | disabled | banned"	Enums(active,disabled,banned)
 //	@Param			page			query		int		false	"1-based page number (default 1)"
 //	@Param			page_size		query		int		false	"Page size (default 20, max 200)"
@@ -102,11 +98,10 @@ func (a *UsersAPI) ListUsers(c *gin.Context) {
 	}
 
 	params := userpkg.ListUsersParams{
-		Keyword:      c.Query("keyword"),
-		Organization: c.Query("organization"),
-		Status:       status,
-		Page:         page,
-		PageSize:     pageSize,
+		Keyword:  c.Query("keyword"),
+		Status:   status,
+		Page:     page,
+		PageSize: pageSize,
 	}
 
 	users, total, err := a.Svc.ListUsers(c.Request.Context(), params)
@@ -124,15 +119,14 @@ func (a *UsersAPI) ListUsers(c *gin.Context) {
 	items := make([]adminUserListItem, 0, len(users))
 	for _, u := range users {
 		items = append(items, adminUserListItem{
-			SubjectID:    u.SubjectID,
-			Username:     u.Username,
-			DisplayName:  u.DisplayName,
-			Email:        u.Email,
-			AvatarURL:    u.AvatarURL,
-			Organization: u.Organization,
-			Status:       u.Status,
-			IsActive:     u.IsActive,
-			CreatedAt:    u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			SubjectID:   u.SubjectID,
+			Username:    u.Username,
+			DisplayName: u.DisplayName,
+			Email:       u.Email,
+			AvatarURL:   u.AvatarURL,
+			Status:      u.Status,
+			IsActive:    u.IsActive,
+			CreatedAt:   u.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}
 	c.JSON(http.StatusOK, adminUserListResponse{
@@ -214,30 +208,6 @@ func (a *UsersAPI) SetUserStatus(c *gin.Context) {
 	})
 }
 
-// ListOrganizations godoc
-//
-//	@Summary		List organizations with member counts (admin)
-//	@Description	Returns the per-tenant organization roll-up (grouped by users.organization, busiest first). Powers the admin console's organization filter dropdown. NULL/empty organizations are skipped. Used by @server's GET /api/admin/users/organizations (admin-user-migration slice).
-//	@Tags			users,admin
-//	@Produce		json
-//	@Security		InternalToken
-//	@Success		200	{object}	object{organizations=[]userpkg.OrganizationCount}
-//	@Failure		500	{object}	object{error=string}
-//	@Router			/api/internal/users/organizations [get]
-func (a *UsersAPI) ListOrganizations(c *gin.Context) {
-	orgs, err := a.Svc.ListOrganizations(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
-	}
-	// Empty slice (not nil) so the JSON serializes as `[]` not `null` —
-	// keeps the admin UI's iteration simple (no null-guard required).
-	if orgs == nil {
-		orgs = []userpkg.OrganizationCount{}
-	}
-	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
-}
-
 // adminUserProfileDTO is the privacy-scoped projection of models.User
 // returned by the admin profile endpoint. Deliberately omits infra-only
 // identifiers (external_key, casdoor_*, provider_user_id) — those are used
@@ -252,7 +222,6 @@ type adminUserProfileDTO struct {
 	Phone        *string `json:"phone,omitempty"`
 	AvatarURL    *string `json:"avatar_url,omitempty"`
 	AuthProvider *string `json:"auth_provider,omitempty"`
-	Organization *string `json:"organization,omitempty"`
 	Status       string  `json:"status"`
 	IsActive     bool    `json:"is_active"`
 	LastLoginAt  *string `json:"last_login_at,omitempty"`
@@ -300,7 +269,6 @@ func (a *UsersAPI) GetUserProfile(c *gin.Context) {
 		Phone:        u.Phone,
 		AvatarURL:    u.AvatarURL,
 		AuthProvider: u.AuthProvider,
-		Organization: u.Organization,
 		Status:       u.Status,
 		IsActive:     u.IsActive,
 		CreatedAt:    u.CreatedAt.Format("2006-01-02T15:04:05Z"),
@@ -387,7 +355,6 @@ func (a *UsersAPI) AdminUpdateProfile(c *gin.Context) {
 		Phone:        u.Phone,
 		AvatarURL:    u.AvatarURL,
 		AuthProvider: u.AuthProvider,
-		Organization: u.Organization,
 		Status:       u.Status,
 		IsActive:     u.IsActive,
 		CreatedAt:    u.CreatedAt.Format("2006-01-02T15:04:05Z"),
