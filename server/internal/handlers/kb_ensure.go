@@ -384,8 +384,8 @@ func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 	giteaUserID := int64(0)
 	giteaUsername := ""
 	if userMeta != nil {
-		giteaUserID = userMeta.GiteaUserID
-		giteaUsername = userMeta.GiteaUsername
+		giteaUserID = userMeta.GitUserID
+		giteaUsername = userMeta.GitUsername
 	}
 
 	// Also collect team space.

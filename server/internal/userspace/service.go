@@ -79,7 +79,7 @@ func NewService(
 // personal space readiness.
 type UserSpaceInfo struct {
 	UserSubjectID string `json:"user_subject_id"`
-	GiteaUsername string `json:"gitea_username"`
+	GitUsername string `json:"git_username"`
 	SyncStatus    string `json:"sync_status"` // "synced" | "pending" | "error" | ""
 	Ready         bool   `json:"ready"`
 }
@@ -101,7 +101,7 @@ func (s *Service) GetUserSpace(ctx context.Context, userSubjectID, tenantID stri
 
 	return &UserSpaceInfo{
 		UserSubjectID: binding.UserSubjectID,
-		GiteaUsername: binding.GitUsername,
+		GitUsername: binding.GitUsername,
 		SyncStatus:    binding.SyncStatus,
 		Ready:         binding.SyncStatus == models.GitSyncStatusSynced,
 	}, nil

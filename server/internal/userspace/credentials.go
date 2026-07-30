@@ -110,9 +110,9 @@ func (s *Service) ensurePAT(
 		UserSubjectID:  subjectID,
 		TenantID:       tenantID,
 		GitServerID:    cfg.ServerID,
-		GiteaUsername:  gitUsername,
-		GiteaUserID:    giteaUserID,
-		GiteaTokenID:   tok.ID,
+		GitUsername:  gitUsername,
+		GitUserID:    giteaUserID,
+		GitTokenID:   tok.ID,
 		TokenEncrypted: encrypted,
 		TokenSHA256:    crypto.SHA256Hex([]byte(tok.TokenPlaintext)),
 	}
@@ -122,7 +122,7 @@ func (s *Service) ensurePAT(
 
 	s.log.Info("userspace: created PAT for user",
 		zap.String("subject", subjectID),
-		zap.String("gitea_username", gitUsername))
+		zap.String("git_username", gitUsername))
 	return nil
 }
 
