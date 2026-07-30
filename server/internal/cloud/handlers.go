@@ -294,7 +294,7 @@ func DeviceNotifyHandler(manager *ConnectionManager, deviceSvc *services.DeviceS
 	}
 }
 
-func NotifyRespondedHandler(store *notification.Store) gin.HandlerFunc {
+func NotifyRespondedHandler(store *notification.Store, deviceSvc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ""
 		auth := c.GetHeader("Authorization")
@@ -303,6 +303,13 @@ func NotifyRespondedHandler(store *notification.Store) gin.HandlerFunc {
 		}
 		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "device token required"})
+			return
+		}
+		// Verify the bearer token actually belongs to a registered device.
+		// Previously the token was parsed but never validated, allowing any
+		// non-empty bearer to mark any session as responded.
+		if _, err := deviceSvc.VerifyDeviceToken(token); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid device token"})
 			return
 		}
 
