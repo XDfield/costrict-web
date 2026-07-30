@@ -41,6 +41,7 @@ type AdminUsersService interface {
 // payload through with no field reshaping.
 type adminUserListItem struct {
 	SubjectID   string  `json:"subject_id"`
+	ShortID     string  `json:"short_id"`
 	Username    string  `json:"username"`
 	DisplayName *string `json:"display_name,omitempty"`
 	Email       *string `json:"email,omitempty"`
@@ -120,6 +121,7 @@ func (a *UsersAPI) ListUsers(c *gin.Context) {
 	for _, u := range users {
 		items = append(items, adminUserListItem{
 			SubjectID:   u.SubjectID,
+			ShortID:     u.ShortID,
 			Username:    u.Username,
 			DisplayName: u.DisplayName,
 			Email:       u.Email,

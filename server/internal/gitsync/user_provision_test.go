@@ -40,6 +40,14 @@ type stubProvisioner struct {
 	lookupCalls   []string
 	lookupResult  *GiteaUser
 	lookupErr     error
+	editCalls     []editCall
+	editErr       error
+}
+
+// editCall records a single EditUser invocation for assertions.
+type editCall struct {
+	Username string
+	FullName string
 }
 
 func (s *stubProvisioner) CreateUser(ctx context.Context, opts CreateUserOptions) (*GiteaUser, error) {
@@ -56,6 +64,18 @@ func (s *stubProvisioner) CreateUser(ctx context.Context, opts CreateUserOptions
 func (s *stubProvisioner) GetUserByName(ctx context.Context, username string) (*GiteaUser, error) {
 	s.lookupCalls = append(s.lookupCalls, username)
 	return s.lookupResult, s.lookupErr
+}
+
+func (s *stubProvisioner) EditUser(ctx context.Context, username string, opts EditUserOptions) (*GiteaUser, error) {
+	full := ""
+	if opts.FullName != nil {
+		full = *opts.FullName
+	}
+	s.editCalls = append(s.editCalls, editCall{Username: username, FullName: full})
+	if s.editErr != nil {
+		return nil, s.editErr
+	}
+	return &GiteaUser{ID: 99, Login: username, FullName: full}, nil
 }
 
 func setupProvisionDB(t *testing.T) *gorm.DB {

@@ -229,6 +229,18 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 				s.logf("gitsync.ProvisionUser: markSynced (post-409) failed subject=%q err=%v", params.SubjectID, err)
 				return fmt.Errorf("gitsync: mark synced (post-409): %w", err)
 			}
+			// Push current cs-user display_name to the pre-existing Gitea
+			// account — without this, a user provisioned via 409-recovery
+			// keeps Gitea's stale full_name forever. Best-effort: failure
+			// to update display_name does NOT fail the provision itself.
+			if newName := strings.TrimSpace(userFullName(params)); newName != "" && newName != existing.FullName {
+				if _, editErr := provider.EditUser(provCtx, binding.GitUsername, EditUserOptions{
+					FullName: &newName,
+				}); editErr != nil {
+					s.logf("gitsync.ProvisionUser: post-409 display_name update failed subject=%q err=%v",
+						params.SubjectID, editErr)
+				}
+			}
 			return nil
 		}
 		provErr = fmt.Errorf("%w; lookup also failed: %v", ErrUsernameTaken, lookupErr)
@@ -355,4 +367,187 @@ func randomProvisioningPassword() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// BackfillUser is one entry in a BackfillMissingBindings batch. Caller
+// (admin handler) fills it from cs-user's user list; ShortID is mandatory
+// because ProvisionUser uses it as the Git login.
+type BackfillUser struct {
+	SubjectID   string
+	ShortID     string
+	Username    string
+	DisplayName *string
+	Email       *string
+}
+
+// BackfillFailure records one user whose provisioning attempt returned an
+// error. SubjectID + Error are surfaced to the admin for follow-up.
+type BackfillFailure struct {
+	SubjectID string `json:"subject_id"`
+	Error     string `json:"error"`
+}
+
+// BackfillResult is the aggregate outcome of BackfillMissingBindings.
+type BackfillResult struct {
+	Total              int               `json:"total"`
+	AlreadyBound       int               `json:"already_bound"`
+	Provisioned        int               `json:"provisioned"`
+	DisplayNameUpdated int               `json:"display_name_updated"`
+	Skipped            int               `json:"skipped"`
+	Failed             int               `json:"failed"`
+	Failures           []BackfillFailure `json:"failures,omitempty"`
+}
+
+// BackfillOptions tweaks BackfillMissingBindings behaviour. Zero-value is
+// the safe default (idempotent short-circuit on synced bindings, no extra
+// Git API calls).
+type BackfillOptions struct {
+	// UpdateDisplayName, when true, pushes each user's current cs-user
+	// display_name to the existing Gitea user via EditUser (PATCH
+	// /admin/users/{username}). Applies to users whose binding was already
+	// synced before this run — newly provisioned users already get the
+	// display_name set via CreateUser. Each update is one synchronous Git
+	// API call; cap input slice accordingly.
+	UpdateDisplayName bool
+}
+
+// BackfillMissingBindings reconciles existing cs-user users against
+// user_git_binding for one tenant. Used to migrate users created before
+// user.created event processing was enabled (the "存量用户开户" path).
+//
+// For each input user:
+//
+//	ShortID empty                       → skipped (cannot derive git login)
+//	synced binding already exists       → already_bound (idempotent short-circuit)
+//	    + opts.UpdateDisplayName        → also pushes display_name to Gitea
+//	otherwise ProvisionUser invoked     → provisioned (nil err) / failed (non-nil)
+//
+// One user's failure never aborts the batch — ProvisionUser is best-effort
+// and the underlying binding row stays pending/error for retry. Caller is
+// responsible for capping the input slice (admin handler enforces a hard
+// max_users) since each ProvisionUser makes a synchronous Git API call.
+func (s *UserProvisionService) BackfillMissingBindings(ctx context.Context, tenantID string, users []BackfillUser, opts BackfillOptions) BackfillResult {
+	result := BackfillResult{Total: len(users)}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	// Pre-fetch this tenant's bindings once: (a) avoids N+1 lookups inside
+	// ProvisionUser's upsertPendingBinding, (b) lets us distinguish
+	// already-synced (idempotent no-op) from freshly provisioned, (c) gives
+	// us the GitUsername needed for EditUser when UpdateDisplayName is set.
+	type bindingInfo struct {
+		Status      string
+		GitUsername string
+	}
+	bound := make(map[string]bindingInfo, len(users))
+	if s != nil && s.db != nil {
+		var rows []models.UserGitBinding
+		if err := s.db.WithContext(ctx).
+			Where("tenant_id = ?", tenantID).
+			Find(&rows).Error; err == nil {
+			for _, r := range rows {
+				bound[r.UserSubjectID] = bindingInfo{Status: r.SyncStatus, GitUsername: r.GitUsername}
+			}
+		}
+	}
+
+	for _, u := range users {
+		if u.SubjectID == "" || u.ShortID == "" {
+			result.Skipped++
+			continue
+		}
+		if info := bound[u.SubjectID]; info.Status == models.GitSyncStatusSynced {
+			result.AlreadyBound++
+			if opts.UpdateDisplayName && shouldSyncDisplayName(u.DisplayName) {
+				if err := s.syncDisplayName(ctx, tenantID, info.GitUsername, u.DisplayName); err == nil {
+					result.DisplayNameUpdated++
+				} else {
+					result.Failed++
+					result.Failures = append(result.Failures, BackfillFailure{
+						SubjectID: u.SubjectID,
+						Error:     "display_name sync: " + err.Error(),
+					})
+				}
+			}
+			continue
+		}
+		err := s.ProvisionUser(ctx, UserProvisionParams{
+			SubjectID:   u.SubjectID,
+			TenantID:    tenantID,
+			ShortID:     u.ShortID,
+			Username:    u.Username,
+			DisplayName: u.DisplayName,
+			Email:       u.Email,
+		})
+		if err == nil {
+			result.Provisioned++
+			continue
+		}
+		result.Failed++
+		result.Failures = append(result.Failures, BackfillFailure{
+			SubjectID: u.SubjectID,
+			Error:     err.Error(),
+		})
+	}
+	return result
+}
+
+// shouldSyncDisplayName returns true iff display_name is meaningfully set.
+// nil / blank values are no-ops: we don't force-clear Gitea's existing
+// full_name during reconciliation (would wipe data on users whose cs-user
+// profile legitimately lacks display_name).
+func shouldSyncDisplayName(displayName *string) bool {
+	if displayName == nil {
+		return false
+	}
+	return strings.TrimSpace(*displayName) != ""
+}
+
+// syncDisplayName resolves the tenant's git_server and PATCHes the user's
+// full_name. Soft-skips (returns nil) when the tenant has no git_server —
+// consistent with ProvisionUser's missing-server semantics. Caller must
+// guard with shouldSyncDisplayName to avoid no-op EditUser calls; this
+// helper additionally defends against nil/blank for direct callers.
+func (s *UserProvisionService) syncDisplayName(ctx context.Context, tenantID, gitUsername string, displayName *string) error {
+	if s == nil || s.resolver == nil || gitUsername == "" {
+		return errors.New("gitsync: invalid syncDisplayName args")
+	}
+	if displayName == nil {
+		return nil
+	}
+	name := strings.TrimSpace(*displayName)
+	if name == "" {
+		return nil
+	}
+
+	serverCfg, err := s.resolver.Resolve(ctx, tenantID)
+	if err != nil {
+		isSoftSkip := errors.Is(err, gitserver.ErrTenantMissingGitServer) ||
+			errors.Is(err, gitserver.ErrGitServerNotFound) ||
+			errors.Is(err, gitserver.ErrGitServerDisabled)
+		if isSoftSkip {
+			return nil
+		}
+		return fmt.Errorf("resolve git server: %w", err)
+	}
+
+	provCtx, cancel := context.WithTimeout(ctx, provisionTimeout)
+	defer cancel()
+
+	provider := s.providerFactory(GitServerConfig{
+		Kind:       serverCfg.Kind,
+		Endpoint:   serverCfg.Endpoint,
+		AdminToken: serverCfg.AdminToken,
+	})
+	if provider == nil {
+		return fmt.Errorf("nil git provider for kind=%q", serverCfg.Kind)
+	}
+
+	if _, err := provider.EditUser(provCtx, gitUsername, EditUserOptions{
+		FullName: &name,
+	}); err != nil {
+		return fmt.Errorf("edit user %q: %w", gitUsername, err)
+	}
+	return nil
 }
