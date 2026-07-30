@@ -172,9 +172,19 @@ func (v *CasdoorVerifier) validateRegistered(claims jwt.MapClaims) error {
 }
 
 // mapClaimsToModel copies Casdoor's standard claim fields into the
-// models.JWTClaims wire struct. Non-string fields are coerced defensively;
-// any unknown claim is dropped (forward-compat: future Casdoor fields don't
-// need verifier changes).
+// models.JWTClaims wire struct AND harvests the enterprise payload
+// (`properties.*` including oauth_Custom sub-objects, plus `signupApplication`)
+// into ExternalClaims. ApplyEnterpriseMapping's field_map walker expects
+// ExternalClaims to look identical to what server's
+// ParseJWTClaimsFromAccessToken used to surface — i.e. a flat top-level map
+// with `properties` and `signupApplication` as keys, plus any other raw Casdoor
+// fields it might reference. Pulling these straight from the verified JWT
+// keeps the enterprise-claims chain inside the JWKS verification boundary.
+//
+// Non-string standard fields are coerced defensively; unknown claims are
+// preserved in ExternalClaims (forward-compat for new Casdoor fields the
+// field_map might reference) but never promoted to a typed field on
+// models.JWTClaims.
 func mapClaimsToModel(claims jwt.MapClaims) *models.JWTClaims {
 	out := &models.JWTClaims{}
 	out.ID, _ = claims["id"].(string)
@@ -188,10 +198,34 @@ func mapClaimsToModel(claims jwt.MapClaims) *models.JWTClaims {
 	out.Provider, _ = claims["provider"].(string)
 	out.ProviderUserID, _ = claims["provider_user_id"].(string)
 	out.Phone, _ = claims["phone"].(string)
-	if ext, ok := claims["external_claims"].(map[string]any); ok {
-		out.ExternalClaims = ext
-	}
+	out.ExternalClaims = harvestExternalClaims(claims)
 	return out
+}
+
+// harvestExternalClaims carries the raw verified JWT payload so the field_map
+// walker in employment_mapping.go can reference any top-level or dotted-path
+// field. Matches the prior server-side contract (server/internal/user/
+// service.go::ParseJWTClaimsFromAccessToken assigned `result.ExternalClaims =
+// rawClaims`) so existing tenant_configs that reference top-level Casdoor
+// fields (e.g. `employee_number: "employeeNumber"`) keep working after the
+// cs-user-side harvest took over from server-side parsing.
+//
+// Returns nil when the verified JWT carries no payload at all (empty map)
+// — ApplyEnterpriseMapping no-ops on empty ExternalClaims.
+//
+// We carry the full payload rather than cherry-picking keys because the
+// walker supports arbitrary dotted paths and operators can configure
+// field_map entries pointing at any claim. Carrying everything keeps the
+// pipeline forward-compatible without per-field allow-listing.
+func harvestExternalClaims(claims jwt.MapClaims) map[string]any {
+	if len(claims) == 0 {
+		return nil
+	}
+	ext := make(map[string]any, len(claims))
+	for k, v := range claims {
+		ext[k] = v
+	}
+	return ext
 }
 
 // lookupKey returns the RSA public key for kid, refreshing the cached JWKS

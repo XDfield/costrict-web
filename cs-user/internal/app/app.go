@@ -247,7 +247,8 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 			cfg.Casdoor.JWKSHTTPTimeout,
 			cfg.Casdoor.JWKSRefreshTTL,
 		),
-		Permissions: deps.PermissionReader,
+		TenantResolver: deps.TenantResolver,
+		Permissions:    deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)
 }

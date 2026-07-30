@@ -24,6 +24,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -42,27 +43,43 @@ import (
 
 // phaseAFixture bundles the moving parts a Phase A integration test needs.
 // All optional readers are stubs so the test pins exact responses without
-// a DB.
+// a DB. The fixture also wires a mock Casdoor JWKS so the verifier path
+// runs end-to-end — tests pass a raw Casdoor JWT (signed by casdoorKey) and
+// cs-user's reissue-token handler verifies it itself.
 type phaseAFixture struct {
-	signer   *auth.Signer
-	pk       *rsa.PrivateKey
-	engine   *gin.Engine
-	jwksBody []byte // captured JWKS JSON for cross-verification
+	signer     *auth.Signer
+	pk         *rsa.PrivateKey
+	casdoorKey *rsa.PrivateKey
+	casdoorKid string
+	engine     *gin.Engine
+	jwksBody   []byte // captured JWKS JSON for cross-verification
 }
 
 // newPhaseAFixture builds a gin engine wired with both /.well-known/jwks and
-// /api/internal/users/reissue-token — the two endpoints the OAuth-callback
-// takeover depends on. The permission reader is optional: pass nil for the
-// 灰度 (gray-release) path.
-func newPhaseAFixture(t *testing.T, employment EmploymentReader, permissions PermissionReader) phaseAFixture {
+// /api/internal/users/reissue-token. employment MUST wire external_key +
+// GetUserByID stubs so the handler can resolve subject_id and tenant from
+// the verified JWT. permissions is optional: pass nil for the 灰度 path.
+func newPhaseAFixture(t *testing.T, employment EmploymentReader, permissions PermissionReader, tenant TenantReader) phaseAFixture {
 	t.Helper()
 	signer, pk := newTestSigner(t)
+
+	casdoorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	const casdoorKid = "casdoor-kid-phasea"
+	casdoorJWKS := startMockCasdoorJWKS(t, &casdoorKey.PublicKey, casdoorKid)
+
 	jwksAPI := JWKSAPI{Signer: signer}
 	authAPI := &AuthAPI{
-		Svc:         employment,
-		Signer:      signer,
-		JWT:         config.JWTConfig{Issuer: "https://cs-user.test", TTL: time.Hour, DefaultAudience: []string{"costrict-web"}},
-		Permissions: permissions,
+		Svc:            employment,
+		Signer:         signer,
+		JWT:            config.JWTConfig{Issuer: "https://cs-user.test", TTL: time.Hour, DefaultAudience: []string{"costrict-web"}},
+		Permissions:    permissions,
+		TenantResolver: tenant,
+		CasdoorVerifier: auth.NewCasdoorVerifier(
+			casdoorJWKS.URL, "", nil, time.Second, time.Minute,
+		),
 	}
 	r := gin.New()
 	r.GET("/.well-known/jwks", jwksAPI.GetJWKS)
@@ -77,11 +94,27 @@ func newPhaseAFixture(t *testing.T, employment EmploymentReader, permissions Per
 		t.Fatalf("JWKS bootstrap: status %d body=%s", w.Code, w.Body.String())
 	}
 	return phaseAFixture{
-		signer:   signer,
-		pk:       pk,
-		engine:   r,
-		jwksBody: w.Body.Bytes(),
+		signer:     signer,
+		pk:         pk,
+		casdoorKey: casdoorKey,
+		casdoorKid: casdoorKid,
+		engine:     r,
+		jwksBody:   w.Body.Bytes(),
 	}
+}
+
+// casdoorJWT signs a raw Casdoor-format JWT the fixture's verifier will
+// accept. universalID + provider drive the external_key the handler resolves
+// subject_id from.
+func (f phaseAFixture) casdoorJWT(t *testing.T, universalID, name, provider string) string {
+	t.Helper()
+	return signCasdoorJWTForHandler(t, f.casdoorKey, f.casdoorKid, jwt.MapClaims{
+		"sub":          universalID,
+		"universal_id": universalID,
+		"name":         name,
+		"provider":     provider,
+		"exp":          time.Now().Add(time.Hour).Unix(),
+	})
 }
 
 // callReissue posts the request body to the fixture's reissue-token route
@@ -163,37 +196,60 @@ func (f phaseAFixture) verifyViaJWKS(t *testing.T, token string) *auth.Enterpris
 // verify purely from /.well-known/jwks.
 func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 	empNum := "E-1001"
-	fixture := newPhaseAFixture(t,
-		stubEmploymentReader{
-			fn: func(_ context.Context, id string) (*models.EmploymentIdentity, error) {
-				return &models.EmploymentIdentity{
-					UserSubjectID:  id,
-					EmployeeNumber: &empNum,
-					JobTitle:       ptrStrLocal("Staff Engineer"),
-				}, nil
-			},
+	const subjectID = "usr_alice"
+	const tenantID = "t-acme"
+	employment := stubEmploymentReader{
+		fn: func(_ context.Context, id string) (*models.EmploymentIdentity, error) {
+			return &models.EmploymentIdentity{
+				UserSubjectID:  id,
+				EmployeeNumber: &empNum,
+				JobTitle:       ptrStrLocal("Staff Engineer"),
+			}, nil
 		},
-		stubPermissionReader{
-			platformFn: func(_ context.Context, id string) (*models.PlatformAdmin, error) {
-				return &models.PlatformAdmin{UserID: id, Scope: models.PlatformScopeFull}, nil
-			},
-			tenantRolesFn: func(_ context.Context, _, _ string) ([]string, error) {
-				return []string{models.TenantRoleOwner}, nil
-			},
+		externalKeyFn: func(_ context.Context, k string) (string, error) {
+			if k != "casdoor:idtrust:uuid-alice" {
+				t.Errorf("external_key: got %q", k)
+			}
+			return subjectID, nil
 		},
-	)
+		userFn: func(_ context.Context, id string) (*models.User, error) {
+			return &models.User{SubjectID: id, TenantID: tenantID}, nil
+		},
+	}
+	permissions := stubPermissionReader{
+		platformFn: func(_ context.Context, id string) (*models.PlatformAdmin, error) {
+			return &models.PlatformAdmin{UserID: id, Scope: models.PlatformScopeFull}, nil
+		},
+		tenantRolesFn: func(_ context.Context, _, tenant string) ([]string, error) {
+			if tenant != tenantID {
+				t.Errorf("tenant_roles tenant arg: got %q, want %q", tenant, tenantID)
+			}
+			return []string{models.TenantRoleOwner}, nil
+		},
+	}
+	tenant := stubTenantReader{
+		fn: func(_ context.Context, idOrSlug string) (*models.Tenant, error) {
+			if idOrSlug != tenantID {
+				t.Errorf("ResolveBySlug arg: got %q, want %q", idOrSlug, tenantID)
+			}
+			return &models.Tenant{TenantID: tenantID, Slug: "acme"}, nil
+		},
+	}
+	fixture := newPhaseAFixture(t, employment, permissions, tenant)
 
-	resp := fixture.callReissue(t, reissueTokenRequest{
-		UserSubjectID: "usr_alice",
-		TenantID:      "t-acme",
-		TenantSlug:    "acme",
-		Identity: &models.JWTClaims{
-			UniversalID: "uuid-alice",
-			Name:        "Alice Lee",
-			Email:       "alice@example.com",
-			Provider:    "idtrust",
-		},
+	raw := fixture.casdoorJWT(t, "uuid-alice", "Alice Lee", "idtrust")
+	// Embed the email claim that the fixture's helper doesn't set by default.
+	// Re-sign with the richer claim set:
+	raw = signCasdoorJWTForHandler(t, fixture.casdoorKey, fixture.casdoorKid, jwt.MapClaims{
+		"sub":          "uuid-alice",
+		"universal_id": "uuid-alice",
+		"name":         "Alice Lee",
+		"email":        "alice@example.com",
+		"provider":     "idtrust",
+		"exp":          time.Now().Add(time.Hour).Unix(),
 	})
+
+	resp := fixture.callReissue(t, reissueTokenRequest{CasdoorJWT: raw})
 
 	got := fixture.verifyViaJWKS(t, resp.Token)
 
@@ -201,7 +257,7 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 	if got.Issuer != "https://cs-user.test" {
 		t.Errorf("iss: got %q", got.Issuer)
 	}
-	if got.Subject != "usr_alice" {
+	if got.Subject != subjectID {
 		t.Errorf("sub: got %q", got.Subject)
 	}
 	if got.Expiry == nil || !got.Expiry.After(time.Now()) {
@@ -224,7 +280,7 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 		t.Errorf("enterprise: emp=%q job=%q", got.EmployeeNumber, got.JobTitle)
 	}
 	// Tenant group (Phase B).
-	if got.TenantID != "t-acme" || got.TenantSlug != "acme" {
+	if got.TenantID != tenantID || got.TenantSlug != "acme" {
 		t.Errorf("tenant: id=%q slug=%q", got.TenantID, got.TenantSlug)
 	}
 	// Permission group (Phase C1).
@@ -243,22 +299,33 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 // parties parsing the token see only the standard + tenant claims they
 // already know how to handle.
 func TestPhaseA_GrayReleaseMinimalToken(t *testing.T) {
-	fixture := newPhaseAFixture(t,
-		stubEmploymentReader{
-			fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	const subjectID = "usr_pre_cutover"
+	employment := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+		externalKeyFn: func(_ context.Context, k string) (string, error) {
+			if k != "casdoor:idtrust:uuid-pre" {
+				t.Errorf("external_key: got %q", k)
+			}
+			return subjectID, nil
 		},
-		nil, // no permission reader — gray release
-	)
+		userFn: func(_ context.Context, id string) (*models.User, error) {
+			return &models.User{SubjectID: id, TenantID: "default"}, nil
+		},
+	}
+	tenant := stubTenantReader{
+		fn: func(_ context.Context, idOrSlug string) (*models.Tenant, error) {
+			return &models.Tenant{TenantID: idOrSlug, Slug: "default"}, nil
+		},
+	}
+	fixture := newPhaseAFixture(t, employment, nil, tenant) // no permission reader — gray release
 
-	resp := fixture.callReissue(t, reissueTokenRequest{
-		UserSubjectID: "usr_pre_cutover",
-		TenantID:      "default",
-	})
+	raw := fixture.casdoorJWT(t, "uuid-pre", "Pre Cutover", "idtrust")
+	resp := fixture.callReissue(t, reissueTokenRequest{CasdoorJWT: raw})
 
 	got := fixture.verifyViaJWKS(t, resp.Token)
 
 	// Standard + tenant groups populated.
-	if got.Subject != "usr_pre_cutover" {
+	if got.Subject != subjectID {
 		t.Errorf("sub: got %q", got.Subject)
 	}
 	if got.TenantID != "default" {
@@ -279,16 +346,22 @@ func TestPhaseA_GrayReleaseMinimalToken(t *testing.T) {
 // rotation); a mismatch means verification would fall through to a wrong
 // key.
 func TestPhaseA_JWKSKidMatchesSignerKid(t *testing.T) {
-	fixture := newPhaseAFixture(t,
-		stubEmploymentReader{
-			fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	const subjectID = "usr_kid"
+	employment := stubEmploymentReader{
+		fn:            func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+		externalKeyFn: func(context.Context, string) (string, error) { return subjectID, nil },
+		userFn: func(_ context.Context, id string) (*models.User, error) {
+			return &models.User{SubjectID: id, TenantID: "default"}, nil
 		},
-		nil,
-	)
-	resp := fixture.callReissue(t, reissueTokenRequest{
-		UserSubjectID: "usr_kid",
-		TenantID:      "default",
-	})
+	}
+	tenant := stubTenantReader{
+		fn: func(_ context.Context, idOrSlug string) (*models.Tenant, error) {
+			return &models.Tenant{TenantID: idOrSlug, Slug: "default"}, nil
+		},
+	}
+	fixture := newPhaseAFixture(t, employment, nil, tenant)
+	raw := fixture.casdoorJWT(t, "uuid-kid", "Kid", "idtrust")
+	resp := fixture.callReissue(t, reissueTokenRequest{CasdoorJWT: raw})
 
 	// Parse the unverified header — we only need the kid, not signature.
 	unverified := jwt.NewParser(jwt.WithoutClaimsValidation())
@@ -313,16 +386,22 @@ func TestPhaseA_JWKSKidMatchesSignerKid(t *testing.T) {
 // configured TTL — locks in the "1h default" contract that the OAuth
 // callback + cookie MaxAge depend on.
 func TestPhaseA_TokenExpiryMatchesConfigTTL(t *testing.T) {
-	fixture := newPhaseAFixture(t,
-		stubEmploymentReader{
-			fn: func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+	const subjectID = "usr_ttl"
+	employment := stubEmploymentReader{
+		fn:            func(context.Context, string) (*models.EmploymentIdentity, error) { return nil, nil },
+		externalKeyFn: func(context.Context, string) (string, error) { return subjectID, nil },
+		userFn: func(_ context.Context, id string) (*models.User, error) {
+			return &models.User{SubjectID: id, TenantID: "default"}, nil
 		},
-		nil,
-	)
-	resp := fixture.callReissue(t, reissueTokenRequest{
-		UserSubjectID: "usr_ttl",
-		TenantID:      "default",
-	})
+	}
+	tenant := stubTenantReader{
+		fn: func(_ context.Context, idOrSlug string) (*models.Tenant, error) {
+			return &models.Tenant{TenantID: idOrSlug, Slug: "default"}, nil
+		},
+	}
+	fixture := newPhaseAFixture(t, employment, nil, tenant)
+	raw := fixture.casdoorJWT(t, "uuid-ttl", "TTL", "idtrust")
+	resp := fixture.callReissue(t, reissueTokenRequest{CasdoorJWT: raw})
 
 	got := fixture.verifyViaJWKS(t, resp.Token)
 	if got.Expiry == nil {

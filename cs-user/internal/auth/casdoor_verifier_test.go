@@ -303,3 +303,66 @@ func TestJwkToRSAPublicKey_RoundTrip(t *testing.T) {
 		t.Errorf("exponent: got %d, want %d", pub.E, key.PublicKey.E)
 	}
 }
+
+// TestMapClaimsToModel_ExternalClaimsCarriesAllTopLevelFields pins the
+// harvest contract: ExternalClaims must carry the full verified JWT payload
+// (not just `properties` + `signupApplication`) so the field_map walker in
+// employment_mapping.go can reference any top-level Casdoor field a tenant
+// config might use (e.g. `employee_number: "employeeNumber"`, where
+// `employeeNumber` is top-level, not under `properties.*`). The prior
+// narrower harvest silently dropped these fields, producing NULL employment
+// columns — this test is the regression lock.
+func TestMapClaimsToModel_ExternalClaimsCarriesAllTopLevelFields(t *testing.T) {
+	claims := jwt.MapClaims{
+		"sub":             "uni-1",
+		"exp":             time.Now().Add(time.Hour).Unix(),
+		"name":            "Alice",
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom": map[string]any{"id": "alice-uid"},
+		},
+		// Top-level IdP fields the field_map walker might reference:
+		"employeeNumber":  "E-1001",
+		"departmentNumber": "DC-42",
+		"UserId":          "alice-idtrust-uid",
+	}
+	got := mapClaimsToModel(claims)
+
+	if got.ExternalClaims == nil {
+		t.Fatal("ExternalClaims: got nil, want non-nil")
+	}
+	// Nested payload preserved.
+	if props, ok := got.ExternalClaims["properties"].(map[string]any); !ok || props["oauth_Custom"] == nil {
+		t.Errorf("ExternalClaims['properties']: got %+v, want nested oauth_Custom", got.ExternalClaims["properties"])
+	}
+	// signupApplication preserved.
+	if got.ExternalClaims["signupApplication"] != "idtrust" {
+		t.Errorf("ExternalClaims['signupApplication']: got %v", got.ExternalClaims["signupApplication"])
+	}
+	// Top-level IdP fields preserved (the regression-prone path).
+	if got.ExternalClaims["employeeNumber"] != "E-1001" {
+		t.Errorf("ExternalClaims['employeeNumber']: got %v, want E-1001", got.ExternalClaims["employeeNumber"])
+	}
+	if got.ExternalClaims["departmentNumber"] != "DC-42" {
+		t.Errorf("ExternalClaims['departmentNumber']: got %v, want DC-42", got.ExternalClaims["departmentNumber"])
+	}
+	if got.ExternalClaims["UserId"] != "alice-idtrust-uid" {
+		t.Errorf("ExternalClaims['UserId']: got %v, want alice-idtrust-uid", got.ExternalClaims["UserId"])
+	}
+	// Typed identity fields also still carried (no harm; walker reads via
+	// dotted path if configured).
+	if got.ExternalClaims["name"] != "Alice" {
+		t.Errorf("ExternalClaims['name']: got %v, want Alice", got.ExternalClaims["name"])
+	}
+}
+
+// TestMapClaimsToModel_EmptyClaimsReturnsNilExternalClaims locks the empty-
+// payload branch: when the verified JWT carries no claims at all (cannot
+// happen for a real JWT but defensive), harvestExternalClaims returns nil
+// and ApplyEnterpriseMapping no-ops.
+func TestMapClaimsToModel_EmptyClaimsReturnsNilExternalClaims(t *testing.T) {
+	got := mapClaimsToModel(jwt.MapClaims{})
+	if got.ExternalClaims != nil {
+		t.Errorf("ExternalClaims: got %+v, want nil for empty claims", got.ExternalClaims)
+	}
+}
