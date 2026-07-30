@@ -20,6 +20,16 @@ type User struct {
 	ID                 uint           `gorm:"primaryKey;autoIncrement" json:"id"`
 	TenantID           string         `gorm:"type:text;size:191;not null;default:default;index:idx_users_tenant_id" json:"tenant_id"`
 	SubjectID          string         `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"`
+	// ShortID is the platform-wide compact handle derived from SubjectID
+	// (SHA256-truncated). Stable, collision-resistant, used wherever a short
+	// non-email identifier is needed (Gitea login, future integrations).
+	// Generated once at user creation; never recomputed.
+	//
+	// Uniqueness enforced in production by migration
+	// 20260730100000_add_users_short_id.sql via a partial UNIQUE INDEX
+	// (WHERE short_id <> ''). The GORM tag deliberately omits uniqueIndex so
+	// test AutoMigrate doesn't collide empty-string rows.
+	ShortID            string         `gorm:"not null;size:32;index:idx_user_short_id" json:"short_id"`
 	Username           string         `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`
 	DisplayName        *string        `gorm:"size:191" json:"display_name"`
 	Email              *string        `gorm:"index:idx_user_email;size:191" json:"email"`

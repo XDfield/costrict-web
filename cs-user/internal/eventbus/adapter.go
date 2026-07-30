@@ -44,6 +44,7 @@ func (p *UserPublisher) PublishUserCreated(ctx context.Context, u *models.User) 
 	return p.outbox.Enqueue(ctx, userCreatedEventType, u.SubjectID, tenantID, UserPayload{
 		SubjectID:   u.SubjectID,
 		TenantID:    tenantID,
+		ShortID:     u.ShortID,
 		Username:    u.Username,
 		DisplayName: u.DisplayName,
 		Email:       u.Email,

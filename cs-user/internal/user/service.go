@@ -298,6 +298,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 
 	// 1. SubjectID is always generated locally and remains stable afterward.
 	subjectID := "usr_" + uuid.NewString()
+	shortID := BuildShortID(subjectID)
 	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
@@ -467,6 +468,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	user = models.User{
 		TenantID:           tenant.IDFromContext(ctx),
 		SubjectID:          subjectID,
+		ShortID:            shortID,
 		Username:           claims.Name,
 		DisplayName:        stringPtr(claims.PreferredUsername),
 		Email:              stringPtr(claims.Email),
