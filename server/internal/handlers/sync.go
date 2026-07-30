@@ -1,13 +1,8 @@
 package handlers
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -496,105 +491,4 @@ func listSyncJobs(c *gin.Context, registryID string) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"jobs": jobs, "total": total})
-}
-
-// HandleGitHubWebhook godoc
-// @Summary      Handle GitHub webhook
-// @Description  Receive GitHub push events and enqueue sync jobs
-// @Tags         sync
-// @Accept       json
-// @Produce      json
-// @Param        X-GitHub-Event  header  string  true   "GitHub event type (push)"
-// @Param        X-Hub-Signature-256  header  string  false  "GitHub webhook signature"
-// @Param        body  body  object{}  true  "GitHub webhook payload"
-// @Success      200  {object}  object{message=string}
-// @Success      202  {object}  object{queued=[]string}
-// @Failure      400  {object}  object{error=string}
-// @Failure      401  {object}  object{error=string}
-// @Failure      503  {object}  object{error=string}
-// @Router       /webhooks/github [post]
-func HandleGitHubWebhook(c *gin.Context) {
-	if JobService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Sync service not available"})
-		return
-	}
-
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
-		return
-	}
-
-	event := c.GetHeader("X-GitHub-Event")
-	if event != "push" {
-		c.JSON(http.StatusOK, gin.H{"message": "Event ignored"})
-		return
-	}
-
-	var payload struct {
-		Repository struct {
-			HTMLURL  string `json:"html_url"`
-			CloneURL string `json:"clone_url"`
-		} `json:"repository"`
-		Ref string `json:"ref"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
-		return
-	}
-
-	repoURL := payload.Repository.HTMLURL
-	if repoURL == "" {
-		repoURL = payload.Repository.CloneURL
-	}
-
-	db := database.GetDB()
-	var registries []models.CapabilityRegistry
-	db.Where("external_url = ? AND sync_enabled = true", repoURL).Find(&registries)
-	if len(registries) == 0 {
-		db.Where("external_url = ? OR external_url = ?",
-			repoURL,
-			repoURL+".git",
-		).Find(&registries)
-	}
-
-	if len(registries) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No matching registry found"})
-		return
-	}
-
-	var queued []string
-	for _, reg := range registries {
-		sig := c.GetHeader("X-Hub-Signature-256")
-		if sig != "" {
-			var cfgMap map[string]interface{}
-			if len(reg.SyncConfig) > 0 {
-				_ = json.Unmarshal(reg.SyncConfig, &cfgMap)
-			}
-			if secret, ok := cfgMap["webhookSecret"].(string); ok && secret != "" {
-				if !verifyGitHubSignature(body, sig, secret) {
-					continue
-				}
-			}
-		}
-
-		job, err := JobService.Enqueue(reg.ID, "webhook", "", services.EnqueueOptions{Priority: 1})
-		if err == nil && job != nil {
-			queued = append(queued, job.ID)
-		}
-	}
-
-	c.JSON(http.StatusAccepted, gin.H{"queued": queued})
-}
-
-func verifyGitHubSignature(body []byte, signature, secret string) bool {
-	const prefix = "sha256="
-	if len(signature) < len(prefix) {
-		return false
-	}
-	sig := signature[len(prefix):]
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(sig), []byte(expected))
 }

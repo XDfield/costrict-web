@@ -1,9 +1,6 @@
 package handlers
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -97,44 +94,8 @@ func setupSyncDB(t *testing.T) func() {
 }
 
 // ---------------------------------------------------------------------------
-// verifyGitHubSignature
+// verifyGitHubSignature (removed along with HandleGitHubWebhook)
 // ---------------------------------------------------------------------------
-
-func TestVerifyGitHubSignature_Valid(t *testing.T) {
-	body := []byte(`{"ref":"refs/heads/main"}`)
-	secret := "my-secret"
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-
-	if !verifyGitHubSignature(body, sig, secret) {
-		t.Fatal("expected valid signature")
-	}
-}
-
-func TestVerifyGitHubSignature_Invalid(t *testing.T) {
-	body := []byte(`{"ref":"refs/heads/main"}`)
-	if verifyGitHubSignature(body, "sha256=invalidsig", "secret") {
-		t.Fatal("expected invalid signature")
-	}
-}
-
-func TestVerifyGitHubSignature_TooShort(t *testing.T) {
-	if verifyGitHubSignature([]byte("body"), "short", "secret") {
-		t.Fatal("expected false for too-short signature")
-	}
-}
-
-func TestVerifyGitHubSignature_WrongSecret(t *testing.T) {
-	body := []byte(`payload`)
-	mac := hmac.New(sha256.New, []byte("correct-secret"))
-	mac.Write(body)
-	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-
-	if verifyGitHubSignature(body, sig, "wrong-secret") {
-		t.Fatal("expected false for wrong secret")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // getRegistryIDForRepo

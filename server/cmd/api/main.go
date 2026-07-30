@@ -493,7 +493,6 @@ func main() {
 		api.GET("/registry/:repo/:itemType/:slug/*file", handlers.DownloadRegistryFile)
 		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
 		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
-		api.POST("/webhooks/github", handlers.HandleGitHubWebhook)
 
 		// Phase B3b.2b-step2c: tenant picker suggestion endpoint. Public read
 		// (OptionalAuth) so the pre-login picker page can call it after the
