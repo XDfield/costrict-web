@@ -114,8 +114,11 @@ type JWTConfig struct {
 	// relying parties need to verify iss against a known origin.
 	Issuer string
 
-	// TTL is the time from issuance to expiry. Defaults to 1h. Parsed from
-	// the env var as a Go duration string ("1h", "30m", "3600s").
+	// TTL is the time from issuance to expiry. Defaults to 7d (168h) — long
+	// enough that relying parties (Gitea fork auth, app-ai-native) don't
+	// see constant re-issue churn in normal use, short enough to bound the
+	// blast radius of a leaked cookie. Parsed from the env var as a Go
+	// duration string ("168h", "7d" via ParseDuration-friendly forms, "30m").
 	TTL time.Duration
 
 	// DefaultAudience is the aud claim applied when the caller doesn't
@@ -129,7 +132,7 @@ type JWTConfig struct {
 // rather than reaching into config internals.
 const (
 	defaultJWTIssuer = "cs-user"
-	defaultJWTTTL    = 1 * time.Hour
+	defaultJWTTTL    = 7 * 24 * time.Hour
 )
 
 // Load reads configuration from environment variables (prefixed CS_USER_).
