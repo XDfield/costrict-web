@@ -238,6 +238,41 @@ func TestProvisionUser_NonConflictErrorMarksError(t *testing.T) {
 	}
 }
 
+// TestProvisionUser_ValidationFailureMarksErrorWithoutRecovery reproduces
+// the dev-env bug where a 422 (email collision) was misclassified as
+// ErrUsernameTaken, triggering a meaningless GetUserByName call that 404'd
+// and producing a misleading "username taken; lookup also failed" error.
+// 422 now surfaces as ErrGiteaValidationFailed and routes straight to
+// markError — no GetUserByName call, error message preserves Gitea's body.
+func TestProvisionUser_ValidationFailureMarksErrorWithoutRecovery(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{createErr: fmt.Errorf("%w: status=422 body=e-mail already in use", ErrGiteaValidationFailed)}
+	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-val", TenantID: "t1", ShortID: "u-val01", Username: "val",
+	})
+	if err == nil {
+		t.Fatalf("expected validation error to surface")
+	}
+
+	if len(stub.lookupCalls) != 0 {
+		t.Errorf("GetUserByName must NOT be called on 422 (no user was created), got %d calls: %v",
+			len(stub.lookupCalls), stub.lookupCalls)
+	}
+
+	var b models.UserGitBinding
+	if err := db.First(&b, "user_subject_id = ?", "usr-val").Error; err != nil {
+		t.Fatalf("query binding: %v", err)
+	}
+	if b.SyncStatus != models.GitSyncStatusError {
+		t.Errorf("status = %q, want error", b.SyncStatus)
+	}
+	if b.LastError == nil || !strings.Contains(*b.LastError, "e-mail already in use") {
+		t.Errorf("last_error = %v, want Gitea's 422 body preserved for operator diagnostics", b.LastError)
+	}
+}
+
 func TestProvisionUser_MissingShortIDFails(t *testing.T) {
 	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
 	stub := &stubProvisioner{}

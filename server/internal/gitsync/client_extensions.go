@@ -31,9 +31,11 @@ import (
 // Additional sentinel errors surfaced by the bot-provisioning path. The
 // Service layer switches on these to decide retry vs operator-intervention.
 var (
-	// ErrUsernameTaken — HTTP 409 / 422 from POST /admin/users or POST
-	// /orgs. Username / org name is globally unique inside one Gitea instance.
-	// Caller can't retry; needs operator rename or out-of-band cleanup.
+	// ErrUsernameTaken — HTTP 409 from POST /admin/users or POST /orgs.
+	// Username / org name is globally unique inside one Gitea instance.
+	// Caller can't retry; needs operator rename or out-of-band cleanup
+	// (ProvisionUser's 409 recovery path attempts GetUserByName first to
+	// silently re-bind to a pre-existing account before surfacing this).
 	ErrUsernameTaken = errors.New("gitsync: git username/org name already taken")
 
 	// ErrGiteaUsernameTaken retained as a deprecation alias so existing
@@ -41,6 +43,14 @@ var (
 	// use ErrUsernameTaken; this alias will be removed once the team / bot
 	// path is also adapter-pattern refactored (separate change).
 	ErrGiteaUsernameTaken = ErrUsernameTaken
+
+	// ErrGiteaValidationFailed — HTTP 422 from POST /admin/users. Distinct
+	// from ErrUsernameTaken: 422 means a non-name validation reject (email
+	// already in use, password policy, malformed field). GetUserByName
+	// recovery can't help because no user was created, so ProvisionUser
+	// routes this straight to markError without the misleading "lookup
+	// also failed" tail previously bolted onto ErrUsernameTaken.
+	ErrGiteaValidationFailed = errors.New("gitsync: gitea validation rejected user payload")
 
 	// ErrGiteaNotFound (alias of ErrGiteaTeamNotFound) — HTTP 404 on user / org
 	// / token lookups. Already declared in client.go as ErrGiteaTeamNotFound;
@@ -153,8 +163,15 @@ func (c *Client) CreateUser(ctx context.Context, opts CreateUserOptions) (*Gitea
 	}
 	resp, err := c.doJSON(ctx, http.MethodPost, "/api/v1/admin/users", opts, http.StatusCreated)
 	if err != nil {
-		// doJSON wraps 409/422 as ErrGiteaUnreachable by default; sniff the
-		// status out of the message to surface ErrGiteaUsernameTaken instead.
+		// Distinguish 422 (validation: email collision, password policy,
+		// ...) from 409 (true username/org clash). Both come back wrapped
+		// as ErrGiteaUnreachable from doJSON; sniff the status code out of
+		// the message. 422 MUST be checked first — isConflictError also
+		// matches 422 for the org / repo idempotent-recovery callers that
+		// don't care about the distinction.
+		if isValidationError(err) {
+			return nil, fmt.Errorf("%w: %v", ErrGiteaValidationFailed, err)
+		}
 		if isConflictError(err) {
 			return nil, fmt.Errorf("%w: %v", ErrGiteaUsernameTaken, err)
 		}
@@ -179,6 +196,34 @@ func (c *Client) GetUserByName(ctx context.Context, username string) (*GiteaUser
 		return nil, fmt.Errorf("gitsync: username is required")
 	}
 	resp, err := c.doJSON(ctx, http.MethodGet, "/api/v1/users/"+url.PathEscape(username), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var u GiteaUser
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
+	}
+	return &u, nil
+}
+
+// EditUser implements GitProvider. PATCH /admin/users/{username} with the
+// non-nil fields of opts. Returns ErrGiteaTeamNotFound on HTTP 404 to stay
+// consistent with GetUserByName.
+//
+// Used by display_name reconciliation: when a synced Gitea user's cs-user
+// display_name has changed, EditUser pushes the new value to Gitea's
+// full_name field without recreating the account.
+func (c *Client) EditUser(ctx context.Context, username string, opts EditUserOptions) (*GiteaUser, error) {
+	if c == nil {
+		return nil, ErrGiteaUnreachable
+	}
+	if username == "" {
+		return nil, fmt.Errorf("gitsync: username is required")
+	}
+	path := "/api/v1/admin/users/" + url.PathEscape(username)
+	resp, err := c.doJSON(ctx, http.MethodPatch, path, opts, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -325,12 +370,28 @@ func (c *Client) ListOrgTeams(ctx context.Context, org string) ([]GiteaTeam, err
 // (status=NNN body=...), so a substring match is the most robust way to
 // distinguish username-taken from generic unreachable without changing
 // doJSON's signature.
+//
+// CreateUser needs finer granularity (422 is validation, not name clash)
+// and therefore calls isValidationError first; the remaining callers
+// (CreateOrg, repo ops) treat any 409/422 as idempotent "already exists"
+// and use this helper unchanged.
 func isConflictError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "status=409") || strings.Contains(msg, "status=422")
+}
+
+// isValidationError matches only HTTP 422. Used by CreateUser to route
+// validation failures (email collision, password policy, ...) to the
+// distinct ErrGiteaValidationFailed sentinel so ProvisionUser doesn't
+// confuse them with username clashes.
+func isValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "status=422")
 }
 
 // UpdateOrgOptions is the body for PATCH /orgs/{org}. Only fields set in

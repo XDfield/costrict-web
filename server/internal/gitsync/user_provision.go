@@ -211,7 +211,17 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 		return nil
 	}
 
-	// 409 / 422 recovery: provider already has this user.
+	// 422 validation failure (email collision, password policy, ...): the
+	// user was NOT created on the provider, so GetUserByName recovery is
+	// pointless. Surface a clear error to the operator — the binding row
+	// goes to 'error' state for human follow-up (the cs-user payload needs
+	// fixing, not a retry). Falls through to markError below.
+	if errors.Is(provErr, ErrGiteaValidationFailed) {
+		s.logf("gitsync.ProvisionUser: provider rejected payload subject=%q username=%q err=%v",
+			params.SubjectID, binding.GitUsername, provErr)
+	}
+
+	// 409 recovery: provider already has this username.
 	if errors.Is(provErr, ErrUsernameTaken) {
 		existing, lookupErr := provider.GetUserByName(provCtx, binding.GitUsername)
 		if lookupErr == nil && existing != nil {

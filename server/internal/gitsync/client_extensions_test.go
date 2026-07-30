@@ -122,6 +122,39 @@ func TestClient_CreateUser_UsernameConflictReturnsTaken(t *testing.T) {
 	if !errors.Is(err, ErrGiteaUsernameTaken) {
 		t.Errorf("got %v, want ErrGiteaUsernameTaken", err)
 	}
+	// 409 must NOT be classified as validation failure — ProvisionUser
+	// routes ErrUsernameTaken through GetUserByName recovery.
+	if errors.Is(err, ErrGiteaValidationFailed) {
+		t.Errorf("409 should not also satisfy ErrGiteaValidationFailed: %v", err)
+	}
+}
+
+// TestClient_CreateUser_EmailConflictReturnsValidationFailed reproduces the
+// dev-env bug where cs-user sent two users with the same email — Gitea
+// replied 422 "e-mail already in use" but the client misclassified it as
+// ErrUsernameTaken, sending ProvisionUser down the meaningless GetUserByName
+// recovery path and emitting a confusing "username taken; lookup also failed"
+// error. 422 now surfaces as ErrGiteaValidationFailed so ProvisionUser can
+// route straight to markError.
+func TestClient_CreateUser_EmailConflictReturnsValidationFailed(t *testing.T) {
+	srv := newDispatchServer(t, dispatch{
+		"POST /api/v1/admin/users": func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"message":"e-mail already in use [email: dup@example.com]"}`, http.StatusUnprocessableEntity)
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+	_, err := c.CreateUser(context.Background(), CreateUserOptions{
+		Login: "fresh", Password: "x",
+	})
+	if !errors.Is(err, ErrGiteaValidationFailed) {
+		t.Errorf("got %v, want ErrGiteaValidationFailed", err)
+	}
+	if errors.Is(err, ErrGiteaUsernameTaken) {
+		t.Errorf("422 should not also satisfy ErrUsernameTaken (would trigger wrong recovery): %v", err)
+	}
+	if !strings.Contains(err.Error(), "e-mail already in use") {
+		t.Errorf("error should preserve Gitea's body for operator diagnostics, got %v", err)
+	}
 }
 
 func TestClient_GetUserByName_NotFoundReturnsGiteaNotFound(t *testing.T) {
