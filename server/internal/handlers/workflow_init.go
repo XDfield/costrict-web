@@ -30,10 +30,13 @@ import (
 
 // WorkflowInitRequest is the POST /api/internal/workflow/init body.
 type WorkflowInitRequest struct {
-	WorkflowDefSlug    string `json:"workflow_def_slug"`
-	InstanceID         string `json:"instance_id"`
-	TeamID             string `json:"team_id"`
-	DefinitionSnapshot string `json:"definition_snapshot"`
+	WorkflowDefSlug string `json:"workflow_def_slug"`
+	InstanceID      string `json:"instance_id"`
+	TeamID          string `json:"team_id"`
+	// SkipInstanceBranch omits the per-instance branch creation. Set by
+	// workspace/workflow activation (no run yet); left false at issue/run
+	// time so the per-run inst branch is created.
+	SkipInstanceBranch bool `json:"skip_instance_branch,omitempty"`
 }
 
 // WorkflowInitResponse is the response shape per doc §8.3.
@@ -148,13 +151,11 @@ func WorkflowInit(c *gin.Context) {
 		giteaUsername = botMeta.GiteaUsername
 	}
 
-	// Provision the Gitea side: type repo + definition_snapshot +
-	// branch protection (main) + instance branch. Idempotent —
-	// re-running for an already-provisioned repo is a no-op (Created flags
-	// all false). Definition drift between caller's snapshot and main HEAD
-	// is the one non-idempotent error: 409 DEFINITION_DRIFT.
+	// Provision the Gitea side: type repo + branch protection (main) +
+	// (unless skipped) instance branch. Idempotent — re-running for an
+	// already-provisioned repo is a no-op (Created flags all false).
 	provResult, err := teamnsService.EnsureWorkflowRepo(c.Request.Context(),
-		req.TeamID, req.WorkflowDefSlug, req.DefinitionSnapshot, req.InstanceID)
+		req.TeamID, req.WorkflowDefSlug, req.InstanceID, req.SkipInstanceBranch)
 	if err != nil {
 		// Map teamns sentinels to HTTP codes per doc §8.4.
 		status, body := mapWorkflowInitError(err)
@@ -197,21 +198,12 @@ func validateWorkflowInitRequest(req WorkflowInitRequest) error {
 }
 
 // mapWorkflowInitError translates teamns provisioning errors to the HTTP
-// status + error_code shape from doc §8.4. The drift case is the only
-// 4xx-class outcome from a fully-validated request: 409 with code
-// DEFINITION_DRIFT signals the caller that main HEAD has a snapshot that
-// doesn't match their input, and they must reconcile (typically by
-// re-reading the canonical snapshot from upstream) before retrying.
+// status + error_code shape from doc §8.4.
 //
-// Other failures (git-side 5xx, network) collapse to 502 — we deliberately
-// don't expose the upstream error to avoid leaking backend topology.
+// Failures (git-side 5xx, network) collapse to 502 — we deliberately don't
+// expose the upstream error to avoid leaking backend topology.
 func mapWorkflowInitError(err error) (int, gin.H) {
 	switch {
-	case errors.Is(err, teamns.ErrDefinitionDrift):
-		return http.StatusConflict, gin.H{
-			"error_code": "DEFINITION_DRIFT",
-			"message":    err.Error(),
-		}
 	case errors.Is(err, teamns.ErrInvalidRequest):
 		return http.StatusBadRequest, gin.H{
 			"error_code": "INVALID_REQUEST",

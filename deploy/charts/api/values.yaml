@@ -136,7 +136,14 @@ jwtSignMode: ""
 # before allowing user creation.
 profileGateEnabled: false
 
-env: []
+# user.created event processing (Git Ownership Refactor Phase 3). When true,
+# costrict-web provisions a Gitea account (+ user_git_binding row) for each
+# cs-user user on receipt of a user.created event — a prerequisite for
+# team-namespace member sync to resolve workspace members. Leave enabled so
+# member sync (and thus workspace provisioning) works.
+env:
+  - name: USER_CREATED_EVENT_PROCESSING_ENABLED
+    value: "true"
 envFrom: []
 
 # Optional: mount an existing ConfigMap as the .env file in the container

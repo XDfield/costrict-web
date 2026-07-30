@@ -5,26 +5,25 @@
 //
 //  1. Resolve tenant's GitServer (platform-agnostic backend).
 //  2. Get-or-create the type repo `wf-<escaped_slug>` under the team's org.
-//  3. Get-or-write `definition_snapshot.json` on main; SHA256 mismatch on
-//     existing file returns ErrDefinitionDrift (handler maps to 409).
-//  4. Apply branch protection on `main` (direct push denied); inst-* is left
+//  3. Apply branch protection on `main` (direct push denied); inst-* is left
 //     unprotected so instance branches can be created/pushed directly.
 //     Idempotent on already-exists.
-//  5. Get-or-create the instance branch `inst-<inst_short>` from main HEAD.
+//  4. Unless skipInstanceBranch, get-or-create the instance branch
+//     `inst-<inst_short>` from main HEAD. Workspace/workflow activation
+//     provisions the repo without an instance branch; the per-run branch is
+//     created at issue/run time (initWorkflowNamespace) instead.
 //
 // Return value carries Created flags so workflow_init's response reports
 // whether each sub-step ran this call vs. was already in place. The handler
 // forwards these verbatim to clients, who use them for observability.
 //
 // All idempotent: re-running EnsureWorkflowRepo for an already-provisioned
-// repo is a no-op (Created flags false, no drift error if snapshot matches).
+// repo is a no-op (Created flags false).
 
 package teamns
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,18 +35,10 @@ import (
 
 // Sentinel errors for workflow repo provisioning.
 var (
-	// ErrDefinitionDrift — the existing definition_snapshot.json on main
-	// does not hash-match the caller-supplied snapshot. HTTP 409.
-	ErrDefinitionDrift = errors.New("teamns: definition snapshot drift")
 	// ErrWorkflowRepoProvisioning — generic wrapper for git-side failures
-	// during repo / branch / file / protection ops. HTTP 502.
+	// during repo / branch / protection ops. HTTP 502.
 	ErrWorkflowRepoProvisioning = errors.New("teamns: workflow repo provisioning failed")
 )
-
-// DefinitionSnapshotPath is the canonical path within the type repo where
-// the orchestrator-stamped workflow definition lands. Both server (write)
-// and orchestrator (read) reference this constant.
-const DefinitionSnapshotPath = "definition_snapshot.json"
 
 // WorkflowRepoResult carries per-call flags for the workflow_init response.
 // `Created` semantics: true only when the sub-op created a new resource
@@ -56,16 +47,18 @@ type WorkflowRepoResult struct {
 	TypeRepoCreated       bool
 	InstanceBranchCreated bool
 	BranchProtectionSet   bool
-	SnapshotHash          string
 }
 
 // EnsureWorkflowRepo runs the full provisioning pipeline. teamID selects
-// the team_ns + bot creds (must exist); defSlug + definitionSnapshot +
-// instanceID drive the deterministic path computation
-// (workflow.WfRepoPath / WfBranchName).
+// the team_ns + bot creds (must exist); defSlug + instanceID drive the
+// deterministic path computation (workflow.WfRepoPath / WfBranchName).
+// skipInstanceBranch omits the per-instance branch — used by workspace /
+// workflow activation (no run yet); the per-run branch is created at
+// issue/run time instead.
 func (s *Service) EnsureWorkflowRepo(
 	ctx context.Context,
-	teamID, defSlug, definitionSnapshot, instanceID string,
+	teamID, defSlug, instanceID string,
+	skipInstanceBranch bool,
 ) (*WorkflowRepoResult, error) {
 	if s == nil {
 		return nil, ErrTenantGitServerUnresolved
@@ -95,7 +88,6 @@ func (s *Service) EnsureWorkflowRepo(
 		}
 		return nil, err
 	}
-	_ = ns // referenced for existence check; future drift audits may use it
 
 	// 3. Resolve platform-agnostic backend via the injectable hook
 	// (tests override; production delegates to gitsync.Service).
@@ -107,9 +99,7 @@ func (s *Service) EnsureWorkflowRepo(
 		return nil, ErrTenantGitServerUnresolved
 	}
 
-	result := &WorkflowRepoResult{
-		SnapshotHash: hashSnapshot(definitionSnapshot),
-	}
+	result := &WorkflowRepoResult{}
 
 	// 4. Type repo get-or-create.
 	repo, err := gitcli.GetRepo(ctx, owner, repoName)
@@ -130,40 +120,25 @@ func (s *Service) EnsureWorkflowRepo(
 		result.TypeRepoCreated = true
 	}
 
-	// 5. Definition snapshot drift check + write.
-	existing, err := gitcli.ReadFile(ctx, owner, repoName, "main", DefinitionSnapshotPath)
-	if err != nil {
-		return nil, fmt.Errorf("%w: read snapshot: %v", ErrWorkflowRepoProvisioning, err)
-	}
-	if existing != nil {
-		// Drift detection: if existing snapshot doesn't hash-match the
-		// caller's, return 409 — caller must reconcile before continuing.
-		if hashSnapshot(string(existing)) != result.SnapshotHash {
-			return nil, ErrDefinitionDrift
-		}
-		// Hashes match — no rewrite needed.
-	} else {
-		if err := gitcli.WriteFile(ctx, owner, repoName, "main",
-			DefinitionSnapshotPath, []byte(definitionSnapshot),
-			"Initialize definition_snapshot"); err != nil {
-			return nil, fmt.Errorf("%w: write snapshot: %v", ErrWorkflowRepoProvisioning, err)
-		}
-	}
-
-	// 6. Protect main (the snapshot branch — created by repo init / our
-	// WriteFile above; no further direct pushes are expected). Tolerate
-	// already-exists because re-running EnsureWorkflowRepo should be safe.
-	// Only main is protected: inst-* MUST stay unprotected so the orchestrator
-	// can create inst branches and push deliverable content to them directly
-	// (per-node changes still gate via node branches + PRs off inst); some
-	// Gitea versions also reject API branch creation matching a protected glob
-	// (status 500 PushRejected), which would self-block provisioning.
+	// 5. Protect main (the repo's default branch, created by repo init; no
+	// direct pushes are expected). Tolerate already-exists because re-running
+	// EnsureWorkflowRepo should be safe. Only main is protected: inst-* MUST
+	// stay unprotected so the orchestrator can create inst branches and push
+	// deliverable content to them directly (per-node changes still gate via
+	// node branches + PRs off inst); some Gitea versions also reject API
+	// branch creation matching a protected glob (status 500 PushRejected),
+	// which would self-block provisioning.
 	if err := applyBranchProtection(ctx, gitcli, owner, repoName, "main", ErrWorkflowRepoProvisioning); err != nil {
 		return nil, err
 	}
 	result.BranchProtectionSet = true
 
-	// 7. Instance branch get-or-create from main HEAD.
+	// 6. Instance branch get-or-create from main HEAD. Skipped for
+	// workspace/workflow activation (no run yet) — the per-run branch is
+	// created at issue/run time instead.
+	if skipInstanceBranch {
+		return result, nil
+	}
 	br, err := gitcli.GetBranch(ctx, owner, repoName, instanceBranch)
 	if err != nil {
 		return nil, fmt.Errorf("%w: get branch: %v", ErrWorkflowRepoProvisioning, err)
@@ -212,12 +187,4 @@ func splitOwnerRepo(path string) (string, string) {
 		panic(fmt.Sprintf("teamns: invalid wf_repo_path %q (expected owner/repo)", path))
 	}
 	return path[:idx], path[idx+1:]
-}
-
-// hashSnapshot returns the SHA256 hex of a definition_snapshot string.
-// Used for both drift comparison (existing vs. caller-supplied) and for
-// the response's SnapshotHash field (observability / dedup).
-func hashSnapshot(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
