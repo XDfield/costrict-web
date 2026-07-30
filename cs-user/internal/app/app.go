@@ -237,9 +237,16 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 		reader = unavailableAuthReader{}
 	}
 	authAPI := handlers.AuthAPI{
-		Svc:         reader,
-		Signer:      deps.Signer,
-		JWT:         cfg.JWT,
+		Svc:            reader,
+		Signer:         deps.Signer,
+		JWT:            cfg.JWT,
+		CasdoorVerifier: auth.NewCasdoorVerifier(
+			cfg.Casdoor.JWKSURL,
+			cfg.Casdoor.Issuer,
+			cfg.Casdoor.Audience,
+			cfg.Casdoor.JWKSHTTPTimeout,
+			cfg.Casdoor.JWKSRefreshTTL,
+		),
 		Permissions: deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)

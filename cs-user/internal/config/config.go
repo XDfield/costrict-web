@@ -24,8 +24,38 @@ type Config struct {
 	Postgres PostgresConfig
 	Internal InternalConfig
 	JWT      JWTConfig
+	Casdoor  CasdoorConfig
 	Tenant   TenantConfig
 	EventBus EventBusConfig
+}
+
+// CasdoorConfig backs the reissue-token handler's Casdoor JWT verification.
+// cs-user no longer trusts server-supplied parsed claims unconditionally:
+// when JWKSURL is configured, the handler pulls Casdoor's JWKS itself and
+// re-validates any raw Casdoor JWT forwarded by server (signed, exp, nbf,
+// iss, aud). Empty JWKSURL = verifier disabled (dev / pre-rollout); the
+// handler logs and falls through to the legacy trust path so a misconfig
+// never deadlocks login.
+type CasdoorConfig struct {
+	// JWKSURL is Casdoor's /.well-known/jwks endpoint. Required for
+	// verification to engage.
+	JWKSURL string
+	// Issuer is the expected `iss` claim. When empty, the iss check is
+	// skipped (not recommended for production — set this to Casdoor's
+	// origin so a token minted by a misconfigured peer IdP can't pass).
+	Issuer string
+	// Audience is the list of allowed `aud` values. When empty, the aud
+	// check is skipped. Casdoor typically does not set aud on access
+	// tokens, so the default is empty.
+	Audience []string
+	// JWKSHTTPTimeout bounds the JWKS fetch. Default 5s — long enough for
+	// Casdoor round-trip on a slow link, short enough that a wedged
+	// Casdoor doesn't stall login past the gateway timeout.
+	JWKSHTTPTimeout time.Duration
+	// JWKSRefreshTTL is how long a fetched key set is reused before a
+	// background refresh. Default 15m. Unknown `kid` triggers an
+	// immediate refresh regardless of TTL (handled in the verifier).
+	JWKSRefreshTTL time.Duration
 }
 
 // EventBusConfig drives the Git Ownership Refactor Phase 2 outbox worker.
@@ -133,6 +163,9 @@ type JWTConfig struct {
 const (
 	defaultJWTIssuer = "cs-user"
 	defaultJWTTTL    = 7 * 24 * time.Hour
+
+	defaultCasdoorJWKSHTTPTimeout = 5 * time.Second
+	defaultCasdoorJWKSRefreshTTL  = 15 * time.Minute
 )
 
 // Load reads configuration from environment variables (prefixed CS_USER_).
@@ -159,7 +192,8 @@ func Load() (*Config, error) {
 		Internal: InternalConfig{
 			Token: os.Getenv("CS_USER_INTERNAL_TOKEN"),
 		},
-		JWT: jwtCfg,
+		JWT:     jwtCfg,
+		Casdoor: loadCasdoorConfig(),
 		Tenant: TenantConfig{
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
 		},
@@ -293,4 +327,25 @@ func loadApexDomains(raw string) []string {
 		}
 	}
 	return out
+}
+
+// loadCasdoorConfig reads the Casdoor JWKS verification env vars. Empty
+// JWKSURL → verifier disabled (load returns a zero-value config; the
+// verifier struct treats empty JWKSURL as "off"). Optional knobs fall back
+// to safe defaults.
+func loadCasdoorConfig() CasdoorConfig {
+	cfg := CasdoorConfig{
+		JWKSURL:        strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_JWKS_URL")),
+		Issuer:         strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
+		JWKSHTTPTimeout: envDuration("CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT", defaultCasdoorJWKSHTTPTimeout),
+		JWKSRefreshTTL:  envDuration("CS_USER_CASDOOR_JWKS_REFRESH_TTL", defaultCasdoorJWKSRefreshTTL),
+	}
+	if audRaw := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_AUDIENCE")); audRaw != "" {
+		for _, aud := range strings.Split(audRaw, ",") {
+			if v := strings.TrimSpace(aud); v != "" {
+				cfg.Audience = append(cfg.Audience, v)
+			}
+		}
+	}
+	return cfg
 }

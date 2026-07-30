@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -896,6 +897,201 @@ func TestReissueToken_ExternalKeyFallbackNoUserMatches(t *testing.T) {
 			UniversalID: "uuid-bob",
 			Provider:    "idtrust",
 		},
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// startMockCasdoorJWKS spins up an httptest server that returns the public
+// half of `key` under `kid` as a JWK. Returns the server (close it yourself)
+// so each test runs in isolation.
+func startMockCasdoorJWKS(t *testing.T, key *rsa.PublicKey, kid string) *httptest.Server {
+	t.Helper()
+	nBytes := key.N.Bytes()
+	eBytes := []byte{byte(key.E >> 24), byte(key.E >> 16), byte(key.E >> 8), byte(key.E)}
+	for len(eBytes) > 0 && eBytes[0] == 0 {
+		eBytes = eBytes[1:]
+	}
+	jwk := auth.JWK{
+		Kty: "RSA",
+		Kid: kid,
+		Alg: "RS256",
+		Use: "sig",
+		N:   base64.RawURLEncoding.EncodeToString(nBytes),
+		E:   base64.RawURLEncoding.EncodeToString(eBytes),
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(auth.JWKS{Keys: []auth.JWK{jwk}})
+	}))
+}
+
+// signCasdoorJWTForHandler produces a raw RS256 JWT signed by `key` with the
+// given kid + claims. Mirrors what Casdoor would actually emit.
+func signCasdoorJWTForHandler(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = kid
+	signed, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatalf("SignedString: %v", err)
+	}
+	return signed
+}
+
+// TestReissueToken_VerifiesCasdoorJWT_Success exercises the verify-then-issue
+// happy path: server forwards a raw Casdoor JWT, cs-user verifies it against
+// a JWKS stub, merges the verified claims over the (here nil) hint, and
+// issues a cs-user token. Asserts the standard IdP fields the verifier
+// extracted flow into the signed token.
+func TestReissueToken_VerifiesCasdoorJWT_Success(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	casdoorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	const kid = "casdoor-kid-1"
+	jwks := startMockCasdoorJWKS(t, &casdoorKey.PublicKey, kid)
+	defer jwks.Close()
+
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) {
+			return nil, nil
+		},
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.CasdoorVerifier = auth.NewCasdoorVerifier(jwks.URL, "", nil, time.Second, time.Minute)
+
+	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
+		"sub":                "uni-alice",
+		"universal_id":       "uni-alice",
+		"name":               "Alice Lee",
+		"preferred_username": "alice",
+		"email":              "alice@example.com",
+		"provider":           "idtrust",
+		"exp":                time.Now().Add(time.Hour).Unix(),
+	})
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		CasdoorJWT:    raw,
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Token == "" {
+		t.Fatal("token empty")
+	}
+}
+
+// TestReissueToken_VerifiesCasdoorJWT_InvalidReturns401 asserts a JWT signed
+// by the wrong key fails the verifier and the handler surfaces 401. This is
+// the load-bearing security contract — a forged token must never reach the
+// signing path.
+func TestReissueToken_VerifiesCasdoorJWT_InvalidReturns401(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	jwksKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	signerKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	const kid = "casdoor-kid-1"
+	jwks := startMockCasdoorJWKS(t, &jwksKey.PublicKey, kid)
+	defer jwks.Close()
+
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) {
+			t.Fatal("GetEmploymentIdentity must not be called when verification fails")
+			return nil, nil
+		},
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.CasdoorVerifier = auth.NewCasdoorVerifier(jwks.URL, "", nil, time.Second, time.Minute)
+
+	raw := signCasdoorJWTForHandler(t, signerKey, kid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		CasdoorJWT:    raw,
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid casdoor jwt") {
+		t.Errorf("body: want 'invalid casdoor jwt', got %s", w.Body.String())
+	}
+}
+
+// TestReissueToken_CasdoorJWTButVerifierUnconfiguredReturns503 locks the
+// operational misconfig path: a caller forwards casdoor_jwt but the
+// deployment hasn't set CS_USER_CASDOOR_JWKS_URL. Surface 503 (not 500)
+// so monitoring can distinguish "config gap" from "bug".
+func TestReissueToken_CasdoorJWTButVerifierUnconfiguredReturns503(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) {
+			t.Fatal("GetEmploymentIdentity must not be called on verifier-missing path")
+			return nil, nil
+		},
+	}
+	_, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	// CasdoorVerifier intentionally left nil.
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		CasdoorJWT:    "header.payload.sig",
+	}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestReissueToken_NoCasdoorJWTLegacyFallback asserts the rolling-deploy
+// fallback: when the caller omits casdoor_jwt, cs-user falls through to the
+// legacy trust path (server-supplied Identity used as-is) and still issues.
+// Logger.Warn fires but the request must succeed — never block login during
+// the rollout.
+func TestReissueToken_NoCasdoorJWTLegacyFallback(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	svc := stubEmploymentReader{
+		fn: func(context.Context, string) (*models.EmploymentIdentity, error) {
+			return nil, nil
+		},
+	}
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	// Verifier configured but caller didn't supply casdoor_jwt — legacy
+	// branch must NOT touch it.
+	casdoorKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	jwks := startMockCasdoorJWKS(t, &casdoorKey.PublicKey, "kid")
+	defer jwks.Close()
+	api.CasdoorVerifier = auth.NewCasdoorVerifier(jwks.URL, "", nil, time.Second, time.Minute)
+
+	body := reissueTokenRequest{
+		UserSubjectID: "usr_alice",
+		Identity: &models.JWTClaims{
+			UniversalID: "uuid-alice",
+			Name:        "Alice",
+			Provider:    "idtrust",
+		},
+		// CasdoorJWT intentionally omitted.
 	}
 	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
 	if w.Code != http.StatusOK {

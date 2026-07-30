@@ -1,16 +1,22 @@
 // Phase A7: cs-user OAuth-callback takeover endpoint.
 //
 // Strategy (b) re-sign: Casdoor still handles the login UI + OAuth dance +
-// password reset + MFA. The server validates the Casdoor JWT it received,
-// then forwards the parsed claims + user_subject_id to this endpoint. cs-user
-// loads the employment_identities snapshot (Phase A4), builds enterprise
-// claims (Phase A5), signs the token (Phase A3), and returns it. The server
-// then sets the cookie + handles the dual-sign 灰度 window (Phase A8).
+// password reset + MFA. The server forwards the raw Casdoor JWT (in
+// `casdoor_jwt`) plus user_subject_id to this endpoint. cs-user verifies
+// the Casdoor JWT itself against Casdoor's JWKS (no longer trusting
+// server-side verification), loads the employment_identities snapshot
+// (Phase A4), builds enterprise claims (Phase A5), signs the token
+// (Phase A3), and returns it. The server then sets the cookie + handles
+// the dual-sign 灰度 window (Phase A8).
 //
-// Trust boundary: cs-user does NOT re-validate the Casdoor JWT signature.
-// The X-Internal-Token middleware has already authenticated the caller as
-// the server, and the server has already validated the original token; the
-// Identity payload here is treated as data, not as a security primitive.
+// Trust boundary: when `casdoor_jwt` is supplied AND CasdoorVerifier is
+// configured, cs-user re-validates signature + exp/nbf/iss/aud and treats
+// the verified claims as authoritative. server-supplied `identity` (when
+// present) degrades to a hint — only its ExternalClaims field survives
+// (server-side parse of oauth_Custom.* is not in the raw JWT). When
+// `casdoor_jwt` is absent, the handler falls through to the legacy trust
+// path (log warn) so rolling deploys don't break login. A future commit
+// will make `casdoor_jwt` required.
 
 package handlers
 
@@ -39,6 +45,12 @@ type AuthAPI struct {
 	Svc    EmploymentReader
 	Signer *auth.Signer
 	JWT    config.JWTConfig
+	// CasdoorVerifier, when non-nil, validates raw Casdoor JWTs forwarded
+	// in reissueTokenRequest.CasdoorJWT. nil = verification disabled (dev
+	// / pre-rollout) — handler preserves the legacy trust path on the
+	// no-`casdoor_jwt` branch but returns 503 if a caller supplies
+	// `casdoor_jwt` against a verifier-less deployment.
+	CasdoorVerifier *auth.CasdoorVerifier
 	// Permissions optionally carries the Phase C1 permission readers. When
 	// nil, no permission claims are populated (graceful — used during the
 	// Phase C1 灰度 rollout before middlewares enforce the new claims).
@@ -102,10 +114,20 @@ type reissueTokenRequest struct {
 	// UserSubjectID is the cs-user user's stable subject_id. Required.
 	UserSubjectID string `json:"user_subject_id" binding:"required"`
 
-	// Identity carries the parsed Casdoor JWT claims. Optional — when nil,
-	// only standard JWT claims + enterprise claims (if any) are emitted.
-	// Typical Phase A7 callers always pass Identity; the nil path exists
-	// for refresh-token flows (Phase B) where identity may be cached.
+	// CasdoorJWT is the raw Casdoor-issued access token. When supplied AND
+	// AuthAPI.CasdoorVerifier is configured, cs-user verifies the JWT
+	// against Casdoor's JWKS and treats the verified claims as
+	// authoritative (overriding any conflicting field in Identity). When
+	// supplied but verifier is nil → 503. When absent → legacy trust path
+	// (Identity used as-is, with a warn log).
+	CasdoorJWT string `json:"casdoor_jwt,omitempty"`
+
+	// Identity carries the parsed Casdoor JWT claims. Acts as a HINT when
+	// CasdoorJWT is verified (only ExternalClaims survives — server-side
+	// parse of oauth_Custom.* not in the raw JWT); acts as the AUTHORITATIVE
+	// source when CasdoorJWT is absent (legacy path). Optional — when nil
+	// and CasdoorJWT is verified, only standard JWT claims + enterprise
+	// claims (if any) are emitted.
 	Identity *models.JWTClaims `json:"identity,omitempty"`
 
 	// TenantID is reserved for Phase B. Phase A callers pass "default" or
@@ -136,14 +158,15 @@ type reissueTokenResponse struct {
 // ReissueToken godoc
 //
 //	@Summary		Reissue a cs-user-signed JWT (OAuth callback takeover)
-//	@Description	Strategy (b) re-sign: server validates the Casdoor JWT, then calls this endpoint with the parsed claims + user_subject_id. cs-user loads the user's employment_identities snapshot (Phase A4), builds enterprise claims (Phase A5), signs via the configured RSA key (Phase A3), and returns the new token. cs-user does NOT re-validate the Casdoor JWT — the X-Internal-Token middleware authenticates the caller as the server, and the server has already validated the original. Returns 503 when no signing key is configured.
+//	@Description	Strategy (b) re-sign: server forwards the raw Casdoor JWT (`casdoor_jwt`) plus user_subject_id; cs-user verifies the JWT against Casdoor's JWKS, loads the user's employment_identities snapshot (Phase A4), builds enterprise claims (Phase A5), signs via the configured RSA key (Phase A3), and returns the new token. When `casdoor_jwt` is omitted the legacy trust path is used (warn log) for rolling-deploy compatibility. Returns 401 when verification fails; 503 when the verifier is unconfigured but `casdoor_jwt` is supplied, or when no signing key is configured.
 //	@Tags			auth
 //	@Accept			json
 //	@Produce		json
 //	@Security		InternalToken
-//	@Param			body	body		reissueTokenRequest	true	"Parsed Casdoor claims + user_subject_id + optional tenant_id / audience override"
+//	@Param			body	body		reissueTokenRequest	true	"Raw Casdoor JWT + user_subject_id + optional identity hint / tenant_id / audience override"
 //	@Success		200		{object}	reissueTokenResponse
 //	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
 //	@Failure		500		{object}	object{error=string}
 //	@Failure		503		{object}	object{error=string}
 //	@Router			/api/internal/users/reissue-token [post]
@@ -160,6 +183,37 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
 		return
+	}
+
+	// Casdoor JWT verification gate. When the caller forwards the raw
+	// Casdoor JWT, cs-user ceases to trust server's parsed Identity
+	// unconditionally: it re-validates signature + registered claims
+	// against Casdoor's JWKS, then merges the verified claims over the
+	// hint. ExternalClaims (server's oauth_Custom.* parse) survives — it
+	// isn't in the raw JWT and carries data cs-user needs for enterprise
+	// mapping. See the package-level trust-boundary comment for the
+	// rolling-deploy rationale behind the optional contract.
+	if req.CasdoorJWT != "" {
+		if a.CasdoorVerifier == nil {
+			logger.Warn("[reissue-token] caller supplied casdoor_jwt but verifier is not configured (CS_USER_CASDOOR_JWKS_URL missing)")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "casdoor verifier not configured"})
+			return
+		}
+		verified, verifyErr := a.CasdoorVerifier.Verify(c.Request.Context(), req.CasdoorJWT)
+		if verifyErr != nil {
+			if errors.Is(verifyErr, auth.ErrCasdoorVerifierDisabled) {
+				// Verifier disappeared between the nil check above and
+				// now (shouldn't happen but stay defensive). Treat as 503.
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "casdoor verifier not configured"})
+				return
+			}
+			logger.Warn("[reissue-token] casdoor jwt verification failed: %v", verifyErr)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid casdoor jwt"})
+			return
+		}
+		req.Identity = mergeVerifiedClaims(req.Identity, verified)
+	} else {
+		logger.Warn("[reissue-token] no casdoor_jwt supplied — legacy trust path (will be deprecated in a future release)")
 	}
 
 	// Debug: dump what we received from server so ApplyEnterpriseMapping
@@ -373,4 +427,21 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		Token:     signed,
 		ExpiresAt: claims.Expiry.Time,
 	})
+}
+
+// mergeVerifiedClaims overlays the JWKS-verified Casdoor claims onto the
+// server-supplied hint. All IdP standard fields come from `verified` (the
+// authoritative source once verification passed); only ExternalClaims is
+// taken from the hint, because it's server's parse of oauth_Custom.* which
+// isn't present in the raw JWT. A nil hint yields a fresh claims object
+// cloned from verified.
+func mergeVerifiedClaims(hint *models.JWTClaims, verified *models.JWTClaims) *models.JWTClaims {
+	if verified == nil {
+		return hint
+	}
+	out := *verified
+	if hint != nil && hint.ExternalClaims != nil {
+		out.ExternalClaims = hint.ExternalClaims
+	}
+	return &out
 }
