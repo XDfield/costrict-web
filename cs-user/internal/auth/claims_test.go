@@ -306,6 +306,85 @@ func ptrStr(s string) *string { return &s }
 // carries the new permission fields straight through to the claims struct.
 // Phase C1: tenant_admins / platform_admins rows are translated into these
 // claims at reissue-token time.
+func TestNewEnterpriseClaims_UserOverridesIdentity(t *testing.T) {
+	// cs-user's own user record is the canonical source for profile-shaped
+	// claims. Identity (forwarded by server from Casdoor) is fallback only —
+	// Casdoor's `name` drifts (phone-registered users get name=phone) and
+	// must not bleed into relying-party JWTs. This test pins the override
+	// contract so callers can rely on User being authoritative when set.
+	strPtr := func(s string) *string { return &s }
+	identity := &models.JWTClaims{
+		UniversalID:       "casdoor-uuid-alice",
+		Name:              "15986746954", // Casdoor's name=phone for phone-registered users
+		PreferredUsername: "ph_15986746954",
+		Email:             "stale@casdoor.example",
+		Phone:             "15986746954",
+		Picture:           "https://casdoor.example/old.png",
+	}
+	user := &models.User{
+		SubjectID:   "b74e5889-546e-4cc9-9ec5-a0f3de1874c0",
+		ShortID:     "u-5Fc4PIuH",
+		Username:    "alice",
+		DisplayName: strPtr("陈烜42766"),
+		Email:       strPtr("alice@costrict.example"),
+		Phone:       strPtr("15986746954"),
+		AvatarURL:   strPtr("https://costrict.example/alice.png"),
+	}
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Issuer:   "https://cs-user",
+		Subject:  user.SubjectID,
+		TTL:      time.Hour,
+		Identity: identity,
+		User:     user,
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	if c.Name != "陈烜42766" {
+		t.Errorf("Name: want %q (cs-user display_name), got %q", "陈烜42766", c.Name)
+	}
+	if c.PreferredUsername != "alice" {
+		t.Errorf("PreferredUsername: want %q (cs-user username), got %q", "alice", c.PreferredUsername)
+	}
+	if c.ShortID != "u-5Fc4PIuH" {
+		t.Errorf("ShortID: want %q (cs-user short_id), got %q", "u-5Fc4PIuH", c.ShortID)
+	}
+	if c.Email != "alice@costrict.example" {
+		t.Errorf("Email: want cs-user email, got %q", c.Email)
+	}
+	if c.Picture != "https://costrict.example/alice.png" {
+		t.Errorf("Picture: want cs-user avatar, got %q", c.Picture)
+	}
+	// universal_id stays sourced from Identity — it's the cross-IdP join
+	// key, not a profile field, and cs-user doesn't own its value.
+	if c.UniversalID != "casdoor-uuid-alice" {
+		t.Errorf("UniversalID: want %q (Identity-sourced), got %q", "casdoor-uuid-alice", c.UniversalID)
+	}
+}
+
+func TestNewEnterpriseClaims_UserDisplayNameNilFallsBackToUsername(t *testing.T) {
+	// When cs-user has no display_name set, `name` should fall back to
+	// cs-user's username rather than Casdoor's stale name=phone.
+	user := &models.User{
+		SubjectID:   "usr_x",
+		Username:    "bob",
+		DisplayName: nil,
+	}
+	identity := &models.JWTClaims{Name: "15999999999"}
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Subject:  "usr_x",
+		TTL:      time.Hour,
+		Identity: identity,
+		User:     user,
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	if c.Name != "bob" {
+		t.Errorf("Name: want %q (username fallback), got %q", "bob", c.Name)
+	}
+}
+
 func TestNewEnterpriseClaims_PermissionFieldsRoundTrip(t *testing.T) {
 	c, err := NewEnterpriseClaims(IssuanceParams{
 		Subject:       "usr_perm",

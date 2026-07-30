@@ -324,24 +324,26 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		tenantRoles = roles
 	}
 
-	// Load the user row to surface short_id. Best-effort: legacy users
-	// backfilled before the short_id migration may have an empty value;
-	// the JWT then omits the claim (omitempty) and relying parties like
-	// the Gitea fork will reject with 503 — operator signal to run the
-	// backfill CLI. Lookups that soft-fail (record not found) are treated
-	// the same way: skip the claim rather than blocking token issuance.
-	var shortID string
+	// Load cs-user's canonical user row. NewEnterpriseClaims sources
+	// profile-shaped claims (name / preferred_username / email / phone /
+	// picture / short_id) from this row, falling back to Identity only
+	// when cs-user has no record. Best-effort: record-not-found is silent
+	// (legacy users pending backfill get a token without short_id /
+	// canonical profile — relying parties like the Gitea fork will reject
+	// with 503, the operator signal to run the backfill CLI); any other
+	// lookup error is logged so operators can diagnose DB connectivity.
+	var userRow *models.User
 	if u, lookupErr := a.Svc.GetUserByID(c.Request.Context(), req.UserSubjectID); lookupErr == nil {
-		shortID = u.ShortID
+		userRow = u
 	} else if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-		logger.Warn("[reissue-token] user lookup for short_id failed (token issued without short_id claim): %v", lookupErr)
+		logger.Warn("[reissue-token] user lookup failed (token issued with Identity fallback only): %v", lookupErr)
 	}
 
 	now := time.Now()
 	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
 		Issuer:        a.JWT.Issuer,
 		Subject:       req.UserSubjectID,
-		ShortID:       shortID,
+		User:          userRow,
 		Audience:      audience,
 		TTL:           a.JWT.TTL,
 		JTI:           uuid.NewString(),
