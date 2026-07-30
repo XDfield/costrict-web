@@ -522,7 +522,7 @@ func AuthCallback(c *gin.Context) {
 				// dual and single lives in the verifier (JWKS chain), not
 				// here — the cookie value is the cs-user JWT either way.
 				if jwtSignMode != config.JWTSignModeOff {
-					if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), created.SubjectID, claims, nil); err != nil {
+					if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), created.SubjectID, claims, nil, tokenResp.AccessToken); err != nil {
 						fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
 					} else {
 						cookieToken = newToken

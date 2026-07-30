@@ -57,7 +57,7 @@ type UserWriter interface {
 	// as best-effort: when ReissueToken fails the cookie keeps the Casdoor
 	// token, when it succeeds the cookie gets the cs-user token.
 	// Added in Phase A7b.
-	ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error)
+	ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error)
 	// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration + profile
 	// self-edit. Username uniqueness is tenant-scoped under the rpc backend
 	// (cs-user) and global under the local backend (server has no tenant_id
@@ -230,11 +230,11 @@ func (d *DualWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, 
 // When Secondary is nil (e.g. a future single-primary config), returns
 // ErrSelfSignUnavailable so the OAuth callback surfaces the misconfiguration.
 // Phase A7b.
-func (d *DualWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (d *DualWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	if d.Secondary == nil {
 		return "", time.Time{}, ErrSelfSignUnavailable
 	}
-	token, exp, err := d.Secondary.ReissueToken(ctx, userSubjectID, claims, audience)
+	token, exp, err := d.Secondary.ReissueToken(ctx, userSubjectID, claims, audience, rawCasdoorJWT)
 	if err != nil {
 		// Log + propagate. Unlike ApplyEnterpriseMapping (pure best-effort),
 		// ReissueToken errors must reach the OAuth callback so it can decide

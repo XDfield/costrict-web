@@ -285,12 +285,19 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 // (csc CLI vs. costrict-web frontend). nil falls back to cs-user's
 // configured default audience (CS_USER_JWT_AUDIENCE).
 //
+// rawCasdoorJWT is the raw access token received from Casdoor during OAuth
+// callback. cs-user (when its Casdoor JWKS verifier is configured) re-
+// validates signature + exp/nbf/iss/aud itself instead of trusting the
+// server-parsed claims. Empty string preserves the legacy trust path
+// (rolling-deploy compatibility; will be deprecated once all cs-user
+// deployments have the verifier wired).
+//
 // Best-effort at the caller — the OAuth callback treats errors as "stick
 // with the Casdoor token" rather than failing login. This is the foundation
 // of Phase A8's 灰度 dual-sign window: when ReissueToken fails, the cookie
 // gets the Casdoor token; when it succeeds, the cookie gets the cs-user
 // token; A8 will introduce an explicit dual-issuance mode that sets both.
-func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	if !w.Configured() {
 		return "", time.Time{}, ErrNotConfigured
 	}
@@ -299,8 +306,12 @@ func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, clai
 	}
 	body := struct {
 		UserSubjectID string     `json:"user_subject_id"`
-		Identity      *JWTClaims `json:"identity,omitempty"`
-		Audience      []string   `json:"audience,omitempty"`
+		// CasdoorJWT: raw Casdoor access token forwarded for cs-user-side
+		// JWKS verification (see package-level trust-boundary comment in
+		// cs-user/internal/handlers/auth.go). Empty → legacy trust path.
+		CasdoorJWT string     `json:"casdoor_jwt,omitempty"`
+		Identity   *JWTClaims `json:"identity,omitempty"`
+		Audience   []string   `json:"audience,omitempty"`
 		// TenantSlug (Phase B): forwarded from ctx so cs-user embeds the
 		// runtime-resolved tenant slug into the re-issued JWT. Server's
 		// TenantMatch middleware then compares this claim against future
@@ -310,6 +321,7 @@ func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, clai
 		TenantSlug string `json:"tenant_slug,omitempty"`
 	}{
 		UserSubjectID: userSubjectID,
+		CasdoorJWT:    rawCasdoorJWT,
 		Identity:      claims,
 		Audience:      audience,
 		TenantSlug:    tenantSlugFromContext(ctx),

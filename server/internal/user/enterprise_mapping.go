@@ -46,10 +46,11 @@ func (s *UserService) ApplyEnterpriseMapping(ctx context.Context, userSubjectID,
 //
 // The audience parameter is accepted for interface symmetry with RPCWriter.
 // It's ignored (no signer to honor it).
-func (s *UserService) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string) (string, time.Time, error) {
+func (s *UserService) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	_ = ctx
 	_ = userSubjectID
 	_ = claims
 	_ = audience
+	_ = rawCasdoorJWT
 	return "", time.Time{}, ErrSelfSignUnavailable
 }
