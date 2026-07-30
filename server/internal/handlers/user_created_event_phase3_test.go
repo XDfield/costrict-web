@@ -240,7 +240,7 @@ func TestDispatch_HappyPath(t *testing.T) {
 		"event_type": "user.created",
 		"subject_id": "usr-1",
 		"tenant_id": "t1",
-		"user": {"subject_id": "usr-1", "username": "alice"}
+		"user": {"subject_id": "usr-1", "short_id": "u-alice01", "username": "alice"}
 	}`
 	w := postEventWithID(t, r, body, "11111111-1111-4111-8111-111111111111")
 	if w.Code != http.StatusAccepted {
@@ -301,7 +301,7 @@ func TestDispatch_DuplicateEventIdIsIdempotent(t *testing.T) {
 		"event_type": "user.created",
 		"subject_id": "usr-2",
 		"tenant_id": "t1",
-		"user": {"subject_id": "usr-2", "username": "bob"}
+		"user": {"subject_id": "usr-2", "short_id": "u-bob02", "username": "bob"}
 	}`
 
 	// First delivery.
@@ -373,7 +373,7 @@ func TestDispatch_FlagOffIsLogOnly(t *testing.T) {
 		"event_type": "user.created",
 		"subject_id": "usr-3",
 		"tenant_id": "t1",
-		"user": {"subject_id": "usr-3", "username": "carol"}
+		"user": {"subject_id": "usr-3", "short_id": "u-carol03", "username": "carol"}
 	}`
 	w := postEventWithID(t, r, body, "33333333-3333-4333-8333-333333333333")
 	if w.Code != http.StatusAccepted {
@@ -425,7 +425,7 @@ func TestDispatch_SoftSkipStillMarksProcessed(t *testing.T) {
 		"event_type": "user.created",
 		"subject_id": "usr-4",
 		"tenant_id": "t-orphan",
-		"user": {"subject_id": "usr-4", "username": "dave"}
+		"user": {"subject_id": "usr-4", "short_id": "u-dave04", "username": "dave"}
 	}`
 	w := postEventWithID(t, r, body, "44444444-4444-4444-8444-444444444444")
 	if w.Code != http.StatusAccepted {

@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -100,7 +99,7 @@ func TestProvisionUser_HappyPath(t *testing.T) {
 	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-1", TenantID: "t1", Username: "alice",
+		SubjectID: "usr-1", TenantID: "t1", ShortID: "u-alice01", Username: "alice",
 	}); err != nil {
 		t.Fatalf("ProvisionUser: %v", err)
 	}
@@ -115,6 +114,9 @@ func TestProvisionUser_HappyPath(t *testing.T) {
 	if b.GitUID == nil || *b.GitUID != 7 {
 		t.Errorf("git_uid = %v, want 7", b.GitUID)
 	}
+	if b.GitUsername != "u-alice01" {
+		t.Errorf("git_username = %q, want u-alice01", b.GitUsername)
+	}
 	if len(stub.createCalls) != 1 {
 		t.Errorf("expected 1 CreateUser call, got %d", len(stub.createCalls))
 	}
@@ -127,14 +129,14 @@ func TestProvisionUser_AlreadySyncedIsNoop(t *testing.T) {
 
 	// Seed a synced binding.
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-2", TenantID: "t1", Username: "bob",
+		SubjectID: "usr-2", TenantID: "t1", ShortID: "u-bob02", Username: "bob",
 	}); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	// Second call should not invoke CreateUser again.
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-2", TenantID: "t1", Username: "bob",
+		SubjectID: "usr-2", TenantID: "t1", ShortID: "u-bob02", Username: "bob",
 	}); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestProvisionUser_MissingGitServerSoftSkips(t *testing.T) {
 	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
 
 	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-3", TenantID: "t1", Username: "carol",
+		SubjectID: "usr-3", TenantID: "t1", ShortID: "u-carol03", Username: "carol",
 	})
 	if err != nil {
 		t.Errorf("soft-skip should return nil, got %v", err)
@@ -173,7 +175,7 @@ func TestProvisionUser_ResolverTransientErrorSurfaces(t *testing.T) {
 	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
 
 	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-4", TenantID: "t1", Username: "dave",
+		SubjectID: "usr-4", TenantID: "t1", ShortID: "u-dave04", Username: "dave",
 	})
 	if err == nil {
 		t.Fatalf("expected non-soft error to surface, got nil")
@@ -192,7 +194,7 @@ func TestProvisionUser_UserExistsRecovers(t *testing.T) {
 	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-5", TenantID: "t1", Username: "eve",
+		SubjectID: "usr-5", TenantID: "t1", ShortID: "u-eve05", Username: "eve",
 	}); err != nil {
 		t.Fatalf("ProvisionUser: %v", err)
 	}
@@ -218,7 +220,7 @@ func TestProvisionUser_NonConflictErrorMarksError(t *testing.T) {
 	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
 
 	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-6", TenantID: "t1", Username: "frank",
+		SubjectID: "usr-6", TenantID: "t1", ShortID: "u-frank06", Username: "frank",
 	})
 	if err == nil {
 		t.Fatalf("expected error to surface")
@@ -236,22 +238,72 @@ func TestProvisionUser_NonConflictErrorMarksError(t *testing.T) {
 	}
 }
 
-func TestBuildGitUsername_Sanitizes(t *testing.T) {
-	cases := []struct {
-		username, subjectID, want string
-	}{
-		{"alice", "usr-1", "u-alice"},
-		{"", "usr-2", "u-usr-2"},
-		{"!@#bad chars", "usr-3", "u----bad-chars"},
-		{"this-is-a-very-long-username-that-exceeds-the-limit-of-forty-chars-yes", "usr-4", regexp.MustCompile(`^u-.{0,38}$`).String()},
+func TestProvisionUser_MissingShortIDFails(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{}
+	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-7", TenantID: "t1",
+		// ShortID intentionally empty — caller bug or stale payload.
+	})
+	if err == nil {
+		t.Fatalf("expected error when ShortID missing")
 	}
-	for _, tc := range cases {
-		got := buildGitUsername(tc.username, tc.subjectID)
-		if len(got) > 40 {
-			t.Errorf("got %q (%d chars), must be ≤40", got, len(got))
-		}
-		if !strings.HasPrefix(got, "u-") {
-			t.Errorf("got %q, must start with 'u-'", got)
-		}
+	if !strings.Contains(err.Error(), "ShortID") {
+		t.Errorf("err should mention ShortID, got %v", err)
+	}
+	if len(stub.createCalls) != 0 {
+		t.Errorf("expected 0 CreateUser calls, got %d", len(stub.createCalls))
+	}
+	// No binding row should have been inserted.
+	var count int64
+	db.Model(&models.UserGitBinding{}).Where("user_subject_id = ?", "usr-7").Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 binding rows, got %d", count)
+	}
+}
+
+func TestProvisionUser_PassesDisplayNameAsFullName(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "https://g.example", AdminToken: "tok"}}
+	stub := &stubProvisioner{created: &GiteaUser{ID: 11}}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	name := "Alice Wonderland"
+	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID:   "usr-1",
+		TenantID:    "t1",
+		ShortID:     "u-alice01",
+		Username:    "alice",
+		DisplayName: &name,
+	}); err != nil {
+		t.Fatalf("ProvisionUser: %v", err)
+	}
+	if len(stub.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateUser call, got %d", len(stub.createCalls))
+	}
+	if got := stub.createCalls[0].FullName; got != name {
+		t.Errorf("FullName = %q, want %q", got, name)
+	}
+	if got := stub.createCalls[0].Login; got != "u-alice01" {
+		t.Errorf("Login = %q, want u-alice01", got)
+	}
+}
+
+func TestProvisionUser_NilDisplayNameYieldsEmptyFullName(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{created: &GiteaUser{ID: 12}}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-2",
+		TenantID:  "t1",
+		ShortID:   "u-bob02",
+		Username:  "bob",
+	}); err != nil {
+		t.Fatalf("ProvisionUser: %v", err)
+	}
+	if got := stub.createCalls[0].FullName; got != "" {
+		t.Errorf("FullName = %q, want empty when DisplayName is nil", got)
 	}
 }

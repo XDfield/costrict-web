@@ -183,7 +183,7 @@ func TestE2E_ProvisionUser_HappyPath(t *testing.T) {
 	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-e2e-1", TenantID: "t-e2e-1", Username: "alice",
+		SubjectID: "usr-e2e-1", TenantID: "t-e2e-1", ShortID: "u-e2ealice01", Username: "alice",
 	}); err != nil {
 		t.Fatalf("ProvisionUser: %v", err)
 	}
@@ -199,8 +199,9 @@ func TestE2E_ProvisionUser_HappyPath(t *testing.T) {
 	if b.GitUID == nil || *b.GitUID != 101 {
 		t.Errorf("git_uid = %v, want 101", b.GitUID)
 	}
-	if b.GitUsername != "u-alice" {
-		t.Errorf("git_username = %q, want u-alice", b.GitUsername)
+	// Login now flows from cs-user's ShortID; server passes it through verbatim.
+	if b.GitUsername != "u-e2ealice01" {
+		t.Errorf("git_username = %q, want u-e2ealice01", b.GitUsername)
 	}
 	if b.LastSyncedAt == nil {
 		t.Errorf("last_synced_at should be set")
@@ -208,8 +209,8 @@ func TestE2E_ProvisionUser_HappyPath(t *testing.T) {
 
 	gitea.mu.Lock()
 	defer gitea.mu.Unlock()
-	if _, ok := gitea.users["u-alice"]; !ok {
-		t.Errorf("fake Gitea didn't record user u-alice (have %v)", gitea.users)
+	if _, ok := gitea.users["u-e2ealice01"]; !ok {
+		t.Errorf("fake Gitea didn't record user u-e2ealice01 (have %v)", gitea.users)
 	}
 }
 
@@ -218,8 +219,10 @@ func TestE2E_ProvisionUser_HappyPath(t *testing.T) {
 // fake). New provisioning call hits 409 → GET recovers UID → binding synced.
 func TestE2E_ProvisionUser_409Recovery(t *testing.T) {
 	gitea := newFakeGitea("test-admin-token")
-	// Pre-seed existing Gitea user (uid 555).
-	gitea.users["u-bob"] = 555
+	// Pre-seed existing Gitea user (uid 555) under the ShortID ProvisionUser
+	// will pass through for usr-e2e-2.
+	const shortID = "u-e2ebob02"
+	gitea.users[shortID] = 555
 	giteaSrv := httptest.NewServer(gitea)
 	defer giteaSrv.Close()
 
@@ -229,7 +232,7 @@ func TestE2E_ProvisionUser_409Recovery(t *testing.T) {
 	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-e2e-2", TenantID: "t-e2e-2", Username: "bob",
+		SubjectID: "usr-e2e-2", TenantID: "t-e2e-2", ShortID: shortID, Username: "bob",
 	}); err != nil {
 		t.Fatalf("ProvisionUser: %v", err)
 	}
@@ -259,7 +262,7 @@ func TestE2E_ProvisionUser_MissingBindingSoftSkips(t *testing.T) {
 	svc := NewUserProvisionService(db, gitserver.NewDBResolver(db), zap.NewNop())
 
 	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
-		SubjectID: "usr-orphan", TenantID: "t-orphan", Username: "carol",
+		SubjectID: "usr-orphan", TenantID: "t-orphan", ShortID: "u-orphan03", Username: "carol",
 	}); err != nil {
 		t.Fatalf("ProvisionUser on orphan tenant should soft-skip, got %v", err)
 	}
