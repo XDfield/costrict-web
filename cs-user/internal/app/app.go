@@ -425,6 +425,10 @@ func (unavailableAuthReader) GetSubjectIDByExternalKey(_ context.Context, _ stri
 	return "", errServiceUnavailable
 }
 
+func (unavailableAuthReader) GetUserByID(_ context.Context, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
+}
+
 // unavailableTenantResolver is the fallback when Deps.TenantResolver is nil —
 // keeps /tenants/resolve-by-email resolvable for swagger while refusing
 // traffic with 503 (production wires a real *tenant.Resolver via main.go).

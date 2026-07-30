@@ -27,6 +27,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // AuthAPI bundles the dependencies the reissue-token flow needs. Lives
@@ -68,6 +69,11 @@ type EmploymentReader interface {
 	// reuses the existing one (cs-user is single-source-of-truth on its own
 	// users table). Returns ("", nil) when no user matches.
 	GetSubjectIDByExternalKey(ctx context.Context, externalKey string) (string, error)
+	// GetUserByID loads the user row by subject_id. Used by reissue-token
+	// to surface `short_id` (consumed verbatim by the Gitea fork auth
+	// middleware). Returns gorm.ErrRecordNotFound when no user matches —
+	// caller treats as best-effort and omits the short_id claim.
+	GetUserByID(ctx context.Context, subjectID string) (*models.User, error)
 }
 
 // PermissionReader is the Phase C1 subset of *user.Service the reissue flow
@@ -318,10 +324,24 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		tenantRoles = roles
 	}
 
+	// Load the user row to surface short_id. Best-effort: legacy users
+	// backfilled before the short_id migration may have an empty value;
+	// the JWT then omits the claim (omitempty) and relying parties like
+	// the Gitea fork will reject with 503 — operator signal to run the
+	// backfill CLI. Lookups that soft-fail (record not found) are treated
+	// the same way: skip the claim rather than blocking token issuance.
+	var shortID string
+	if u, lookupErr := a.Svc.GetUserByID(c.Request.Context(), req.UserSubjectID); lookupErr == nil {
+		shortID = u.ShortID
+	} else if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		logger.Warn("[reissue-token] user lookup for short_id failed (token issued without short_id claim): %v", lookupErr)
+	}
+
 	now := time.Now()
 	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
 		Issuer:        a.JWT.Issuer,
 		Subject:       req.UserSubjectID,
+		ShortID:       shortID,
 		Audience:      audience,
 		TTL:           a.JWT.TTL,
 		JTI:           uuid.NewString(),

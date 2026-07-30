@@ -46,6 +46,13 @@ type EnterpriseClaims struct {
 	UniversalID       string `json:"universal_id,omitempty"`
 	Name              string `json:"name,omitempty"`
 	PreferredUsername string `json:"preferred_username,omitempty"`
+	// ShortID is the platform-wide compact handle (e.g. "u-khGu8ddt") derived
+	// from SubjectID. Consumed verbatim by relying parties that need a stable,
+	// collision-resistant, charset-safe identifier — notably the Gitea fork's
+	// CoStrictJWT middleware, which uses it directly as the Gitea username
+	// (no further transformation). Distinct from PreferredUsername (display
+	// name) which carries no uniqueness / charset guarantees.
+	ShortID string `json:"short_id,omitempty"`
 	Email             string `json:"email,omitempty"`
 	Picture           string `json:"picture,omitempty"`
 	Owner             string `json:"owner,omitempty"`
@@ -145,6 +152,11 @@ type IssuanceParams struct {
 	Issuer string
 	// Subject is the user's stable subject_id (users.subject_id). Required.
 	Subject string
+	// ShortID is the platform-wide compact handle (users.short_id, e.g.
+	// "u-khGu8ddt"). Emitted verbatim as the `short_id` JWT claim for
+	// relying parties (Gitea fork auth) that key on it directly. Empty for
+	// users created before the short_id migration was backfilled.
+	ShortID string
 	// Audience is the aud claim — relying parties that should accept the
 	// token. Empty slice means "no aud claim" (some validators reject this;
 	// populate when in doubt).
@@ -208,6 +220,7 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 	c := &EnterpriseClaims{
 		Issuer:        params.Issuer,
 		Subject:       params.Subject,
+		ShortID:       params.ShortID,
 		IssuedAt:      jwt.NewNumericDate(now),
 		NotBefore:     jwt.NewNumericDate(now),
 		Expiry:        jwt.NewNumericDate(now.Add(params.TTL)),

@@ -20,6 +20,7 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm"
 )
 
 // stubEmploymentReader lets handler tests pin GetEmploymentIdentity responses
@@ -36,6 +37,10 @@ type stubEmploymentReader struct {
 	fn            func(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
 	applyCalls    *[]user.EmploymentMappingParams
 	externalKeyFn func(ctx context.Context, externalKey string) (string, error)
+	// userFn, when non-nil, drives GetUserByID — used to feed ShortID into
+	// the issued JWT. Returns (nil, gorm.ErrRecordNotFound) when unset so
+	// the handler's best-effort path skips the short_id claim.
+	userFn func(ctx context.Context, subjectID string) (*models.User, error)
 }
 
 func (s stubEmploymentReader) GetEmploymentIdentity(ctx context.Context, id string) (*models.EmploymentIdentity, error) {
@@ -61,6 +66,16 @@ func (s stubEmploymentReader) GetSubjectIDByExternalKey(ctx context.Context, ext
 		return "", nil
 	}
 	return s.externalKeyFn(ctx, extKey)
+}
+
+// GetUserByID satisfies the EmploymentReader interface. When userFn is nil
+// the stub returns gorm.ErrRecordNotFound so the handler's best-effort
+// path skips emitting short_id (mirrors legacy-user pre-backfill state).
+func (s stubEmploymentReader) GetUserByID(ctx context.Context, subjectID string) (*models.User, error) {
+	if s.userFn == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return s.userFn(ctx, subjectID)
 }
 
 // stubPermissionReader lets handler tests pin GetPlatformAdmin +

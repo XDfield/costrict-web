@@ -443,6 +443,7 @@ func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
 		"universal_id":       "UniversalID",
 		"name":               "Name",
 		"preferred_username": "PreferredUsername",
+		"short_id":           "ShortID",
 		"email":              "Email",
 		"picture":            "Picture",
 		"owner":              "Owner",
