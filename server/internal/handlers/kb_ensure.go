@@ -51,12 +51,12 @@ type KBEnsureResponse struct {
 	KbRepoPath       string              `json:"kb_repo_path,omitempty"`
 	KbCloneURL       string              `json:"kb_clone_url,omitempty"`
 	KbWebURL         string              `json:"kb_web_url,omitempty"`
-	Created          KBEnsureCreated     `json:"created,omitempty"`
+	Created          *KBEnsureCreated    `json:"created,omitempty"`
 	AlgorithmVersion string              `json:"algorithm_version,omitempty"`
 	BotCredentials   *BotCredentialsView `json:"bot_credentials,omitempty"`
 
 	// --- Space overview (always populated) ---
-	SpaceType     string               `json:"space_type,omitempty"`     // "team" | "user"
+	SpaceType     string                  `json:"space_type"`              // "" (discovery) | "team" | "user"
 	TeamSpace     *TeamSpaceInfo       `json:"team_space,omitempty"`     // user's default team
 	PersonalSpace *userspace.UserSpaceInfo `json:"personal_space,omitempty"` // user's personal space
 }
@@ -223,6 +223,12 @@ func handleDiscovery(c *gin.Context, subjectID, codeRepoURL string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		if us == nil {
+			us = &userspace.UserSpaceInfo{
+				UserSubjectID: subjectID,
+				Ready:         false,
+			}
+		}
 		resp.PersonalSpace = us
 	}
 
@@ -314,7 +320,7 @@ func handleTeamEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 		KbRepoPath:       provResult.KbRepoPath,
 		KbCloneURL:       endpoint + "/" + provResult.KbRepoPath + ".git",
 		KbWebURL:         endpoint + "/" + provResult.KbRepoPath,
-		Created:          KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
+		Created:          &KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
 		AlgorithmVersion: "v2",
 		BotCredentials: &BotCredentialsView{
 			GiteaUsername:     giteaUsername,
@@ -404,7 +410,7 @@ func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 		KbRepoPath:       provResult.KbRepoPath,
 		KbCloneURL:       endpoint + "/" + provResult.KbRepoPath + ".git",
 		KbWebURL:         endpoint + "/" + provResult.KbRepoPath,
-		Created:          KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
+		Created:          &KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
 		AlgorithmVersion: "v2",
 		BotCredentials: &BotCredentialsView{
 			GiteaUsername:     giteaUsername,

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/kb"
@@ -126,9 +127,14 @@ func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string
 	// Not ready — try fallback provisioning.
 	if s.userProvisionSvc != nil {
 		// Best-effort: ignore errors (ProvisionUser logs internally).
+		short := strings.ReplaceAll(subjectID, "-", "")
+		if len(short) > 8 {
+			short = short[:8]
+		}
 		_ = s.userProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
 			SubjectID: subjectID,
 			TenantID:  tenantID,
+			Username:  "u-" + short,
 		})
 	}
 
