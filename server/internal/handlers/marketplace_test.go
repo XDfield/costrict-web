@@ -735,6 +735,12 @@ func TestLogBehavior_FeedbackDedupSupersedes(t *testing.T) {
 
 	r := newMarketplaceRouter("user-f")
 	postJSON(r, "/api/items/item-fd/behavior", map[string]interface{}{"actionType": "feedback", "rating": 5, "feedback": "first take"})
+	// Distinct created_at tick so read-time dedup (ORDER BY created_at DESC, id DESC)
+	// reliably treats the second POST as latest. SQLite + GORM autoCreateTime only
+	// resolve to microseconds; back-to-back POSTs under warm cache land in the same
+	// tick and fall back to the random-UUID tiebreaker — production uses Postgres
+	// timestamptz where this is a non-issue (see GetItemBehaviorStats comment).
+	time.Sleep(2 * time.Millisecond)
 	postJSON(r, "/api/items/item-fd/behavior", map[string]interface{}{"actionType": "feedback", "rating": 1, "feedback": "changed my mind"})
 
 	w := get(r, "/api/items/item-fd/stats")
@@ -763,6 +769,9 @@ func TestGetItemStats_RatingSurvivesTextOnlyEdit(t *testing.T) {
 	r := newMarketplaceRouter("user-rt")
 	postJSON(r, "/api/items/item-rt/behavior", map[string]interface{}{"actionType": "feedback", "rating": 5, "feedback": "great"})
 	// Rating omitted (→ 0): editing only the comment.
+	// Distinct created_at tick so read-time dedup picks this row as latest; see
+	// TestLogBehavior_FeedbackDedupSupersedes for the SQLite timing rationale.
+	time.Sleep(2 * time.Millisecond)
 	postJSON(r, "/api/items/item-rt/behavior", map[string]interface{}{"actionType": "feedback", "feedback": "still using it"})
 
 	w := get(r, "/api/items/item-rt/stats")
