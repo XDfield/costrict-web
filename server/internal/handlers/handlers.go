@@ -333,39 +333,6 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 	}
 }
 
-func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
-	name := claims.Name
-	if claims.PreferredUsername != "" {
-		name = claims.PreferredUsername
-	}
-	// Fallback chain: universal_id → sub → id
-	userID := claims.UniversalID
-	if userID == "" {
-		userID = claims.Sub
-	}
-	if userID == "" {
-		userID = claims.ID
-	}
-	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(userID)
-	return authUserDTO{
-		ID:                 userID,
-		SubjectID:          userID,
-		Name:               name,
-		Username:           claims.Name,
-		Email:              stringPtr(claims.Email),
-		Phone:              stringPtr(claims.Phone),
-		AvatarURL:          claims.Picture,
-		CasdoorUniversalID: stringPtr(claims.UniversalID),
-		SystemRoles:        roles,
-		Auth: gin.H{
-			"provider":        claims.Provider,
-			"providerUserId":  claims.ProviderUserID,
-			"externalKey":     buildExternalKeyForResponse(claims),
-			"externalSubject": userID,
-		},
-	}
-}
-
 func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
 	return authIdentityDTO{
 		Provider:    identity.Provider,
@@ -864,12 +831,13 @@ func ResolveAuthUser(c *gin.Context) {
 
 // GetCurrentUser godoc
 // @Summary      Get current user
-// @Description  Get information of the authenticated user
+// @Description  Get information of the authenticated user. Returns 404 when the JWT subject resolves to no row in the user service — cs-user is the authoritative registry, so unregistered Casdoor identities are not synthesised from claims.
 // @Tags         auth
 // @Produce      json
 // @Security     BearerAuth
 // @Success      200  {object}  object{}
 // @Failure      401  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
@@ -897,41 +865,14 @@ func GetCurrentUser(c *gin.Context) {
 		}
 	}
 
-	token, exists := c.Get("accessToken")
-	if !exists || token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	userInfo, err := getUserInfoFunc(token.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
-		return
-	}
-
-	claims := &userpkg.JWTClaims{
-		ID:                userInfo.User.Id,
-		Sub:               userInfo.User.Sub,
-		UniversalID:       userInfo.User.UniversalID,
-		Name:              userInfo.User.Name,
-		PreferredUsername: userInfo.User.PreferredUsername,
-		Email:             userInfo.User.Email,
-		Picture:           userInfo.User.Picture,
-		Owner:             userInfo.User.Owner,
-	}
-	if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(token.(string)); parseErr == nil {
-		claims = userpkg.MergeJWTClaims(claims, tokenClaims)
-	}
-
-	if UserModule != nil && UserModule.Service != nil {
-		// Try to find existing user only (read-only), don't create
-		if user, userErr := UserModule.Service.FindUserByClaims(claims); userErr == nil && user != nil {
-			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
+	// No Casdoor / claims-synthesis fallback. cs-user is the authoritative
+	// registry (ADR D1) — a JWT whose subject resolves to no row in the user
+	// service means the identity is not registered on this platform, and
+	// synthesising a user object from claims alone (the legacy path) would
+	// let unregistered Casdoor identities pass as legitimate users. Mirror
+	// /api/me's strict contract: 404 when the authenticated subject has no
+	// user record.
+	c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 }
 
 // GetMe godoc

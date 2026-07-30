@@ -1198,7 +1198,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get information of the authenticated user",
+                "description": "Get information of the authenticated user. Returns 404 when the JWT subject resolves to no row in the user service — cs-user is the authoritative registry, so unregistered Casdoor identities are not synthesised from claims.",
                 "produces": [
                     "application/json"
                 ],
@@ -1215,6 +1215,17 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {

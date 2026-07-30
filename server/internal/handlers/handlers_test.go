@@ -155,6 +155,27 @@ func TestGetCurrentUserReturnsLocalSubjectUser(t *testing.T) {
 	}
 }
 
+// TestGetCurrentUser_UserNotFoundReturns404 locks the strict contract for
+// /api/auth/me: an authenticated JWT whose subject resolves to no row in
+// the user service must return 404 — NOT a synthesised user object built
+// from JWT claims. The legacy claims-synthesis path leaked unregistered
+// Casdoor identities as legitimate users (handlers.go GetCurrentUser).
+// Parallels TestGetMe_UserNotFoundReturns404.
+func TestGetCurrentUser_UserNotFoundReturns404(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+
+	// Subject id that doesn't exist in the user table. The test router
+	// injects "accessToken=fake-token" so the legacy fallback would have
+	// called getUserInfoFunc; with the fallback removed the handler must
+	// short-circuit to 404 without any Casdoor call.
+	w := get(newAuthRouter("usr_does_not_exist"), "/api/auth/me")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestListBoundIdentities(t *testing.T) {
 	defer setupTestDB(t)()
 	defer InitUserModule(nil)
