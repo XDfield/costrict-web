@@ -44,12 +44,10 @@ func (s *UserService) ApplyEnterpriseMapping(ctx context.Context, userSubjectID,
 // (DualWriter bypasses Primary entirely; OAuth callback must check that the
 // writer isn't a bare *UserService when JWT_SELF_SIGN_ENABLED=true).
 //
-// The audience parameter is accepted for interface symmetry with RPCWriter.
-// It's ignored (no signer to honor it).
-func (s *UserService) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+// The audience + rawCasdoorJWT parameters are accepted for interface symmetry
+// with RPCWriter. They're ignored (no signer to honor them).
+func (s *UserService) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	_ = ctx
-	_ = userSubjectID
-	_ = claims
 	_ = audience
 	_ = rawCasdoorJWT
 	return "", time.Time{}, ErrSelfSignUnavailable

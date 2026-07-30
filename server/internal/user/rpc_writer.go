@@ -270,61 +270,46 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 // ReissueToken calls POST /api/internal/users/reissue-token (Phase A7). The
 // server's OAuth callback invokes this when JWT_SELF_SIGN_ENABLED=true to
 // swap the Casdoor-validated claims for a cs-user-signed JWT carrying
-// enterprise claims (Phase A5). cs-user loads employment_identities (A4),
-// builds claims, signs with its RSA key (A3), and returns {token, expires_at}.
+// enterprise claims (Phase A5). cs-user verifies the raw Casdoor JWT against
+// its own JWKS, resolves the authoritative user via external_key, reads
+// tenant_id from the user row, joins tenant slug, loads employment_identities
+// (A4), builds claims, signs with its RSA key (A3), and returns
+// {token, expires_at}.
 //
-// Wire format: JWTClaims now carries explicit snake_case json tags
-// (id/sub/universal_id/name/email/...) so the wire shape matches
-// cs-user's models.JWTClaims 1:1. The prior reliance on encoding/json's
-// case-insensitive fallback (https://pkg.go.dev/encoding/json#Unmarshal)
-// silently dropped snake_case-only fields like universal_id on the cs-user
-// side (EqualFold doesn't span underscores), which is why the tags were
-// added. GetOrCreateUser's body shares the same struct shape.
+// Contract: cs-user is the platform-layer identity authority. The only
+// identity-bearing field on the wire is rawCasdoorJWT — cs-user derives
+// subject_id / tenant_id / tenant_slug / ExternalClaims entirely from its
+// own verification + reverse-lookup. Server-side fields like userSubjectID,
+// parsed claims, or runtime tenant slug are NO LONGER forwarded; legacy
+// fields an un-upgraded server might still send are silently ignored at
+// unmarshal time on cs-user's side.
 //
 // audience is forwarded so the server can target specific relying parties
 // (csc CLI vs. costrict-web frontend). nil falls back to cs-user's
 // configured default audience (CS_USER_JWT_AUDIENCE).
 //
 // rawCasdoorJWT is the raw access token received from Casdoor during OAuth
-// callback. cs-user (when its Casdoor JWKS verifier is configured) re-
-// validates signature + exp/nbf/iss/aud itself instead of trusting the
-// server-parsed claims. Empty string preserves the legacy trust path
-// (rolling-deploy compatibility; will be deprecated once all cs-user
-// deployments have the verifier wired).
+// callback. Required — cs-user treats Casdoor as a pure login source and
+// refuses to issue without verifying the upstream JWT itself.
 //
 // Best-effort at the caller — the OAuth callback treats errors as "stick
 // with the Casdoor token" rather than failing login. This is the foundation
 // of Phase A8's 灰度 dual-sign window: when ReissueToken fails, the cookie
 // gets the Casdoor token; when it succeeds, the cookie gets the cs-user
 // token; A8 will introduce an explicit dual-issuance mode that sets both.
-func (w *RPCWriter) ReissueToken(ctx context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+func (w *RPCWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	if !w.Configured() {
 		return "", time.Time{}, ErrNotConfigured
 	}
-	if userSubjectID == "" {
-		return "", time.Time{}, errors.New("user rpc writer: reissue-token: empty user_subject_id")
+	if rawCasdoorJWT == "" {
+		return "", time.Time{}, errors.New("user rpc writer: reissue-token: empty casdoor_jwt")
 	}
 	body := struct {
-		UserSubjectID string     `json:"user_subject_id"`
-		// CasdoorJWT: raw Casdoor access token forwarded for cs-user-side
-		// JWKS verification (see package-level trust-boundary comment in
-		// cs-user/internal/handlers/auth.go). Empty → legacy trust path.
-		CasdoorJWT string     `json:"casdoor_jwt,omitempty"`
-		Identity   *JWTClaims `json:"identity,omitempty"`
-		Audience   []string   `json:"audience,omitempty"`
-		// TenantSlug (Phase B): forwarded from ctx so cs-user embeds the
-		// runtime-resolved tenant slug into the re-issued JWT. Server's
-		// TenantMatch middleware then compares this claim against future
-		// requests' resolved slug (cookie/subdomain) for cross-tenant
-		// detection (B3b.2c). Empty slug → empty claim → middleware skips
-		// comparison (graceful pre-cutover behavior).
-		TenantSlug string `json:"tenant_slug,omitempty"`
+		CasdoorJWT string   `json:"casdoor_jwt"`
+		Audience   []string `json:"audience,omitempty"`
 	}{
-		UserSubjectID: userSubjectID,
-		CasdoorJWT:    rawCasdoorJWT,
-		Identity:      claims,
-		Audience:      audience,
-		TenantSlug:    tenantSlugFromContext(ctx),
+		CasdoorJWT: rawCasdoorJWT,
+		Audience:   audience,
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

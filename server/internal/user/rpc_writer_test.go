@@ -381,7 +381,7 @@ type recordingWriter struct {
 	unbind                 int
 	applyEnterpriseMapping int
 	reissueToken           int
-	reissueTokenFn         func(userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error)
+	reissueTokenFn         func(audience []string, rawCasdoorJWT string) (string, time.Time, error)
 	primaryError           error // forces a non-nil return from all methods when set
 	// subjectID overrides the default "usr_recording" returned by
 	// GetOrCreateUser. Used to distinguish Primary vs Secondary users in
@@ -424,10 +424,10 @@ func (r *recordingWriter) ApplyEnterpriseMapping(_ context.Context, _, _ string)
 	r.applyEnterpriseMapping++
 	return r.primaryError
 }
-func (r *recordingWriter) ReissueToken(_ context.Context, userSubjectID string, claims *JWTClaims, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+func (r *recordingWriter) ReissueToken(_ context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
 	r.reissueToken++
 	if r.reissueTokenFn != nil {
-		return r.reissueTokenFn(userSubjectID, claims, audience, rawCasdoorJWT)
+		return r.reissueTokenFn(audience, rawCasdoorJWT)
 	}
 	if r.primaryError != nil {
 		return "", time.Time{}, r.primaryError
@@ -792,9 +792,8 @@ func TestDualWriter_ApplyEnterpriseMapping_NilSecondarySkipsFanOut(t *testing.T)
 // --- RPCWriter.ReissueToken (Phase A7b) ---
 
 // TestRPCWriter_ReissueToken_HappyPath verifies the wire format + response
-// decode. The handler's Identity field is a *JWTClaims — server-side
-// JWTClaims has no JSON tags so the wire is PascalCase; cs-user decodes via
-// encoding/json's case-insensitive fallback (same mechanism as GetOrCreateUser).
+// decode. New contract (cs-user identity authority): the ONLY identity
+// field on the wire is casdoor_jwt — no user_subject_id, no identity.
 func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 	t.Parallel()
 	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -806,10 +805,7 @@ func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	token, exp, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{
-		UniversalID: "uuid-alice",
-		Name:        "Alice",
-	}, nil, "raw-casdoor-jwt")
+	token, exp, err := w.ReissueToken(context.Background(), nil, "raw-casdoor-jwt")
 	if err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
@@ -821,36 +817,35 @@ func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 		t.Errorf("expires_at: got %v, want %v", exp, wantExp)
 	}
 
-	// Verify the request body shape: user_subject_id forwarded; identity
-	// carries OIDC fields with explicit snake_case json tags (the prior
-	// reliance on encoding/json's case-insensitive fallback silently dropped
-	// snake_case-only fields like universal_id on the cs-user side).
+	// Verify the request body shape: only casdoor_jwt on wire; legacy
+	// user_subject_id / identity / tenant_slug fields absent.
 	var body struct {
+		CasdoorJWT    string `json:"casdoor_jwt"`
 		UserSubjectID string `json:"user_subject_id"`
-		Identity      struct {
-			UniversalID string `json:"universal_id"`
-			Name        string `json:"name"`
-		} `json:"identity"`
+		Identity      any    `json:"identity"`
+		TenantSlug    string `json:"tenant_slug"`
 	}
 	if err := json.Unmarshal(cap.Body, &body); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
 	}
-	if body.UserSubjectID != "usr_alice" {
-		t.Errorf("user_subject_id: got %q", body.UserSubjectID)
+	if body.CasdoorJWT != "raw-casdoor-jwt" {
+		t.Errorf("casdoor_jwt: got %q", body.CasdoorJWT)
 	}
-	if body.Identity.UniversalID != "uuid-alice" {
-		t.Errorf("Identity.UniversalID: got %q", body.Identity.UniversalID)
+	if body.UserSubjectID != "" {
+		t.Errorf("user_subject_id leaked onto wire: %q (cs-user resolves itself)", body.UserSubjectID)
 	}
-	if body.Identity.Name != "Alice" {
-		t.Errorf("Identity.Name: got %q", body.Identity.Name)
+	if body.Identity != nil {
+		t.Errorf("identity leaked onto wire: %v (cs-user harvests from verified JWT)", body.Identity)
+	}
+	if body.TenantSlug != "" {
+		t.Errorf("tenant_slug leaked onto wire: %q (cs-user reads user.tenant_id)", body.TenantSlug)
 	}
 }
 
 // TestRPCWriter_ReissueToken_CasdoorJWTForwarded verifies the raw Casdoor
 // JWT supplied by the OAuth callback is forwarded verbatim under the
 // `casdoor_jwt` wire key. cs-user reads this field to re-validate the JWT
-// against Casdoor's JWKS — leaving it off the wire (or empty) would force
-// cs-user onto the legacy trust path.
+// against Casdoor's JWKS.
 func TestRPCWriter_ReissueToken_CasdoorJWTForwarded(t *testing.T) {
 	t.Parallel()
 	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -859,7 +854,7 @@ func TestRPCWriter_ReissueToken_CasdoorJWTForwarded(t *testing.T) {
 	w := newTestRPCWriter(t, srv.URL)
 
 	const rawCasdoor = "eyJhbGciOiJSUzI1NiJ9.payload.sig"
-	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{UniversalID: "uuid-1"}, nil, rawCasdoor); err != nil {
+	if _, _, err := w.ReissueToken(context.Background(), nil, rawCasdoor); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -874,23 +869,21 @@ func TestRPCWriter_ReissueToken_CasdoorJWTForwarded(t *testing.T) {
 	}
 }
 
-// TestRPCWriter_ReissueToken_EmptyCasdoorJWTOmitted verifies the omitempty
-// contract — empty rawCasdoorJWT must NOT serialize the field, so rolling
-// deploys (server pre-upgrade) don't send an empty string that cs-user
-// mistakes for "verifier required but missing".
-func TestRPCWriter_ReissueToken_EmptyCasdoorJWTOmitted(t *testing.T) {
+// TestRPCWriter_ReissueToken_EmptyCasdoorJWTRejected verifies the new
+// required-contract — empty rawCasdoorJWT fails fast at the local guard.
+// Rolling-deploy side note: any caller still on the legacy trust path MUST
+// upgrade before cs-user cuts the verifier to required.
+func TestRPCWriter_ReissueToken_EmptyCasdoorJWTRejected(t *testing.T) {
 	t.Parallel()
-	srv, cap := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"token":"t","expires_at":"2026-07-17T13:00:00Z"}`))
+	srv, _ := stubCSUserServer(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("server should not be called when casdoor_jwt is empty")
 	})
+	defer srv.Close()
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{UniversalID: "uuid-1"}, nil, ""); err != nil {
-		t.Fatalf("ReissueToken: %v", err)
-	}
-
-	if strings.Contains(string(cap.Body), "casdoor_jwt") {
-		t.Errorf("casdoor_jwt key leaked onto wire for empty input: %s", string(cap.Body))
+	_, _, err := w.ReissueToken(context.Background(), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "empty casdoor_jwt") {
+		t.Fatalf("expected empty-casdoor_jwt error, got %v", err)
 	}
 }
 
@@ -903,7 +896,7 @@ func TestRPCWriter_ReissueToken_AudienceForwarded(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", nil, []string{"csc-cli", "ops-portal"}, ""); err != nil {
+	if _, _, err := w.ReissueToken(context.Background(), []string{"csc-cli", "ops-portal"}, "raw"); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -925,28 +918,12 @@ func TestRPCWriter_ReissueToken_NilAudienceOmitted(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken(context.Background(), "usr_alice", nil, nil, ""); err != nil {
+	if _, _, err := w.ReissueToken(context.Background(), nil, "raw"); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
 	if strings.Contains(string(cap.Body), "audience") {
 		t.Errorf("audience key leaked onto wire: %s", string(cap.Body))
-	}
-}
-
-// TestRPCWriter_ReissueToken_EmptySubjectIDRejected verifies the local
-// guard — caller bug, surface before making the HTTP call.
-func TestRPCWriter_ReissueToken_EmptySubjectIDRejected(t *testing.T) {
-	t.Parallel()
-	srv, _ := stubCSUserServer(t, func(http.ResponseWriter, *http.Request) {
-		t.Fatal("server should not be called when subject_id is empty")
-	})
-	defer srv.Close()
-	w := newTestRPCWriter(t, srv.URL)
-
-	_, _, err := w.ReissueToken(context.Background(), "", &JWTClaims{}, nil, "")
-	if err == nil || !strings.Contains(err.Error(), "empty user_subject_id") {
-		t.Fatalf("expected empty-subject error, got %v", err)
 	}
 }
 
@@ -958,7 +935,7 @@ func TestRPCWriter_ReissueToken_NotConfigured(t *testing.T) {
 	if w.Configured() {
 		t.Fatal("writer should be unconfigured with empty URL+token")
 	}
-	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
@@ -973,7 +950,7 @@ func TestRPCWriter_ReissueToken_5xxMapsToErrRPCUnavailable(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -985,12 +962,12 @@ func TestRPCWriter_ReissueToken_4xxSurfacesServerMessage(t *testing.T) {
 	t.Parallel()
 	srv, _ := stubCSUserServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"user_subject_id is required"}`))
+		_, _ = w.Write([]byte(`{"error":"user not provisioned"}`))
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
-	if err == nil || err.Error() != "user_subject_id is required" {
+	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
+	if err == nil || err.Error() != "user not provisioned" {
 		t.Fatalf("expected server message, got %v", err)
 	}
 }
@@ -1005,7 +982,7 @@ func TestRPCWriter_ReissueToken_EmptyTokenInResponseErrors(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
 	if err == nil || !strings.Contains(err.Error(), "empty token") {
 		t.Fatalf("expected empty-token error, got %v", err)
 	}
@@ -1025,7 +1002,7 @@ func TestDualWriter_ReissueToken_BypassesPrimary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	token, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	token, _, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
@@ -1049,7 +1026,7 @@ func TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable(t *te
 	primary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: nil}
 
-	_, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	_, _, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
@@ -1068,7 +1045,7 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	_, _, err := dw.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	_, _, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if err == nil || !strings.Contains(err.Error(), "cs-user unreachable") {
 		t.Fatalf("expected secondary error to propagate, got %v", err)
 	}
@@ -1082,7 +1059,7 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 func TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable(t *testing.T) {
 	t.Parallel()
 	var s *UserService // method receiver is nil-safe — no db needed
-	token, _, err := s.ReissueToken(context.Background(), "usr_alice", &JWTClaims{}, nil, "")
+	token, _, err := s.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
