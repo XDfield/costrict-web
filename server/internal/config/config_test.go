@@ -215,3 +215,61 @@ func TestJWTSignMode_JWT_SIGN_MODE_WinsOverLegacyBool(t *testing.T) {
 		t.Errorf("JWT_SIGN_MODE=off + JWT_SELF_SIGN_ENABLED=true: got %q, want %q (JWT_SIGN_MODE must win)", got, JWTSignModeOff)
 	}
 }
+
+func TestResolveBindStateSecret(t *testing.T) {
+	cases := []struct {
+		name        string
+		bindState   string
+		internal    string
+		want        string
+		wantErr     bool
+	}{
+		{
+			name:      "dedicated secret preferred",
+			bindState: "bind-secret-xyz",
+			internal:  "internal-fallback",
+			want:      "bind-secret-xyz",
+		},
+		{
+			name:      "fallback to InternalSecret",
+			bindState: "",
+			internal:  "internal-fallback",
+			want:      "internal-fallback",
+		},
+		{
+			name:      "whitespace-only bind treated as empty",
+			bindState: "   ",
+			internal:  "internal-fallback",
+			want:      "internal-fallback",
+		},
+		{
+			name:     "both empty errors",
+			bindState: "",
+			internal: "",
+			wantErr:  true,
+		},
+		{
+			name:     "both whitespace errors",
+			bindState: "  ",
+			internal: "\t\n",
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveBindStateSecret(tc.bindState, tc.internal)
+			if tc.wantErr {
+				if err != ErrBindStateSecretMissing {
+					t.Errorf("expected ErrBindStateSecretMissing, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -105,10 +105,10 @@ func InitUserModule(module *userpkg.Module) {
 // InitCookieConfig sets cookie-related configuration from the global config.
 func InitCookieConfig(cfg *config.Config) {
 	cookieSecure = cfg.CookieSecure
-	bindStateSecret = cfg.InternalSecret
-	if strings.TrimSpace(bindStateSecret) == "" {
-		bindStateSecret = cfg.Casdoor.Secret
-	}
+	// Config.Load() already validates BindStateSecret is non-empty (panics
+	// otherwise), so no fallback here. InternalSecret fallback is preserved
+	// inside Config.Load() for backward compatibility.
+	bindStateSecret = cfg.BindStateSecret
 
 	// Phase A8: surface JWT self-sign mode to the OAuth callback without
 	// plumbing cfg through every handler call. Default OFF — Casdoor JWT
@@ -247,10 +247,8 @@ func stripBindQueryParams(raw string) string {
 }
 
 func signBindStatePayload(payload string) string {
+	// bindStateSecret is guaranteed non-empty by Config.Load() at startup.
 	key := strings.TrimSpace(bindStateSecret)
-	if key == "" {
-		key = "costrict-bind-state-default"
-	}
 	h := hmac.New(sha256.New, []byte(key))
 	_, _ = h.Write([]byte(payload))
 	return hex.EncodeToString(h.Sum(nil))

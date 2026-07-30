@@ -162,6 +162,18 @@ spec:
             - name: JWT_SIGN_MODE
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.bindStateSecret }}
+            {{- if .value }}
+            - name: BIND_STATE_SECRET
+              value: {{ .value | quote }}
+            {{- else if .existingSecret }}
+            - name: BIND_STATE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: {{ .key }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.profileGateEnabled }}
             - name: PROFILE_GATE_ENABLED
               value: "true"
