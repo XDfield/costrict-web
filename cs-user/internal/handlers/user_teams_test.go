@@ -25,7 +25,6 @@ func (s *stubUserTeamsSvc) ListUserTeams(ctx context.Context, subjectID string) 
 }
 
 func newTestUserTeamsRouter(svc UserTeamsService) *gin.Engine {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &UserTeamsAPI{Svc: svc}
 	r.GET("/api/internal/users/:subject_id/teams", api.ListUserTeams)

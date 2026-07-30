@@ -8,16 +8,17 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 )
 
-// TestRefreshUserProfile_NeverOverwritesUsername locks in the existing
-// protection (REGISTRATION_PROFILE_DESIGN two-layer identity):
-// refreshUserProfileFromIdentitiesTx computes an IdP-derived username
-// candidate but the Save on line ~150 uses Omit("username"), so the DB
-// value is never touched post-creation. This means a username set by
-// /register/complete (R2) or an admin override (R5) sticks across logins
-// regardless of profile_completed_at.
+// TestRefreshUserProfile_NeverOverwritesUsername locks in the protection
+// (REGISTRATION_PROFILE_DESIGN two-layer identity):
+// refreshUserProfileFromIdentitiesTx no longer recomputes any user-facing
+// field (display_name / email / phone / avatar_url / organization /
+// username) — provider-tracking fields only. A username set by
+// /register/complete (R2) or an admin override (R5) sticks across
+// bind/unbind/transfer regardless of profile_completed_at.
 //
-// This test is a regression lock: if someone removes the Omit, this test
-// fails and forces them to think about the two-layer identity model.
+// This test is a regression lock: if someone reintroduces username
+// recompute in refresh, this test fails and forces them to reconsider
+// the user-owned boundary.
 func TestRefreshUserProfile_NeverOverwritesUsername(t *testing.T) {
 	svc := newTestService(t)
 

@@ -173,6 +173,17 @@ func (s *UserService) ResolveSubjectID(claims *JWTClaims) (string, string, error
 }
 
 // FindUserByClaims performs a read-only lookup to find an existing user by JWT claims.
+//
+// Lookup strategy is the durable external_key only (format
+// `casdoor:<provider>:<universal_id>` — see buildExternalKey); the legacy
+// casdoor_universal_id / casdoor_id / casdoor_sub / username fallback paths
+// were removed because the cs-user users table no longer carries those
+// columns, and even on server's local mirror they were redundant with
+// user_auth_identities.external_key and could diverge on rebind/unbind.
+//
+// This method is only used in USER_SERVICE_BACKEND=local mode; in RPC mode
+// the middleware goes through RPCClient.GetUserByIdentity → cs-user's
+// /by-identity endpoint.
 func (s *UserService) FindUserByClaims(claims *JWTClaims) (*models.User, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("nil JWT claims")
@@ -180,7 +191,7 @@ func (s *UserService) FindUserByClaims(claims *JWTClaims) (*models.User, error) 
 	claims = normalizeJWTClaims(claims)
 	externalKey := buildExternalKey(claims)
 
-	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
+	if externalKey == "" && claims.Sub == "" {
 		return nil, fmt.Errorf("no valid user identifier in JWT claims")
 	}
 
@@ -203,32 +214,12 @@ func (s *UserService) FindUserByClaims(claims *JWTClaims) (*models.User, error) 
 			}
 		}
 	}
-	// Try user table directly by external_key
+	// Try user table directly by external_key (denormalized cache of primary identity)
 	for _, key := range lookupKeys {
 		if key == "" {
 			break
 		}
 		if err := s.db.Where("external_key = ?", key).Take(&user).Error; err == nil {
-			return &user, nil
-		}
-	}
-	if claims.UniversalID != "" {
-		if err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error; err == nil {
-			return &user, nil
-		}
-	}
-	if claims.ID != "" {
-		if err := s.db.Where("casdoor_id = ?", claims.ID).Take(&user).Error; err == nil {
-			return &user, nil
-		}
-	}
-	if claims.Sub != "" {
-		if err := s.db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error; err == nil {
-			return &user, nil
-		}
-	}
-	if claims.Name != "" {
-		if err := s.db.Where("username = ?", claims.Name).Take(&user).Error; err == nil {
 			return &user, nil
 		}
 	}
@@ -627,47 +618,15 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, er
 			}
 		}
 	}
-	if claims.UniversalID != "" {
-		err := s.db.Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, false, fmt.Errorf("failed to query user by universal_id: %w", err)
-		}
-	}
-	if !found && claims.ID != "" {
-		err := s.db.Where("casdoor_id = ?", claims.ID).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, false, fmt.Errorf("failed to query user by id: %w", err)
-		}
-	}
-	if !found && claims.Sub != "" {
-		err := s.db.Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, false, fmt.Errorf("failed to query user by sub: %w", err)
-		}
-	}
-	if !found && claims.Name != "" {
-		err := s.db.Where("username = ?", claims.Name).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if err != gorm.ErrRecordNotFound {
-			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
-		}
-	}
 
 	now := time.Now()
 
 	if found {
 		// Existing user login refresh. Only sync provider-tracking and
-		// Casdoor-linking fields — user-facing profile (DisplayName, Email,
-		// Phone, AvatarURL, Organization) is user-owned now and must not be
-		// clobbered by re-login or by binding additional identities. Initial
-		// values for those fields are populated at CREATE time below.
+		// identity-linking fields — user-facing profile (DisplayName, Email,
+		// Phone, AvatarURL) is user-owned now and must not be clobbered by
+		// re-login or by binding additional identities. Initial values for
+		// those fields are populated at CREATE time below.
 		shouldUpdate := false
 
 		if user.SubjectID == "" {
@@ -676,10 +635,6 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, er
 		}
 		if !user.IsActive {
 			user.IsActive = true
-			shouldUpdate = true
-		}
-		if claims.ID != "" && (user.CasdoorID == nil || *user.CasdoorID != claims.ID) {
-			user.CasdoorID = &claims.ID
 			shouldUpdate = true
 		}
 		if externalKey != "" && (user.ExternalKey == nil || *user.ExternalKey != externalKey) {
@@ -692,14 +647,6 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, er
 		}
 		if claims.ProviderUserID != "" && (user.ProviderUserID == nil || *user.ProviderUserID != claims.ProviderUserID) {
 			user.ProviderUserID = &claims.ProviderUserID
-			shouldUpdate = true
-		}
-		if claims.UniversalID != "" && (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != claims.UniversalID) {
-			user.CasdoorUniversalID = &claims.UniversalID
-			shouldUpdate = true
-		}
-		if claims.Sub != "" && (user.CasdoorSub == nil || *user.CasdoorSub != claims.Sub) {
-			user.CasdoorSub = &claims.Sub
 			shouldUpdate = true
 		}
 
@@ -727,84 +674,49 @@ func (s *UserService) getOrCreateUser(claims *JWTClaims) (*models.User, bool, er
 
 	// 3. User doesn't exist, create new user
 	user = models.User{
-		SubjectID:          subjectID,
-		Username:           claims.Name,
-		DisplayName:        stringPtr(claims.PreferredUsername),
-		Email:              stringPtr(claims.Email),
-		Phone:              stringPtr(claims.Phone),
-		AvatarURL:          stringPtr(claims.Picture),
-		AuthProvider:       stringPtr(claims.Provider),
-		ExternalKey:        stringPtr(externalKey),
-		ProviderUserID:     stringPtr(claims.ProviderUserID),
-		CasdoorID:          stringPtr(claims.ID),
-		CasdoorUniversalID: stringPtr(claims.UniversalID),
-		CasdoorSub:         stringPtr(claims.Sub),
-		Organization:       stringPtr(claims.Owner),
-		IsActive:           true,
-		LastLoginAt:        &now,
-		LastSyncAt:         &now,
+		SubjectID:      subjectID,
+		Username:       claims.Name,
+		DisplayName:    stringPtr(claims.PreferredUsername),
+		Email:          stringPtr(claims.Email),
+		Phone:          stringPtr(claims.Phone),
+		AvatarURL:      stringPtr(claims.Picture),
+		AuthProvider:   stringPtr(claims.Provider),
+		ExternalKey:    stringPtr(externalKey),
+		ProviderUserID: stringPtr(claims.ProviderUserID),
+		IsActive:       true,
+		LastLoginAt:    &now,
+		LastSyncAt:     &now,
 	}
 
 	if err := s.db.Create(&user).Error; err != nil {
-		if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
+		// Race: another caller created the same user concurrently. Try to
+		// resolve the winner via the same external_key lookup chain.
+		if externalKey != "" {
 			var existing models.User
-			query := s.db.Clauses(clause.Locking{Strength: "UPDATE"})
-			conditions := s.db
-			if externalKey != "" {
-				conditions = conditions.Where("external_key = ?", externalKey)
-				if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
-					conditions = conditions.Or("external_key = ?", legacy)
-				}
-			} else {
-				conditions = conditions.Where("casdoor_universal_id = ?", claims.UniversalID)
+			query := s.db.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("external_key = ?", externalKey)
+			if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
+				query = query.Or("external_key = ?", legacy)
 			}
-			query = conditions.Or("casdoor_universal_id = ?", claims.UniversalID).
-				Or("casdoor_id = ?", claims.ID).
-				Or("casdoor_sub = ?", claims.Sub)
-			err := query.Take(&existing).Error
-			if err == nil {
+			if err := query.Take(&existing).Error; err == nil {
 				s.notifyUserUpdated(existing.SubjectID)
 				return &existing, true, nil
 			}
 		}
 		return nil, false, fmt.Errorf("failed to create user: %w", err)
 	}
-		if err := s.db.Create(&user).Error; err != nil {
-			if externalKey != "" || claims.UniversalID != "" || claims.ID != "" || claims.Sub != "" {
-				var existing models.User
-				query := s.db.Clauses(clause.Locking{Strength: "UPDATE"})
-				conditions := s.db
-				if externalKey != "" {
-					conditions = conditions.Where("external_key = ?", externalKey)
-					if legacy := legacyExternalKey(claims); legacy != "" && legacy != externalKey {
-						conditions = conditions.Or("external_key = ?", legacy)
-					}
-				} else {
-					conditions = conditions.Where("casdoor_universal_id = ?", claims.UniversalID)
-				}
-				query = conditions.Or("casdoor_universal_id = ?", claims.UniversalID).
-					Or("casdoor_id = ?", claims.ID).
-					Or("casdoor_sub = ?", claims.Sub)
-				err := query.Take(&existing).Error
-				if err == nil {
-					s.notifyUserUpdated(existing.SubjectID)
-					return &existing, true, nil
-				}
-			}
-			return nil, false, fmt.Errorf("failed to create user: %w", err)
-		}
-		// Bind identity for newly created user
-		if err := s.BindIdentityToUser(context.Background(), user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
-			// Log but don't fail user creation if identity binding fails
-			fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
-		}
-		s.notifyUserUpdated(user.SubjectID)
-		if refreshed, err := s.GetUserByID(context.Background(), user.SubjectID); err == nil {
-			return refreshed, true, nil
-		}
-
-		return &user, false, nil
+	// Bind identity for newly created user
+	if err := s.BindIdentityToUser(context.Background(), user.SubjectID, claims); err != nil && err.Error() != "identity_already_bound" {
+		// Log but don't fail user creation if identity binding fails
+		fmt.Printf("[WARN] Failed to bind identity for new user: %v\n", err)
 	}
+	s.notifyUserUpdated(user.SubjectID)
+	if refreshed, err := s.GetUserByID(context.Background(), user.SubjectID); err == nil {
+		return refreshed, true, nil
+	}
+
+	return &user, false, nil
+}
 
 // ParseJWTClaimsFromMiddleware extracts JWT claims from gin.Context
 // This is a helper to convert middleware context to JWTClaims

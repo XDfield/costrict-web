@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/costrict/costrict-web/cs-user/internal/models"
+	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"gorm.io/gorm"
 )
 
@@ -143,6 +144,21 @@ func ImportUsers(ctx context.Context, db *gorm.DB, batch []*models.User, dryRun 
 				// auto-increment (avoiding collision with source's PK).
 				clone := *p.src
 				clone.ID = 0
+				// short_id is a cs-user-only derived column. Source (server's
+				// users) doesn't carry it, so ETL's read SELECT omits it
+				// (see runUsers in cmd/etl/main.go); we materialize it here
+				// from the deterministic BuildShortID(subject_id) so the
+				// inserted row satisfies NOT NULL on target.
+				if clone.ShortID == "" && clone.SubjectID != "" {
+					clone.ShortID = user.BuildShortID(clone.SubjectID)
+				}
+				// tenant_id is NOT NULL on target but absent on source.
+				// GORM would write the zero value ("") rather than letting
+				// the column DEFAULT 'default' apply, so set it explicitly.
+				// Future multi-tenant migrations will need to revisit this.
+				if clone.TenantID == "" {
+					clone.TenantID = "default"
+				}
 				if err := tx.Unscoped().Create(&clone).Error; err != nil {
 					acc.Failed++
 					return fmt.Errorf("etl.ImportUsers: insert subject_id=%s: %w", p.src.SubjectID, err)
@@ -196,14 +212,6 @@ func buildUserUpdateMap(src *models.User, diffs []FieldDiff) map[string]any {
 			upd["external_key"] = src.ExternalKey
 		case "provider_user_id":
 			upd["provider_user_id"] = src.ProviderUserID
-		case "casdoor_id":
-			upd["casdoor_id"] = src.CasdoorID
-		case "casdoor_universal_id":
-			upd["casdoor_universal_id"] = src.CasdoorUniversalID
-		case "casdoor_sub":
-			upd["casdoor_sub"] = src.CasdoorSub
-		case "organization":
-			upd["organization"] = src.Organization
 		case "is_active":
 			upd["is_active"] = src.IsActive
 		case "last_login_at":
@@ -374,41 +382,8 @@ func buildAuthIdentityUpdateMap(src *models.UserAuthIdentity, diffs []FieldDiff)
 	return upd
 }
 
-// ValidateSource runs pre-flight data quality checks against the source DB.
-// Currently checks that casdoor_universal_id is unique among non-null values
-// (a duplicate would otherwise surface during target INSERT and abort the
-// migration mid-batch). Returns the offending IDs if duplicates exist.
-func ValidateSource(ctx context.Context, db *gorm.DB) (universalIDDups []DuplicateFinding, err error) {
-	if db == nil {
-		return nil, ErrNilDB
-	}
-	type dup struct {
-		Value      string
-		Occurances int64
-	}
-	var dups []dup
-	// Unscoped because soft-deleted rows still occupy the unique index in PG.
-	err = db.WithContext(ctx).Unscoped().
-		Model(&models.User{}).
-		Select("casdoor_universal_id AS value, COUNT(*) AS occurances").
-		Where("casdoor_universal_id IS NOT NULL AND casdoor_universal_id <> ''").
-		Group("casdoor_universal_id").
-		Having("COUNT(*) > 1").
-		Order("occurances DESC").
-		Scan(&dups).Error
-	if err != nil {
-		return nil, fmt.Errorf("etl.ValidateSource: %w", err)
-	}
-	out := make([]DuplicateFinding, 0, len(dups))
-	for _, d := range dups {
-		out = append(out, DuplicateFinding{Value: d.Value, Count: d.Occurances})
-	}
-	return out, nil
-}
-
-// DuplicateFinding names a duplicated value (e.g. casdoor_universal_id) and
-// how many rows share it.
-type DuplicateFinding struct {
-	Value string `json:"value"`
-	Count int64  `json:"count"`
-}
+// (ValidateSource / DuplicateFinding removed: the only check guarded
+// users.casdoor_universal_id uniqueness against target's unique index, but
+// that column was dropped from cs-user. external_key uniqueness is enforced
+// at write-time by the unique index on user_auth_identities and surfaced as
+// a normal INSERT error.)

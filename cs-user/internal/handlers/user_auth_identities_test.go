@@ -19,7 +19,6 @@ func (s stubAuthIdentityService) ListIdentities(ctx context.Context, id string) 
 }
 
 func newAuthIdentitiesAPI(svc AuthIdentityService) (*AuthIdentitiesAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &AuthIdentitiesAPI{Svc: svc}
 	r.GET("/api/internal/users/:subject_id/auth-identities", api.ListIdentities)

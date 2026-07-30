@@ -40,7 +40,6 @@ func (s *stubProviderMappingService) UpdateProviderMapping(ctx context.Context, 
 // /api/internal/tenant/provider-mapping routes. The shim mirrors
 // middleware.ResolveTenant by setting the "tenant" context key.
 func newProviderMappingAPI(svc TenantProviderMappingService, resolvedTenant *models.Tenant) *gin.Engine {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		if resolvedTenant != nil {

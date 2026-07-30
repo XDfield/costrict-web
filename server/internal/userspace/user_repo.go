@@ -134,7 +134,7 @@ func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string
 		_ = s.userProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
 			SubjectID: subjectID,
 			TenantID:  tenantID,
-			Username:  "u-" + short,
+			ShortID:   "u-" + short,
 		})
 	}
 

@@ -28,7 +28,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -42,10 +41,6 @@ import (
 // provisionTimeout caps a single Provision call's total provider roundtrip.
 const provisionTimeout = 5 * time.Second
 
-// gitUsernamePattern — login rule for the common Gitea-compatible providers
-// (alphanumerics, dash, underscore, dot); we sanitize rather than reject.
-var gitUsernamePattern = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
-
 // UserProvisionAPI is retained as a backwards-compat alias for GitProvider
 // so existing fake implementations (handlers/fake_gitserver_test.go,
 // teamns/workflow_repo_test.go) keep compiling during the rename window.
@@ -56,10 +51,12 @@ type UserProvisionAPI = GitProvider
 
 // UserProvisionParams is the input shape for ProvisionUser.
 type UserProvisionParams struct {
-	SubjectID string
-	TenantID  string
-	Username  string
-	Email     *string
+	SubjectID   string
+	TenantID    string
+	ShortID     string
+	Username    string
+	DisplayName *string
+	Email       *string
 }
 
 // UserLogger mirrors *zap.Logger — minimal interface for test stubs.
@@ -155,12 +152,18 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	if params.SubjectID == "" {
 		return errors.New("gitsync: SubjectID is required")
 	}
+	if params.ShortID == "" {
+		// ShortID is the platform-wide compact handle (cs-user-owned).
+		// Missing it means the user.created payload is from a stale
+		// deployment — refuse rather than invent a placeholder username.
+		return errors.New("gitsync: ShortID is required")
+	}
 
 	tenantID := params.TenantID
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	gitUsername := buildGitUsername(params.Username, params.SubjectID)
+	gitUsername := params.ShortID
 
 	// Insert (or fetch) the binding row in 'pending'. If a row already
 	// exists in 'synced', short-circuit — idempotent.
@@ -210,7 +213,7 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	providerUser, provErr := provider.CreateUser(provCtx, CreateUserOptions{
 		Login:              binding.GitUsername,
 		Email:              userEmail(params),
-		FullName:           "",
+		FullName:           userFullName(params),
 		Password:           randomProvisioningPassword(),
 		SourceID:           0,
 		SendNotify:         false,
@@ -398,24 +401,9 @@ func (s *UserProvisionService) ensureUserPAT(
 	s.logf("gitsync.ensureUserPAT: PAT created for subject=%q username=%q", subjectID, gitUsername)
 }
 
-// buildGitUsername derives the provider login name from a cs-user username.
-// "u-" + sanitized, truncated to 40 chars (Gitea hard limit; conservative
-// across providers).
-func buildGitUsername(username, subjectID string) string {
-	raw := username
-	if raw == "" {
-		raw = subjectID
-	}
-	sanitized := gitUsernamePattern.ReplaceAllString(raw, "-")
-	if sanitized == "" {
-		sanitized = "user"
-	}
-	name := "u-" + sanitized
-	if len(name) > 40 {
-		name = name[:40]
-	}
-	return name
-}
+// buildGitUsername was removed: Gitea login is now supplied by cs-user as
+// ShortID (a platform-wide compact handle). See user.created payload.
+
 
 func isDuplicatePK(err error) bool {
 	if err == nil {
@@ -433,6 +421,16 @@ func userEmail(params UserProvisionParams) string {
 		return *params.Email
 	}
 	return params.SubjectID + "@no-email.local"
+}
+
+// userFullName surfaces the human-readable name from cs-user's payload. Gitea
+// login is a hash (buildGitUsername), so without full_name the Gitea web UI
+// is unusable. Empty / nil → "" (Gitea treats blank as no full name).
+func userFullName(params UserProvisionParams) string {
+	if params.DisplayName != nil {
+		return strings.TrimSpace(*params.DisplayName)
+	}
+	return ""
 }
 
 // randomProvisioningPassword returns a 32-byte random hex string. Throwaway

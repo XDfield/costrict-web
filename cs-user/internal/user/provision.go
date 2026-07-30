@@ -8,11 +8,10 @@
 //     existing side effects (identity row, outbox user.created event,
 //     applyEnterpriseMappingOnLogin) fire unchanged.
 //   - The synthetic claim's UniversalID is set to the caller's enterprise_uid.
-//     This is intentional: it persists the caller's handle into
-//     users.casdoor_universal_id as an observable trace, and lets a future
-//     real OAuth callback that happens to carry the same universal_id hit
-//     via the existing universal_id lookup branch (path C in the integration
-//     doc).
+//     This forms the user's external_key
+//     (`casdoor:<EnterpriseProvider>:<EnterpriseUID>`) — the durable identity
+//     handle — and lets a future real OAuth callback carrying the same
+//     universal_id re-resolve to the same user via external_key.
 //   - The employment_identities row is force-written after GetOrCreateUser
 //     returns, bypassing the tenant's employment_providers.enabled gate. The
 //     gate is a tenant-admin config concern; pre-provisioning is an explicit
@@ -131,9 +130,11 @@ func (s *Service) ProvisionByEnterprise(ctx context.Context, params ProvisionByE
 	}
 
 	// 2. Build synthetic JWTClaims and delegate to GetOrCreateUser. The
-	//    UniversalID is set to EnterpriseUID so users.casdoor_universal_id
-	//    carries the trace and a future OAuth callback with the same
-	//    universal_id hits via the existing universal_id lookup branch.
+	//    UniversalID is set to EnterpriseUID so the synthetic user's
+	//    external_key becomes
+	//    `casdoor:<EnterpriseProvider>:<EnterpriseUID>` — the durable
+	//    identity handle that a future real OAuth callback with the same
+	//    universal_id re-resolves to.
 	username := strings.TrimSpace(params.Username)
 	if username == "" {
 		username = "ext_" + params.EnterpriseUID

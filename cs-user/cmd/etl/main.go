@@ -138,21 +138,6 @@ func main() {
 		}
 	}
 
-	// Pre-flight: source-level uniqueness validation (cheap, catches a
-	// duplicate casdoor_universal_id that would otherwise abort mid-batch).
-	if !f.skipUsers {
-		dups, err := etl.ValidateSource(ctx, source.Gorm)
-		if err != nil {
-			log.Printf("WARN: validate source skipped: %v", err)
-		} else if len(dups) > 0 {
-			log.Printf("WARN: %d duplicate casdoor_universal_id value(s) in source:", len(dups))
-			for _, d := range dups {
-				log.Printf("  - %q appears %d times", d.Value, d.Count)
-			}
-			log.Printf("continuing — duplicates will surface as INSERT errors at the offending rows")
-		}
-	}
-
 	if !f.skipUsers {
 		usersStats, err := runUsers(ctx, source.Gorm, target.Gorm, f)
 		if err != nil {
@@ -184,7 +169,25 @@ func runUsers(ctx context.Context, source, target *gorm.DB, f flags) (etl.Stats,
 	log.Printf("users: source has %d rows", srcCount)
 
 	batchCount := 0
-	if err := etl.ExportUsers(ctx, source, f.batchSize, func(batch []*models.User) error {
+	// cs-user's users schema has diverged from server's: cs-user added
+	// tenant_id / short_id / phone / auth_provider / external_key /
+	// provider_user_id, none of which exist on server's users table. Omit
+	// them from the source SELECT so GORM doesn't try to read non-existent
+	// columns. Target fills them as follows:
+	//   - tenant_id: NOT NULL DEFAULT 'default' on target, DB fills it
+	//   - short_id: materialized by ImportUsers via BuildShortID(subject_id)
+	//   - phone / auth_provider / external_key / provider_user_id: stay NULL
+	//     — server never tracked them; identity-side data flows via the
+	//     separate user_auth_identities pass.
+	srcReader := source.Omit(
+		"tenant_id",
+		"short_id",
+		"phone",
+		"auth_provider",
+		"external_key",
+		"provider_user_id",
+	)
+	if err := etl.ExportUsers(ctx, srcReader, f.batchSize, func(batch []*models.User) error {
 		batchCount++
 		log.Printf("users: batch %d (%d rows)", batchCount, len(batch))
 		return etl.ImportUsers(ctx, target, batch, f.dryRun, f.maxDiffRecords, &acc)

@@ -131,6 +131,20 @@ userService:
 #   single — only cs-user-issued JWTs are accepted
 jwtSignMode: ""
 
+# OAuth bind-state HMAC secret. Required for /api/auth/bind flow.
+# If left empty the server falls back to INTERNAL_SECRET; if that is also
+# empty the server refuses to start. Set a dedicated random ≥32-byte value
+# in production via:
+#   kubectl create secret generic costrict-bind-state \
+#     --from-literal=bind-state-secret=$(openssl rand -hex 32)
+#   helm install api ./deploy/charts/api \
+#     --set bindStateSecret.existingSecret=costrict-bind-state \
+#     --set bindStateSecret.key=bind-state-secret
+bindStateSecret:
+  value: ""            # dev: plaintext secret (do not use in prod)
+  existingSecret: ""   # prod: externally provisioned Secret name
+  key: bind-state-secret
+
 # Registration Profile gate (R0–R6 design). When true, the
 # PROFILE_GATE_ENABLED middleware enforces admin-approved profiles
 # before allowing user creation.

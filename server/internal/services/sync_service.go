@@ -547,7 +547,7 @@ func completeSyncResult(result *SyncResult, commitSHA string, completedAt time.T
 // syncAssets collects and upserts non-primary files in the same skill directory.
 func (s *SyncService) syncAssets(ctx context.Context, localPath, relPath, itemID string, errs *[]string) int {
 	failures := 0
-	dir := filepath.Dir(relPath)
+	dir := filepath.ToSlash(filepath.Dir(relPath))
 	if dir == "." {
 		return failures
 	}

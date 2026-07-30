@@ -63,6 +63,7 @@ type userCreatedEventRequest struct {
 type eventUserBody struct {
 	SubjectID   string  `json:"subject_id"`
 	TenantID    string  `json:"tenant_id"`
+	ShortID     string  `json:"short_id"`
 	Username    string  `json:"username,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
 	Email       *string `json:"email,omitempty"`
@@ -181,10 +182,12 @@ func (a *UserCreatedEventAPI) dispatchUserCreated(c *gin.Context, svc *gitsync.U
 	}
 
 	provErr := svc.ProvisionUser(ctx, gitsync.UserProvisionParams{
-		SubjectID: req.SubjectID,
-		TenantID:  tenantID,
-		Username:  req.User.Username,
-		Email:     req.User.Email,
+		SubjectID:   req.SubjectID,
+		TenantID:    tenantID,
+		ShortID:     req.User.ShortID,
+		Username:    req.User.Username,
+		DisplayName: req.User.DisplayName,
+		Email:       req.User.Email,
 	})
 
 	// Step 3: record in event log so duplicates short-circuit future calls.

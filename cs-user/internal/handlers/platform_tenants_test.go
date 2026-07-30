@@ -71,7 +71,6 @@ func (s stubPlatformTenantService) RequestDeletion(ctx context.Context, id strin
 // newPlatformTenantsAPI mirrors newUsersAPI: builds a gin engine wired with
 // all 7 routes so handler tests exercise the same path tree production uses.
 func newPlatformTenantsAPI(svc PlatformTenantService) (*PlatformTenantsAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &PlatformTenantsAPI{Svc: svc}
 	g := r.Group("/api/internal/platform/tenants")

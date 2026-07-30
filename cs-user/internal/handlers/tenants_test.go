@@ -37,7 +37,6 @@ func (s stubTenantResolver) ListByEmailDomain(ctx context.Context, email string)
 }
 
 func newTenantsAPI(r TenantResolverService) (*TenantsAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	api := &TenantsAPI{Resolver: r}
 	engine := gin.New()
 	engine.POST("/api/internal/tenants/resolve-by-email", api.ResolveByEmail)

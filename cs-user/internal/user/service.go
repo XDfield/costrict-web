@@ -273,14 +273,21 @@ var ErrEmptySubjectID = errors.New("subject_id must not be empty")
 // P0-8b dual-write canary, where a divergence would split a user's
 // identities across DBs.
 
-// GetOrCreateUser is the upsert entry point for OAuth login. It runs the
-// full multi-lookup strategy (external_key → universal_id → casdoor_id →
-// sub → username) and either updates an existing user or creates a new one
-// plus a primary identity row. Mirrors server:557-870 — SyncUser collapses
-// into this method because cs-user has no post-login hook to suppress.
+// GetOrCreateUser is the upsert entry point for OAuth login. The lookup
+// strategy is the durable external_key only (format
+// `casdoor:<provider>:<universal_id>` — see buildExternalKey); the legacy
+// casdoor_* / username fallback paths were removed when those columns were
+// dropped from users, because they were redundant with
+// user_auth_identities.external_key and could diverge on rebind/unbind.
 //
-// Idempotent: a second call with the same claim inside syncInterval skips
-// the update query.
+// Path order:
+//  1. user_auth_identities.external_key → users.subject_id
+//  2. users.external_key (denormalized cache of the primary identity)
+//  3. employment_identities.enterprise_uid (pre-provisioning reverse lookup)
+//
+// Either updates an existing user or creates a new one plus a primary
+// identity row. Idempotent: a second call with the same claim inside
+// syncInterval skips the update query.
 //
 // Slice 2 (2026-07-23): both success paths trigger ApplyEnterpriseMapping
 // as a best-effort post-login hook, harvesting claims.ExternalClaims via
@@ -298,6 +305,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 
 	// 1. SubjectID is always generated locally and remains stable afterward.
 	subjectID := "usr_" + uuid.NewString()
+	shortID := BuildShortID(subjectID)
 	externalKey := buildExternalKey(claims)
 
 	if claims.ID == "" && claims.Sub == "" && claims.UniversalID == "" {
@@ -348,39 +356,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			}
 		}
 	}
-	if claims.UniversalID != "" {
-		err := db.Scopes(tenantScope).Where("casdoor_universal_id = ?", claims.UniversalID).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, false, fmt.Errorf("failed to query user by universal_id: %w", err)
-		}
-	}
-	if !found && claims.ID != "" {
-		err := db.Scopes(tenantScope).Where("casdoor_id = ?", claims.ID).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, false, fmt.Errorf("failed to query user by id: %w", err)
-		}
-	}
-	if !found && claims.Sub != "" {
-		err := db.Scopes(tenantScope).Where("casdoor_sub = ?", claims.Sub).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, false, fmt.Errorf("failed to query user by sub: %w", err)
-		}
-	}
-	if !found && claims.Name != "" {
-		err := db.Scopes(tenantScope).Where("username = ?", claims.Name).Take(&user).Error
-		if err == nil {
-			found = true
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, false, fmt.Errorf("failed to query user by username: %w", err)
-		}
-	}
-	// Path 6: employment_identities.enterprise_uid reverse lookup.
+	// Path 3: employment_identities.enterprise_uid reverse lookup.
 	// Pre-provisioning via /users/provision writes this row ahead of real
 	// OAuth login. When the real OAuth callback arrives, the JWT may carry a
 	// different universal_id / sub, but as long as ExternalClaims contains
@@ -425,10 +401,6 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 			user.IsActive = true
 			shouldUpdate = true
 		}
-		if claims.ID != "" && (user.CasdoorID == nil || *user.CasdoorID != claims.ID) {
-			user.CasdoorID = &claims.ID
-			shouldUpdate = true
-		}
 		if externalKey != "" && (user.ExternalKey == nil || *user.ExternalKey != externalKey) {
 			user.ExternalKey = &externalKey
 			shouldUpdate = true
@@ -439,14 +411,6 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 		}
 		if claims.ProviderUserID != "" && (user.ProviderUserID == nil || *user.ProviderUserID != claims.ProviderUserID) {
 			user.ProviderUserID = &claims.ProviderUserID
-			shouldUpdate = true
-		}
-		if claims.UniversalID != "" && (user.CasdoorUniversalID == nil || *user.CasdoorUniversalID != claims.UniversalID) {
-			user.CasdoorUniversalID = &claims.UniversalID
-			shouldUpdate = true
-		}
-		if claims.Sub != "" && (user.CasdoorSub == nil || *user.CasdoorSub != claims.Sub) {
-			user.CasdoorSub = &claims.Sub
 			shouldUpdate = true
 		}
 
@@ -465,37 +429,35 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 	// it doesn't fall through to the column default ('default') — that would
 	// mis-file a user logging in via tenant 'acme' into the default tenant.
 	user = models.User{
-		TenantID:           tenant.IDFromContext(ctx),
-		SubjectID:          subjectID,
-		Username:           claims.Name,
-		DisplayName:        stringPtr(claims.PreferredUsername),
-		Email:              stringPtr(claims.Email),
-		Phone:              stringPtr(claims.Phone),
-		AvatarURL:          stringPtr(claims.Picture),
-		AuthProvider:       stringPtr(claims.Provider),
-		ExternalKey:        stringPtr(externalKey),
-		ProviderUserID:     stringPtr(claims.ProviderUserID),
-		CasdoorID:          stringPtr(claims.ID),
-		CasdoorUniversalID: stringPtr(claims.UniversalID),
-		CasdoorSub:         stringPtr(claims.Sub),
-		Organization:       stringPtr(claims.Owner),
-		IsActive:           true,
-		LastLoginAt:        &now,
-		LastSyncAt:         &now,
+		TenantID:       tenant.IDFromContext(ctx),
+		SubjectID:      subjectID,
+		ShortID:        shortID,
+		Username:       claims.Name,
+		DisplayName:    stringPtr(claims.PreferredUsername),
+		Email:          stringPtr(claims.Email),
+		Phone:          stringPtr(claims.Phone),
+		AvatarURL:      stringPtr(claims.Picture),
+		AuthProvider:   stringPtr(claims.Provider),
+		ExternalKey:    stringPtr(externalKey),
+		ProviderUserID: stringPtr(claims.ProviderUserID),
+		IsActive:       true,
+		LastLoginAt:    &now,
+		LastSyncAt:     &now,
 	}
 
 	if err := db.Create(&user).Error; err != nil {
 		// Race: another caller created the same user concurrently. Try to
-		// resolve the winner via the same lookup chain so the caller still
-		// gets a usable row. Must scope to ctx tenant — without this, a
-		// casdoor_id collision across tenants would let this race recovery
-		// return another tenant's user (cross-tenant leak under concurrency).
+		// resolve the winner via the same external_key lookup chain so the
+		// caller still gets a usable row. Must scope to ctx tenant — without
+		// this, a cross-tenant external_key collision would let this race
+		// recovery return another tenant's user (cross-tenant leak under
+		// concurrency).
 		//
 		// Build the WHERE as a single grouped clause so the tenant_id
 		// constraint ANDs against the entire OR-chain. Naive
 		// `Scopes(tenantScope).Where(...).Or(...)` would emit
-		//   WHERE tenant_id=? AND external_key=? OR casdoor_universal_id=?
-		// letting a cross-tenant universal_id match leak another tenant's user.
+		//   WHERE tenant_id=? AND external_key=? OR external_key=?
+		// letting a cross-tenant match leak another tenant's user.
 		var (
 			conditions []string
 			args       []any
@@ -507,18 +469,6 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 				conditions = append(conditions, "external_key = ?")
 				args = append(args, legacy)
 			}
-		}
-		if claims.UniversalID != "" {
-			conditions = append(conditions, "casdoor_universal_id = ?")
-			args = append(args, claims.UniversalID)
-		}
-		if claims.ID != "" {
-			conditions = append(conditions, "casdoor_id = ?")
-			args = append(args, claims.ID)
-		}
-		if claims.Sub != "" {
-			conditions = append(conditions, "casdoor_sub = ?")
-			args = append(args, claims.Sub)
 		}
 		var existing models.User
 		query := db.Clauses(clause.Locking{Strength: "UPDATE"}).

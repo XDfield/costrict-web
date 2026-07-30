@@ -27,6 +27,7 @@ type stubUserService struct {
 	getByIDs               func(context.Context, []string) (map[string]*models.User, error)
 	searchUsers            func(context.Context, string, int) ([]*models.User, error)
 	searchUsersByEmpNo     func(context.Context, string, int) ([]*models.User, error)
+	getEmployments         func(context.Context, []string) (map[string]*models.EmploymentIdentity, error)
 	getOrCreate            func(context.Context, *models.JWTClaims) (*models.User, bool, error)
 	provisionByEnterprise  func(context.Context, user.ProvisionByEnterpriseParams) (*models.User, bool, error)
 	bindIdentity           func(context.Context, string, *models.JWTClaims, ...models.BindIdentityOptions) error
@@ -35,7 +36,7 @@ type stubUserService struct {
 	applyEnterpriseMapping func(context.Context, user.EmploymentMappingParams) error
 	listUsers              func(context.Context, user.ListUsersParams) ([]*models.User, int64, error)
 	setUserStatus          func(context.Context, string, string, string) (*user.SetUserStatusResult, error)
-	listOrganizations      func(context.Context) ([]user.OrganizationCount, error)
+	getUserByIdentity      func(context.Context, string, string) (*models.User, error)
 	// R2 (REGISTRATION_PROFILE_DESIGN).
 	completeRegistration func(context.Context, string, string, string) (*models.User, error)
 	updateProfile        func(context.Context, string, string) (*models.User, error)
@@ -67,6 +68,13 @@ func (s stubUserService) SearchUsersByEmployeeNumber(ctx context.Context, empNo 
 		panic("stubUserService.searchUsersByEmpNo not wired")
 	}
 	return s.searchUsersByEmpNo(ctx, empNo, lim)
+}
+func (s stubUserService) GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, ids []string) (map[string]*models.EmploymentIdentity, error) {
+	if s.getEmployments == nil {
+		// Default: no employment rows. Tests that care wire this field.
+		return map[string]*models.EmploymentIdentity{}, nil
+	}
+	return s.getEmployments(ctx, ids)
 }
 func (s stubUserService) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error) {
 	if s.getOrCreate == nil {
@@ -140,15 +148,14 @@ func (s stubUserService) SetUserStatus(ctx context.Context, subjectID, status, o
 	}
 	return s.setUserStatus(ctx, subjectID, status, operatorID)
 }
-func (s stubUserService) ListOrganizations(ctx context.Context) ([]user.OrganizationCount, error) {
-	if s.listOrganizations == nil {
-		panic("stubUserService.listOrganizations not wired")
+func (s stubUserService) GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error) {
+	if s.getUserByIdentity == nil {
+		panic("stubUserService.getUserByIdentity not wired")
 	}
-	return s.listOrganizations(ctx)
+	return s.getUserByIdentity(ctx, provider, universalID)
 }
 
 func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &UsersAPI{Svc: svc}
 	r.GET("/api/internal/users/:subject_id", api.GetUser)
@@ -166,7 +173,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
-	r.GET("/api/internal/users/organizations", api.ListOrganizations)
+	r.GET("/api/internal/users/by-identity", api.GetUserByIdentity)
 	r.POST("/api/internal/users/:subject_id/status", api.SetUserStatus)
 	r.GET("/api/internal/users/:subject_id/profile", api.GetUserProfile)
 	// R2 routes.
@@ -319,6 +326,81 @@ func TestSearchUsers_HappyPath(t *testing.T) {
 	}
 	if !called {
 		t.Error("SearchUsers not invoked")
+	}
+}
+
+// TestSearchUsers_AttachesEmploymentSnapshot proves the response tacks on
+// the most-recent employment_identities row per user, with operational
+// fields stripped.
+func TestSearchUsers_AttachesEmploymentSnapshot(t *testing.T) {
+	empNum := "1001"
+	jobTitle := "Engineer"
+	rawHash := "hash-xyz"
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	_, r := newUsersAPI(stubUserService{
+		searchUsers: func(_ context.Context, _ string, _ int) ([]*models.User, error) {
+			return []*models.User{{SubjectID: "a", Username: "alice"}}, nil
+		},
+		getEmployments: func(_ context.Context, ids []string) (map[string]*models.EmploymentIdentity, error) {
+			if len(ids) != 1 || ids[0] != "a" {
+				t.Errorf("subject_ids: got %v want [a]", ids)
+			}
+			return map[string]*models.EmploymentIdentity{
+				"a": {
+					UserSubjectID:    "a",
+					Provider:         "idtrust",
+					EmployeeNumber:   &empNum,
+					JobTitle:         &jobTitle,
+					LastSyncedAt:     now,
+					SyncStatus:       "fresh",
+					RawPayloadHash:   &rawHash,
+					NextSyncDueAt:    now,
+				},
+			}, nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?keyword=ali", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`"employee_number":"1001"`,
+		`"job_title":"Engineer"`,
+		`"provider":"idtrust"`,
+		`"last_synced_at":"2026-07-01T12:00:00Z"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %s: %s", want, body)
+		}
+	}
+	for _, banned := range []string{"sync_status", "next_sync_due_at", "raw_payload_hash", "hash-xyz"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("employment snapshot must not leak %s: %s", banned, body)
+		}
+	}
+}
+
+// TestSearchUsers_NoEmploymentOmitsField proves users without an
+// employment_identities row return without the employment key (not null).
+func TestSearchUsers_NoEmploymentOmitsField(t *testing.T) {
+	_, r := newUsersAPI(stubUserService{
+		searchUsers: func(_ context.Context, _ string, _ int) ([]*models.User, error) {
+			return []*models.User{{SubjectID: "a", Username: "alice"}}, nil
+		},
+	})
+
+	w := doJSON(t, r, http.MethodGet, "/api/internal/users/search?keyword=ali", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, `"employment"`) {
+		t.Errorf("employment key must be omitted when no row: %s", body)
+	}
+	if !strings.Contains(body, `"username":"alice"`) {
+		t.Errorf("user fields must still be present: %s", body)
 	}
 }
 
@@ -987,7 +1069,6 @@ func TestApplyEnterpriseMapping_OptionalTenantID(t *testing.T) {
 // newListUsersAPI wires the UsersAPI with a stub service for the
 // ListUsers-only test surface.
 func newListUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &UsersAPI{Svc: svc}
 	r.GET("/api/internal/users/list", api.ListUsers)
@@ -995,13 +1076,12 @@ func newListUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 }
 
 func TestListUsers_HappyPathReturnsPaginatedResult(t *testing.T) {
-	org := "eng"
 	email := "alice@example.com"
 	display := "Alice"
 	avatar := "https://example.com/a.png"
 	now := time.Now().UTC()
 	users := []*models.User{
-		{SubjectID: "usr_alice", Username: "alice", DisplayName: &display, Email: &email, AvatarURL: &avatar, Organization: &org, Status: "active", IsActive: true, CreatedAt: now},
+		{SubjectID: "usr_alice", Username: "alice", DisplayName: &display, Email: &email, AvatarURL: &avatar, Status: "active", IsActive: true, CreatedAt: now},
 	}
 	var capturedParams user.ListUsersParams
 	svc := stubUserService{
@@ -1012,14 +1092,14 @@ func TestListUsers_HappyPathReturnsPaginatedResult(t *testing.T) {
 	}
 	_, r := newListUsersAPI(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?keyword=ali&organization=eng&status=active&page=2&page_size=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/list?keyword=ali&status=active&page=2&page_size=10", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if capturedParams.Keyword != "ali" || capturedParams.Organization != "eng" || capturedParams.Status != "active" {
+	if capturedParams.Keyword != "ali" || capturedParams.Status != "active" {
 		t.Errorf("filter passthrough mismatch: %+v", capturedParams)
 	}
 	if capturedParams.Page != 2 || capturedParams.PageSize != 10 {
@@ -1271,74 +1351,11 @@ func TestSetUserStatus_InvalidBodyReturns400(t *testing.T) {
 	}
 }
 
-// --- ListOrganizations (admin-user-migration slice) ---
-
-func TestListOrganizations_HappyPath(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return []user.OrganizationCount{
-				{Organization: "Eng", MemberCount: 42},
-				{Organization: "Ops", MemberCount: 7},
-			}, nil
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"organization":"Eng"`) || !strings.Contains(w.Body.String(), `"memberCount":42`) {
-		t.Errorf("response missing org/count fields: %s", w.Body.String())
-	}
-}
-
-func TestListOrganizations_EmptySerializesAsArray(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return nil, nil
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), `"organizations":[]`) {
-		t.Errorf("nil slice should serialize as [] not null: %s", w.Body.String())
-	}
-}
-
-func TestListOrganizations_ServiceErrorReturns500(t *testing.T) {
-	svc := stubUserService{
-		listOrganizations: func(context.Context) ([]user.OrganizationCount, error) {
-			return nil, errors.New("db down")
-		},
-	}
-	_, r := newUsersAPI(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/users/organizations", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "db down") {
-		t.Errorf("internal error must not leak: %s", w.Body.String())
-	}
-}
-
 // --- GetUserProfile (admin-user-migration slice) ---
 
 func TestGetUserProfile_HappyPath(t *testing.T) {
 	disp := "Alice"
 	email := "alice@example.com"
-	org := "Eng"
 	avatar := "https://cdn/x.png"
 	lastLogin := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1350,7 +1367,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 				DisplayName:  &disp,
 				Email:        &email,
 				AvatarURL:    &avatar,
-				Organization: &org,
 				Status:       user.UserStatusActive,
 				IsActive:     true,
 				LastLoginAt:  &lastLogin,
@@ -1372,7 +1388,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 		`"username":"alice"`,
 		`"display_name":"Alice"`,
 		`"email":"alice@example.com"`,
-		`"organization":"Eng"`,
 		`"status":"active"`,
 		`"is_active":true`,
 		`"last_login_at":"2026-07-01T12:00:00Z"`,
@@ -1386,7 +1401,6 @@ func TestGetUserProfile_HappyPath(t *testing.T) {
 
 func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 	extKey := "ext-secret"
-	casdoorID := "cas-abc"
 	provUserID := "prov-xyz"
 	svc := stubUserService{
 		getByID: func(_ context.Context, _ string) (*models.User, error) {
@@ -1394,7 +1408,6 @@ func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 				SubjectID:      "subj-1",
 				Username:       "alice",
 				ExternalKey:    &extKey,
-				CasdoorID:      &casdoorID,
 				ProviderUserID: &provUserID,
 				Status:         user.UserStatusActive,
 				IsActive:       true,
@@ -1411,12 +1424,12 @@ func TestGetUserProfile_DoesNotLeakInfraIDs(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, banned := range []string{"external_key", "casdoor_id", "provider_user_id", "casdoor_sub", "casdoor_universal_id"} {
+	for _, banned := range []string{"external_key", "provider_user_id"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("profile must not leak %s: %s", banned, body)
 		}
 	}
-	if strings.Contains(body, "ext-secret") || strings.Contains(body, "cas-abc") || strings.Contains(body, "prov-xyz") {
+	if strings.Contains(body, "ext-secret") || strings.Contains(body, "prov-xyz") {
 		t.Errorf("infra identifiers leaked: %s", body)
 	}
 }

@@ -133,26 +133,22 @@ func TestRefreshUserProfileFromIdentitiesTx_PromotesNewPrimary(t *testing.T) {
 }
 
 // TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged verifies the
-// change-detection gate: re-running refresh with no field changes leaves the
-// user row's updated_at untouched. Otherwise repeat logins would mask real
-// drift in ops dashboards.
+// change-detection gate: re-running refresh with no provider-tracking field
+// changes leaves the user row's updated_at untouched. Otherwise repeat
+// operations would mask real drift in ops dashboards.
 func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 	svc := newTestService(t)
 
+	ext := "casdoor:github:noop"
+	auth := "github"
 	seedUser(t, svc, func(u *models.User) {
 		u.SubjectID = "subj-noop"
-		// Pre-populate every field refresh would compute so the change-
-		// detection gate triggers and we exercise the genuine no-op path.
-		// refresh omits external_key + username from Save (unique indexes),
-		// so they can't drift-correct on their own — they have to be set
-		// correctly up front for the second refresh to be a true no-op.
-		u.Username = "alice"
-		ext := "casdoor:github:noop"
+		// Pre-populate every provider-tracking field refresh would compute
+		// so the change-detection gate triggers and we exercise the genuine
+		// no-op path. User-facing fields (display_name, email, etc.) are
+		// intentionally NOT pre-populated — refresh no longer touches them.
 		u.ExternalKey = &ext
-		auth := "github"
 		u.AuthProvider = &auth
-		dn := "alice"
-		u.DisplayName = &dn
 	})
 	seedIdentity(t, svc, func(i *models.UserAuthIdentity) {
 		i.UserSubjectID = "subj-noop"
@@ -163,7 +159,7 @@ func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 		i.DisplayName = &display
 	})
 
-	// First call writes the changes (denormalizes display_name onto user).
+	// First call writes the changes (provider-tracking denormalized).
 	if err := refreshUserProfileFromIdentitiesTx(context.Background(), svc.db, "subj-noop"); err != nil {
 		t.Fatalf("first refresh: %v", err)
 	}
@@ -184,6 +180,12 @@ func TestRefreshUserProfileFromIdentitiesTx_NoOpWhenUnchanged(t *testing.T) {
 	if !afterFirst.UpdatedAt.Equal(afterSecond.UpdatedAt) {
 		t.Errorf("no-op refresh should not bump updated_at: first=%v second=%v",
 			afterFirst.UpdatedAt, afterSecond.UpdatedAt)
+	}
+
+	// Regression check: display_name on the identity must NOT have leaked
+	// onto the user row — refresh no longer touches user-facing fields.
+	if afterSecond.DisplayName != nil {
+		t.Errorf("refresh must not write display_name: got %q", *afterSecond.DisplayName)
 	}
 }
 
@@ -225,41 +227,5 @@ func TestEqualStringPtr_NilSafe(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
 		})
-	}
-}
-
-// TestFirstNonNilStringPtr_Filters verifies nil and empty-trim values are
-// skipped, and the returned pointer holds the trimmed value (not the
-// original).
-func TestFirstNonNilStringPtr_Filters(t *testing.T) {
-	t.Parallel()
-
-	v := "  x  "
-	got := firstNonNilStringPtr(nil, &v)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-	if *got != "x" {
-		t.Fatalf("expected trimmed to 'x', got %q", *got)
-	}
-
-	if result := firstNonNilStringPtr(nil, strPtr("")); result != nil {
-		t.Fatalf("all-empty input should return nil, got %q", *result)
-	}
-}
-
-// TestValidEmailPtr_RejectsMissingAtSign verifies the email-shape guard —
-// providers sometimes send placeholders like "alice"; those must not be
-// persisted as the user's email.
-func TestValidEmailPtr_RejectsMissingAtSign(t *testing.T) {
-	t.Parallel()
-
-	bad := "alice"
-	good := "alice@example.com"
-	if got := validEmailPtr(&bad, nil); got != nil {
-		t.Fatalf("invalid email should return nil, got %q", *got)
-	}
-	if got := validEmailPtr(&good, nil); got == nil || *got != "alice@example.com" {
-		t.Fatalf("valid email should round-trip, got %v", got)
 	}
 }

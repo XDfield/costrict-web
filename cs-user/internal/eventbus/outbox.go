@@ -130,6 +130,7 @@ type EventPayload struct {
 type UserPayload struct {
 	SubjectID   string  `json:"subject_id"`
 	TenantID    string  `json:"tenant_id"`
+	ShortID     string  `json:"short_id"`
 	Username    string  `json:"username,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
 	Email       *string `json:"email,omitempty"`

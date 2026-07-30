@@ -32,7 +32,6 @@ func (s *stubAuditLogListService) List(ctx context.Context, p auditlog.ListParam
 }
 
 func newPlatformAuditLogsAPI(svc AuditLogListService) (*PlatformAuditLogsAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := &PlatformAuditLogsAPI{Svc: svc}
 	r.GET("/api/internal/platform/audit-logs", api.List)
@@ -40,7 +39,6 @@ func newPlatformAuditLogsAPI(svc AuditLogListService) (*PlatformAuditLogsAPI, *g
 }
 
 func newTenantAuditLogsAPI(svc AuditLogListService, resolverFn func(*gin.Context)) (*TenantAuditLogsAPI, *gin.Engine) {
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	if resolverFn != nil {
 		r.Use(func(c *gin.Context) { resolverFn(c); c.Next() })

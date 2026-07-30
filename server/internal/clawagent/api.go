@@ -123,17 +123,29 @@ func (rt *ClawAgentRuntime) handleListSessions(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleGetSession(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	sessionID := c.Param("id")
-	meta, err := rt.SessionMeta.Get(c.Request.Context(), sessionID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+	meta, ok := rt.requireOwnedSession(c, c.Request.Context(), sessionID, userID)
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, meta)
 }
 
 func (rt *ClawAgentRuntime) handleDeleteSession(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	sessionID := c.Param("id")
+	if _, ok := rt.requireOwnedSession(c, c.Request.Context(), sessionID, userID); !ok {
+		return
+	}
 	if err := rt.SessionMeta.Archive(c.Request.Context(), sessionID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -183,10 +195,14 @@ func (rt *ClawAgentRuntime) handleCreatePersona(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleUpdatePersona(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	id := c.Param("id")
-	persona, err := rt.PersonaMgr.LoadByID(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "persona not found"})
+	persona, ok := rt.requireOwnedPersona(c, c.Request.Context(), id, userID)
+	if !ok {
 		return
 	}
 
@@ -218,7 +234,15 @@ func (rt *ClawAgentRuntime) handleUpdatePersona(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleDeletePersona(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	id := c.Param("id")
+	if _, ok := rt.requireOwnedPersona(c, c.Request.Context(), id, userID); !ok {
+		return
+	}
 	if err := rt.PersonaMgr.Delete(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -283,6 +307,10 @@ func (rt *ClawAgentRuntime) handleCreateProvider(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := ValidateProviderBaseURL(p.BaseURL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	p.UserID = userID
 
 	if err := rt.ProviderMgr.Create(c.Request.Context(), &p); err != nil {
@@ -300,14 +328,16 @@ func (rt *ClawAgentRuntime) handleCreateProvider(c *gin.Context) {
 
 func (rt *ClawAgentRuntime) handleUpdateProvider(c *gin.Context) {
 	userID := rt.resolveUserID(c)
-	id := parseInt(c.Param("id"))
-
-	prov, err := rt.ProviderMgr.LoadByID(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	prov.UserID = userID
+	id := parseInt(c.Param("id"))
+
+	prov, ok := rt.requireOwnedProvider(c, c.Request.Context(), id, userID)
+	if !ok {
+		return
+	}
 
 	var updates Provider
 	if err := c.ShouldBindJSON(&updates); err != nil {
@@ -319,6 +349,10 @@ func (rt *ClawAgentRuntime) handleUpdateProvider(c *gin.Context) {
 		prov.APIKeyEncrypted = updates.APIKeyEncrypted
 	}
 	if updates.BaseURL != "" {
+		if err := ValidateProviderBaseURL(updates.BaseURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		prov.BaseURL = updates.BaseURL
 	}
 	if updates.ModelName != "" {
@@ -343,7 +377,15 @@ func (rt *ClawAgentRuntime) handleUpdateProvider(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleDeleteProvider(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	id := parseInt(c.Param("id"))
+	if _, ok := rt.requireOwnedProvider(c, c.Request.Context(), id, userID); !ok {
+		return
+	}
 	if err := rt.ProviderMgr.Delete(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -352,7 +394,15 @@ func (rt *ClawAgentRuntime) handleDeleteProvider(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleTestProvider(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	id := parseInt(c.Param("id"))
+	if _, ok := rt.requireOwnedProvider(c, c.Request.Context(), id, userID); !ok {
+		return
+	}
 	result, err := rt.ProviderMgr.TestProvider(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -468,10 +518,14 @@ func (rt *ClawAgentRuntime) handleGetDelegationTask(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleAbortDelegationTask(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	taskID := c.Param("taskId")
-	task, err := rt.TaskRegistry.Get(c.Request.Context(), taskID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	task, ok := rt.requireOwnedTask(c, c.Request.Context(), taskID, userID)
+	if !ok {
 		return
 	}
 

@@ -417,6 +417,82 @@ func TestSearchUsersByEmployeeNumber_EmptyArgErrors(t *testing.T) {
 	}
 }
 
+// TestGetEmploymentIdentitiesBySubjectIDs_PicksLatestSync proves the batch
+// loader dedupes multiple employment_identities rows per user by
+// last_synced_at DESC. Same SQL shape as SearchUsersByEmployeeNumber's
+// tie-break — this test guards the dedup loop in the new method.
+func TestGetEmploymentIdentitiesBySubjectIDs_PicksLatestSync(t *testing.T) {
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) { u.SubjectID = "subj-dedup" })
+
+	older := time.Now().Add(-2 * time.Hour).UTC()
+	newer := time.Now().UTC()
+	staleProvider := "idtrust"
+	freshProvider := "feishu"
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "subj-dedup"
+		e.Provider = staleProvider
+		e.LastSyncedAt = older
+	})
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "subj-dedup"
+		e.Provider = freshProvider
+		e.LastSyncedAt = newer
+	})
+
+	got, err := svc.GetEmploymentIdentitiesBySubjectIDs(context.Background(), []string{"subj-dedup", "absent"})
+	if err != nil {
+		t.Fatalf("GetEmploymentIdentitiesBySubjectIDs: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1 (absent subject must not appear)", len(got))
+	}
+	row, ok := got["subj-dedup"]
+	if !ok {
+		t.Fatal("missing subj-dedup")
+	}
+	if row.Provider != freshProvider {
+		t.Errorf("provider = %q, want %q (latest sync wins)", row.Provider, freshProvider)
+	}
+}
+
+// TestGetEmploymentIdentitiesBySubjectIDs_EmptyInputReturnsEmpty asserts no
+// query fires for an empty slice — the trivial guard.
+func TestGetEmploymentIdentitiesBySubjectIDs_EmptyInputReturnsEmpty(t *testing.T) {
+	svc := newTestService(t)
+	got, err := svc.GetEmploymentIdentitiesBySubjectIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d entries, want 0", len(got))
+	}
+}
+
+// TestGetEmploymentIdentitiesBySubjectIDs_TenantScoped proves the loader
+// respects ctx's tenant signal — rows from other tenants never leak in.
+func TestGetEmploymentIdentitiesBySubjectIDs_TenantScoped(t *testing.T) {
+	svc := newTestService(t)
+	seedUser(t, svc, func(u *models.User) {
+		u.SubjectID = "tenant-a-user"
+		u.TenantID = "tenant-a"
+	})
+	seedEmployment(t, svc, func(e *models.EmploymentIdentity) {
+		e.UserSubjectID = "tenant-a-user"
+		e.TenantID = "tenant-a"
+	})
+
+	tenantB := &models.Tenant{TenantID: "tenant-b"}
+	ctxB := tenant.WithTenant(context.Background(), tenantB)
+	got, err := svc.GetEmploymentIdentitiesBySubjectIDs(ctxB, []string{"tenant-a-user"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("tenant-b scope: got %d entries, want 0 (no leak)", len(got))
+	}
+}
+
 // TestService_NilDBGuards asserts every method short-circuits cleanly when
 // the service is constructed without a DB (defensive against future callers
 // that forget to inject one).
