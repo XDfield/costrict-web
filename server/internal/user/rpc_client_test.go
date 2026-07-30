@@ -254,3 +254,123 @@ func TestRPCClient_ListUserIdentities_NotFound(t *testing.T) {
 		t.Fatalf("want gorm.ErrRecordNotFound, got %v", err)
 	}
 }
+
+// TestRPCClient_GetUserByIdentity_CachesAfterFirstHit asserts the second
+// call with the same identity handle does NOT reach cs-user — the auth
+// middleware's subjectResolver hits this on every Casdoor-JWT request, so
+// caching turns a per-request RPC into one round-trip per TTL window.
+func TestRPCClient_GetUserByIdentity_CachesAfterFirstHit(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/internal/users/by-identity" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("universal_id") != "uni-1" {
+			t.Errorf("unexpected universal_id: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(models.User{
+			SubjectID: "usr_1", Username: "alice", DisplayName: strPtr("Alice"),
+		})
+	}))
+	defer srv.Close()
+
+	c := newConfiguredRPCClient(t, srv.URL)
+
+	got, err := c.GetUserByIdentity(context.Background(), "github", "uni-1")
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if got.SubjectID != "usr_1" {
+		t.Fatalf("unexpected user: %+v", got)
+	}
+
+	// Second call with the same identity must be served from cache.
+	got2, err := c.GetUserByIdentity(context.Background(), "github", "uni-1")
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if got2.SubjectID != "usr_1" {
+		t.Fatalf("cached user mismatch: %+v", got2)
+	}
+	if calls != 1 {
+		t.Fatalf("cs-user hit count: want 1, got %d (cache not working)", calls)
+	}
+
+	// Different identity → must hit cs-user again.
+	if _, err := c.GetUserByIdentity(context.Background(), "gitlab", "uni-1"); err != nil {
+		t.Fatalf("third call: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("cs-user hit count after distinct key: want 2, got %d", calls)
+	}
+}
+
+// TestRPCClient_GetUserByIdentity_DoesNotCacheErrors ensures a transient
+// cs-user failure (5xx → ErrRPCUnavailable) is not cached — the next call
+// must retry. This preserves the fail-open contract: a cs-user hiccup
+// doesn't pin a user out for the TTL window.
+func TestRPCClient_GetUserByIdentity_DoesNotCacheErrors(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(models.User{SubjectID: "usr_2", Username: "bob"})
+	}))
+	defer srv.Close()
+
+	c := newConfiguredRPCClient(t, srv.URL)
+
+	if _, err := c.GetUserByIdentity(context.Background(), "github", "uni-2"); !errors.Is(err, ErrRPCUnavailable) {
+		t.Fatalf("first call: want ErrRPCUnavailable, got %v", err)
+	}
+	got, err := c.GetUserByIdentity(context.Background(), "github", "uni-2")
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if got.SubjectID != "usr_2" {
+		t.Fatalf("unexpected user after retry: %+v", got)
+	}
+	if calls != 2 {
+		t.Fatalf("cs-user hit count: want 2 (error must trigger retry), got %d", calls)
+	}
+}
+
+// TestRPCClient_InvalidateUserIdentityCache verifies manual invalidation
+// drops the cached entry so a fresh lookup reaches cs-user. This backs
+// the contract that admin rename / subject_id reassignment can pin
+// through immediately.
+func TestRPCClient_InvalidateUserIdentityCache(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(models.User{SubjectID: "usr_3", Username: "carol"})
+	}))
+	defer srv.Close()
+
+	c := newConfiguredRPCClient(t, srv.URL)
+	if _, err := c.GetUserByIdentity(context.Background(), "github", "uni-3"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := c.GetUserByIdentity(context.Background(), "github", "uni-3"); err != nil {
+		t.Fatalf("cached call: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected single cs-user hit before invalidate, got %d", calls)
+	}
+
+	c.InvalidateUserIdentityCache("github", "uni-3")
+
+	if _, err := c.GetUserByIdentity(context.Background(), "github", "uni-3"); err != nil {
+		t.Fatalf("post-invalidate call: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected cs-user hit after invalidate, got %d", calls)
+	}
+}

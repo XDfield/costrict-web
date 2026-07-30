@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
@@ -44,11 +45,36 @@ var (
 
 const defaultTimeout = 10 * time.Second
 
+// byIdentityCacheTTL bounds how long a (provider, universal_id) → user
+// resolution is reused before hitting cs-user again. Aligned with
+// middleware.statusCacheTTL — short enough that a subject_id reassignment
+// or rename takes effect within seconds, long enough to keep the auth
+// resolver off the per-request hot path. The cache only stores successful
+// lookups; errors are not cached so a transient cs-user hiccup fails open.
+const byIdentityCacheTTL = 30 * time.Second
+
 // RPCClient talks to cs-user over HTTP. Construct with NewRPCClient.
 type RPCClient struct {
 	baseURL       string
 	internalToken string
 	httpClient    *http.Client
+
+	// byIdentityCache backs GetUserByIdentity — the auth middleware's
+	// subjectResolver hits it on every Casdoor-issued JWT (legacy/associated
+	// projects keep signing Casdoor tokens indefinitely). Identity mapping
+	// is stable in a user's lifetime, so a short TTL turns repeated RPCs
+	// from the same session into a single round-trip. Errors are not cached.
+	byIdentityMu    sync.RWMutex
+	byIdentityCache map[string]byIdentityCacheEntry
+}
+
+// byIdentityCacheEntry stores a successful GetUserByIdentity result. The
+// cached *models.User is shared across goroutines; callers MUST treat it
+// as read-only (the only current caller — middleware.SetSubjectResolver
+// in main.go — only reads from it).
+type byIdentityCacheEntry struct {
+	user      *models.User
+	expiresAt time.Time
 }
 
 // NewRPCClient builds an RPCClient from config. The httpClient timeout is taken
@@ -90,13 +116,22 @@ func (c *RPCClient) GetUserByID(ctx context.Context, userID string) (*models.Use
 
 // GetUserByIdentity calls GET /api/internal/users/by-identity?provider=...&universal_id=...
 // to resolve the canonical user from a Casdoor identity handle. Used by the
-// auth middleware during the legacy-Casdoor-JWT compatibility window so the
-// server doesn't need a local casdoor_universal_id copy. HTTP 404 →
+// auth middleware's subjectResolver on every Casdoor-issued JWT (legacy and
+// associated-project tokens keep flowing in indefinitely) so the server
+// doesn't need a local casdoor_universal_id copy. HTTP 404 →
 // gorm.ErrRecordNotFound so callers can distinguish "identity never seen"
 // from cs-user outages.
+//
+// Results are cached for byIdentityCacheTTL; errors are not cached (fail-open
+// on cs-user hiccups). The returned *models.User is shared with concurrent
+// callers when served from cache — treat it as read-only.
 func (c *RPCClient) GetUserByIdentity(ctx context.Context, provider, universalID string) (*models.User, error) {
 	if !c.Configured() {
 		return nil, ErrNotConfigured
+	}
+	key := provider + "|" + universalID
+	if cached, ok := c.byIdentityCacheGet(key); ok {
+		return cached, nil
 	}
 	q := url.Values{}
 	q.Set("universal_id", universalID)
@@ -107,7 +142,44 @@ func (c *RPCClient) GetUserByIdentity(ctx context.Context, provider, universalID
 	if err := c.do(ctx, http.MethodGet, "/api/internal/users/by-identity?"+q.Encode(), nil, &user, decodeBareUser); err != nil {
 		return nil, err
 	}
+	c.byIdentityCacheSet(key, &user)
 	return &user, nil
+}
+
+// InvalidateUserIdentityCache drops any cached resolution for the given
+// identity so an admin rename / subject_id reassignment takes effect
+// immediately rather than after the TTL elapses. Safe to call when no entry
+// exists. Pass the same (provider, universalID) pair the resolver would.
+func (c *RPCClient) InvalidateUserIdentityCache(provider, universalID string) {
+	key := provider + "|" + universalID
+	c.byIdentityMu.Lock()
+	delete(c.byIdentityCache, key)
+	c.byIdentityMu.Unlock()
+}
+
+func (c *RPCClient) byIdentityCacheGet(key string) (*models.User, bool) {
+	c.byIdentityMu.RLock()
+	defer c.byIdentityMu.RUnlock()
+	if c.byIdentityCache == nil {
+		return nil, false
+	}
+	entry, ok := c.byIdentityCache[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.user, true
+}
+
+func (c *RPCClient) byIdentityCacheSet(key string, user *models.User) {
+	c.byIdentityMu.Lock()
+	defer c.byIdentityMu.Unlock()
+	if c.byIdentityCache == nil {
+		c.byIdentityCache = map[string]byIdentityCacheEntry{}
+	}
+	c.byIdentityCache[key] = byIdentityCacheEntry{user: user, expiresAt: time.Now().Add(byIdentityCacheTTL)}
 }
 
 // GetUsersByIDs calls POST /api/internal/users/by-ids with {"ids": [...]}.
