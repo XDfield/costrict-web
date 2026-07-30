@@ -82,12 +82,16 @@ func ErrorLogger() gin.HandlerFunc {
 
 		status := c.Writer.Status()
 		if status >= http.StatusBadRequest {
+			// Mask known-sensitive fields (password/apiKey/token/secret/etc.)
+			// before logging the body. Non-JSON bodies pass through unchanged
+			// and remain subject to length truncation below.
+			masked := maskSensitiveBody(bodyBytes)
 			msg := "%s %s => %d | body: %s | errors: %s"
 			args := []any{
 				c.Request.Method,
 				c.Request.RequestURI,
 				status,
-				logger.Truncate(string(bodyBytes), 2000),
+				logger.Truncate(string(masked), 2000),
 				c.Errors.String(),
 			}
 
