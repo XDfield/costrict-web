@@ -292,6 +292,51 @@ func TestReissueToken_HappyPath(t *testing.T) {
 	}
 }
 
+// TestReissueToken_PhoneLoginBuildsPhoneExternalKey is the handler-level
+// regression for the reissue-token 404 bug. Casdoor phone-login JWTs carry
+// `phone` but no top-level `provider` claim; if the verifier's NormalizeClaimsMap
+// doesn't run the phone fallback, BuildExternalKey produces
+// `casdoor:<universal_id>` while GetOrCreateUser (driven by @server's
+// NormalizeClaimsMap) wrote `casdoor:phone:<universal_id>` — reissue-token
+// returns 404 and @server's OAuth callback falls back to writing the raw
+// Casdoor token into the cookie. This test pins the contract end-to-end:
+// phone-only JWT → externalKeyFn must receive `casdoor:phone:<universal_id>`.
+// defaultHappyStubs already asserts the exact key, so a regression in
+// provider derivation surfaces here as a lookup-key mismatch.
+func TestReissueToken_PhoneLoginBuildsPhoneExternalKey(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	v, casdoorKey, kid, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	const subjectID = "usr_phone"
+	const tenantID = "default"
+	// external_key shape MUST match what @server's GetOrCreateUser RPC writes
+	// for the same JWT (server derives provider="phone" from phone field).
+	svc, tenantR := defaultHappyStubs(t, "casdoor:phone:b74e5889-phonelogin", subjectID, tenantID)
+	api, r := newAuthAPI(svc, signer, defaultJWTCfg())
+	api.CasdoorVerifier = v
+	api.TenantResolver = tenantR
+
+	// Mirrors the real Casdoor phone-login payload that triggered the bug:
+	// `phone` present, top-level `provider` ABSENT, universal_id present.
+	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
+		"sub":          "b74e5889-phonelogin",
+		"universal_id": "b74e5889-phonelogin",
+		"phone":        "15986746954",
+		"name":         "陈烜42766",
+		"exp":          time.Now().Add(time.Hour).Unix(),
+	})
+
+	body := reissueTokenRequest{CasdoorJWT: raw}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/users/reissue-token", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	// defaultHappyStubs.externalKeyFn already asserted the key shape inline;
+	// reaching here with 200 means the phone fallback produced the correct
+	// `casdoor:phone:<universal_id>` and the lookup succeeded.
+}
+
 // TestReissueToken_NoCasdoorJWT_Returns400 locks the new contract:
 // casdoor_jwt is required; missing it surfaces as 400 (binding error), and
 // the service is never called.
