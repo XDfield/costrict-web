@@ -36,9 +36,29 @@ type Config struct {
 // iss, aud). Empty JWKSURL = verifier disabled (dev / pre-rollout); the
 // handler logs and falls through to the legacy trust path so a misconfig
 // never deadlocks login.
+//
+// FIXME(多租户 Casdoor): 当前 CasdoorConfig 是进程级全局——一台 cs-user 只能
+// 验证一个 Casdoor 实例签发的 JWT。多租户场景下每个租户对接自家 Casdoor 时，
+// 这套配置必须改成租户级别（来源是 tenant_configs.config_yaml 里的 Casdoor
+// 子段，参考 MULTI_TENANCY_DESIGN §9.3 / §12.1）。届时验签流程需要从"先验后
+// 查租户"调整为"peek JWT iss → 选 verifier → 验签 → 再查租户"，破掉顺序环。
+// 改造完成前此结构保持进程级单实例。详见历史讨论与 MULTI_TENANCY_DESIGN。
 type CasdoorConfig struct {
-	// JWKSURL is Casdoor's /.well-known/jwks endpoint. Required for
-	// verification to engage.
+	// Endpoint is Casdoor's base URL (origin only, no path), e.g.
+	// "https://casdoor.example.com". When JWKSURL is empty but Endpoint is
+	// set, the JWKS URL is derived as "<Endpoint>/.well-known/jwks" at load
+	// time (see loadCasdoorConfig). This matches the convention used by
+	// server/internal/middleware/jwks.go (NewJWKSProvider appends the same
+	// suffix to a base URL) so the two services stay consistent. Kept as a
+	// distinct field (not folded into JWKSURL) so future per-tenant
+	// refactoring can resolve it from tenant_configs without losing the
+	// discovery-style derivation. See the FIXME on this struct.
+	Endpoint string
+	// JWKSURL is Casdoor's /.well-known/jwks endpoint. When set explicitly
+	// via CS_USER_CASDOOR_JWKS_URL it overrides any derivation from Endpoint
+	// (operators point this at a proxy / non-default path when Casdoor is
+	// behind a custom route). Required for verification to engage — when
+	// neither JWKSURL nor Endpoint is set, the verifier is disabled.
 	JWKSURL string
 	// Issuer is the expected `iss` claim. When empty, the iss check is
 	// skipped (not recommended for production — set this to Casdoor's
@@ -333,10 +353,22 @@ func loadApexDomains(raw string) []string {
 // JWKSURL → verifier disabled (load returns a zero-value config; the
 // verifier struct treats empty JWKSURL as "off"). Optional knobs fall back
 // to safe defaults.
+//
+// JWKS URL resolution: explicit CS_USER_CASDOOR_JWKS_URL wins; when unset,
+// derive from CS_USER_CASDOOR_ENDPOINT as "<Endpoint>/.well-known/jwks"
+// (matches server/internal/middleware/jwks.go's base-URL convention so the
+// two services agree on the suffix). When both are empty the verifier stays
+// disabled — operators in dev / pre-rollout don't need to fill anything.
 func loadCasdoorConfig() CasdoorConfig {
+	endpoint := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ENDPOINT"))
+	jwksURL := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_JWKS_URL"))
+	if jwksURL == "" && endpoint != "" {
+		jwksURL = strings.TrimRight(endpoint, "/") + "/.well-known/jwks"
+	}
 	cfg := CasdoorConfig{
-		JWKSURL:        strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_JWKS_URL")),
-		Issuer:         strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
+		Endpoint:        endpoint,
+		JWKSURL:         jwksURL,
+		Issuer:          strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
 		JWKSHTTPTimeout: envDuration("CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT", defaultCasdoorJWKSHTTPTimeout),
 		JWKSRefreshTTL:  envDuration("CS_USER_CASDOOR_JWKS_REFRESH_TTL", defaultCasdoorJWKSRefreshTTL),
 	}

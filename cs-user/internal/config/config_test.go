@@ -30,6 +30,12 @@ func clearEnv(t *testing.T) {
 		"CS_USER_JWT_TTL",
 		"CS_USER_JWT_AUDIENCE",
 		"CS_USER_APEX_DOMAINS",
+		"CS_USER_CASDOOR_ENDPOINT",
+		"CS_USER_CASDOOR_JWKS_URL",
+		"CS_USER_CASDOOR_ISSUER",
+		"CS_USER_CASDOOR_AUDIENCE",
+		"CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT",
+		"CS_USER_CASDOOR_JWKS_REFRESH_TTL",
 	} {
 		prev, had := os.LookupEnv(key)
 		os.Unsetenv(key)
@@ -319,6 +325,94 @@ func TestLoad_JWTAudienceEmptyOmitted(t *testing.T) {
 	}
 	if len(cfg.JWT.DefaultAudience) != 0 {
 		t.Errorf("expected empty audience, got %v", cfg.JWT.DefaultAudience)
+	}
+}
+
+// --- Casdoor JWKS URL derivation ---
+
+// TestLoad_CasdoorJWKS_DerivedFromEndpoint verifies the discovery-style
+// derivation: when only CS_USER_CASDOOR_ENDPOINT is set, the JWKS URL is
+// "<Endpoint>/.well-known/jwks". Operators can configure just the base URL
+// and let cs-user append the standard OIDC suffix — matching the convention
+// @server's JWKSProvider uses (server/internal/middleware/jwks.go).
+func TestLoad_CasdoorJWKS_DerivedFromEndpoint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+	t.Setenv("CS_USER_CASDOOR_ENDPOINT", "https://casdoor.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Casdoor.Endpoint != "https://casdoor.example.com" {
+		t.Errorf("Casdoor.Endpoint = %q, want https://casdoor.example.com", cfg.Casdoor.Endpoint)
+	}
+	if want := "https://casdoor.example.com/.well-known/jwks"; cfg.Casdoor.JWKSURL != want {
+		t.Errorf("Casdoor.JWKSURL derived = %q, want %q", cfg.Casdoor.JWKSURL, want)
+	}
+}
+
+// TestLoad_CasdoorJWKS_DerivedTrimsTrailingSlash verifies a trailing slash on
+// the endpoint doesn't produce a double-slash JWKS URL. Common config typo
+// that would otherwise yield a 404 against Casdoor silently.
+func TestLoad_CasdoorJWKS_DerivedTrimsTrailingSlash(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+	t.Setenv("CS_USER_CASDOOR_ENDPOINT", "https://casdoor.example.com/")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := "https://casdoor.example.com/.well-known/jwks"; cfg.Casdoor.JWKSURL != want {
+		t.Errorf("Casdoor.JWKSURL = %q, want %q (no double slash)", cfg.Casdoor.JWKSURL, want)
+	}
+}
+
+// TestLoad_CasdoorJWKS_ExplicitURLOverridesEndpoint verifies an explicit
+// CS_USER_CASDOOR_JWKS_URL wins over derivation. Operators point this at a
+// proxy / non-default path when Casdoor is behind a custom route; derivation
+// must never override the explicit value.
+func TestLoad_CasdoorJWKS_ExplicitURLOverridesEndpoint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+	t.Setenv("CS_USER_CASDOOR_ENDPOINT", "https://casdoor.example.com")
+	t.Setenv("CS_USER_CASDOOR_JWKS_URL", "https://proxy.example.com/custom-jwks")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Casdoor.JWKSURL != "https://proxy.example.com/custom-jwks" {
+		t.Errorf("Casdoor.JWKSURL = %q, want explicit override", cfg.Casdoor.JWKSURL)
+	}
+}
+
+// TestLoad_CasdoorJWKS_BothEmptyDisablesVerifier verifies the dev / pre-
+// rollout posture: when neither Endpoint nor JWKS URL is configured, the
+// verifier stays disabled (empty JWKSURL → NewCasdoorVerifier returns nil →
+// reissue-token handler logs and falls through to the legacy trust path).
+func TestLoad_CasdoorJWKS_BothEmptyDisablesVerifier(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Casdoor.Endpoint != "" {
+		t.Errorf("Casdoor.Endpoint = %q, want empty", cfg.Casdoor.Endpoint)
+	}
+	if cfg.Casdoor.JWKSURL != "" {
+		t.Errorf("Casdoor.JWKSURL = %q, want empty (verifier disabled)", cfg.Casdoor.JWKSURL)
 	}
 }
 
