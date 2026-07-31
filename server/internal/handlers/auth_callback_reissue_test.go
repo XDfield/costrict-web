@@ -238,3 +238,89 @@ func TestAuthCallback_JWTSignModeOff_SkipsReissueToken(t *testing.T) {
 		t.Errorf("ReissueToken was called even though jwtSignMode=off; arg=%q", stub.gotRawCasdoorJWT)
 	}
 }
+
+// TestAuthCallback_SSOShortcut_ProvisionsUser pins the regression: when the
+// browser already holds a Casdoor access token that /api/userinfo honours,
+// the OAuth callback MUST still run provisionCsUser (GetOrCreateUser +
+// ReissueToken) before redirecting. Skipping provisioning — the old
+// behaviour — left cs-user without a row, so middleware's by-identity lookup
+// 404'd on the next request and the browser bounced back to /login, where
+// the still-valid Casdoor cookie short-circuited the callback again. Loop.
+//
+// This test drives the exact shape: request arrives with a Cookie header
+// carrying a Casdoor access token that getUserInfoFunc validates. We assert
+// that ReissueToken fires (provisioning ran) and that the cookie the
+// response sets carries the cs-user-signed JWT (not the legacy Casdoor
+// value), proving the shortcut now goes through provisionCsUser.
+func TestAuthCallback_SSOShortcut_ProvisionsUser(t *testing.T) {
+	defer setupTestDB(t)()
+	defer InitUserModule(nil)
+	InitUserModule(userpkg.New(database.DB))
+	stub := &stubReissueWriter{reissueToken: "CS-USER-MINTED-VIA-SSO"}
+	UserModule.Writer = stub
+
+	prevSignMode := jwtSignMode
+	defer func() { jwtSignMode = prevSignMode }()
+	jwtSignMode = config.JWTSignModeDual
+
+	// A pre-existing Casdoor cookie — content is irrelevant because
+	// getUserInfoFunc is stubbed; this is the value the browser would
+	// carry when an already-logged-in Casdoor session returns to /login.
+	const existingCasdoorToken = "EXISTING-CASDOOR-TOKEN"
+
+	defer func() {
+		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
+		}
+		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+			return CasdoorClient.GetUserInfo(accessToken)
+		}
+	}()
+	// Code-exchange must NOT fire on the SSO path — if it does, the test
+	// would silently pass via the wrong branch. Make it loud.
+	exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
+		t.Fatalf("SSO shortcut must not exchange code; got code=%q", code)
+		return nil, nil
+	}
+	getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
+		if accessToken != existingCasdoorToken {
+			t.Errorf("getUserInfoFunc accessToken: got %q, want %q", accessToken, existingCasdoorToken)
+		}
+		return &casdoor.CasdoorUserInfoResponse{
+			User: &casdoor.CasdoorUser{Id: "sso-id", Sub: "sso-sub", UniversalID: "sso-uni", Name: "sso-user"},
+		}, nil
+	}
+
+	r := gin.New()
+	r.GET("/api/auth/callback", AuthCallback)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
+	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: existingCasdoorToken})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect, got %d: body=%s", w.Code, w.Body.String())
+	}
+
+	// Provisioning MUST have run — ReissueToken got called with the
+	// existing Casdoor token, and the cookie now carries the cs-user JWT.
+	if stub.gotRawCasdoorJWT != existingCasdoorToken {
+		t.Errorf("ReissueToken arg: got %q, want %q (provisioning skipped on SSO path)",
+			stub.gotRawCasdoorJWT, existingCasdoorToken)
+	}
+
+	var cookieValue string
+	resp := &http.Response{Header: w.Result().Header}
+	for _, c := range resp.Cookies() {
+		if c.Name == "zgsmAdminToken" {
+			cookieValue = c.Value
+		}
+	}
+	if cookieValue != "CS-USER-MINTED-VIA-SSO" {
+		t.Fatalf("cookie: got %q, want cs-user minted token (SSO shortcut must overwrite the legacy Casdoor cookie)", cookieValue)
+	}
+	if cookieValue == existingCasdoorToken {
+		t.Fatalf("cookie still equals the legacy Casdoor token — provisioning did not take over")
+	}
+}
