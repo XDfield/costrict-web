@@ -22,11 +22,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/crypto"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/kb"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/teamns"
 	"github.com/costrict/costrict-web/server/internal/user"
-	"github.com/costrict/costrict-web/server/internal/userspace"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -58,7 +61,7 @@ type KBEnsureResponse struct {
 	// --- Space overview (always populated) ---
 	SpaceType     string                  `json:"space_type"`              // "" (discovery) | "team" | "user"
 	TeamSpace     *TeamSpaceInfo       `json:"team_space,omitempty"`     // user's default team
-	PersonalSpace *userspace.UserSpaceInfo `json:"personal_space,omitempty"` // user's personal space
+	PersonalSpace *gitsync.UserSpaceInfo `json:"personal_space,omitempty"` // user's personal space
 }
 
 // TeamSpaceInfo carries the user's team namespace summary for discovery mode.
@@ -111,13 +114,20 @@ func InitTeamResolver(r TeamResolver) {
 	teamResolver = r
 }
 
-// userspaceService is the package-level holder, set via InitUserSpaceService.
-var userspaceService *userspace.Service
+// Personal-space dependencies, wired from main.go.
+var (
+	gitsyncDB              *gorm.DB
+	gitsyncCrypt           *crypto.AESGCM
+	gitsyncResolver        gitserver.Resolver
+	gitsyncUserProvisionSvc *gitsync.UserProvisionService
+)
 
-// InitUserSpaceService wires the personal-space service. Called once from
-// cmd/api/main.go during boot.
-func InitUserSpaceService(svc *userspace.Service) {
-	userspaceService = svc
+// InitUserSpaceService wires the personal-space dependencies.
+func InitUserSpaceService(db *gorm.DB, crypt *crypto.AESGCM, gres gitserver.Resolver, upSvc *gitsync.UserProvisionService) {
+	gitsyncDB = db
+	gitsyncCrypt = crypt
+	gitsyncResolver = gres
+	gitsyncUserProvisionSvc = upSvc
 }
 
 // KBEnsure godoc
@@ -217,14 +227,14 @@ func handleDiscovery(c *gin.Context, subjectID, codeRepoURL string) {
 	}
 
 	// Personal space.
-	if userspaceService != nil {
-		us, err := userspaceService.GetUserSpace(c.Request.Context(), subjectID, tenantID)
+	if gitsyncDB != nil {
+		us, err := gitsync.GetUserSpace(c.Request.Context(), gitsyncDB, subjectID, tenantID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		if us == nil {
-			us = &userspace.UserSpaceInfo{
+			us = &gitsync.UserSpaceInfo{
 				UserSubjectID: subjectID,
 				Ready:         false,
 			}
@@ -311,9 +321,9 @@ func handleTeamEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	var personalSpace *userspace.UserSpaceInfo
-	if userspaceService != nil {
-		personalSpace, _ = userspaceService.GetUserSpace(c.Request.Context(), subjectID, tenantID)
+	var personalSpace *gitsync.UserSpaceInfo
+	if gitsyncDB != nil {
+		personalSpace, _ = gitsync.GetUserSpace(c.Request.Context(), gitsyncDB, subjectID, tenantID)
 	}
 
 	c.JSON(http.StatusOK, KBEnsureResponse{
@@ -337,7 +347,7 @@ func handleTeamEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 
 // handleUserEnsure runs personal-space KB repo provisioning.
 func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
-	if userspaceService == nil {
+	if gitsyncUserProvisionSvc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":      "personal space service not configured",
 			"error_code": "PERSONAL_SPACE_UNAVAILABLE",
@@ -359,7 +369,7 @@ func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 		tenantID = "default"
 	}
 
-	provResult, err := userspaceService.EnsureUserRepo(c.Request.Context(), subjectID, tenantID, req.CodeRepoURL)
+	provResult, err := kb.EnsureUserRepo(c.Request.Context(), gitsyncDB, gitsyncResolver, gitsyncCrypt, nil, gitsyncUserProvisionSvc, subjectID, tenantID, req.CodeRepoURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "error_code": "KB_REPO_PROVISIONING_FAILED"})
 		return
@@ -371,7 +381,7 @@ func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 		return
 	}
 
-	plaintext, err := userspaceService.DecryptUserToken(c.Request.Context(), subjectID)
+	plaintext, err := gitsync.DecryptUserToken(c.Request.Context(), gitsyncDB, gitsyncCrypt, subjectID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":      "failed to decrypt user token: " + err.Error(),
@@ -380,7 +390,7 @@ func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
 		return
 	}
 
-	userMeta, _ := userspaceService.LookupUserMeta(c.Request.Context(), subjectID)
+	userMeta, _ := gitsync.LookupUserMeta(c.Request.Context(), gitsyncDB, subjectID)
 	giteaUserID := int64(0)
 	giteaUsername := ""
 	if userMeta != nil {

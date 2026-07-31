@@ -1,10 +1,10 @@
-// Package userspace — per-user KB repo provisioning.
+// Package kb — per-user KB repo provisioning.
 //
-// EnsureUserRepo is the Gitea-side provisioning entry point for personal-space
-// KB repos. It mirrors teamns.EnsureKBRepo with the owner being
-// {gitea_username} instead of t-<team_short>.
+// EnsureUserRepo creates or reuses a KB repo under a user's personal
+// Git namespace. Mirrors teamns.EnsureKBRepo with the owner being
+// {git_username} instead of t-<team_short>.
 
-package userspace
+package kb
 
 import (
 	"context"
@@ -12,18 +12,25 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/crypto"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
-	"github.com/costrict/costrict-web/server/internal/kb"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
+)
+
+// Sentinel errors for user repo provisioning.
+var (
+	ErrUserSpaceUnavailable = errors.New("kb: user git account not ready")
+	ErrUserRepoProvisioning = errors.New("kb: user repo provisioning failed")
 )
 
 // UserRepoResult carries per-call flags for the response.
 type UserRepoResult struct {
-	KbRepoPath          string
-	KbRepoCreated       bool
-	BranchProtectionSet bool
-	UserNSReady         bool
+	KbRepoPath    string
+	KbRepoCreated bool
+	UserNSReady   bool
 }
 
 // EnsureUserRepo runs the full personal-space KB provisioning pipeline.
@@ -32,45 +39,50 @@ type UserRepoResult struct {
 //  1. Resolve user's Gitea username from UserGitBinding; fallback-provision
 //     if missing or not synced.
 //  2. Resolve tenant's GitServer.
-//  3. Determine deterministic repo path via kb.KBRepoPathForUser.
-//  4. Get-or-create the KB repo under the user's namespace.
-//  5. Apply branch protection on main.
+//  3. Determine deterministic repo path via KBRepoPathForUser.
+//  4. Ensure PAT exists (fallback for when ProvisionUser skipped PAT creation).
+//  5. Get-or-create the KB repo under the user's namespace.
 //
 // All steps are idempotent — re-running for the same (user, code_repo_url)
 // is a no-op with KbRepoCreated=false.
-func (s *Service) EnsureUserRepo(
+func EnsureUserRepo(
 	ctx context.Context,
+	db *gorm.DB,
+	gres gitserver.Resolver,
+	crypt *crypto.AESGCM,
+	log *zap.Logger,
+	userProvisionSvc *gitsync.UserProvisionService,
 	userSubjectID, tenantID, codeRepoURL string,
 ) (*UserRepoResult, error) {
 	// 1. Resolve user's Gitea identity.
-	binding, err := s.resolveBinding(ctx, userSubjectID, tenantID)
+	binding, err := resolveBinding(ctx, db, userProvisionSvc, userSubjectID, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 2. Resolve tenant's Git server.
-	cfg, gitcli, err := s.resolveGitServer(ctx, tenantID)
+	cfg, gitcli, err := resolveGitServer(ctx, gres, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	_ = gitcli // unused for now; repo ops use the gitsync.Client
 
 	// 3. Compute deterministic repo path.
-	kbRepoPath, err := kb.KBRepoPathForUser(codeRepoURL, binding.GitUsername)
+	kbRepoPath, err := KBRepoPathForUser(codeRepoURL, binding.GitUsername)
 	if err != nil {
-		return nil, fmt.Errorf("userspace: %w", err)
+		return nil, fmt.Errorf("kb: %w", err)
 	}
 	owner, repoName := splitOwnerRepo(kbRepoPath)
 
-	// 4. Ensure PAT exists (fallback for when ProvisionUser skipped PAT creation).
-	if err := s.ensurePAT(ctx, binding.GitUsername, *binding.GitUID,
-		&gitsync.GitServerConfig{
+	// 4. Ensure PAT exists.
+	if err := gitsync.EnsureUserPAT(ctx, db, crypt, log,
+		gitsync.GitServerConfig{
 			Endpoint:      cfg.Endpoint,
 			AdminToken:    cfg.AdminToken,
 			AdminUser:     cfg.AdminUser,
 			AdminPassword: cfg.AdminPassword,
+			ServerID:      cfg.ServerID,
 		},
-		userSubjectID, tenantID,
+		userSubjectID, tenantID, binding.GitUsername, *binding.GitUID,
 	); err != nil {
 		return nil, fmt.Errorf("%w: ensure PAT: %v", ErrUserRepoProvisioning, err)
 	}
@@ -93,7 +105,6 @@ func (s *Service) EnsureUserRepo(
 			AutoInit:      true,
 			DefaultBranch: "main",
 		}); err != nil {
-			// Race: another concurrent ensure may have won the create.
 			repo, lookupErr := gitcli.GetRepo(ctx, owner, repoName)
 			if lookupErr != nil || repo == nil {
 				return nil, fmt.Errorf("%w: create repo: %v (post-create lookup: %v)",
@@ -104,20 +115,14 @@ func (s *Service) EnsureUserRepo(
 		}
 	}
 
-	// 6. Protect main.
-	if err := s.applyBranchProtection(ctx, gitcli, owner, repoName, "main"); err != nil {
-		return nil, err
-	}
-	result.BranchProtectionSet = true
-
 	return result, nil
 }
 
 // resolveBinding looks up the UserGitBinding and falls back to ProvisionUser
 // when missing or not synced.
-func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string) (*models.UserGitBinding, error) {
+func resolveBinding(ctx context.Context, db *gorm.DB, userProvisionSvc *gitsync.UserProvisionService, subjectID, tenantID string) (*models.UserGitBinding, error) {
 	var binding models.UserGitBinding
-	err := s.db.WithContext(ctx).
+	err := db.WithContext(ctx).
 		Where("user_subject_id = ? AND tenant_id = ?", subjectID, tenantID).
 		First(&binding).Error
 	if err == nil && binding.SyncStatus == models.GitSyncStatusSynced {
@@ -125,13 +130,12 @@ func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string
 	}
 
 	// Not ready — try fallback provisioning.
-	if s.userProvisionSvc != nil {
-		// Best-effort: ignore errors (ProvisionUser logs internally).
+	if userProvisionSvc != nil {
 		short := strings.ReplaceAll(subjectID, "-", "")
 		if len(short) > 8 {
 			short = short[:8]
 		}
-		_ = s.userProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
+		_ = userProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
 			SubjectID: subjectID,
 			TenantID:  tenantID,
 			ShortID:   "u-" + short,
@@ -139,14 +143,14 @@ func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string
 	}
 
 	// Re-read after fallback.
-	err = s.db.WithContext(ctx).
+	err = db.WithContext(ctx).
 		Where("user_subject_id = ? AND tenant_id = ?", subjectID, tenantID).
 		First(&binding).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("%w: no UserGitBinding for subject=%q", ErrUserSpaceUnavailable, subjectID)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("userspace: re-read binding: %w", err)
+		return nil, fmt.Errorf("kb: re-read binding: %w", err)
 	}
 	if binding.SyncStatus != models.GitSyncStatusSynced {
 		return nil, fmt.Errorf("%w: status=%s", ErrUserSpaceUnavailable, binding.SyncStatus)
@@ -154,24 +158,17 @@ func (s *Service) resolveBinding(ctx context.Context, subjectID, tenantID string
 	return &binding, nil
 }
 
-// applyBranchProtection installs a "no direct push, no force push" rule
-// on the given branch. Mirrors teamns.applyBranchProtection.
-// Tolerates already-exists (idempotent).
-func (s *Service) applyBranchProtection(ctx context.Context, gitcli *gitsync.Client, owner, repo, rule string) error {
-	err := gitcli.SetBranchProtection(ctx, owner, repo, gitsync.BranchProtectionOptions{
-		RuleName:          rule,
-		EnablePush:        false,
-		EnableForcePush:   false,
-		RequiredApprovals: 0,
-	})
-	if err == nil {
-		return nil
+// resolveGitServer resolves the tenant's git server config and builds a client.
+func resolveGitServer(ctx context.Context, gres gitserver.Resolver, tenantID string) (*gitserver.Config, *gitsync.Client, error) {
+	cfg, err := gres.Resolve(ctx, tenantID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("kb: resolve git server: %w", err)
 	}
-	if errors.Is(err, gitsync.ErrGiteaUsernameTaken) {
-		// Rule already exists — idempotent success.
-		return nil
+	client := gitsync.NewClient(cfg.Endpoint, cfg.AdminToken)
+	if client == nil {
+		return nil, nil, fmt.Errorf("kb: cannot create git client for tenant %s", tenantID)
 	}
-	return fmt.Errorf("%w: branch protection %q: %v", ErrUserRepoProvisioning, rule, err)
+	return cfg, client, nil
 }
 
 // splitOwnerRepo splits "owner/repo" into its two components.

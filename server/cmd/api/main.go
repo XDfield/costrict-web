@@ -70,7 +70,6 @@ import (
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/costrict/costrict-web/server/internal/teamdir"
 	"github.com/costrict/costrict-web/server/internal/teamns"
-	"github.com/costrict/costrict-web/server/internal/userspace"
 	teampkg "github.com/costrict/costrict-web/server/internal/team"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
@@ -166,7 +165,7 @@ func main() {
 		//   - UserRefResolver (cs-user RPC for subject → user; local DB for
 		//     user_git_binding lookups)
 		//   - teamns.Service (orchestration)
-		// Missing CS_BOT_TOKEN_KEY → teamns and userspace stay disabled;
+		// Missing CS_BOT_TOKEN_KEY → teamns and personal-space stay disabled;
 		// handlers return 503.
 		aesKey, aesKeyErr = loadBotTokenKey()
 		if aesKeyErr == nil {
@@ -218,8 +217,7 @@ func main() {
 	// Personal-space KB ensure (Phase E3c extension).
 	// Requires AES key for credential storage; nil → disabled.
 	if aesForProvision != nil && userProvisionSvc != nil {
-		userspaceSvc := userspace.NewService(db, localGitResolver, userProvisionSvc, aesForProvision, logger.L())
-		handlers.InitUserSpaceService(userspaceSvc)
+		handlers.InitUserSpaceService(db, aesForProvision, localGitResolver, userProvisionSvc)
 	}
 
 	// Operator-supplied template seed: if GIT_SERVER_TEMPLATE_ENDPOINT +
