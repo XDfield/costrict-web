@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/costrict/costrict-web/cs-user/internal/auditlog"
+	"github.com/costrict/costrict-web/cs-user/internal/logger"
 	"github.com/costrict/costrict-web/cs-user/internal/models"
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
@@ -492,6 +493,13 @@ func (a *UsersAPI) BindIdentity(c *gin.Context) {
 		case isBindArgError(err):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
+			logger.Error("[bind-identity] internal error: subject_id=%s provider=%s universal_id=%s external_key=%s err=%v",
+				userSubjectID,
+				req.Claims.Provider,
+				req.Claims.UniversalID,
+				user.BuildExternalKey(req.Claims),
+				err,
+			)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		}
 		return

@@ -727,6 +727,8 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 			c.Redirect(http.StatusFound, redirectURL+sep+"bind=conflict&merge_token="+mergeToken)
 			return
 		}
+		fmt.Printf("[ERROR] bindAuthCallback BindIdentityToUser failed: subject_id=%s provider=%q universal_id=%q external_key=%q err=%v\n",
+			currentUser.SubjectID, claims.Provider, claims.UniversalID, userpkg.BuildExternalKey(claims), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
 		return
 	}
