@@ -48,10 +48,16 @@ type stubProvisioner struct {
 // EmailIsSet captures whether opts.Email was non-nil — backfill's
 // display-name sync must NEVER touch email on already-provisioned Gitea
 // accounts (locked by TestBackfill_SyncedBindingEmailNeverTouched).
+// LoginNameIsSet / LoginName capture the login_name field — the costrict
+// Gitea fork marks login_name as required on PATCH /admin/users/{username}
+// and returns 422 `[LoginName]: Required` if absent; every EditUser call
+// MUST set it (locked by TestBackfill_EditUserAlwaysSendsLoginName).
 type editCall struct {
-	Username  string
-	FullName  string
-	EmailIsSet bool
+	Username       string
+	FullName       string
+	EmailIsSet     bool
+	LoginNameIsSet bool
+	LoginName      string
 }
 
 func (s *stubProvisioner) CreateUser(ctx context.Context, opts CreateUserOptions) (*GiteaUser, error) {
@@ -75,7 +81,17 @@ func (s *stubProvisioner) EditUser(ctx context.Context, username string, opts Ed
 	if opts.FullName != nil {
 		full = *opts.FullName
 	}
-	s.editCalls = append(s.editCalls, editCall{Username: username, FullName: full, EmailIsSet: opts.Email != nil})
+	login := ""
+	if opts.LoginName != nil {
+		login = *opts.LoginName
+	}
+	s.editCalls = append(s.editCalls, editCall{
+		Username:       username,
+		FullName:       full,
+		EmailIsSet:     opts.Email != nil,
+		LoginNameIsSet: opts.LoginName != nil,
+		LoginName:      login,
+	})
 	if s.editErr != nil {
 		return nil, s.editErr
 	}

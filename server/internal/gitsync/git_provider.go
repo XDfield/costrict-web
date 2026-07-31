@@ -39,11 +39,19 @@ type GitProvider interface {
 }
 
 // EditUserOptions is the PATCH /admin/users/{username} body. Pointer fields
-// mean "absent from request" (no change) vs zero value. Today only FullName
-// is exercised — display_name sync from cs-user → Gitea.
+// mean "absent from request" (no change) vs zero value.
+//
+// LoginName MUST be set on every EditUser call against the costrict Gitea
+// fork — the fork marks login_name as a required field on the PATCH
+// endpoint and returns HTTP 422 `[LoginName]: Required` otherwise. For our
+// locally-provisioned accounts (source_id=0) the canonical value is the
+// username itself, mirroring Gitea's web-UI convention for local users;
+// login_name is only load-bearing when source_id != 0 (LDAP/OAuth), so
+// rewriting it to username on local accounts is a no-op.
 type EditUserOptions struct {
-	FullName *string `json:"full_name,omitempty"`
-	Email    *string `json:"email,omitempty"`
+	LoginName *string `json:"login_name,omitempty"`
+	FullName  *string `json:"full_name,omitempty"`
+	Email     *string `json:"email,omitempty"`
 }
 
 // ProviderUser is the provider-agnostic slice of a remote user record.

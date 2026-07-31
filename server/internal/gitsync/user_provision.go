@@ -234,8 +234,10 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 			// keeps Gitea's stale full_name forever. Best-effort: failure
 			// to update display_name does NOT fail the provision itself.
 			if newName := strings.TrimSpace(userFullName(params)); newName != "" && newName != existing.FullName {
+				loginName := binding.GitUsername
 				if _, editErr := provider.EditUser(provCtx, binding.GitUsername, EditUserOptions{
-					FullName: &newName,
+					LoginName: &loginName,
+					FullName:  &newName,
 				}); editErr != nil {
 					s.logf("gitsync.ProvisionUser: post-409 display_name update failed subject=%q err=%v",
 						params.SubjectID, editErr)
@@ -560,8 +562,10 @@ func (s *UserProvisionService) syncDisplayName(ctx context.Context, tenantID, gi
 		return fmt.Errorf("nil git provider for kind=%q", serverCfg.Kind)
 	}
 
+	loginName := gitUsername
 	if _, err := provider.EditUser(provCtx, gitUsername, EditUserOptions{
-		FullName: &name,
+		LoginName: &loginName,
+		FullName:  &name,
 	}); err != nil {
 		return fmt.Errorf("edit user %q: %w", gitUsername, err)
 	}

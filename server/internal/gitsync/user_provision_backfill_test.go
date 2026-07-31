@@ -285,6 +285,44 @@ func TestBackfill_SyncedBindingEmailNeverTouched(t *testing.T) {
 	}
 }
 
+// TestBackfill_EditUserAlwaysSendsLoginName locks the workaround for the
+// costrict Gitea fork's PATCH /admin/users/{username} requiring login_name.
+// Without it Gitea returns HTTP 422 `[LoginName]: Required` and every
+// already-bound user fails display_name sync (root cause of the
+// 2026-07-31 backfill run that 100%-failed on 2/2 synced users). For
+// locally-provisioned accounts (source_id=0) the canonical value is the
+// username itself, mirroring Gitea's web-UI convention.
+func TestBackfill_EditUserAlwaysSendsLoginName(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-1", TenantID: "t1", ShortID: "u-alice01", Username: "alice",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	newName := "Alice Updated"
+	res := svc.BackfillMissingBindings(context.Background(), "t1", []BackfillUser{
+		{SubjectID: "usr-1", ShortID: "u-alice01", Username: "alice", DisplayName: &newName},
+	}, BackfillOptions{UpdateDisplayName: true})
+
+	if res.DisplayNameUpdated != 1 || res.Failed != 0 {
+		t.Fatalf("result = %+v, want DisplayNameUpdated=1 Failed=0", res)
+	}
+	if len(stub.editCalls) != 1 {
+		t.Fatalf("editCalls = %+v, want exactly 1", stub.editCalls)
+	}
+	got := stub.editCalls[0]
+	if !got.LoginNameIsSet {
+		t.Errorf("EditUser was called without LoginName — Gitea fork returns 422 [LoginName]: Required; got %+v", got)
+	}
+	if got.LoginName != "u-alice01" {
+		t.Errorf("EditUser LoginName = %q, want %q (gitUsername, the local-account convention)", got.LoginName, "u-alice01")
+	}
+}
+
 func TestBackfill_UpdateDisplayNameOffByDefault(t *testing.T) {
 	// opts.UpdateDisplayName=false: synced users short-circuit with no
 	// EditUser call. This is the default-safe behaviour.
