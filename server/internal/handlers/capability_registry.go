@@ -392,6 +392,7 @@ type MyItem struct {
 // @Param        pageSize  query     int     false  "Page size (default: 20, max: 100)"
 // @Param        sortBy    query     string  false  "Sort by updatedAt, createdAt, previewCount, installCount, favoriteCount, or experienceScore"
 // @Param        sortOrder query     string  false  "Sort order: asc or desc (default: desc)"
+// @Param        slug      query     string  false  "Filter by exact slug (used by device publish flow to look up an existing item)"
 // @Success      200      {object}  object{items=[]MyItem,total=integer,page=integer,pageSize=integer,hasMore=boolean}
 // @Failure      401      {object}  object{error=string}
 // @Router       /items/my [get]
@@ -435,6 +436,14 @@ func ListMyItems(c *gin.Context) {
 		AllowRegistryID: true,
 		UserID:          ownerID.(string),
 	})
+
+	// Optional exact-slug filter. The device publish flow uses this as a cloud
+	// fallback: when local sync state is missing (new machine / cleared cache),
+	// it queries ?slug=<slug> to find whether it already owns an item with this
+	// slug before deciding to create vs. bump.
+	if slug := c.Query("slug"); slug != "" {
+		query = query.Where("slug = ?", slug)
+	}
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)
