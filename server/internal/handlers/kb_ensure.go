@@ -1,19 +1,19 @@
 // Package handlers — user-facing KB ensure handler.
 //
 // POST /api/kb/ensure is the user-side entry point (csc direct call) that
-// resolves the caller's team membership from the JWT and ensures the kb
-// repo backing (code_repo_url, team_id) exists. Behavior mirrors the
-// internal §接口 9 contract; differences are documented in
-// docs/repo-management/KB_USER_ENSURE_API.md (v1.0):
+// resolves the caller's identity from the JWT and ensures the kb repo
+// backing (code_repo_url, space_type) exists.
 //
-//   - Auth: user JWT (middleware.RequireAuth sets UserIDKey)
-//   - team_id is optional; when omitted, server resolves the caller's
-//     team list and either auto-derives (single team) or returns 409
-//     TEAM_DISAMBIGUATION_REQUIRED (multi-team) or 403 NO_TEAM_MEMBERSHIP
-//     (zero teams).
+// Three modes:
 //
-// Provisioning is delegated to teamns.Service.EnsureKBRepo (mirror of
-// EnsureWorkflowRepo minus drift check and instance branch).
+//   - Discovery (space_type omitted): returns team + personal space overview,
+//     no repo is created.
+//   - Team mode (space_type="team"): resolves team membership, creates repo
+//     under t-<team_short> org (existing behavior).
+//   - User mode (space_type="user"): creates repo under the user's personal
+//     Gitea namespace, fallback-provisioning the Gitea account if needed.
+//
+// Auth: user JWT (middleware.RequireAuth sets UserIDKey).
 
 package handlers
 
@@ -22,6 +22,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/costrict/costrict-web/server/internal/crypto"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/kb"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/costrict/costrict-web/server/internal/teamns"
@@ -30,25 +34,43 @@ import (
 	"gorm.io/gorm"
 )
 
-// KBEnsureRequest is the POST /api/kb/ensure body. TeamID is optional per
-// the user-facing contract — see KB_USER_ENSURE_API.md §1.1.
+// KBEnsureRequest is the POST /api/kb/ensure body.
+//
+// Modes:
+//   - Discovery:  code_repo_url only, space_type omitted → returns space overview
+//   - Team:       space_type="team", space_id=team_id (optional, auto-derived)
+//   - User:       space_type="user", space_id=subject_id (optional, auto-derived from JWT)
 type KBEnsureRequest struct {
 	CodeRepoURL string `json:"code_repo_url"`
-	TeamID      string `json:"team_id,omitempty"`
+	SpaceType   string `json:"space_type,omitempty"` // "" | "team" | "user"
+	SpaceID     string `json:"space_id,omitempty"`   // team_id or user_subject_id
 }
 
-// KBEnsureResponse mirrors §接口 9.3 with two extra fields for user-side
-// auditability (TeamID + TeamResolution).
+// KBEnsureResponse carries the KB ensure result. In discovery mode
+// (space_type omitted), only SpaceType, TeamSpace and PersonalSpace are
+// populated — no repo is created.
 type KBEnsureResponse struct {
-	KbRepoPath       string              `json:"kb_repo_path"`
-	KbCloneURL       string              `json:"kb_clone_url"`
-	KbWebURL         string              `json:"kb_web_url"`
-	Created          KBEnsureCreated     `json:"created"`
-	TeamNSExists     bool                `json:"team_ns_exists"`
-	AlgorithmVersion string              `json:"algorithm_version"`
-	TeamID           string              `json:"team_id"`
-	TeamResolution   string              `json:"team_resolution"` // "implicit_single" | "explicit"
-	BotCredentials   *BotCredentialsView `json:"bot_credentials"`
+	// --- Repo info (populated only when a repo was created) ---
+	KbRepoPath       string              `json:"kb_repo_path,omitempty"`
+	KbCloneURL       string              `json:"kb_clone_url,omitempty"`
+	KbWebURL         string              `json:"kb_web_url,omitempty"`
+	Created          *KBEnsureCreated    `json:"created,omitempty"`
+	AlgorithmVersion string              `json:"algorithm_version,omitempty"`
+	BotCredentials   *BotCredentialsView `json:"bot_credentials,omitempty"`
+
+	// --- Space overview (always populated) ---
+	SpaceType     string                  `json:"space_type"`              // "" (discovery) | "team" | "user"
+	TeamSpace     *TeamSpaceInfo       `json:"team_space,omitempty"`     // user's default team
+	PersonalSpace *gitsync.UserSpaceInfo `json:"personal_space,omitempty"` // user's personal space
+}
+
+// TeamSpaceInfo carries the user's team namespace summary for discovery mode.
+type TeamSpaceInfo struct {
+	TeamID      string `json:"team_id"`
+	DisplayName string `json:"display_name"`
+	OrgName     string `json:"org_name"`
+	Status      string `json:"status"`
+	Role        string `json:"role,omitempty"`
 }
 
 // KBEnsureCreated flags whether the kb repo was newly created in this call.
@@ -92,6 +114,22 @@ func InitTeamResolver(r TeamResolver) {
 	teamResolver = r
 }
 
+// Personal-space dependencies, wired from main.go.
+var (
+	gitsyncDB              *gorm.DB
+	gitsyncCrypt           *crypto.AESGCM
+	gitsyncResolver        gitserver.Resolver
+	gitsyncUserProvisionSvc *gitsync.UserProvisionService
+)
+
+// InitUserSpaceService wires the personal-space dependencies.
+func InitUserSpaceService(db *gorm.DB, crypt *crypto.AESGCM, gres gitserver.Resolver, upSvc *gitsync.UserProvisionService) {
+	gitsyncDB = db
+	gitsyncCrypt = crypt
+	gitsyncResolver = gres
+	gitsyncUserProvisionSvc = upSvc
+}
+
 // KBEnsure godoc
 // @Summary      Ensure KB repo for current user (user-side)
 // @Description  POST /api/kb/ensure — get-or-create kb repo for (code_repo_url, team); JWT auth, team auto-derived or explicit.
@@ -111,13 +149,6 @@ func KBEnsure(c *gin.Context) {
 	if teamnsDisabled(c) {
 		return
 	}
-	if teamResolver == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":      "team membership resolver not configured",
-			"error_code": "ORG_TEAM_SERVICE_UNAVAILABLE",
-		})
-		return
-	}
 
 	var req KBEnsureRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -131,34 +162,112 @@ func KBEnsure(c *gin.Context) {
 
 	subjectID := c.GetString(middleware.UserIDKey)
 	if subjectID == "" {
-		// Should never happen post-RequireAuth, but fail closed.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing subject in JWT", "error_code": "UNAUTHORIZED"})
 		return
 	}
 
-	// Resolve team_id per KB_USER_ENSURE_API.md §2.
-	resolvedTeamID, resolution, teams, httpErr := resolveTeamForKB(c, subjectID, req.TeamID, teamResolver)
+	// ---- Discovery mode: space_type omitted, return space overview ----
+	if req.SpaceType == "" {
+		handleDiscovery(c, subjectID, req.CodeRepoURL)
+		return
+	}
+
+	// ---- Team mode ----
+	if req.SpaceType == "team" {
+		handleTeamEnsure(c, subjectID, req)
+		return
+	}
+
+	// ---- User mode ----
+	if req.SpaceType == "user" {
+		handleUserEnsure(c, subjectID, req)
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error":      "invalid space_type; must be team or user",
+		"error_code": "INVALID_REQUEST",
+	})
+}
+
+// handleDiscovery returns team + personal space overview without creating a repo.
+func handleDiscovery(c *gin.Context, subjectID, codeRepoURL string) {
+	tenantID := resolveTenantID(c)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	resp := KBEnsureResponse{
+		SpaceType: "",
+	}
+
+	// Team space.
+	teams, err := teamResolver.ResolveCurrentUserTeams(c, subjectID)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "team membership lookup failed: " + err.Error(),
+			"error_code": "ORG_TEAM_SERVICE_UNAVAILABLE",
+		})
+		return
+	}
+	if len(teams) > 0 {
+		// Pick the first team as the "default" team.
+		t := teams[0]
+		ns, _ := lookupTeamNSForKB(c, t.TeamID)
+		ts := &TeamSpaceInfo{
+			TeamID:      t.TeamID,
+			DisplayName: t.DisplayName,
+			Role:        t.Role,
+		}
+		if ns != nil {
+			ts.OrgName = ns.TeamNSOrg
+			ts.Status = ns.Status
+		}
+		resp.TeamSpace = ts
+	}
+
+	// Personal space.
+	if gitsyncDB != nil {
+		us, err := gitsync.GetUserSpace(c.Request.Context(), gitsyncDB, subjectID, tenantID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if us == nil {
+			us = &gitsync.UserSpaceInfo{
+				UserSubjectID: subjectID,
+				Ready:         false,
+			}
+		}
+		resp.PersonalSpace = us
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleTeamEnsure runs the existing team-based KB repo provisioning.
+func handleTeamEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
+	if teamResolver == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":      "team membership resolver not configured",
+			"error_code": "ORG_TEAM_SERVICE_UNAVAILABLE",
+		})
+		return
+	}
+
+	resolvedTeamID, resolution, teams, httpErr := resolveTeamForKB(c, subjectID, req.SpaceID, teamResolver)
 	if httpErr != nil {
 		c.JSON(httpErr.status, httpErr.body)
 		return
 	}
 
-	// 1. Verify team ns exists. Auto-provision when missing — the team
-	// already exists in the directory backend (we just confirmed
-	// membership) but lacks a git namespace binding. CreateTeam is
-	// idempotent on team_id, so concurrent ensure calls on the same
-	// unbound team race safely: the loser's persist hits the existing
-	// row and returns the existing binding.
+	// Verify / auto-provision team ns.
 	ns, err := lookupTeamNSForKB(c, resolvedTeamID)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		// Display name is non-core cached metadata — fall back to the
-		// team_id when the directory backend didn't carry one, rather
-		// than blocking the user. team_ns.team_display_name is a
-		// best-effort cache; the directory backend stays authoritative.
 		displayName := pickTeamDisplayName(teams, resolvedTeamID)
 		if displayName == "" {
 			displayName = "team-" + shortID(resolvedTeamID)
@@ -173,7 +282,6 @@ func KBEnsure(c *gin.Context) {
 			c.JSON(status, body)
 			return
 		}
-		// Re-lookup; CreateTeam persisted the binding row.
 		ns, err = lookupTeamNSForKB(c, resolvedTeamID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -181,7 +289,6 @@ func KBEnsure(c *gin.Context) {
 		}
 	}
 
-	// 2. Provision kb repo (delegates to teamns.EnsureKBRepo).
 	provResult, err := teamnsService.EnsureKBRepo(c.Request.Context(), resolvedTeamID, req.CodeRepoURL)
 	if err != nil {
 		status, body := mapKBEnsureError(err)
@@ -189,22 +296,16 @@ func KBEnsure(c *gin.Context) {
 		return
 	}
 
-	// 3. Compose URLs + bot creds (mirrors workflow_init step 4-5).
 	endpoint, err := resolveTenantGiteaBaseURL(c, ns.TenantID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
 	plaintext, err := teamnsService.DecryptBotToken(c.Request.Context(), resolvedTeamID)
 	if err != nil {
-		// Distinguish the three real failure modes so operators can
-		// diagnose without reading stack traces. None of these are
-		// auto-recoverable from inside the request.
 		status, code, msg := mapBotCredentialsError(err)
-		c.JSON(status, gin.H{
-			"error":      msg,
-			"error_code": code,
-		})
+		c.JSON(status, gin.H{"error": msg, "error_code": code})
 		return
 	}
 	botMeta, _ := lookupBotMetaForKB(c, resolvedTeamID)
@@ -215,23 +316,131 @@ func KBEnsure(c *gin.Context) {
 		giteaUsername = botMeta.GiteaUsername
 	}
 
+	// Also collect personal space.
+	tenantID := resolveTenantID(c)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var personalSpace *gitsync.UserSpaceInfo
+	if gitsyncDB != nil {
+		personalSpace, _ = gitsync.GetUserSpace(c.Request.Context(), gitsyncDB, subjectID, tenantID)
+	}
+
 	c.JSON(http.StatusOK, KBEnsureResponse{
 		KbRepoPath:       provResult.KbRepoPath,
 		KbCloneURL:       endpoint + "/" + provResult.KbRepoPath + ".git",
 		KbWebURL:         endpoint + "/" + provResult.KbRepoPath,
-		Created:          KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
-		TeamNSExists:     true,
+		Created:          &KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
 		AlgorithmVersion: "v2",
-		TeamID:           resolvedTeamID,
-		TeamResolution:   resolution,
 		BotCredentials: &BotCredentialsView{
 			GiteaUsername:     giteaUsername,
 			GiteaUserID:       giteaUserID,
 			Token:             plaintext,
 			CloneURLWithToken: composeCloneURLWithToken(endpoint, provResult.KbRepoPath, giteaUsername, plaintext),
 		},
+		SpaceType:     "team",
+		PersonalSpace: personalSpace,
 	})
-	_ = teams // already consumed inside resolveTeamForKB; retained for signature clarity
+	_ = resolution // consumed in resolveTeamForKB
+	_ = teams
+}
+
+// handleUserEnsure runs personal-space KB repo provisioning.
+func handleUserEnsure(c *gin.Context, subjectID string, req KBEnsureRequest) {
+	if gitsyncUserProvisionSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":      "personal space service not configured",
+			"error_code": "PERSONAL_SPACE_UNAVAILABLE",
+		})
+		return
+	}
+
+	// Enforce: user can only create in their own personal space.
+	if req.SpaceID != "" && req.SpaceID != subjectID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":      "cannot create repo in another user's personal space",
+			"error_code": "FORBIDDEN",
+		})
+		return
+	}
+
+	tenantID := resolveTenantID(c)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	provResult, err := kb.EnsureUserRepo(c.Request.Context(), gitsyncDB, gitsyncResolver, gitsyncCrypt, nil, gitsyncUserProvisionSvc, subjectID, tenantID, req.CodeRepoURL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "error_code": "KB_REPO_PROVISIONING_FAILED"})
+		return
+	}
+
+	endpoint, err := resolveTenantGiteaBaseURL(c, tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	plaintext, err := gitsync.DecryptUserToken(c.Request.Context(), gitsyncDB, gitsyncCrypt, subjectID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "failed to decrypt user token: " + err.Error(),
+			"error_code": "BOT_TOKEN_DECRYPT_FAILED",
+		})
+		return
+	}
+
+	userMeta, _ := gitsync.LookupUserMeta(c.Request.Context(), gitsyncDB, subjectID)
+	giteaUserID := int64(0)
+	giteaUsername := ""
+	if userMeta != nil {
+		giteaUserID = userMeta.GitUserID
+		giteaUsername = userMeta.GitUsername
+	}
+
+	// Also collect team space.
+	var teamSpace *TeamSpaceInfo
+	if teamResolver != nil {
+		teams, err := teamResolver.ResolveCurrentUserTeams(c, subjectID)
+		if err == nil && len(teams) > 0 {
+			t := teams[0]
+			teamSpace = &TeamSpaceInfo{
+				TeamID:      t.TeamID,
+				DisplayName: t.DisplayName,
+				Role:        t.Role,
+			}
+			if ns, _ := lookupTeamNSForKB(c, t.TeamID); ns != nil {
+				teamSpace.OrgName = ns.TeamNSOrg
+				teamSpace.Status = ns.Status
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, KBEnsureResponse{
+		KbRepoPath:       provResult.KbRepoPath,
+		KbCloneURL:       endpoint + "/" + provResult.KbRepoPath + ".git",
+		KbWebURL:         endpoint + "/" + provResult.KbRepoPath,
+		Created:          &KBEnsureCreated{KbRepo: provResult.KbRepoCreated},
+		AlgorithmVersion: "v2",
+		BotCredentials: &BotCredentialsView{
+			GiteaUsername:     giteaUsername,
+			GiteaUserID:       giteaUserID,
+			Token:             plaintext,
+			CloneURLWithToken: composeCloneURLWithToken(endpoint, provResult.KbRepoPath, giteaUsername, plaintext),
+		},
+		SpaceType: "user",
+		TeamSpace: teamSpace,
+	})
+}
+
+// resolveTenantID extracts the tenant_id from the gin context (set by
+// TenantContext middleware). Falls back to "default" when unset.
+func resolveTenantID(c *gin.Context) string {
+	tid := c.GetString("tenant_id")
+	if tid == "" {
+		tid = "default"
+	}
+	return tid
 }
 
 // httpErr is a small carrier for "handler should write this status+body".

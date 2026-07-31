@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/crypto"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"go.uber.org/zap"
@@ -66,9 +67,13 @@ type UserLogger = *zap.Logger
 // Holds a gitserver.Resolver (local DB queries, not RPC) and constructs a
 // transient GitProvider per Provision call via providerFactory. The default
 // factory dispatches on GitServerConfig.Kind; tests override it.
+//
+// crypto is used to encrypt user PATs before persisting them to the
+// user_credentials table. When nil (test path), PAT creation is skipped.
 type UserProvisionService struct {
 	db       *gorm.DB
 	resolver gitserver.Resolver
+	crypto   *crypto.AESGCM
 	logger   UserLogger
 
 	// providerFactory builds a GitProvider from a resolved server config.
@@ -79,14 +84,16 @@ type UserProvisionService struct {
 
 // NewUserProvisionService binds a Service to its dependencies. resolver
 // MUST be non-nil — the service cannot fall back to a global default.
+// crypto may be nil — when nil, PAT creation is skipped (test path).
 // logger may be nil; a nop logger is used in that case.
-func NewUserProvisionService(db *gorm.DB, resolver gitserver.Resolver, logger UserLogger) *UserProvisionService {
+func NewUserProvisionService(db *gorm.DB, resolver gitserver.Resolver, crypto *crypto.AESGCM, logger UserLogger) *UserProvisionService {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &UserProvisionService{
 		db:              db,
 		resolver:        resolver,
+		crypto:          crypto,
 		logger:          logger,
 		providerFactory: defaultProviderFactory,
 	}
@@ -102,7 +109,15 @@ func NewUserProvisionService(db *gorm.DB, resolver gitserver.Resolver, logger Us
 func defaultProviderFactory(cfg GitServerConfig) GitProvider {
 	switch cfg.Kind {
 	case GitServerKindGitea, "": // "" = backward compat
-		c := NewClient(cfg.Endpoint, cfg.AdminToken)
+		// Prefer the Basic-Auth-capable client when admin credentials are
+		// available — needed for CreateUserToken (Gitea's POST
+		// /users/{name}/tokens rejects admin PAT auth; requires Basic).
+		var c *Client
+		if cfg.AdminUser != "" && cfg.AdminPassword != "" {
+			c = NewClientWithBasicAuth(cfg.Endpoint, cfg.AdminToken, cfg.AdminUser, cfg.AdminPassword)
+		} else {
+			c = NewClient(cfg.Endpoint, cfg.AdminToken)
+		}
 		if c == nil {
 			return nil
 		}
@@ -184,9 +199,11 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 	defer cancel()
 
 	provider := s.providerFactory(GitServerConfig{
-		Kind:       serverCfg.Kind,
-		Endpoint:   serverCfg.Endpoint,
-		AdminToken: serverCfg.AdminToken,
+		Kind:          serverCfg.Kind,
+		Endpoint:      serverCfg.Endpoint,
+		AdminToken:    serverCfg.AdminToken,
+		AdminUser:     serverCfg.AdminUser,
+		AdminPassword: serverCfg.AdminPassword,
 	})
 	if provider == nil {
 		s.logf("gitsync.ProvisionUser: nil provider for kind=%q subject=%q", serverCfg.Kind, params.SubjectID)
@@ -208,6 +225,9 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 			s.logf("gitsync.ProvisionUser: markSynced failed subject=%q err=%v", params.SubjectID, err)
 			return fmt.Errorf("gitsync: mark synced: %w", err)
 		}
+		// Best-effort: creates a PAT and persists to user_credentials.
+		// Failure is logged but does not fail the provisioning call.
+		s.ensureUserPAT(ctx, provider, params.SubjectID, tenantID, serverCfg.ServerID, binding.GitUsername, providerUser.ID)
 		return nil
 	}
 
@@ -229,6 +249,8 @@ func (s *UserProvisionService) ProvisionUser(ctx context.Context, params UserPro
 				s.logf("gitsync.ProvisionUser: markSynced (post-409) failed subject=%q err=%v", params.SubjectID, err)
 				return fmt.Errorf("gitsync: mark synced (post-409): %w", err)
 			}
+			// Best-effort PAT creation on 409 recovery path.
+			s.ensureUserPAT(ctx, provider, params.SubjectID, tenantID, serverCfg.ServerID, binding.GitUsername, existing.ID)
 			// Push current cs-user display_name to the pre-existing Gitea
 			// account — without this, a user provisioned via 409-recovery
 			// keeps Gitea's stale full_name forever. Best-effort: failure
@@ -332,8 +354,80 @@ func (s *UserProvisionService) markError(ctx context.Context, b *models.UserGitB
 	return nil
 }
 
+// ensureUserPAT checks whether the user already has a non-revoked PAT in
+// user_credentials. If not, it mints a new PAT via the provider, encrypts it
+// with AES-GCM, and persists the row. Best-effort: errors are logged but not
+// returned — the ensure caller will retry PAT creation on the next request.
+func (s *UserProvisionService) ensureUserPAT(
+	ctx context.Context,
+	provider GitProvider,
+	subjectID, tenantID, gitServerID, gitUsername string,
+	giteaUserID int64,
+) {
+	if s.crypto == nil {
+		s.logf("gitsync.ensureUserPAT: crypto not configured, skipping PAT creation for subject=%q", subjectID)
+		return
+	}
+
+	// Check for existing active credentials — idempotent.
+	var existing models.UserCredentials
+	err := s.db.WithContext(ctx).
+		Where("user_subject_id = ? AND revoked_at IS NULL", subjectID).
+		First(&existing).Error
+	if err == nil {
+		s.logf("gitsync.ensureUserPAT: credentials already exist for subject=%q, skipping", subjectID)
+		return
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		s.logf("gitsync.ensureUserPAT: lookup existing credentials failed subject=%q err=%v", subjectID, err)
+		return
+	}
+
+	// Mint a new PAT via Basic-Auth-capable provider.
+	sl := len(subjectID)
+	if sl > 8 {
+		sl = 8
+	}
+	tok, err := provider.CreateUserToken(ctx, gitUsername, CreateUserTokenOptions{
+		Name:   "user-pat-" + subjectID[:sl],
+		Scopes: []string{"write:repository", "read:user"},
+	})
+	if err != nil {
+		s.logf("gitsync.ensureUserPAT: CreateUserToken failed subject=%q username=%q err=%v",
+			subjectID, gitUsername, err)
+		return
+	}
+
+	// Encrypt the plaintext token.
+	encrypted, err := s.crypto.Seal([]byte(tok.TokenPlaintext))
+	if err != nil {
+		s.logf("gitsync.ensureUserPAT: encrypt token failed subject=%q err=%v", subjectID, err)
+		return
+	}
+
+	now := time.Now()
+	creds := models.UserCredentials{
+		UserSubjectID:  subjectID,
+		TenantID:       tenantID,
+		GitServerID:    gitServerID,
+		GitUsername:  gitUsername,
+		GitUserID:    giteaUserID,
+		GitTokenID:   tok.ID,
+		TokenEncrypted: encrypted,
+		TokenSHA256:    crypto.SHA256Hex([]byte(tok.TokenPlaintext)),
+		CreatedAt:      now,
+	}
+	if err := s.db.WithContext(ctx).Create(&creds).Error; err != nil {
+		s.logf("gitsync.ensureUserPAT: persist user_credentials failed subject=%q err=%v", subjectID, err)
+		return
+	}
+
+	s.logf("gitsync.ensureUserPAT: PAT created for subject=%q username=%q", subjectID, gitUsername)
+}
+
 // buildGitUsername was removed: Gitea login is now supplied by cs-user as
 // ShortID (a platform-wide compact handle). See user.created payload.
+
 
 func isDuplicatePK(err error) bool {
 	if err == nil {

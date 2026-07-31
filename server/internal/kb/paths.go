@@ -76,6 +76,36 @@ func KBRepoPath(codeRepoURL, teamID string) (string, error) {
 	}
 	owner := "t-" + short
 
+	repoPart, err := repoPartForURL(codeRepoURL)
+	if err != nil {
+		return "", err
+	}
+
+	return owner + "/" + repoPart, nil
+}
+
+// KBRepoPathForUser returns "<gitea_username>/<repo>" for the KB repo backing
+// the given (code_repo_url, gitea_username). Uses the same repo-part algorithm
+// as KBRepoPath (§3 steps 2-7), but the owner is the user's Gitea login name
+// instead of "t-<team_short>".
+func KBRepoPathForUser(codeRepoURL, giteaUsername string) (string, error) {
+	if giteaUsername == "" {
+		return "", ErrInvalidTeamID // reusing sentinel — "no owner" is an invalid request
+	}
+
+	repoPart, err := repoPartForURL(codeRepoURL)
+	if err != nil {
+		return "", err
+	}
+
+	return giteaUsername + "/" + repoPart, nil
+}
+
+// repoPartForURL computes the repo-name portion ("kb-<host>__<segs>") from a
+// code_repo_url. Shared by KBRepoPath and KBRepoPathForUser; implements §3
+// steps 2-7 of the KB_REPO_PATH_ALGORITHM.md v2.0 spec.
+func repoPartForURL(codeRepoURL string) (string, error) {
+
 	parsed, err := url.Parse(codeRepoURL)
 	if err != nil {
 		return "", ErrInvalidURL
@@ -137,7 +167,7 @@ func KBRepoPath(codeRepoURL, teamID string) (string, error) {
 		repoPart = prefix + host + "__" + truncated
 	}
 
-	return owner + "/" + repoPart, nil
+	return repoPart, nil
 }
 
 // escapeSegment applies §3.5 step 5: keep [a-z0-9._-], replace anything else

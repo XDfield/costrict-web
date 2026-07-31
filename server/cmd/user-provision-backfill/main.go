@@ -137,7 +137,7 @@ func main() {
 	}
 
 	resolver := gitserver.NewDBResolver(db)
-	provSvc := gitsync.NewUserProvisionService(db, resolver, zap.NewNop())
+	provSvc := gitsync.NewUserProvisionService(db, resolver, nil, zap.NewNop())
 
 	start := time.Now()
 	result := provSvc.BackfillMissingBindings(ctx, *tenantID, toBackfillUsers(users), gitsync.BackfillOptions{

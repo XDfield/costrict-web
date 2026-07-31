@@ -29,9 +29,13 @@ import "context"
 //   - GetUserByName returns the same provider-side not-found error
 //     *Client already uses (ErrGiteaTeamNotFound — kept under that name
 //     for now since team / bot paths share it).
+//   - CreateUserToken mints a PAT for the given username. Uses admin
+//     Basic Auth (not admin PAT) — callers MUST ensure the Client was
+//     constructed with AdminUser + AdminPassword configured.
 type GitProvider interface {
 	CreateUser(ctx context.Context, opts CreateUserOptions) (*ProviderUser, error)
 	GetUserByName(ctx context.Context, username string) (*ProviderUser, error)
+	CreateUserToken(ctx context.Context, username string, opts CreateUserTokenOptions) (*GiteaToken, error)
 	// EditUser patches an existing user. Only fields whose pointer is non-nil
 	// are written. Returns ErrGiteaTeamNotFound on HTTP 404 (consistent with
 	// GetUserByName). Used by display_name reconciliation during backfill.
