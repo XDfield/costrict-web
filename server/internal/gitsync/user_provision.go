@@ -344,11 +344,27 @@ func isDuplicatePK(err error) bool {
 		strings.Contains(msg, "23505")
 }
 
+// provisioningEmailDomain is the synthetic mailbox domain used for every
+// Gitea account provisioned by this service. cs-user's email field is NOT
+// globally unique (multiple Casdoor sources, or one source with shared
+// mailboxes, can yield the same address), so forwarding it verbatim
+// triggered Gitea 422 email-collision rejections under real workloads
+// (see TestClient_CreateUser_EmailConflictReturnsValidationFailed for the
+// original repro). ShortID is platform-unique by construction, so
+// {short_id}@costrict.com is guaranteed collision-free.
+const provisioningEmailDomain = "costrict.com"
+
 func userEmail(params UserProvisionParams) string {
-	if params.Email != nil && *params.Email != "" {
-		return *params.Email
+	// ShortID is the platform-unique handle (cs-user guarantees this) and
+	// also the Gitea login name — using it as the email local-part keeps
+	// the two consistent. SubjectID fallback is defensive; ProvisionUser
+	// should never be invoked without ShortID since the binding row's
+	// GitUsername (= ShortID) is what we POST as Login in the same call.
+	handle := params.ShortID
+	if handle == "" {
+		handle = params.SubjectID
 	}
-	return params.SubjectID + "@no-email.local"
+	return handle + "@" + provisioningEmailDomain
 }
 
 // userFullName surfaces the human-readable name from cs-user's payload. Gitea

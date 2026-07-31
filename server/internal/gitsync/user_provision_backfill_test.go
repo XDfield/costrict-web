@@ -244,6 +244,47 @@ func TestBackfill_UpdateDisplayNamePushesToGitea(t *testing.T) {
 	}
 }
 
+// TestBackfill_SyncedBindingEmailNeverTouched locks the contract that
+// backfill never re-touches the email of an already-provisioned Gitea
+// account. Even with UpdateDisplayName=true (which is the only path that
+// issues EditUser on synced bindings), the PATCH body must omit email —
+// accounts opened before the {short_id}@costrict.com template switch
+// keep their original email verbatim. Without this guarantee, an operator
+// running backfill -update-display-name would silently rewrite every
+// legacy Gitea account's email.
+func TestBackfill_SyncedBindingEmailNeverTouched(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	// Seed a synced binding — simulates a legacy Gitea account opened with
+	// the pre-template email (whatever cs-user happened to return).
+	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-legacy", TenantID: "t1", ShortID: "u-leg01", Username: "legacy",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	createCallsBefore := len(stub.createCalls)
+
+	newName := "Legacy User"
+	res := svc.BackfillMissingBindings(context.Background(), "t1", []BackfillUser{
+		{SubjectID: "usr-legacy", ShortID: "u-leg01", Username: "legacy", DisplayName: &newName},
+	}, BackfillOptions{UpdateDisplayName: true})
+
+	if res.AlreadyBound != 1 || res.DisplayNameUpdated != 1 || res.Failed != 0 {
+		t.Fatalf("result = %+v, want AlreadyBound=1 DisplayNameUpdated=1 Failed=0", res)
+	}
+	if len(stub.createCalls) != createCallsBefore {
+		t.Errorf("CreateUser grew by %d, want 0 (synced binding must not be re-provisioned)", len(stub.createCalls)-createCallsBefore)
+	}
+	if len(stub.editCalls) != 1 {
+		t.Fatalf("editCalls = %+v, want exactly 1", stub.editCalls)
+	}
+	if stub.editCalls[0].EmailIsSet {
+		t.Errorf("EditUser was called with Email set — backfill must NEVER rewrite email on already-provisioned accounts; got %+v", stub.editCalls[0])
+	}
+}
+
 func TestBackfill_UpdateDisplayNameOffByDefault(t *testing.T) {
 	// opts.UpdateDisplayName=false: synced users short-circuit with no
 	// EditUser call. This is the default-safe behaviour.
