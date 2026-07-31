@@ -654,12 +654,23 @@ func looksLikeJWT(token string) bool {
 	return strings.Count(token, ".") == 2
 }
 
+// cookieDomain mirrors handlers.cookieDomain — Domain attribute used when
+// setting auth cookies, applied here on ClearAuthCookie so the expired
+// Set-Cookie matches the original cookie's scope. Empty (default) = host-only.
+var cookieDomain string
+
+// SetCookieDomain configures the Domain attribute used by ClearAuthCookie.
+// Call once at startup from main, after config load.
+func SetCookieDomain(d string) {
+	cookieDomain = d
+}
+
 // ClearAuthCookie clears the authentication cookie to prevent the client
 // from sending invalid tokens repeatedly.
 func ClearAuthCookie(c *gin.Context) {
 	// Set cookie with expired date to effectively delete it
 	// Parameters must match the original cookie settings
-	c.SetCookie(AuthCookieName, "", -1, "/", "", false, false)
+	c.SetCookie(AuthCookieName, "", -1, "/", cookieDomain, false, false)
 }
 
 func strClaim(claims jwt.MapClaims, key string) string {

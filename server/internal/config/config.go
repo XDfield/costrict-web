@@ -28,6 +28,7 @@ type Config struct {
 	// Set via BIND_STATE_SECRET env var.
 	BindStateSecret string
 	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
+	CookieDomain              string  // Optional Domain attribute for auth cookies; empty (default) = host-only
 	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
 	Casdoor                   CasdoorConfig
 	Channels                  ChannelSystemConfig
@@ -253,6 +254,7 @@ func Load() *Config {
 		InternalSecret:            getEnv("INTERNAL_SECRET", ""),
 		BindStateSecret:           getEnv("BIND_STATE_SECRET", ""),
 		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
+		CookieDomain:              getEnv("COOKIE_DOMAIN", ""),
 		CORSAllowedOrigins:        getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
 		Casdoor: CasdoorConfig{
 			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
