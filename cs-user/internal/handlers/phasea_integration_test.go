@@ -246,7 +246,13 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 		"name":         "Alice Lee",
 		"email":        "alice@example.com",
 		"provider":     "idtrust",
-		"exp":          time.Now().Add(time.Hour).Unix(),
+		// idtrust provider in NormalizeClaimsMap overrides name = username =
+		// providerUserID. Real Casdoor idtrust payloads carry this; without
+		// it, name would fall back to stableNameFromSubject(universal_id).
+		"properties": map[string]any{
+			"oauth_Custom_id": "Alice Lee",
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 
 	resp := fixture.callReissue(t, reissueTokenRequest{CasdoorJWT: raw})

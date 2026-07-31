@@ -230,7 +230,14 @@ func TestReissueToken_HappyPath(t *testing.T) {
 		"name":         "Alice Lee",
 		"email":        "alice@example.com",
 		"provider":     "idtrust",
-		"exp":          time.Now().Add(time.Hour).Unix(),
+		// idtrust provider in NormalizeClaimsMap overrides name = username =
+		// firstNonEmpty(providerUserID, providerUsername). Without this the
+		// name would fall back to stableNameFromSubject(universal_id). Mirror
+		// of what a real Casdoor idtrust payload carries.
+		"properties": map[string]any{
+			"oauth_Custom_id": "Alice Lee",
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 
 	body := reissueTokenRequest{CasdoorJWT: raw}
@@ -357,7 +364,12 @@ func TestReissueToken_IgnoresServerSuppliedSubjectAndTenant(t *testing.T) {
 		"universal_id": "uuid-real",
 		"name":         "Real User",
 		"provider":     "idtrust",
-		"exp":          time.Now().Add(time.Hour).Unix(),
+		// idtrust override: name = username = providerUserID. See
+		// TestReissueToken_HappyPath fixture note for context.
+		"properties": map[string]any{
+			"oauth_Custom_id": "Real User",
+		},
+		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 
 	// Hand-rolled JSON with bogus legacy fields to prove they don't influence

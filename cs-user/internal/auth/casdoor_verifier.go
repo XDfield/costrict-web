@@ -195,25 +195,35 @@ func (v *CasdoorVerifier) validateRegistered(claims jwt.MapClaims) error {
 // fields it might reference. Pulling these straight from the verified JWT
 // keeps the enterprise-claims chain inside the JWKS verification boundary.
 //
-// Non-string standard fields are coerced defensively; unknown claims are
-// preserved in ExternalClaims (forward-compat for new Casdoor fields the
-// field_map might reference) but never promoted to a typed field on
-// models.JWTClaims.
+// Typed fields are sourced from NormalizeClaimsMap, which mirrors server's
+// authidentity/normalize.go byte-for-byte. This is the load-bearing
+// invariant: GetOrCreateUser (driven by server) and ReissueToken (driven by
+// cs-user) MUST derive the same external_key from the same raw Casdoor JWT —
+// any divergence silently NPEs into a 404 on reissue-token because the lookup
+// key won't match the row server just wrote. Most importantly, Provider is
+// derived through the phone / idtrust / signupApplication fallbacks, not just
+// the bare `provider` claim (which Casdoor frequently omits for phone logins).
+//
+// ExternalClaims is still harvested straight from the raw verified payload so
+// the field_map walker can reference any top-level field; non-string standard
+// fields are coerced defensively by NormalizeClaimsMap, unknown claims are
+// preserved in ExternalClaims (forward-compat for new Casdoor fields).
 func mapClaimsToModel(claims jwt.MapClaims) *models.JWTClaims {
-	out := &models.JWTClaims{}
-	out.ID, _ = claims["id"].(string)
-	out.Sub, _ = claims["sub"].(string)
-	out.UniversalID, _ = claims["universal_id"].(string)
-	out.Name, _ = claims["name"].(string)
-	out.PreferredUsername, _ = claims["preferred_username"].(string)
-	out.Email, _ = claims["email"].(string)
-	out.Picture, _ = claims["picture"].(string)
-	out.Owner, _ = claims["owner"].(string)
-	out.Provider, _ = claims["provider"].(string)
-	out.ProviderUserID, _ = claims["provider_user_id"].(string)
-	out.Phone, _ = claims["phone"].(string)
-	out.ExternalClaims = harvestExternalClaims(claims)
-	return out
+	normalized := NormalizeClaimsMap(claims)
+	return &models.JWTClaims{
+		ID:                normalized.ID,
+		Sub:               normalized.Sub,
+		UniversalID:       normalized.UniversalID,
+		Name:              normalized.Name,
+		PreferredUsername: normalized.PreferredUsername,
+		Email:             normalized.Email,
+		Picture:           normalized.Picture,
+		Owner:             normalized.Owner,
+		Provider:          normalized.Provider,
+		ProviderUserID:    normalized.ProviderUserID,
+		Phone:             normalized.Phone,
+		ExternalClaims:    harvestExternalClaims(claims),
+	}
 }
 
 // harvestExternalClaims carries the raw verified JWT payload so the field_map

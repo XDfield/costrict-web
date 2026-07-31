@@ -402,3 +402,60 @@ func TestMapClaimsToModel_EmptyClaimsReturnsNilExternalClaims(t *testing.T) {
 		t.Errorf("ExternalClaims: got %+v, want nil for empty claims", got.ExternalClaims)
 	}
 }
+
+// TestMapClaimsToModel_PhoneFallbackDerivesProvider is the regression lock for
+// the reissue-token 404 bug: Casdoor phone-login JWTs omit the top-level
+// `provider` claim, so a naive `claims["provider"]` lookup returns "". Server
+// derives provider="phone" from the phone field via NormalizeClaimsMap; if
+// cs-user's verifier doesn't do the same, BuildExternalKey produces
+// `casdoor:<universal_id>` while GetOrCreateUser wrote `casdoor:phone:<universal_id>`
+// — reissue-token returns 404 and server falls back to the raw Casdoor token.
+// The fix lives in mapClaimsToModel using NormalizeClaimsMap; this test pins
+// the contract.
+func TestMapClaimsToModel_PhoneFallbackDerivesProvider(t *testing.T) {
+	// Mirrors the real Casdoor payload that triggered the bug (phone login,
+	// no top-level `provider`, universal_id present).
+	claims := jwt.MapClaims{
+		"sub":           "b74e5889-546e-4cc9-9ec5-a0f3de1874c0",
+		"universal_id":  "b74e5889-546e-4cc9-9ec5-a0f3de1874c0",
+		"phone":         "15986746954",
+		"name":          "陈烜42766",
+		"iss":           "http://casdoor:8000",
+		"exp":           time.Now().Add(time.Hour).Unix(),
+	}
+	got := mapClaimsToModel(claims)
+
+	if got.Provider != "phone" {
+		t.Errorf("Provider: got %q, want \"phone\" (phone fallback failed)", got.Provider)
+	}
+	// Sanity-check the external_key shape BuildExternalKey will produce now
+	// that Provider is correct: casdoor:phone:<universal_id>.
+	if got.UniversalID != "b74e5889-546e-4cc9-9ec5-a0f3de1874c0" {
+		t.Errorf("UniversalID: got %q", got.UniversalID)
+	}
+	// ExternalClaims must still carry the raw payload (harvest unchanged).
+	if got.ExternalClaims["phone"] != "15986746954" {
+		t.Errorf("ExternalClaims['phone']: got %v, want 15986746954", got.ExternalClaims["phone"])
+	}
+}
+
+// TestMapClaimsToModel_IdtrustFallbackDerivesProvider covers the second
+// fallback branch: signupApplication="idtrust" with no explicit provider.
+func TestMapClaimsToModel_IdtrustFallbackDerivesProvider(t *testing.T) {
+	claims := jwt.MapClaims{
+		"sub":               "uni-1",
+		"universal_id":      "uni-1",
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom_id":       "idt-1001",
+			"oauth_Custom_username": "alice",
+		},
+	}
+	got := mapClaimsToModel(claims)
+	if got.Provider != "idtrust" {
+		t.Errorf("Provider: got %q, want \"idtrust\"", got.Provider)
+	}
+	if got.ProviderUserID != "idt-1001" {
+		t.Errorf("ProviderUserID: got %q, want idt-1001", got.ProviderUserID)
+	}
+}
