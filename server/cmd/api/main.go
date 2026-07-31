@@ -132,6 +132,7 @@ func main() {
 	handlers.EnsurePublicRegistry()
 	handlers.InitCasdoor(&cfg.Casdoor)
 	handlers.InitCookieConfig(cfg)
+	middleware.SetCookieDomain(cfg.CookieDomain)
 	userModule := userpkg.NewWithConfig(db, cfg.UserSyncIntervalMinutes, cfg.UserService)
 	handlers.InitUserModule(userModule)
 

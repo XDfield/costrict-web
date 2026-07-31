@@ -134,7 +134,7 @@ func CompleteRegistration(c *gin.Context) {
 	}
 	// Clear the post-OAuth reg_pending cookie on success so subsequent
 	// requests don't get gated by the frontend's intermediate check.
-	c.SetCookie("reg_pending", "", -1, "/", "", cookieSecure, false)
+	c.SetCookie("reg_pending", "", -1, "/", cookieDomain, cookieSecure, false)
 	// R3: invalidate the profile-cache entry so RequireProfileComplete
 	// reflects the new state immediately rather than after the 30s TTL.
 	middleware.InvalidateProfileCache(user.SubjectID)

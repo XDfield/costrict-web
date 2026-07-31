@@ -28,6 +28,7 @@ import (
 
 var CasdoorClient *casdoor.CasdoorClient
 var cookieSecure bool              // whether to set Secure flag on auth cookies
+var cookieDomain string            // optional Domain attribute for auth cookies (empty = host-only)
 var defaultFrontendURL string      // first entry from FRONTEND_URLS, used as fallback
 var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
@@ -105,6 +106,7 @@ func InitUserModule(module *userpkg.Module) {
 // InitCookieConfig sets cookie-related configuration from the global config.
 func InitCookieConfig(cfg *config.Config) {
 	cookieSecure = cfg.CookieSecure
+	cookieDomain = cfg.CookieDomain
 	// Config.Load() already validates BindStateSecret is non-empty (panics
 	// otherwise), so no fallback here. InternalSecret fallback is preserved
 	// inside Config.Load() for backward compatibility.
@@ -527,7 +529,7 @@ func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, is
 					// through Layer 2 without re-resolving. Same
 					// Secure flag as the auth cookie.
 					c.SetCookie(middleware.TenantSlugCookie, res.Slug,
-						int(365*24*time.Hour/time.Second), "/", "", cookieSecure, true)
+						int(365*24*time.Hour/time.Second), "/", cookieDomain, cookieSecure, true)
 				}
 			case "ambiguous":
 				// TODO(B3b.2b-step2c): redirect to /tenant/picker
@@ -576,7 +578,7 @@ func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, is
 // paths so they cannot drift on cookie flags / redirect validation.
 func completeAuthCallback(c *gin.Context, state oauthState, cookieToken string, isNewUser bool) {
 	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
-	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
+	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", cookieDomain, cookieSecure, false)
 
 	// Surface the is_new_user signal from GetOrCreateUser to the frontend so
 	// app-ai-native's registration gate can decide whether to bounce to
@@ -584,7 +586,7 @@ func completeAuthCallback(c *gin.Context, state oauthState, cookieToken string, 
 	// RequireProfileComplete (server-side gate) consults profile_completed_at
 	// directly and this cookie becomes irrelevant. See REGISTRATION_PROFILE_DESIGN §7.1.
 	if isNewUser {
-		c.SetCookie("reg_pending", "1", 300, "/", "", cookieSecure, false)
+		c.SetCookie("reg_pending", "1", 300, "/", cookieDomain, cookieSecure, false)
 	}
 
 	// Determine where to send the user after login.
