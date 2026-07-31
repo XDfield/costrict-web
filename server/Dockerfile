@@ -26,6 +26,10 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o server ./cmd/api
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o migrate ./cmd/migrate
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o gitserver-config ./cmd/gitserver-config
+# Operator CLI for retrofitting Gitea provisioning onto pre-existing cs-user
+# users (cb83dcd). Same posture as migrate / gitserver-config: in-image so
+# operators can `kubectl exec` it without rolling a bespoke job image.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o user-provision-backfill ./cmd/user-provision-backfill
 
 # Final stage
 FROM alpine:latest
@@ -46,6 +50,7 @@ WORKDIR /app
 COPY --from=builder --chmod=755 /app/server ./server
 COPY --from=builder --chmod=755 /app/migrate ./migrate
 COPY --from=builder --chmod=755 /app/gitserver-config ./gitserver-config
+COPY --from=builder --chmod=755 /app/user-provision-backfill ./user-provision-backfill
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/costrict-entrypoint
 
 # Change ownership to non-root user
