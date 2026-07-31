@@ -40,6 +40,24 @@ type stubProvisioner struct {
 	lookupCalls   []string
 	lookupResult  *GiteaUser
 	lookupErr     error
+	editCalls     []editCall
+	editErr       error
+}
+
+// editCall records a single EditUser invocation for assertions.
+// EmailIsSet captures whether opts.Email was non-nil — backfill's
+// display-name sync must NEVER touch email on already-provisioned Gitea
+// accounts (locked by TestBackfill_SyncedBindingEmailNeverTouched).
+// LoginNameIsSet / LoginName capture the login_name field — the costrict
+// Gitea fork marks login_name as required on PATCH /admin/users/{username}
+// and returns 422 `[LoginName]: Required` if absent; every EditUser call
+// MUST set it (locked by TestBackfill_EditUserAlwaysSendsLoginName).
+type editCall struct {
+	Username       string
+	FullName       string
+	EmailIsSet     bool
+	LoginNameIsSet bool
+	LoginName      string
 }
 
 func (s *stubProvisioner) CreateUser(ctx context.Context, opts CreateUserOptions) (*GiteaUser, error) {
@@ -60,6 +78,28 @@ func (s *stubProvisioner) GetUserByName(ctx context.Context, username string) (*
 
 func (s *stubProvisioner) CreateUserToken(ctx context.Context, username string, opts CreateUserTokenOptions) (*GiteaToken, error) {
 	return nil, errors.New("not implemented in stub")
+}
+
+func (s *stubProvisioner) EditUser(ctx context.Context, username string, opts EditUserOptions) (*GiteaUser, error) {
+	full := ""
+	if opts.FullName != nil {
+		full = *opts.FullName
+	}
+	login := ""
+	if opts.LoginName != nil {
+		login = *opts.LoginName
+	}
+	s.editCalls = append(s.editCalls, editCall{
+		Username:       username,
+		FullName:       full,
+		EmailIsSet:     opts.Email != nil,
+		LoginNameIsSet: opts.LoginName != nil,
+		LoginName:      login,
+	})
+	if s.editErr != nil {
+		return nil, s.editErr
+	}
+	return &GiteaUser{ID: 99, Login: username, FullName: full}, nil
 }
 
 func setupProvisionDB(t *testing.T) *gorm.DB {
@@ -123,6 +163,34 @@ func TestProvisionUser_HappyPath(t *testing.T) {
 	}
 	if len(stub.createCalls) != 1 {
 		t.Errorf("expected 1 CreateUser call, got %d", len(stub.createCalls))
+	}
+}
+
+// TestProvisionUser_EmailUsesShortIDTemplate locks the contract: the Gitea
+// account's email MUST be {short_id}@costrict.com, derived from ShortID,
+// NOT forwarded from cs-user's payload. cs-user's email field is not
+// globally unique (multiple Casdoor sources can yield the same address),
+// so forwarding it triggered Gitea 422 email-collision rejections. This
+// test passes a non-empty Email in params and asserts it is IGNORED.
+func TestProvisionUser_EmailUsesShortIDTemplate(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "https://g.example", AdminToken: "tok"}}
+	stub := &stubProvisioner{created: &GiteaUser{ID: 9, Login: "u-carol03"}}
+	svc, _ := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	csUserEmail := "carol.duplicate@example.com" // would collide if forwarded
+	if err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-3", TenantID: "t1", ShortID: "u-carol03", Username: "carol",
+		Email: &csUserEmail,
+	}); err != nil {
+		t.Fatalf("ProvisionUser: %v", err)
+	}
+	if len(stub.createCalls) != 1 {
+		t.Fatalf("expected 1 CreateUser call, got %d", len(stub.createCalls))
+	}
+	got := stub.createCalls[0].Email
+	want := "u-carol03@costrict.com"
+	if got != want {
+		t.Errorf("create email: got %q, want %q (cs-user email must NOT be forwarded)", got, want)
 	}
 }
 
@@ -239,6 +307,41 @@ func TestProvisionUser_NonConflictErrorMarksError(t *testing.T) {
 	}
 	if b.LastError == nil || !strings.Contains(*b.LastError, "500 internal") {
 		t.Errorf("last_error = %v, want '500 internal'", b.LastError)
+	}
+}
+
+// TestProvisionUser_ValidationFailureMarksErrorWithoutRecovery reproduces
+// the dev-env bug where a 422 (email collision) was misclassified as
+// ErrUsernameTaken, triggering a meaningless GetUserByName call that 404'd
+// and producing a misleading "username taken; lookup also failed" error.
+// 422 now surfaces as ErrGiteaValidationFailed and routes straight to
+// markError — no GetUserByName call, error message preserves Gitea's body.
+func TestProvisionUser_ValidationFailureMarksErrorWithoutRecovery(t *testing.T) {
+	resolver := &stubResolver{cfg: &gitserver.Config{Endpoint: "x", AdminToken: "y"}}
+	stub := &stubProvisioner{createErr: fmt.Errorf("%w: status=422 body=e-mail already in use", ErrGiteaValidationFailed)}
+	svc, db := newSvcForTest(t, resolver, func(_ GitServerConfig) GitProvider { return stub })
+
+	err := svc.ProvisionUser(context.Background(), UserProvisionParams{
+		SubjectID: "usr-val", TenantID: "t1", ShortID: "u-val01", Username: "val",
+	})
+	if err == nil {
+		t.Fatalf("expected validation error to surface")
+	}
+
+	if len(stub.lookupCalls) != 0 {
+		t.Errorf("GetUserByName must NOT be called on 422 (no user was created), got %d calls: %v",
+			len(stub.lookupCalls), stub.lookupCalls)
+	}
+
+	var b models.UserGitBinding
+	if err := db.First(&b, "user_subject_id = ?", "usr-val").Error; err != nil {
+		t.Fatalf("query binding: %v", err)
+	}
+	if b.SyncStatus != models.GitSyncStatusError {
+		t.Errorf("status = %q, want error", b.SyncStatus)
+	}
+	if b.LastError == nil || !strings.Contains(*b.LastError, "e-mail already in use") {
+		t.Errorf("last_error = %v, want Gitea's 422 body preserved for operator diagnostics", b.LastError)
 	}
 }
 

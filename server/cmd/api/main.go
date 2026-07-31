@@ -881,6 +881,12 @@ func main() {
 			}
 			adminuser.New(adminUserRPC, userModule.Service).RegisterRoutes(admin)
 
+			// Admin backfill of user_git_binding for存量 cs-user users
+			// (platform admin only). Pages cs-user ListUsers, invokes
+			// ProvisionUser per user missing a synced binding. Idempotent —
+			// safe to retry on partial failure.
+			admin.POST("/users/provision/backfill", handlers.BackfillGitBindingsHandler(adminUserRPC))
+
 			// Admin department tree (M1 org view, platform admin only): proxies the
 			// external dept-sync service for the real org tree and correlates its
 			// members back to local users via universal id. Optional dependency —

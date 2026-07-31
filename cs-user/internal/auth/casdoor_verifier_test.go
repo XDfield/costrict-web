@@ -1,0 +1,461 @@
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+// generateTestRSAKey makes a 2048-bit RSA key for the test Casdoor. Each
+// test uses its own key — no global state.
+func generateTestRSAKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	return key
+}
+
+// jwkFromPrivateKey builds the JWK wire shape the test JWKS stub returns.
+// Mirrors signer.go's public-key → JWK logic but lives here so the test is
+// self-contained.
+func jwkFromPrivateKey(t *testing.T, key *rsa.PublicKey, kid string) JWK {
+	t.Helper()
+	nBytes := key.N.Bytes()
+	eBytes := []byte{byte(key.E >> 24), byte(key.E >> 16), byte(key.E >> 8), byte(key.E)}
+	// Trim leading zero bytes from e per JWK spec (minimal big-endian).
+	for len(eBytes) > 0 && eBytes[0] == 0 {
+		eBytes = eBytes[1:]
+	}
+	return JWK{
+		Kty: "RSA",
+		Kid: kid,
+		Alg: "RS256",
+		Use: "sig",
+		N:   base64.RawURLEncoding.EncodeToString(nBytes),
+		E:   base64.RawURLEncoding.EncodeToString(eBytes),
+	}
+}
+
+// signTestCasdoorJWT signs a JWT with the test key — this is what Casdoor
+// would emit. Claims are arbitrary; tests add exp/iss/aud as needed.
+func signTestCasdoorJWT(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = kid
+	signed, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatalf("SignedString: %v", err)
+	}
+	return signed
+}
+
+func TestCasdoorVerifier_NilReceiverDisabled(t *testing.T) {
+	var v *CasdoorVerifier
+	_, err := v.Verify(context.Background(), "anything")
+	if !errors.Is(err, ErrCasdoorVerifierDisabled) {
+		t.Fatalf("nil receiver: want ErrCasdoorVerifierDisabled, got %v", err)
+	}
+}
+
+func TestCasdoorVerifier_EmptyJWKSURLReturnsNil(t *testing.T) {
+	if v := NewCasdoorVerifier("   ", "", nil, 0, 0); v != nil {
+		t.Fatalf("empty JWKSURL: want nil verifier, got %+v", v)
+	}
+}
+
+// TestCasdoorVerifier_VerifyHappyPath covers the standard success path:
+// JWKS serves the right key, JWT signed with matching private key, exp in
+// the future, iss matches when configured.
+func TestCasdoorVerifier_VerifyHappyPath(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	jwk := jwkFromPrivateKey(t, &key.PublicKey, kid)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwk}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "http://casdoor:8000", nil, time.Second, time.Minute)
+	raw := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub":                "uni-1",
+		"universal_id":       "uni-1",
+		"name":               "Alice",
+		"preferred_username": "alice",
+		"iss":                "http://casdoor:8000",
+		"exp":                time.Now().Add(time.Hour).Unix(),
+	})
+
+	claims, err := v.Verify(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("Verify: unexpected err: %v", err)
+	}
+	if claims.Sub != "uni-1" {
+		t.Errorf("Sub: got %q, want uni-1", claims.Sub)
+	}
+	if claims.Name != "Alice" {
+		t.Errorf("Name: got %q, want Alice", claims.Name)
+	}
+	if claims.PreferredUsername != "alice" {
+		t.Errorf("PreferredUsername: got %q, want alice", claims.PreferredUsername)
+	}
+}
+
+// TestCasdoorVerifier_BadSignature ensures a JWT signed by a different key
+// than the JWKS serves fails verification. This is the core security check.
+func TestCasdoorVerifier_BadSignature(t *testing.T) {
+	jwksKey := generateTestRSAKey(t)
+	signerKey := generateTestRSAKey(t) // different key
+	const kid = "test-kid-1"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jwk := jwkFromPrivateKey(t, &jwksKey.PublicKey, kid)
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwk}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+	raw := signTestCasdoorJWT(t, signerKey, kid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	_, err := v.Verify(context.Background(), raw)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("bad signature: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
+// TestCasdoorVerifier_Expired asserts exp enforcement — the most common
+// real-world failure.
+func TestCasdoorVerifier_Expired(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, kid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+	raw := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(-time.Hour).Unix(),
+	})
+
+	_, err := v.Verify(context.Background(), raw)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("expired: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
+// TestCasdoorVerifier_LeewayToleratesSmallClockSkew locks the leeway contract:
+// a token whose exp / iat fall within casdoorLeeway (10s) of now MUST verify,
+// so minor clock drift between Casdoor and cs-user hosts does not fail login.
+// The token below carries iat in the future + exp in the past — both within
+// leeway — and must still succeed. Anything beyond leeway still rejects.
+func TestCasdoorVerifier_LeewayToleratesSmallClockSkew(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, kid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+
+	// Within leeway on both sides: iat 3s in the future, exp 3s in the past.
+	now := time.Now()
+	withinLeeway := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x",
+		"iat": now.Add(3 * time.Second).Unix(),
+		"exp": now.Add(-3 * time.Second).Unix(),
+	})
+	if _, err := v.Verify(context.Background(), withinLeeway); err != nil {
+		t.Fatalf("within-leeway token: want nil err, got %v", err)
+	}
+
+	// Just past leeway on exp: rejected. (60s > 10s leeway.)
+	pastLeeway := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x", "exp": now.Add(-60 * time.Second).Unix(),
+	})
+	_, err := v.Verify(context.Background(), pastLeeway)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("past-leeway token: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
+// TestCasdoorVerifier_WrongIssuer locks the optional iss check. A token
+// from the wrong IdP (or a misconfigured Casdoor pointing at a different
+// issuer) must fail even if signed correctly.
+func TestCasdoorVerifier_WrongIssuer(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, kid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "http://casdoor:8000", nil, time.Second, time.Minute)
+	raw := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+		"iss": "http://evil.example.com",
+	})
+
+	_, err := v.Verify(context.Background(), raw)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("wrong iss: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
+// TestCasdoorVerifier_WrongAudience locks the optional aud check.
+func TestCasdoorVerifier_WrongAudience(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const kid = "test-kid-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, kid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", []string{"expected-aud"}, time.Second, time.Minute)
+	raw := signTestCasdoorJWT(t, key, kid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+		"aud": "wrong-aud",
+	})
+
+	_, err := v.Verify(context.Background(), raw)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("wrong aud: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+}
+
+// TestCasdoorVerifier_UnknownKidTriggersRefresh exercises the rotation path:
+// the cache is primed with an OLD key (cold start), then a request with a
+// NEW kid arrives. The verifier should refresh once and succeed when the
+// second JWKS fetch returns the new key. The verifier MUST NOT loop refresh
+// on a persistently-unknown kid (DoS vector), so a single refresh per
+// Verify call is the contract.
+func TestCasdoorVerifier_UnknownKidTriggersRefresh(t *testing.T) {
+	oldKey := generateTestRSAKey(t)
+	newKey := generateTestRSAKey(t)
+	const oldKid = "old-kid"
+	const newKid = "new-kid"
+
+	var fetches int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches++
+		if fetches == 1 {
+			// Cold start: only the old key is published.
+			_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &oldKey.PublicKey, oldKid)}})
+			return
+		}
+		// After rotation: both keys appear (Casdoor typically keeps the
+		// retiring key for a grace period).
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{
+			jwkFromPrivateKey(t, &oldKey.PublicKey, oldKid),
+			jwkFromPrivateKey(t, &newKey.PublicKey, newKid),
+		}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+
+	// Prime the cache with the old key (fetch 1).
+	primeRaw := signTestCasdoorJWT(t, oldKey, oldKid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if _, err := v.Verify(context.Background(), primeRaw); err != nil {
+		t.Fatalf("prime Verify: %v", err)
+	}
+	if fetches != 1 {
+		t.Fatalf("after prime: fetches=%d, want 1", fetches)
+	}
+
+	// New request with the rotated kid — must trigger refresh (fetch 2).
+	rotatedRaw := signTestCasdoorJWT(t, newKey, newKid, jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	if _, err := v.Verify(context.Background(), rotatedRaw); err != nil {
+		t.Fatalf("rotated Verify: %v", err)
+	}
+	if fetches != 2 {
+		t.Errorf("after rotation: fetches=%d, want 2 (prime + rotation refresh)", fetches)
+	}
+}
+
+// TestCasdoorVerifier_PersistentlyUnknownKidDoesNotLoopRefresh locks the
+// DoS-defense contract: an attacker sending a bogus kid must NOT cause
+// repeated JWKS fetches. One refresh per Verify call, then fail.
+func TestCasdoorVerifier_PersistentlyUnknownKidDoesNotLoopRefresh(t *testing.T) {
+	key := generateTestRSAKey(t)
+	const realKid = "real-kid"
+	var fetches int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches++
+		_ = json.NewEncoder(w).Encode(JWKS{Keys: []JWK{jwkFromPrivateKey(t, &key.PublicKey, realKid)}})
+	}))
+	defer srv.Close()
+
+	v := NewCasdoorVerifier(srv.URL, "", nil, time.Second, time.Minute)
+	// JWT signed by the right key but advertising a bogus kid in header —
+	// signature would verify against realKid's key but kid lookup drives
+	// the key choice, so verification fails on the missing kid. Refresh
+	// fires once, second lookup still misses, fail. Total fetches = 1
+	// (cold cache) + 1 (refresh) = 2 — but no more.
+	raw := signTestCasdoorJWT(t, key, "bogus-kid", jwt.MapClaims{
+		"sub": "x", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	_, err := v.Verify(context.Background(), raw)
+	if !errors.Is(err, ErrCasdoorJWTInvalid) {
+		t.Fatalf("bogus kid: want ErrCasdoorJWTInvalid, got %v", err)
+	}
+	if fetches > 2 {
+		t.Errorf("fetches=%d, want ≤2 (no loop on bogus kid)", fetches)
+	}
+}
+
+// TestJwkToRSAPublicKey_RoundTrip sanity-checks the n/e decoder by feeding
+// it a known key and verifying the reconstruction matches.
+func TestJwkToRSAPublicKey_RoundTrip(t *testing.T) {
+	key := generateTestRSAKey(t)
+	jwk := jwkFromPrivateKey(t, &key.PublicKey, "test")
+	pub, err := jwkToRSAPublicKey(jwk)
+	if err != nil {
+		t.Fatalf("jwkToRSAPublicKey: %v", err)
+	}
+	if pub.N.Cmp(key.PublicKey.N) != 0 {
+		t.Errorf("modulus mismatch")
+	}
+	if pub.E != key.PublicKey.E {
+		t.Errorf("exponent: got %d, want %d", pub.E, key.PublicKey.E)
+	}
+}
+
+// TestMapClaimsToModel_ExternalClaimsCarriesAllTopLevelFields pins the
+// harvest contract: ExternalClaims must carry the full verified JWT payload
+// (not just `properties` + `signupApplication`) so the field_map walker in
+// employment_mapping.go can reference any top-level Casdoor field a tenant
+// config might use (e.g. `employee_number: "employeeNumber"`, where
+// `employeeNumber` is top-level, not under `properties.*`). The prior
+// narrower harvest silently dropped these fields, producing NULL employment
+// columns — this test is the regression lock.
+func TestMapClaimsToModel_ExternalClaimsCarriesAllTopLevelFields(t *testing.T) {
+	claims := jwt.MapClaims{
+		"sub":             "uni-1",
+		"exp":             time.Now().Add(time.Hour).Unix(),
+		"name":            "Alice",
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom": map[string]any{"id": "alice-uid"},
+		},
+		// Top-level IdP fields the field_map walker might reference:
+		"employeeNumber":  "E-1001",
+		"departmentNumber": "DC-42",
+		"UserId":          "alice-idtrust-uid",
+	}
+	got := mapClaimsToModel(claims)
+
+	if got.ExternalClaims == nil {
+		t.Fatal("ExternalClaims: got nil, want non-nil")
+	}
+	// Nested payload preserved.
+	if props, ok := got.ExternalClaims["properties"].(map[string]any); !ok || props["oauth_Custom"] == nil {
+		t.Errorf("ExternalClaims['properties']: got %+v, want nested oauth_Custom", got.ExternalClaims["properties"])
+	}
+	// signupApplication preserved.
+	if got.ExternalClaims["signupApplication"] != "idtrust" {
+		t.Errorf("ExternalClaims['signupApplication']: got %v", got.ExternalClaims["signupApplication"])
+	}
+	// Top-level IdP fields preserved (the regression-prone path).
+	if got.ExternalClaims["employeeNumber"] != "E-1001" {
+		t.Errorf("ExternalClaims['employeeNumber']: got %v, want E-1001", got.ExternalClaims["employeeNumber"])
+	}
+	if got.ExternalClaims["departmentNumber"] != "DC-42" {
+		t.Errorf("ExternalClaims['departmentNumber']: got %v, want DC-42", got.ExternalClaims["departmentNumber"])
+	}
+	if got.ExternalClaims["UserId"] != "alice-idtrust-uid" {
+		t.Errorf("ExternalClaims['UserId']: got %v, want alice-idtrust-uid", got.ExternalClaims["UserId"])
+	}
+	// Typed identity fields also still carried (no harm; walker reads via
+	// dotted path if configured).
+	if got.ExternalClaims["name"] != "Alice" {
+		t.Errorf("ExternalClaims['name']: got %v, want Alice", got.ExternalClaims["name"])
+	}
+}
+
+// TestMapClaimsToModel_EmptyClaimsReturnsNilExternalClaims locks the empty-
+// payload branch: when the verified JWT carries no claims at all (cannot
+// happen for a real JWT but defensive), harvestExternalClaims returns nil
+// and ApplyEnterpriseMapping no-ops.
+func TestMapClaimsToModel_EmptyClaimsReturnsNilExternalClaims(t *testing.T) {
+	got := mapClaimsToModel(jwt.MapClaims{})
+	if got.ExternalClaims != nil {
+		t.Errorf("ExternalClaims: got %+v, want nil for empty claims", got.ExternalClaims)
+	}
+}
+
+// TestMapClaimsToModel_PhoneFallbackDerivesProvider is the regression lock for
+// the reissue-token 404 bug: Casdoor phone-login JWTs omit the top-level
+// `provider` claim, so a naive `claims["provider"]` lookup returns "". Server
+// derives provider="phone" from the phone field via NormalizeClaimsMap; if
+// cs-user's verifier doesn't do the same, BuildExternalKey produces
+// `casdoor:<universal_id>` while GetOrCreateUser wrote `casdoor:phone:<universal_id>`
+// — reissue-token returns 404 and server falls back to the raw Casdoor token.
+// The fix lives in mapClaimsToModel using NormalizeClaimsMap; this test pins
+// the contract.
+func TestMapClaimsToModel_PhoneFallbackDerivesProvider(t *testing.T) {
+	// Mirrors the real Casdoor payload that triggered the bug (phone login,
+	// no top-level `provider`, universal_id present).
+	claims := jwt.MapClaims{
+		"sub":           "b74e5889-546e-4cc9-9ec5-a0f3de1874c0",
+		"universal_id":  "b74e5889-546e-4cc9-9ec5-a0f3de1874c0",
+		"phone":         "15986746954",
+		"name":          "陈烜42766",
+		"iss":           "http://casdoor:8000",
+		"exp":           time.Now().Add(time.Hour).Unix(),
+	}
+	got := mapClaimsToModel(claims)
+
+	if got.Provider != "phone" {
+		t.Errorf("Provider: got %q, want \"phone\" (phone fallback failed)", got.Provider)
+	}
+	// Sanity-check the external_key shape BuildExternalKey will produce now
+	// that Provider is correct: casdoor:phone:<universal_id>.
+	if got.UniversalID != "b74e5889-546e-4cc9-9ec5-a0f3de1874c0" {
+		t.Errorf("UniversalID: got %q", got.UniversalID)
+	}
+	// ExternalClaims must still carry the raw payload (harvest unchanged).
+	if got.ExternalClaims["phone"] != "15986746954" {
+		t.Errorf("ExternalClaims['phone']: got %v, want 15986746954", got.ExternalClaims["phone"])
+	}
+}
+
+// TestMapClaimsToModel_IdtrustFallbackDerivesProvider covers the second
+// fallback branch: signupApplication="idtrust" with no explicit provider.
+func TestMapClaimsToModel_IdtrustFallbackDerivesProvider(t *testing.T) {
+	claims := jwt.MapClaims{
+		"sub":               "uni-1",
+		"universal_id":      "uni-1",
+		"signupApplication": "idtrust",
+		"properties": map[string]any{
+			"oauth_Custom_id":       "idt-1001",
+			"oauth_Custom_username": "alice",
+		},
+	}
+	got := mapClaimsToModel(claims)
+	if got.Provider != "idtrust" {
+		t.Errorf("Provider: got %q, want \"idtrust\"", got.Provider)
+	}
+	if got.ProviderUserID != "idt-1001" {
+		t.Errorf("ProviderUserID: got %q, want idt-1001", got.ProviderUserID)
+	}
+}

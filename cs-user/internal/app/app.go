@@ -237,10 +237,18 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 		reader = unavailableAuthReader{}
 	}
 	authAPI := handlers.AuthAPI{
-		Svc:         reader,
-		Signer:      deps.Signer,
-		JWT:         cfg.JWT,
-		Permissions: deps.PermissionReader,
+		Svc:            reader,
+		Signer:         deps.Signer,
+		JWT:            cfg.JWT,
+		CasdoorVerifier: auth.NewCasdoorVerifier(
+			cfg.Casdoor.JWKSURL,
+			cfg.Casdoor.Issuer,
+			cfg.Casdoor.Audience,
+			cfg.Casdoor.JWKSHTTPTimeout,
+			cfg.Casdoor.JWKSRefreshTTL,
+		),
+		TenantResolver: deps.TenantResolver,
+		Permissions:    deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)
 }
@@ -423,6 +431,10 @@ func (unavailableAuthReader) ApplyEnterpriseMapping(_ context.Context, _ user.Em
 
 func (unavailableAuthReader) GetSubjectIDByExternalKey(_ context.Context, _ string) (string, error) {
 	return "", errServiceUnavailable
+}
+
+func (unavailableAuthReader) GetUserByID(_ context.Context, _ string) (*models.User, error) {
+	return nil, errServiceUnavailable
 }
 
 // unavailableTenantResolver is the fallback when Deps.TenantResolver is nil —

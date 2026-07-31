@@ -1,16 +1,20 @@
-// Phase A7: cs-user OAuth-callback takeover endpoint.
+// cs-user OAuth-callback takeover endpoint.
 //
-// Strategy (b) re-sign: Casdoor still handles the login UI + OAuth dance +
-// password reset + MFA. The server validates the Casdoor JWT it received,
-// then forwards the parsed claims + user_subject_id to this endpoint. cs-user
-// loads the employment_identities snapshot (Phase A4), builds enterprise
-// claims (Phase A5), signs the token (Phase A3), and returns it. The server
-// then sets the cookie + handles the dual-sign 灰度 window (Phase A8).
+// Casdoor is treated as a pure login source: it owns the login UI, OAuth
+// dance, password reset, and MFA, and emits a short-lived access token.
+// Server forwards that raw Casdoor JWT to this endpoint; cs-user verifies
+// the signature itself against Casdoor's JWKS, then resolves the
+// authoritative user — and from that user row, the authoritative tenant —
+// entirely from cs-user's own data. Nothing the server supplies beyond the
+// raw Casdoor JWT (no user_subject_id, no tenant_id, no parsed Identity)
+// influences the issued token. The cs-user-signed JWT is the only token
+// trusted at the platform layer.
 //
-// Trust boundary: cs-user does NOT re-validate the Casdoor JWT signature.
-// The X-Internal-Token middleware has already authenticated the caller as
-// the server, and the server has already validated the original token; the
-// Identity payload here is treated as data, not as a security primitive.
+// Required deployment posture: CS_USER_CASDOOR_JWKS_URL must be set, and
+// the OAuth callback must call GetOrCreateUser BEFORE ReissueToken so the
+// user row exists for the external_key → subject_id lookup. A 404 from
+// this endpoint signals "user not provisioned yet" — the caller should
+// treat it as an ordering / data-integrity bug, not a retryable auth failure.
 
 package handlers
 
@@ -27,17 +31,27 @@ import (
 	"github.com/costrict/costrict-web/cs-user/internal/user"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // AuthAPI bundles the dependencies the reissue-token flow needs. Lives
-// separately from UsersAPI because the orchestration spans two services
-// (UserService for employment read, Signer for JWT issuance) and the route
-// shape (`/users/reissue-token`) sits inside the users group but isn't a
-// pure user CRUD op.
+// separately from UsersAPI because the orchestration spans three services
+// (UserService for user/employment read, TenantReader for tenant slug
+// lookup, Signer for JWT issuance) and the route shape
+// (`/users/reissue-token`) sits inside the users group but isn't a pure
+// user CRUD op.
 type AuthAPI struct {
 	Svc    EmploymentReader
 	Signer *auth.Signer
 	JWT    config.JWTConfig
+	// CasdoorVerifier validates the raw Casdoor JWT forwarded in
+	// reissueTokenRequest.CasdoorJWT. Must be non-nil for ReissueToken to
+	// do anything useful — handler returns 503 if a caller hits a
+	// verifier-less deployment.
+	CasdoorVerifier *auth.CasdoorVerifier
+	// TenantResolver looks up the tenants row (carrying slug) for the
+	// resolved user's tenant_id. *tenant.Resolver satisfies this.
+	TenantResolver TenantReader
 	// Permissions optionally carries the Phase C1 permission readers. When
 	// nil, no permission claims are populated (graceful — used during the
 	// Phase C1 灰度 rollout before middlewares enforce the new claims).
@@ -51,23 +65,35 @@ type AuthAPI struct {
 // — sqlite-backed fakes substitute without spinning a real Service.
 //
 // ApplyEnterpriseMapping is invoked BEFORE GetEmploymentIdentity so the
-// fresh-login Casdoor JWT (forwarded as Identity.ExternalClaims by server's
-// ParseJWTClaimsFromAccessToken) drives an upsert against the tenant's
-// employment_providers.field_map. Without this call the reissue flow would
-// read whatever row was previously cached (typically all-NULL when no other
-// caller populated it), and the freshly-arrived idtrust/github enterprise
-// fields would never reach the signed JWT. Errors are best-effort — see
-// ReissueToken for the swallow-and-continue contract.
+// fresh-login Casdoor JWT (ExternalClaims harvested directly from the raw
+// verified JWT's `properties.*` + `signupApplication`) drives an upsert
+// against the tenant's employment_providers.field_map. Errors are
+// best-effort — see ReissueToken for the swallow-and-continue contract.
 type EmploymentReader interface {
 	GetEmploymentIdentity(ctx context.Context, userSubjectID string) (*models.EmploymentIdentity, error)
 	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
 	// GetSubjectIDByExternalKey resolves cs-user's authoritative subject_id
-	// from a Casdoor-style external_key. Used as a fallback when the
-	// server-supplied user_subject_id doesn't match any employment row —
-	// server's GetOrCreate can generate a fresh subject_id while cs-user
-	// reuses the existing one (cs-user is single-source-of-truth on its own
-	// users table). Returns ("", nil) when no user matches.
+	// from a Casdoor-style external_key. This is the PRIMARY resolution
+	// path in the new flow — cs-user derives external_key from the verified
+	// Casdoor claims and looks up its own user row. Returns ("", nil) when
+	// no user matches (caller surfaces as 404 — GetOrCreate hasn't run yet).
 	GetSubjectIDByExternalKey(ctx context.Context, externalKey string) (string, error)
+	// GetUserByID loads the user row by subject_id. ReissueToken uses the
+	// returned row to read tenant_id (the authoritative tenant binding for
+	// the signed JWT) and to surface short_id / canonical profile claims.
+	// Returns gorm.ErrRecordNotFound when no user matches.
+	GetUserByID(ctx context.Context, subjectID string) (*models.User, error)
+}
+
+// TenantReader is the subset of *tenant.Resolver the reissue flow needs to
+// translate the resolved user's tenant_id into the matching tenants.slug.
+// The slug is embedded in the signed JWT so server's TenantMatch middleware
+// can compare without an extra lookup; the tenant_id stays the durable key.
+//
+// ResolveBySlug's existing contract accepts EITHER tenant_id OR slug and
+// returns the matching active tenant — reissue-token passes user.TenantID.
+type TenantReader interface {
+	ResolveBySlug(ctx context.Context, idOrSlug string) (*models.Tenant, error)
 }
 
 // PermissionReader is the Phase C1 subset of *user.Service the reissue flow
@@ -84,35 +110,22 @@ type PermissionReader interface {
 }
 
 // reissueTokenRequest is the body shape for POST
-// /api/internal/users/reissue-token. The server forwards the parsed Casdoor
-// claims (Identity) plus the user_subject_id it resolved via
-// GetOrCreateUser. TenantID is reserved for Phase B; Phase A callers pass
-// "default" or leave empty.
+// /api/internal/users/reissue-token. cs-user is the platform-layer identity
+// authority: the ONLY field it accepts from the wire is the raw Casdoor JWT
+// (and an optional audience override). Everything entering the issued token
+// — subject_id, tenant_id, tenant_slug, ExternalClaims — is resolved by
+// cs-user itself from the verified JWT + its own data. Legacy fields
+// (user_subject_id / tenant_id / tenant_slug / identity) forwarded by an
+// un-upgraded server are silently ignored at unmarshal time.
 //
 // Audience overrides JWTConfig.DefaultAudience when the server knows a
 // specific relying party is the target (e.g. csc CLI vs. costrict-web
 // frontend). Empty array falls back to the default.
 type reissueTokenRequest struct {
-	// UserSubjectID is the cs-user user's stable subject_id. Required.
-	UserSubjectID string `json:"user_subject_id" binding:"required"`
-
-	// Identity carries the parsed Casdoor JWT claims. Optional — when nil,
-	// only standard JWT claims + enterprise claims (if any) are emitted.
-	// Typical Phase A7 callers always pass Identity; the nil path exists
-	// for refresh-token flows (Phase B) where identity may be cached.
-	Identity *models.JWTClaims `json:"identity,omitempty"`
-
-	// TenantID is reserved for Phase B. Phase A callers pass "default" or
-	// leave empty; the service falls back to "default".
-	TenantID string `json:"tenant_id,omitempty"`
-
-	// TenantSlug is the URL-friendly tenant key (Phase B). Forwarded by
-	// server's RPCWriter from the request ctx (set by Try 1 subdomain or
-	// Try 2 email-domain resolution in the OAuth callback). cs-user embeds
-	// this verbatim in the signed JWT so server's TenantMatch middleware
-	// can compare against the runtime-resolved slug without a per-request
-	// slug→tenant_id lookup. Empty for Phase A callers.
-	TenantSlug string `json:"tenant_slug,omitempty"`
+	// CasdoorJWT is the raw Casdoor-issued access token. Required — cs-user
+	// treats Casdoor as a pure login source and refuses to issue a token
+	// without verifying the upstream JWT itself.
+	CasdoorJWT string `json:"casdoor_jwt" binding:"required"`
 
 	// Audience overrides the configured default. Empty slice falls back
 	// to JWTConfig.DefaultAudience; populated slice replaces it.
@@ -130,14 +143,16 @@ type reissueTokenResponse struct {
 // ReissueToken godoc
 //
 //	@Summary		Reissue a cs-user-signed JWT (OAuth callback takeover)
-//	@Description	Strategy (b) re-sign: server validates the Casdoor JWT, then calls this endpoint with the parsed claims + user_subject_id. cs-user loads the user's employment_identities snapshot (Phase A4), builds enterprise claims (Phase A5), signs via the configured RSA key (Phase A3), and returns the new token. cs-user does NOT re-validate the Casdoor JWT — the X-Internal-Token middleware authenticates the caller as the server, and the server has already validated the original. Returns 503 when no signing key is configured.
+//	@Description	cs-user is the platform-layer identity authority. Server forwards ONLY the raw Casdoor JWT; cs-user verifies it against Casdoor's JWKS, resolves the user via external_key, reads the authoritative tenant from the user row, builds enterprise + permission claims, signs via the configured RSA key, and returns the new token. Nothing server supplies beyond `casdoor_jwt` (no user_subject_id, no tenant_id, no parsed identity) influences the issued token. Returns 400 when `casdoor_jwt` is missing, 503 when the verifier is unconfigured, 401 when verification fails, 404 when the user can't be resolved (GetOrCreate hasn't run yet), 500 on tenant lookup failure or signing error.
 //	@Tags			auth
 //	@Accept			json
 //	@Produce		json
 //	@Security		InternalToken
-//	@Param			body	body		reissueTokenRequest	true	"Parsed Casdoor claims + user_subject_id + optional tenant_id / audience override"
+//	@Param			body	body		reissueTokenRequest	true	"Raw Casdoor JWT (required) + optional audience override"
 //	@Success		200		{object}	reissueTokenResponse
 //	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{error=string}
+//	@Failure		404		{object}	object{error=string}
 //	@Failure		500		{object}	object{error=string}
 //	@Failure		503		{object}	object{error=string}
 //	@Router			/api/internal/users/reissue-token [post]
@@ -156,25 +171,99 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		return
 	}
 
-	// Debug: dump what we received from server so ApplyEnterpriseMapping
-	// failures are diagnosable. Keys only (no values) to avoid leaking PII
-	// or secrets in log aggregation systems.
-	if req.Identity != nil {
-		externalKeys := []string{}
-		for k := range req.Identity.ExternalClaims {
-			externalKeys = append(externalKeys, k)
+	// Verifier must be configured — without it cs-user can't establish
+	// the trust boundary. Treat nil verifier as operational misconfig (503)
+	// rather than a caller bug.
+	if a.CasdoorVerifier == nil {
+		logger.Warn("[reissue-token] verifier not configured (CS_USER_CASDOOR_JWKS_URL missing)")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "casdoor verifier not configured"})
+		return
+	}
+	// Verify the Casdoor JWT — the only thing server is trusted to forward
+	// accurately. verified already carries ExternalClaims harvested from the
+	// raw JWT payload (`properties.*` + `signupApplication`), so the entire
+	// enterprise-claims chain stays inside the JWKS verification boundary.
+	verified, verifyErr := a.CasdoorVerifier.Verify(c.Request.Context(), req.CasdoorJWT)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, auth.ErrCasdoorVerifierDisabled) {
+			// Verifier disappeared between the nil check above and now
+			// (shouldn't happen but stay defensive). Treat as 503.
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "casdoor verifier not configured"})
+			return
 		}
-		logger.Info("[reissue-token] incoming request user_subject_id=%s provider=%q name=%q external_claims_keys=%v external_claims_count=%d tenant_slug=%q audience=%v",
-			req.UserSubjectID,
-			req.Identity.Provider,
-			req.Identity.Name,
-			externalKeys,
-			len(req.Identity.ExternalClaims),
-			req.TenantSlug,
-			req.Audience,
-		)
-	} else {
-		logger.Info("[reissue-token] incoming request user_subject_id=%s identity=nil", req.UserSubjectID)
+		logger.Warn("[reissue-token] casdoor jwt verification failed: %v", verifyErr)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid casdoor jwt"})
+		return
+	}
+
+	// Resolve the authoritative subject_id from the verified Casdoor claims.
+	// cs-user is single-source-of-truth on its own users table — server's
+	// user_subject_id is intentionally NOT accepted from the wire. The user
+	// row must already exist (GetOrCreateUser must have run earlier in the
+	// OAuth callback chain); an empty result here means data-integrity
+	// failure, surfaced as 404 so callers can distinguish from auth failure.
+	externalKey := user.BuildExternalKey(verified)
+	if externalKey == "" {
+		// Casdoor JWT verified but has no usable universal_id / sub / id —
+		// malformed IdP response. Configurable IdPs are expected to emit at
+		// least universal_id; absence is a configuration issue upstream.
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid casdoor jwt"})
+		return
+	}
+	subjectID, err := a.Svc.GetSubjectIDByExternalKey(c.Request.Context(), externalKey)
+	if err != nil {
+		logger.Warn("[reissue-token] subject_id lookup failed for external_key=%s: %v", externalKey, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if subjectID == "" {
+		logger.Warn("[reissue-token] no user row for external_key=%s — GetOrCreateUser hasn't run yet", externalKey)
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not provisioned"})
+		return
+	}
+
+	// Load the authoritative user row — this is the source of truth for
+	// tenant_id (server no longer forwards it) and for the canonical profile
+	// fields NewEnterpriseClaims layers on top of Identity.
+	userRow, err := a.Svc.GetUserByID(c.Request.Context(), subjectID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// external_key pointed at a user but the row vanished between
+			// the two lookups — extremely unlikely (no cascade deletes),
+			// but treat as the same 404 contract.
+			logger.Warn("[reissue-token] GetUserByID returned not-found for subject_id=%s (vanished between lookups)", subjectID)
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not provisioned"})
+			return
+		}
+		logger.Warn("[reissue-token] GetUserByID failed for subject_id=%s: %v", subjectID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	// Resolve the tenant from the user row. userRow.TenantID is the
+	// authoritative binding written at GetOrCreate time (server's Phase
+	// B3b.2b Try 1/2 produces it via X-Tenant-Id context). The slug is
+	// joined here so server's TenantMatch middleware can compare without
+	// an extra lookup; tenant_id remains the durable key in the JWT.
+	tenantID := userRow.TenantID
+	if tenantID == "" {
+		// GetOrCreateUser always writes a tenant_id (default 'default').
+		// Empty here signals a backfill gap or schema drift — fail loud
+		// so the operator notices rather than silently signing a token
+		// with no tenant context.
+		logger.Warn("[reissue-token] user %s has empty tenant_id — schema/backfill issue", subjectID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	tenantSlug := ""
+	if a.TenantResolver != nil {
+		tenantRow, tenantErr := a.TenantResolver.ResolveBySlug(c.Request.Context(), tenantID)
+		if tenantErr != nil {
+			logger.Warn("[reissue-token] tenant lookup failed for tenant_id=%s: %v", tenantID, tenantErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		tenantSlug = tenantRow.Slug
 	}
 
 	// Audience: request override wins; otherwise fall back to config default.
@@ -183,100 +272,39 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		audience = a.JWT.DefaultAudience
 	}
 
-	// TenantID: Phase A always uses "default" when caller omits.
-	tenantID := req.TenantID
-	if tenantID == "" {
-		tenantID = "default"
-	}
-
-	// TenantSlug (Phase B): pass through verbatim. Server's auth middleware
-	// reads this from the signed JWT to compare against runtime-resolved slug
-	// (cookie/subdomain) for cross-tenant detection (B3b.2c). Empty for
-	// pre-cutover / Phase A callers — server's TenantMatch middleware skips
-	// comparison when the JWT has no tenant_slug claim.
-	tenantSlug := req.TenantSlug
-
-	// Slice 1.6: refresh employment_identities from the freshly-arrived
-	// Casdoor JWT BEFORE reading it back. server's ParseJWTClaimsFromAccessToken
-	// populates Identity.ExternalClaims with the raw token payload
-	// (properties.oauth_Custom.*, signupApplication, ...) so the tenant's
-	// field_map can extract enterprise columns without server hard-coding
-	// each IdP's property namespace. ApplyEnterpriseMapping is best-effort:
-	// every error path (disabled provider, missing tenant_configs row,
-	// malformed YAML, empty ExternalClaims) is swallowed — the read below
-	// still runs and the JWT still issues. This preserves the "employment
-	// mapping is a bonus feature and must never block login" contract.
-	if req.Identity != nil && len(req.Identity.ExternalClaims) > 0 {
-		err := a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
-			TenantID:        tenantID,
-			UserSubjectID:   req.UserSubjectID,
-			Provider:        req.Identity.Provider,
-			ExternalClaims:  req.Identity.ExternalClaims,
-		})
-		if err != nil {
+	// Refresh employment_identities from the freshly-verified Casdoor JWT
+	// BEFORE reading it back. ExternalClaims (properties.* + signupApplication)
+	// came straight out of the verified JWT — this is the entire enterprise
+	// field pipeline, no server-parsed hint in the loop. Best-effort: every
+	// error path is swallowed so a tenant with a malformed field_map can't
+	// block login.
+	if len(verified.ExternalClaims) > 0 {
+		if err := a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
+			TenantID:       tenantID,
+			UserSubjectID:  subjectID,
+			Provider:       verified.Provider,
+			ExternalClaims: verified.ExternalClaims,
+		}); err != nil {
 			logger.Warn("[reissue-token] ApplyEnterpriseMapping returned error (login continues): %v", err)
-		} else {
-			logger.Info("[reissue-token] ApplyEnterpriseMapping completed without error")
 		}
-	} else {
-		externalCount := 0
-		if req.Identity != nil {
-			externalCount = len(req.Identity.ExternalClaims)
-		}
-		logger.Info("[reissue-token] skipping ApplyEnterpriseMapping: identity_present=%v external_claims_count=%d",
-			req.Identity != nil, externalCount)
 	}
 
-	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), req.UserSubjectID)
+	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), subjectID)
 	if err != nil {
-		switch {
-		case errors.Is(err, user.ErrEmptySubjectID):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "user_subject_id is required"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		}
+		logger.Warn("[reissue-token] GetEmploymentIdentity failed for subject_id=%s: %v", subjectID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
-	}
-
-	// Fallback when server-supplied subject_id doesn't match an employment
-	// row: server's GetOrCreate can generate a fresh subject_id (usr_X) while
-	// cs-user reuses its existing one (usr_Y) for the same IdP user — so the
-	// employment_identities row stays keyed to usr_Y. Resolve cs-user's
-	// authoritative subject_id via the external_key derived from the Identity
-	// payload (provider + universal_id) and re-query. Errors are swallowed
-	// (best-effort fallback) — failure leaves employment == nil and JWT still
-	// issues, just without enterprise claims (same as pre-fallback behavior).
-	if employment == nil && req.Identity != nil {
-		if extKey := user.BuildExternalKey(req.Identity); extKey != "" {
-			realSubID, lookupErr := a.Svc.GetSubjectIDByExternalKey(c.Request.Context(), extKey)
-			if lookupErr != nil {
-				logger.Warn("[reissue-token] external_key fallback lookup failed (continuing without enterprise claims): %v", lookupErr)
-			} else if realSubID != "" && realSubID != req.UserSubjectID {
-				logger.Warn("[reissue-token] server user_subject_id=%s does not match cs-user's authoritative subject_id=%s for external_key=%s; re-querying employment with cs-user ID",
-					req.UserSubjectID, realSubID, extKey)
-				employment, err = a.Svc.GetEmploymentIdentity(c.Request.Context(), realSubID)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-					return
-				}
-			}
-		}
 	}
 	// employment == nil is success — user has no enterprise snapshot yet.
 
-	// Tactical patch: MULTI_TENANCY §9.6 mandates `name` → user.display_name.
-	// Casdoor-brokered IdPs (idtrust etc.) frequently surface the employee
-	// number as Casdoor's User.Name (because the IdP returns id=42766 and
-	// Casdoor falls back to it when no canonical name claim exists). When
-	// that happens, Identity.Name equals EnterpriseUID/EmployeeNumber —
-	// clearly wrong. Override from Employment.DisplayName (which the
-	// field_map populated from oauth_Custom_displayName).
-	// TODO: replace with proper basic-user-init-mapping at registration
-	// (follow-up) — this only fixes the JWT emission path.
-	if req.Identity != nil && employment != nil && employment.DisplayName != nil {
+	// MULTI_TENANCY §9.6: when Casdoor's User.Name was populated from the
+	// IdP's employee number (a common idtrust quirk), surface display_name
+	// from the employment row instead. The field_map populated it from
+	// oauth_Custom_displayName. Best-effort — fall back to verified.Name
+	// when no employment row exists.
+	if employment != nil && employment.DisplayName != nil {
 		displayName := *employment.DisplayName
 		if displayName != "" {
-			current := req.Identity.Name
 			uid := ""
 			if employment.EnterpriseUID != nil {
 				uid = *employment.EnterpriseUID
@@ -285,23 +313,23 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 			if employment.EmployeeNumber != nil {
 				empNo = *employment.EmployeeNumber
 			}
-			if current == "" || current == uid || current == empNo {
-				req.Identity.Name = displayName
+			if verified.Name == "" || verified.Name == uid || verified.Name == empNo {
+				verified.Name = displayName
 			}
 		}
 	}
 
 	// Phase C1: populate permission claims from tenant_admins +
 	// platform_admins. Skipped entirely when Permissions is nil (灰度
-	// rollout: callers that haven't wired the new readers yet). Errors here
-	// surface as 500 — both methods only return errors on real DB faults;
-	// missing data is (nil,nil) / empty slice, not error.
+	// rollout). Tenant scope is the resolved userRow.TenantID, not a
+	// server-supplied value — cross-tenant synthesis via request injection
+	// is therefore impossible at this layer.
 	var platformAdmin bool
 	var platformScope string
 	var tenantRoles []string
 	if a.Permissions != nil {
-		pa, err := a.Permissions.GetPlatformAdmin(c.Request.Context(), req.UserSubjectID)
-		if err != nil {
+		pa, paErr := a.Permissions.GetPlatformAdmin(c.Request.Context(), subjectID)
+		if paErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 			return
 		}
@@ -310,8 +338,8 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 			platformScope = pa.Scope
 		}
 
-		roles, err := a.Permissions.ListActiveTenantRoles(c.Request.Context(), req.UserSubjectID, tenantID)
-		if err != nil {
+		roles, rolesErr := a.Permissions.ListActiveTenantRoles(c.Request.Context(), subjectID, tenantID)
+		if rolesErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 			return
 		}
@@ -321,11 +349,12 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	now := time.Now()
 	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
 		Issuer:        a.JWT.Issuer,
-		Subject:       req.UserSubjectID,
+		Subject:       subjectID,
+		User:          userRow,
 		Audience:      audience,
 		TTL:           a.JWT.TTL,
 		JTI:           uuid.NewString(),
-		Identity:      req.Identity,
+		Identity:      verified,
 		Employment:    employment,
 		TenantID:      tenantID,
 		TenantSlug:    tenantSlug,
@@ -352,3 +381,4 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		ExpiresAt: claims.Expiry.Time,
 	})
 }
+

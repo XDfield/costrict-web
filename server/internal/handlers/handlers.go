@@ -333,39 +333,6 @@ func buildAuthUserDTOFromModel(user *models.User) authUserDTO {
 	}
 }
 
-func buildAuthUserDTOFromClaims(claims *userpkg.JWTClaims) authUserDTO {
-	name := claims.Name
-	if claims.PreferredUsername != "" {
-		name = claims.PreferredUsername
-	}
-	// Fallback chain: universal_id → sub → id
-	userID := claims.UniversalID
-	if userID == "" {
-		userID = claims.Sub
-	}
-	if userID == "" {
-		userID = claims.ID
-	}
-	roles, _ := systemrole.NewSystemRoleService(database.GetDB()).ListRoles(userID)
-	return authUserDTO{
-		ID:                 userID,
-		SubjectID:          userID,
-		Name:               name,
-		Username:           claims.Name,
-		Email:              stringPtr(claims.Email),
-		Phone:              stringPtr(claims.Phone),
-		AvatarURL:          claims.Picture,
-		CasdoorUniversalID: stringPtr(claims.UniversalID),
-		SystemRoles:        roles,
-		Auth: gin.H{
-			"provider":        claims.Provider,
-			"providerUserId":  claims.ProviderUserID,
-			"externalKey":     buildExternalKeyForResponse(claims),
-			"externalSubject": userID,
-		},
-	}
-}
-
 func buildAuthIdentityDTO(identity *models.UserAuthIdentity) authIdentityDTO {
 	return authIdentityDTO{
 		Provider:    identity.Provider,
@@ -448,19 +415,27 @@ func AuthCallback(c *gin.Context) {
 	// Decode state to recover callback_url (needed for token exchange) and redirect target.
 	state := decodeOAuthState(c.Query("state"))
 
-	// If the user already has a valid token, reuse it instead of exchanging a new one.
-	// This prevents overwriting the cookie set by credit-manager and enables SSO.
+	// SSO shortcut: if the browser already holds a Casdoor access token that
+	// /api/userinfo still honours, reuse it instead of running a fresh code
+	// exchange. This preserves cross-product SSO (credit-manager sets the
+	// same cookie) and avoids invalidating other tabs' sessions.
+	//
+	// IMPORTANT: the shortcut still MUST run provisionCsUser before
+	// redirecting. A Casdoor-valid cookie does NOT imply a cs-user row
+	// exists — users carrying a legacy Casdoor cookie into the Phase A8
+	// cutover, or arriving from a sibling product that doesn't provision,
+	// would otherwise loop forever (cookie validates → skip provisioning →
+	// middleware by-identity 404 → bounce to /login → cookie still
+	// validates → …). provisionCsUser is idempotent on the happy path
+	// (GetOrCreateUser no-ops when the row already exists) so re-running
+	// it on every callback is cheap; the only behavioural change for
+	// already-provisioned users is the cookie value flipping from the
+	// Casdoor token to the cs-user-signed JWT (the entire point of the
+	// Phase A8 takeover).
 	if existingToken, err := c.Cookie("zgsmAdminToken"); err == nil && existingToken != "" {
 		if _, userErr := getUserInfoFunc(existingToken); userErr == nil {
-			redirectURL := defaultFrontendURL + "/"
-			if state.RedirectTo != "" {
-				if isAllowedOrigin(state.RedirectTo) {
-					redirectURL = state.RedirectTo
-				} else if !strings.HasPrefix(state.RedirectTo, "http://") && !strings.HasPrefix(state.RedirectTo, "https://") {
-					redirectURL = defaultFrontendURL + state.RedirectTo
-				}
-			}
-			c.Redirect(http.StatusFound, redirectURL)
+			cookieToken, isNewUser := provisionCsUser(c, existingToken)
+			completeAuthCallback(c, state, cookieToken, isNewUser)
 			return
 		}
 	}
@@ -472,101 +447,134 @@ func AuthCallback(c *gin.Context) {
 		return
 	}
 
+	cookieToken, isNewUser := provisionCsUser(c, tokenResp.AccessToken)
+	completeAuthCallback(c, state, cookieToken, isNewUser)
+}
+
+// provisionCsUser runs the cs-user provisioning pipeline (GetUserInfo +
+// tenant-by-email resolution + GetOrCreateUser + Phase A8 ReissueToken)
+// against the supplied Casdoor access token. Returns the cookie-worthy token
+// — cs-user-signed JWT on success, the original accessToken when UserModule
+// is nil, GetUserInfo fails / returns empty, GetOrCreateUser errors, or
+// ReissueToken is off / fails (best-effort 灰度 contract).
+//
+// Callers that hold a verified Casdoor token — both the SSO-shortcut path
+// (existing zgsmAdminToken cookie validates) and the code-exchange path —
+// MUST run through here. Skipping it leaves cs-user without a user row for
+// the Casdoor identity, so middleware's by-identity lookup 404s on the next
+// request and the browser bounces back to /login — observed in production
+// as the "cookie validates against Casdoor but app says logged out" loop.
+func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, isNewUser bool) {
 	// cookieToken holds the value that ends up in the zgsmAdminToken cookie.
 	// Default is the Casdoor access token; Phase A8 overwrites it with a
 	// cs-user-signed JWT when jwtSignMode != off and ReissueToken succeeds.
 	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
 	// (Phase A8) is intentionally non-blocking.
-	cookieToken := tokenResp.AccessToken
-	// isNewUser is set when GetOrCreateUser creates the user row for the
-	// first time. Surfaced to the frontend via the short-lived reg_pending
-	// cookie so app-ai-native can bounce to /register/complete. The
-	// server-side RequireProfileComplete gate is the actual source of
-	// truth — this cookie is only a hint for the very first redirect.
-	isNewUser := false
-	if UserModule != nil {
-		if userInfo, userErr := getUserInfoFunc(tokenResp.AccessToken); userErr == nil && userInfo != nil && userInfo.User != nil {
-			claims := &userpkg.JWTClaims{
-				ID:                userInfo.User.Id,
-				Sub:               userInfo.User.Sub,
-				UniversalID:       userInfo.User.UniversalID,
-				Name:              userInfo.User.Name,
-				PreferredUsername: userInfo.User.PreferredUsername,
-				Email:             userInfo.User.Email,
-				Picture:           userInfo.User.Picture,
-				Owner:             userInfo.User.Owner,
-			}
-			if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken); parseErr == nil {
-				claims = userpkg.MergeJWTClaims(claims, tokenClaims)
-			}
-			// Phase B3b.2b-step2b: §5 Try 2 — when middleware's subdomain
-			// lookup (Try 1) missed, resolve by email domain via cs-user.
-			// Unique hit → set cs_tenant_slug cookie + re-inject slug into
-			// the request context so the upcoming write ops (GetOrCreateUser,
-			// ApplyEnterpriseMapping, ReissueToken) forward the right
-			// X-Tenant-Id to cs-user. Ambiguous → picker redirect
-			// (Phase B3b.2b-step2c — until the picker frontend lands we
-			// log + fall through so login is never blocked). Miss / error
-			// → fall through to default tenant.
-			//
-			// Local-mode (Module.TenantResolver == nil) skips this block —
-			// there's no tenant data on this side (ADR D1).
-			try2Ctx := c.Request.Context()
-			if existingSlug := tenant.SlugFromContext(try2Ctx); existingSlug == "" &&
-				claims.Email != "" && UserModule != nil && UserModule.TenantResolver != nil {
-				res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, claims.Email)
-				if resErr != nil {
-					fmt.Printf("[WARN] ResolveTenantByEmail failed during auth callback (falling through to default tenant): %v\n", resErr)
-				} else if res != nil {
-					switch res.Status {
-					case "ok":
-						if res.Slug != "" {
-							c.Request = c.Request.WithContext(tenant.WithSlug(try2Ctx, res.Slug))
-							// Sticky cookie: future requests carry the slug
-							// through Layer 2 without re-resolving. Same
-							// Secure flag as the auth cookie.
-							c.SetCookie(middleware.TenantSlugCookie, res.Slug,
-								int(365*24*time.Hour/time.Second), "/", "", cookieSecure, true)
-						}
-					case "ambiguous":
-						// TODO(B3b.2b-step2c): redirect to /tenant/picker
-						// with state token + candidates. Until the picker
-						// UI ships, log + fall through so login succeeds
-						// against the default tenant rather than dead-ending.
-						fmt.Printf("[INFO] tenant resolution ambiguous for email=%s, %d candidate(s); picker not yet implemented, falling through to default tenant\n",
-							claims.Email, len(res.Candidates))
-					}
+	cookieToken = accessToken
+	if UserModule == nil {
+		return
+	}
+	userInfo, userErr := getUserInfoFunc(accessToken)
+	if userErr != nil {
+		fmt.Printf("[WARN] GetUserInfo failed during auth callback: %v\n", userErr)
+		return
+	}
+	if userInfo == nil || userInfo.User == nil {
+		// Previously this branch silently skipped provisioning while still
+		// writing the Casdoor-access-token cookie — surfacing it loudly so
+		// production traces (the "login loop" symptom) point here instead
+		// of at the later by-identity 404.
+		fmt.Printf("[WARN] GetUserInfo returned empty user during auth callback: userInfo=%+v\n", userInfo)
+		return
+	}
+	claims := &userpkg.JWTClaims{
+		ID:                userInfo.User.Id,
+		Sub:               userInfo.User.Sub,
+		UniversalID:       userInfo.User.UniversalID,
+		Name:              userInfo.User.Name,
+		PreferredUsername: userInfo.User.PreferredUsername,
+		Email:             userInfo.User.Email,
+		Picture:           userInfo.User.Picture,
+		Owner:             userInfo.User.Owner,
+	}
+	if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(accessToken); parseErr == nil {
+		claims = userpkg.MergeJWTClaims(claims, tokenClaims)
+	}
+	// Phase B3b.2b-step2b: §5 Try 2 — when middleware's subdomain
+	// lookup (Try 1) missed, resolve by email domain via cs-user.
+	// Unique hit → set cs_tenant_slug cookie + re-inject slug into
+	// the request context so the upcoming write ops (GetOrCreateUser,
+	// ApplyEnterpriseMapping, ReissueToken) forward the right
+	// X-Tenant-Id to cs-user. Ambiguous → picker redirect
+	// (Phase B3b.2b-step2c — until the picker frontend lands we
+	// log + fall through so login is never blocked). Miss / error
+	// → fall through to default tenant.
+	//
+	// Local-mode (Module.TenantResolver == nil) skips this block —
+	// there's no tenant data on this side (ADR D1).
+	try2Ctx := c.Request.Context()
+	if existingSlug := tenant.SlugFromContext(try2Ctx); existingSlug == "" &&
+		claims.Email != "" && UserModule.TenantResolver != nil {
+		res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, claims.Email)
+		if resErr != nil {
+			fmt.Printf("[WARN] ResolveTenantByEmail failed during auth callback (falling through to default tenant): %v\n", resErr)
+		} else if res != nil {
+			switch res.Status {
+			case "ok":
+				if res.Slug != "" {
+					c.Request = c.Request.WithContext(tenant.WithSlug(try2Ctx, res.Slug))
+					// Sticky cookie: future requests carry the slug
+					// through Layer 2 without re-resolving. Same
+					// Secure flag as the auth cookie.
+					c.SetCookie(middleware.TenantSlugCookie, res.Slug,
+						int(365*24*time.Hour/time.Second), "/", "", cookieSecure, true)
 				}
+			case "ambiguous":
+				// TODO(B3b.2b-step2c): redirect to /tenant/picker
+				// with state token + candidates. Until the picker
+				// UI ships, log + fall through so login succeeds
+				// against the default tenant rather than dead-ending.
+				fmt.Printf("[INFO] tenant resolution ambiguous for email=%s, %d candidate(s); picker not yet implemented, falling through to default tenant\n",
+					claims.Email, len(res.Candidates))
 			}
-			if created, isNew, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims); err != nil {
-				fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
-			} else if created != nil {
-				isNewUser = isNew
-				// Phase A4b/Slice 2: enterprise mapping is auto-triggered
-				// inside cs-user's GetOrCreateUser using claims.ExternalClaims
-				// (which the Casdoor callback harvests from profile.Raw).
-				// Best-effort — employment mapping is a bonus feature and must
-				// never block login.
-				// Phase A8: when mode is dual or single, ask cs-user to mint
-				// a fresh JWT carrying enterprise claims. Best-effort: on any
-				// failure (transport, ErrSelfSignUnavailable from local-mode
-				// misconfig, cs-user 4xx/5xx) we fall back to the Casdoor
-				// token rather than failing login. The difference between
-				// dual and single lives in the verifier (JWKS chain), not
-				// here — the cookie value is the cs-user JWT either way.
-				if jwtSignMode != config.JWTSignModeOff {
-					if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), created.SubjectID, claims, nil); err != nil {
-						fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
-					} else {
-						cookieToken = newToken
-					}
-				}
-			}
-		} else if userErr != nil {
-			fmt.Printf("[WARN] GetUserInfo failed during auth callback: %v\n", userErr)
 		}
 	}
+	created, isNew, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims)
+	if err != nil {
+		fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
+		return
+	}
+	if created == nil {
+		return
+	}
+	isNewUser = isNew
+	// Phase A4b/Slice 2: enterprise mapping is auto-triggered
+	// inside cs-user's GetOrCreateUser using claims.ExternalClaims
+	// (which the Casdoor callback harvests from profile.Raw).
+	// Best-effort — employment mapping is a bonus feature and must
+	// never block login.
+	// Phase A8: when mode is dual or single, ask cs-user to mint
+	// a fresh JWT carrying enterprise claims. Best-effort: on any
+	// failure (transport, ErrSelfSignUnavailable from local-mode
+	// misconfig, cs-user 4xx/5xx) we fall back to the Casdoor
+	// token rather than failing login. The difference between
+	// dual and single lives in the verifier (JWKS chain), not
+	// here — the cookie value is the cs-user JWT either way.
+	if jwtSignMode == config.JWTSignModeOff {
+		return
+	}
+	if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), nil, accessToken); err != nil {
+		fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
+	} else {
+		cookieToken = newToken
+	}
+	return
+}
 
+// completeAuthCallback writes the auth cookies and issues the 302 to the
+// resolved redirect target. Shared by the SSO-shortcut and code-exchange
+// paths so they cannot drift on cookie flags / redirect validation.
+func completeAuthCallback(c *gin.Context, state oauthState, cookieToken string, isNewUser bool) {
 	// Set auth cookie before redirect (HttpOnly=false so the frontend can read it, matching credit-manager's cookie strategy)
 	c.SetCookie("zgsmAdminToken", cookieToken, int(7*24*time.Hour/time.Second), "/", "", cookieSecure, false)
 
@@ -719,6 +727,8 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 			c.Redirect(http.StatusFound, redirectURL+sep+"bind=conflict&merge_token="+mergeToken)
 			return
 		}
+		fmt.Printf("[ERROR] bindAuthCallback BindIdentityToUser failed: subject_id=%s provider=%q universal_id=%q external_key=%q err=%v\n",
+			currentUser.SubjectID, claims.Provider, claims.UniversalID, userpkg.BuildExternalKey(claims), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
 		return
 	}
@@ -864,12 +874,13 @@ func ResolveAuthUser(c *gin.Context) {
 
 // GetCurrentUser godoc
 // @Summary      Get current user
-// @Description  Get information of the authenticated user
+// @Description  Get information of the authenticated user. Returns 404 when the JWT subject resolves to no row in the user service — cs-user is the authoritative registry, so unregistered Casdoor identities are not synthesised from claims.
 // @Tags         auth
 // @Produce      json
 // @Security     BearerAuth
 // @Success      200  {object}  object{}
 // @Failure      401  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /auth/me [get]
 func GetCurrentUser(c *gin.Context) {
@@ -897,41 +908,14 @@ func GetCurrentUser(c *gin.Context) {
 		}
 	}
 
-	token, exists := c.Get("accessToken")
-	if !exists || token == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	userInfo, err := getUserInfoFunc(token.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
-		return
-	}
-
-	claims := &userpkg.JWTClaims{
-		ID:                userInfo.User.Id,
-		Sub:               userInfo.User.Sub,
-		UniversalID:       userInfo.User.UniversalID,
-		Name:              userInfo.User.Name,
-		PreferredUsername: userInfo.User.PreferredUsername,
-		Email:             userInfo.User.Email,
-		Picture:           userInfo.User.Picture,
-		Owner:             userInfo.User.Owner,
-	}
-	if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(token.(string)); parseErr == nil {
-		claims = userpkg.MergeJWTClaims(claims, tokenClaims)
-	}
-
-	if UserModule != nil && UserModule.Service != nil {
-		// Try to find existing user only (read-only), don't create
-		if user, userErr := UserModule.Service.FindUserByClaims(claims); userErr == nil && user != nil {
-			c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromModel(user)})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"user": buildAuthUserDTOFromClaims(claims)})
+	// No Casdoor / claims-synthesis fallback. cs-user is the authoritative
+	// registry (ADR D1) — a JWT whose subject resolves to no row in the user
+	// service means the identity is not registered on this platform, and
+	// synthesising a user object from claims alone (the legacy path) would
+	// let unregistered Casdoor identities pass as legitimate users. Mirror
+	// /api/me's strict contract: 404 when the authenticated subject has no
+	// user record.
+	c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 }
 
 // GetMe godoc

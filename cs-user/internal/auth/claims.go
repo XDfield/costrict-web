@@ -46,6 +46,13 @@ type EnterpriseClaims struct {
 	UniversalID       string `json:"universal_id,omitempty"`
 	Name              string `json:"name,omitempty"`
 	PreferredUsername string `json:"preferred_username,omitempty"`
+	// ShortID is the platform-wide compact handle (e.g. "u-khGu8ddt") derived
+	// from SubjectID. Consumed verbatim by relying parties that need a stable,
+	// collision-resistant, charset-safe identifier — notably the Gitea fork's
+	// CoStrictJWT middleware, which uses it directly as the Gitea username
+	// (no further transformation). Distinct from PreferredUsername (display
+	// name) which carries no uniqueness / charset guarantees.
+	ShortID string `json:"short_id,omitempty"`
 	Email             string `json:"email,omitempty"`
 	Picture           string `json:"picture,omitempty"`
 	Owner             string `json:"owner,omitempty"`
@@ -145,6 +152,21 @@ type IssuanceParams struct {
 	Issuer string
 	// Subject is the user's stable subject_id (users.subject_id). Required.
 	Subject string
+	// ShortID is the platform-wide compact handle (users.short_id, e.g.
+	// "u-khGu8ddt"). Emitted verbatim as the `short_id` JWT claim for
+	// relying parties (Gitea fork auth) that key on it directly. Empty for
+	// users created before the short_id migration was backfilled.
+	ShortID string
+	// User is cs-user's canonical user record. When non-nil, profile-shaped
+	// claims (name, preferred_username, email, phone, picture, short_id) are
+	// sourced from this row with Identity as fallback. cs-user is the single
+	// source of truth for who the user IS — Identity fields (sourced from
+	// Casdoor via server's reissue-token call) describe how the user
+	// authenticated at the IdP, not their canonical profile, and Casdoor's
+	// `name` field in particular drifts (e.g. phone-registered users have
+	// name=phone-number, not their display name). Nil skips the override
+	// (legacy callers / synthetic issuance paths).
+	User *models.User
 	// Audience is the aud claim — relying parties that should accept the
 	// token. Empty slice means "no aud claim" (some validators reject this;
 	// populate when in doubt).
@@ -208,6 +230,7 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 	c := &EnterpriseClaims{
 		Issuer:        params.Issuer,
 		Subject:       params.Subject,
+		ShortID:       params.ShortID,
 		IssuedAt:      jwt.NewNumericDate(now),
 		NotBefore:     jwt.NewNumericDate(now),
 		Expiry:        jwt.NewNumericDate(now.Add(params.TTL)),
@@ -236,6 +259,39 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 		c.Provider = params.Identity.Provider
 		c.ProviderUserID = params.Identity.ProviderUserID
 		c.Phone = params.Identity.Phone
+	}
+
+	// cs-user's own user record is the canonical source for profile-shaped
+	// claims. Identity (sourced from Casdoor via server) carries IdP-stale
+	// values — phone-registered users in particular get name=phone-number,
+	// which is not a display name. When User is supplied, override name /
+	// preferred_username / email / phone / picture / short_id with cs-user's
+	// truth, keeping Identity only as fallback for fields cs-user doesn't
+	// store (universal_id stays sourced from Identity/Casdoor above since it
+	// is the cross-IdP join key, not a profile field).
+	if params.User != nil {
+		if params.User.ShortID != "" {
+			c.ShortID = params.User.ShortID
+		}
+		// name prefers display_name (admin-editable profile field) and falls
+		// back to username (unique login handle) so the claim is never empty.
+		if params.User.DisplayName != nil && *params.User.DisplayName != "" {
+			c.Name = *params.User.DisplayName
+		} else if params.User.Username != "" {
+			c.Name = params.User.Username
+		}
+		if params.User.Username != "" {
+			c.PreferredUsername = params.User.Username
+		}
+		if params.User.Email != nil && *params.User.Email != "" {
+			c.Email = *params.User.Email
+		}
+		if params.User.Phone != nil && *params.User.Phone != "" {
+			c.Phone = *params.User.Phone
+		}
+		if params.User.AvatarURL != nil && *params.User.AvatarURL != "" {
+			c.Picture = *params.User.AvatarURL
+		}
 	}
 
 	// universal_id is sourced from the Casdoor JWT (preferred — server's

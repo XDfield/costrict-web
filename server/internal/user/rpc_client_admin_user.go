@@ -45,6 +45,7 @@ import (
 // Locally declared (not imported from cs-user) per ADR D1.
 type AdminUser struct {
 	SubjectID    string  `json:"subject_id"`
+	ShortID      string  `json:"short_id"`
 	Username     string  `json:"username"`
 	DisplayName  *string `json:"display_name,omitempty"`
 	Email        *string `json:"email,omitempty"`

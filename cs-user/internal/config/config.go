@@ -24,8 +24,58 @@ type Config struct {
 	Postgres PostgresConfig
 	Internal InternalConfig
 	JWT      JWTConfig
+	Casdoor  CasdoorConfig
 	Tenant   TenantConfig
 	EventBus EventBusConfig
+}
+
+// CasdoorConfig backs the reissue-token handler's Casdoor JWT verification.
+// cs-user no longer trusts server-supplied parsed claims unconditionally:
+// when JWKSURL is configured, the handler pulls Casdoor's JWKS itself and
+// re-validates any raw Casdoor JWT forwarded by server (signed, exp, nbf,
+// iss, aud). Empty JWKSURL = verifier disabled (dev / pre-rollout); the
+// handler logs and falls through to the legacy trust path so a misconfig
+// never deadlocks login.
+//
+// FIXME(多租户 Casdoor): 当前 CasdoorConfig 是进程级全局——一台 cs-user 只能
+// 验证一个 Casdoor 实例签发的 JWT。多租户场景下每个租户对接自家 Casdoor 时，
+// 这套配置必须改成租户级别（来源是 tenant_configs.config_yaml 里的 Casdoor
+// 子段，参考 MULTI_TENANCY_DESIGN §9.3 / §12.1）。届时验签流程需要从"先验后
+// 查租户"调整为"peek JWT iss → 选 verifier → 验签 → 再查租户"，破掉顺序环。
+// 改造完成前此结构保持进程级单实例。详见历史讨论与 MULTI_TENANCY_DESIGN。
+type CasdoorConfig struct {
+	// Endpoint is Casdoor's base URL (origin only, no path), e.g.
+	// "https://casdoor.example.com". When JWKSURL is empty but Endpoint is
+	// set, the JWKS URL is derived as "<Endpoint>/.well-known/jwks" at load
+	// time (see loadCasdoorConfig). This matches the convention used by
+	// server/internal/middleware/jwks.go (NewJWKSProvider appends the same
+	// suffix to a base URL) so the two services stay consistent. Kept as a
+	// distinct field (not folded into JWKSURL) so future per-tenant
+	// refactoring can resolve it from tenant_configs without losing the
+	// discovery-style derivation. See the FIXME on this struct.
+	Endpoint string
+	// JWKSURL is Casdoor's /.well-known/jwks endpoint. When set explicitly
+	// via CS_USER_CASDOOR_JWKS_URL it overrides any derivation from Endpoint
+	// (operators point this at a proxy / non-default path when Casdoor is
+	// behind a custom route). Required for verification to engage — when
+	// neither JWKSURL nor Endpoint is set, the verifier is disabled.
+	JWKSURL string
+	// Issuer is the expected `iss` claim. When empty, the iss check is
+	// skipped (not recommended for production — set this to Casdoor's
+	// origin so a token minted by a misconfigured peer IdP can't pass).
+	Issuer string
+	// Audience is the list of allowed `aud` values. When empty, the aud
+	// check is skipped. Casdoor typically does not set aud on access
+	// tokens, so the default is empty.
+	Audience []string
+	// JWKSHTTPTimeout bounds the JWKS fetch. Default 5s — long enough for
+	// Casdoor round-trip on a slow link, short enough that a wedged
+	// Casdoor doesn't stall login past the gateway timeout.
+	JWKSHTTPTimeout time.Duration
+	// JWKSRefreshTTL is how long a fetched key set is reused before a
+	// background refresh. Default 15m. Unknown `kid` triggers an
+	// immediate refresh regardless of TTL (handled in the verifier).
+	JWKSRefreshTTL time.Duration
 }
 
 // EventBusConfig drives the Git Ownership Refactor Phase 2 outbox worker.
@@ -114,8 +164,11 @@ type JWTConfig struct {
 	// relying parties need to verify iss against a known origin.
 	Issuer string
 
-	// TTL is the time from issuance to expiry. Defaults to 1h. Parsed from
-	// the env var as a Go duration string ("1h", "30m", "3600s").
+	// TTL is the time from issuance to expiry. Defaults to 7d (168h) — long
+	// enough that relying parties (Gitea fork auth, app-ai-native) don't
+	// see constant re-issue churn in normal use, short enough to bound the
+	// blast radius of a leaked cookie. Parsed from the env var as a Go
+	// duration string ("168h", "7d" via ParseDuration-friendly forms, "30m").
 	TTL time.Duration
 
 	// DefaultAudience is the aud claim applied when the caller doesn't
@@ -129,7 +182,10 @@ type JWTConfig struct {
 // rather than reaching into config internals.
 const (
 	defaultJWTIssuer = "cs-user"
-	defaultJWTTTL    = 1 * time.Hour
+	defaultJWTTTL    = 7 * 24 * time.Hour
+
+	defaultCasdoorJWKSHTTPTimeout = 5 * time.Second
+	defaultCasdoorJWKSRefreshTTL  = 15 * time.Minute
 )
 
 // Load reads configuration from environment variables (prefixed CS_USER_).
@@ -156,7 +212,8 @@ func Load() (*Config, error) {
 		Internal: InternalConfig{
 			Token: os.Getenv("CS_USER_INTERNAL_TOKEN"),
 		},
-		JWT: jwtCfg,
+		JWT:     jwtCfg,
+		Casdoor: loadCasdoorConfig(),
 		Tenant: TenantConfig{
 			ApexDomains: loadApexDomains(os.Getenv("CS_USER_APEX_DOMAINS")),
 		},
@@ -290,4 +347,37 @@ func loadApexDomains(raw string) []string {
 		}
 	}
 	return out
+}
+
+// loadCasdoorConfig reads the Casdoor JWKS verification env vars. Empty
+// JWKSURL → verifier disabled (load returns a zero-value config; the
+// verifier struct treats empty JWKSURL as "off"). Optional knobs fall back
+// to safe defaults.
+//
+// JWKS URL resolution: explicit CS_USER_CASDOOR_JWKS_URL wins; when unset,
+// derive from CS_USER_CASDOOR_ENDPOINT as "<Endpoint>/.well-known/jwks"
+// (matches server/internal/middleware/jwks.go's base-URL convention so the
+// two services agree on the suffix). When both are empty the verifier stays
+// disabled — operators in dev / pre-rollout don't need to fill anything.
+func loadCasdoorConfig() CasdoorConfig {
+	endpoint := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ENDPOINT"))
+	jwksURL := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_JWKS_URL"))
+	if jwksURL == "" && endpoint != "" {
+		jwksURL = strings.TrimRight(endpoint, "/") + "/.well-known/jwks"
+	}
+	cfg := CasdoorConfig{
+		Endpoint:        endpoint,
+		JWKSURL:         jwksURL,
+		Issuer:          strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
+		JWKSHTTPTimeout: envDuration("CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT", defaultCasdoorJWKSHTTPTimeout),
+		JWKSRefreshTTL:  envDuration("CS_USER_CASDOOR_JWKS_REFRESH_TTL", defaultCasdoorJWKSRefreshTTL),
+	}
+	if audRaw := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_AUDIENCE")); audRaw != "" {
+		for _, aud := range strings.Split(audRaw, ",") {
+			if v := strings.TrimSpace(aud); v != "" {
+				cfg.Audience = append(cfg.Audience, v)
+			}
+		}
+	}
+	return cfg
 }
