@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -286,11 +287,14 @@ func (h *RecommendHandler) LogBehavior(c *gin.Context) {
 
 // FavoriteItem godoc
 // @Summary      Favorite item
-// @Description  Mark an item as favorited for the current user
+// @Description  Mark an item as favorited for the current user. Optional body
+// @Description  { "invokeMode": "auto" | "manual" } sets the per-user invoke
+// @Description  preference for skill-family items (defaults to "auto").
 // @Tags         behavior
 // @Produce      json
-// @Param        id   path      string  true  "Item ID"
-// @Success      200  {object}  object{favorited=boolean,created=boolean,favoriteCount=integer}
+// @Param        id           path      string  true   "Item ID"
+// @Param        invokeMode   body      object  false  "{ invokeMode: auto|manual }"
+// @Success      200  {object}  object{favorited=boolean,created=boolean,favoriteCount=integer,invokeMode=string}
 // @Failure      401  {object}  object{error=string}
 // @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
@@ -301,7 +305,28 @@ func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
 	if !ok {
 		return
 	}
-	count, created, err := h.behaviorSvc.FavoriteItem(c.Request.Context(), item.ID, uid)
+
+	// Optional body { "invokeMode": "auto" | "manual" }; empty body / missing field
+	// defaults to "auto" (backward compatible with clients that send no body).
+	var body struct {
+		InvokeMode string `json:"invokeMode"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+	}
+	invokeMode := body.InvokeMode
+	if invokeMode == "" {
+		invokeMode = "auto"
+	}
+	if invokeMode != "auto" && invokeMode != "manual" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid invokeMode (expected 'auto' or 'manual')"})
+		return
+	}
+
+	count, created, err := h.behaviorSvc.FavoriteItem(c.Request.Context(), item.ID, uid, invokeMode)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -311,6 +336,7 @@ func (h *RecommendHandler) FavoriteItem(c *gin.Context) {
 		"favorited":     true,
 		"created":       created,
 		"favoriteCount": count,
+		"invokeMode":    invokeMode,
 	})
 }
 
