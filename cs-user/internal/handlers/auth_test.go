@@ -1186,3 +1186,190 @@ func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// newVerifyEngine wires a minimal gin engine with only the verify-token route.
+// Mirrors newAuthAPI's pattern — handler-level testing without the full app
+// router. CasdoorVerifier + Signer are passed in so each test picks the
+// configured / unconfigured combination explicitly.
+func newVerifyEngine(api *AuthAPI) *gin.Engine {
+	r := gin.New()
+	r.POST("/api/internal/auth/verify", api.VerifyToken)
+	return r
+}
+
+// signEnterpriseJWT issues a cs-user-shaped JWT via the test signer —
+// exercises the local-verification fast path. Returns the raw JWT string.
+func signEnterpriseJWT(t *testing.T, s *auth.Signer, claims *auth.EnterpriseClaims) string {
+	t.Helper()
+	signed, err := s.SignJWT(claims, time.Now())
+	if err != nil {
+		t.Fatalf("SignJWT: %v", err)
+	}
+	return signed
+}
+
+// TestVerifyToken_CSUserToken verifies that a cs-user-signed JWT validates
+// via the local public key path (no JWKS round-trip) and surfaces
+// token_source="cs-user".
+func TestVerifyToken_CSUserToken(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	now := time.Now()
+	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
+		Issuer:   "test-issuer",
+		Subject:  "usr_alice",
+		ShortID:  "u-alice",
+		TenantID: "default",
+		TTL:      time.Hour,
+	}, now)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	claims.Email = "alice@example.com"
+	raw := signEnterpriseJWT(t, signer, claims)
+
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg()}
+	r := newVerifyEngine(api)
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp verifyTokenResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Active || resp.TokenSource != "cs-user" {
+		t.Errorf("active/source = %v/%q, want true/cs-user", resp.Active, resp.TokenSource)
+	}
+	if resp.Subject != "usr_alice" {
+		t.Errorf("sub = %q, want usr_alice", resp.Subject)
+	}
+	if resp.Email != "alice@example.com" {
+		t.Errorf("email = %q", resp.Email)
+	}
+}
+
+// TestVerifyToken_CasdoorToken verifies the fallback path: when the token is
+// NOT signed by cs-user, verification falls through to the Casdoor JWKS
+// verifier and returns token_source="casdoor".
+func TestVerifyToken_CasdoorToken(t *testing.T) {
+	signer, _ := newTestSigner(t) // cs-user path configured, but token won't match
+	v, casdoorKey, kid, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
+		"sub":          "casdoor-sub-1",
+		"universal_id": "uni-casdoor-1",
+		"name":         "Bob",
+		"email":        "bob@idp.example",
+		"exp":          time.Now().Add(5 * time.Minute).Unix(),
+	})
+
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
+	r := newVerifyEngine(api)
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp verifyTokenResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Active || resp.TokenSource != "casdoor" {
+		t.Errorf("active/source = %v/%q, want true/casdoor", resp.Active, resp.TokenSource)
+	}
+	if resp.Subject != "casdoor-sub-1" {
+		t.Errorf("sub = %q, want casdoor-sub-1", resp.Subject)
+	}
+	if resp.UniversalID != "uni-casdoor-1" {
+		t.Errorf("universal_id = %q", resp.UniversalID)
+	}
+}
+
+// TestVerifyToken_InvalidTokenReturns401 verifies the rejection contract: a
+// token that fails BOTH paths returns 401 (not introspection-style 200 +
+// active=false) so the gateway's standard auth-failure pipeline kicks in.
+// Body still carries active=false + error for callers that want structured
+// detail alongside the status.
+func TestVerifyToken_InvalidTokenReturns401(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	v, _, _, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
+	r := newVerifyEngine(api)
+
+	// Garbage that won't parse as either format.
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{
+		Token: "eyJhbGciOiJIUzI1NiJ9.not-a-real-token.badsignature",
+	})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	var resp struct {
+		Active bool   `json:"active"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Active {
+		t.Errorf("active = true, want false for invalid token")
+	}
+	if resp.Error != "invalid token" {
+		t.Errorf("error = %q, want \"invalid token\"", resp.Error)
+	}
+}
+
+// TestVerifyToken_NoVerifiersConfigured verifies the 503 path: when neither
+// signer nor Casdoor verifier is configured, the endpoint refuses with
+// "no token verifier configured" rather than pretending success.
+func TestVerifyToken_NoVerifiersConfigured(t *testing.T) {
+	api := &AuthAPI{JWT: defaultJWTCfg()} // Signer nil, CasdoorVerifier nil
+	r := newVerifyEngine(api)
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: "anything"})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+}
+
+// TestVerifyToken_MissingTokenBody verifies the 400 contract.
+func TestVerifyToken_MissingTokenBody(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg()}
+	r := newVerifyEngine(api)
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", map[string]any{})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestVerifyToken_ExpiredCSUserTokenReturns401 verifies that an expired
+// cs-user token does NOT silently succeed on the cs-user path (parser
+// enforces exp), the fallback to Casdoor is exercised, and the ultimate
+// two-path failure surfaces as 401.
+func TestVerifyToken_ExpiredCSUserTokenReturns401(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	v, _, _, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	// Token issued 2 hours ago with 1h TTL — already expired past the 10s
+	// leeway window.
+	past := time.Now().Add(-2 * time.Hour)
+	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
+		Issuer: "test-issuer", Subject: "usr_alice", TTL: time.Hour,
+	}, past)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	raw := signEnterpriseJWT(t, signer, claims)
+
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
+	r := newVerifyEngine(api)
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}

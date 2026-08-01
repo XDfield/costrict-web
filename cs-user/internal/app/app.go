@@ -251,6 +251,12 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 		Permissions:    deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)
+	// Gateway-facing token introspection. Mounted under /auth/* (not
+	// /users/*) since the operation is about token validity, not user data.
+	// Already inside the /api/internal group so X-Internal-Token gating
+	// applies. Order matters: try cs-user signature first, fall back to
+	// Casdoor JWKS — gateway gets one round-trip covering both formats.
+	rg.POST("/auth/verify", authAPI.VerifyToken)
 }
 
 // registerTenantRoutes wires POST /tenants/resolve-by-email (Phase B3b.2b-step2).

@@ -27,6 +27,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// ErrSignerDisabled is returned by VerifyJWT when the receiver is nil or has
+// no private key loaded — handlers surface this as 503 (config missing),
+// mirroring the Signer-not-configured branch of the JWKS handler.
+var ErrSignerDisabled = errors.New("auth: signer not configured")
+
 // Signer is the cs-user JWT signing primitive. Construct once at startup;
 // share across handlers. The RSA private key never leaves the struct.
 type Signer struct {
@@ -129,6 +134,55 @@ func (s *Signer) SignJWT(claims jwt.Claims, _ time.Time) (string, error) {
 		return "", fmt.Errorf("auth: sign JWT: %w", err)
 	}
 	return signed, nil
+}
+
+// VerifyJWT validates a cs-user-issued JWT against the signer's own public
+// key. Used by the gateway-facing /api/internal/auth/verify endpoint to
+// authenticate "new" (post-A7 takeover) tokens without round-tripping
+// through JWKS — the in-process public key is the same one exposed at
+// /.well-known/jwks, but local verification saves an HTTP hop and is
+// independent of JWKS cache TTL.
+//
+// issuer, when non-empty, is enforced via jwt.WithIssuer — typically the
+// caller passes cfg.JWT.Issuer so tokens from a different iss are rejected
+// even if the signature happens to validate (defence-in-depth against
+// cross-issuer confusion if a key is ever shared).
+//
+// Returns the parsed EnterpriseClaims on success. A nil receiver / missing
+// key returns ErrSignerDisabled (handler maps to 503); any verification
+// failure (bad signature, expired, wrong alg, malformed, iss mismatch)
+// returns the underlying jwt/v5 error so callers can fall through to a
+// legacy-verifier path.
+func (s *Signer) VerifyJWT(rawJWT, issuer string) (*EnterpriseClaims, error) {
+	if s == nil || s.privateKey == nil {
+		return nil, ErrSignerDisabled
+	}
+	if rawJWT == "" {
+		return nil, errors.New("empty token")
+	}
+	claims := &EnterpriseClaims{}
+	pub := &s.privateKey.PublicKey
+	parserOpts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(10 * time.Second),
+	}
+	if issuer != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(issuer))
+	}
+	_, err := jwt.ParseWithClaims(rawJWT, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected alg %v", t.Header["alg"])
+		}
+		// kid is informational only — cs-user has a single key, so we
+		// always verify against it regardless of the kid header value.
+		// A mismatched kid on a valid signature is not a security event.
+		return pub, nil
+	}, parserOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 // JWKS returns the JSON-serializable key set exposing the public key.

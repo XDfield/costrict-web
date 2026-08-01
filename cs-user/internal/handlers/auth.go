@@ -382,3 +382,125 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	})
 }
 
+// verifyTokenRequest is the body shape for POST /api/internal/auth/verify.
+// The gateway forwards whatever JWT the client carried — could be a cs-user
+// token (new) or a Casdoor token (legacy). cs-user tries the new format
+// first, falls back to Casdoor JWKS verification.
+type verifyTokenRequest struct {
+	// Token is the raw JWT carried by the client (typically in
+	// Authorization: Bearer <token>). Required.
+	Token string `json:"token" binding:"required"`
+}
+
+// verifyTokenResponse is the unified introspection shape returned to the
+// gateway. Mirrors RFC 7662 (OAuth2 Token Introspection) loosely — `active`
+// signals validity, the rest are normalized claims the gateway can route on
+// without re-implementing two different JWT parsers. `token_source` tells
+// the gateway which path validated, useful for migration telemetry.
+type verifyTokenResponse struct {
+	Active      bool      `json:"active"`
+	TokenSource string    `json:"token_source,omitempty"` // "cs-user" | "casdoor"
+	Subject     string    `json:"sub,omitempty"`
+	UniversalID string    `json:"universal_id,omitempty"`
+	ShortID     string    `json:"short_id,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Email       string    `json:"email,omitempty"`
+	Phone       string    `json:"phone,omitempty"`
+	TenantID    string    `json:"tenant_id,omitempty"`
+	TenantSlug  string    `json:"tenant_slug,omitempty"`
+	ExpiresAt   time.Time `json:"exp,omitempty"`
+	IssuedAt    time.Time `json:"iat,omitempty"`
+	Issuer      string    `json:"iss,omitempty"`
+}
+
+// VerifyToken godoc
+//
+//	@Summary		Verify a client JWT (gateway introspection)
+//	@Description	Gateway-facing token verification. Accepts either a cs-user-signed JWT (new format, post-A7) or a Casdoor-issued JWT (legacy). cs-user tries the new format first via its local RSA public key, then falls back to Casdoor JWKS verification. Returns normalized claims on success, 401 on any verification failure (token failed both paths). Requires the X-Internal-Token shared secret — this endpoint is consumed by the gateway only, never exposed publicly. Returns 400 on missing token, 503 when neither verifier is configured.
+//	@Tags			auth
+//	@Accept			json
+//	@Produce		json
+//	@Security		InternalToken
+//	@Param			body	body		verifyTokenRequest	true	"Raw JWT to verify"
+//	@Success		200		{object}	verifyTokenResponse
+//	@Failure		400		{object}	object{error=string}
+//	@Failure		401		{object}	object{active=boolean,error=string}
+//	@Failure		503		{object}	object{error=string}
+//	@Router			/api/internal/auth/verify [post]
+func (a *AuthAPI) VerifyToken(c *gin.Context) {
+	var req verifyTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+
+	// Path 1: try cs-user-signed token via local public key. Fast path —
+	// no JWKS fetch, no network hop. Signer is optional (503 when nil, same
+	// as JWKS handler); ErrSignerDisabled is treated as "skip this path".
+	if a.Signer != nil {
+		claims, err := a.Signer.VerifyJWT(req.Token, a.JWT.Issuer)
+		if err == nil && claims != nil {
+			c.JSON(http.StatusOK, verifyTokenResponse{
+				Active:      true,
+				TokenSource: "cs-user",
+				Subject:     claims.Subject,
+				UniversalID: claims.UniversalID,
+				ShortID:     claims.ShortID,
+				Name:        claims.Name,
+				Email:       claims.Email,
+				Phone:       claims.Phone,
+				TenantID:    claims.TenantID,
+				TenantSlug:  claims.TenantSlug,
+				ExpiresAt:   claims.Expiry.Time,
+				IssuedAt:    claims.IssuedAt.Time,
+				Issuer:      claims.Issuer,
+			})
+			return
+		}
+		// ErrSignerDisabled falls through to Casdoor path; any other verify
+		// error ALSO falls through — the token might be a legacy Casdoor
+		// JWT that legitimately fails cs-user signature check. Logged at
+		// info (not warn) because the fallback path is the expected route
+		// for legacy tokens during the migration window.
+		if !errors.Is(err, auth.ErrSignerDisabled) {
+			logger.Info("[verify-token] cs-user path failed, trying casdoor: %v", err)
+		}
+	}
+
+	// Path 2: legacy Casdoor JWT via Casdoor JWKS.
+	if a.CasdoorVerifier == nil {
+		// Neither verifier is configured — operator misconfig. 503 matches
+		// the reissue-token handler's stance in the same state.
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no token verifier configured"})
+		return
+	}
+	verified, err := a.CasdoorVerifier.Verify(c.Request.Context(), req.Token)
+	if err != nil {
+		if errors.Is(err, auth.ErrCasdoorVerifierDisabled) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "casdoor verifier not configured"})
+			return
+		}
+		// Token failed BOTH paths — return 401 so the gateway's standard
+		// auth-failure pipeline kicks in (reject / challenge / drop). Logged
+		// at warn for ops visibility since one expected cause is "client
+		// carrying a token from a now-unsupported issuer" — worth surfacing.
+		logger.Warn("[verify-token] token failed both cs-user and casdoor paths: %v", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token", "active": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, verifyTokenResponse{
+		Active:      true,
+		TokenSource: "casdoor",
+		Subject:     verified.Sub,
+		UniversalID: verified.UniversalID,
+		Name:        verified.Name,
+		Email:       verified.Email,
+		Phone:       verified.Phone,
+		// Casdoor-side `iss` is not surfaced here — the gateway already
+		// knows the configured Casdoor issuer, and token_source="casdoor"
+		// is the discriminator that matters. models.JWTClaims carries `jti`
+		// in ID, not iss, so don't try to repurpose it.
+	})
+}
+
