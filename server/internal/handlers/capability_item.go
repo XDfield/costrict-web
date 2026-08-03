@@ -208,6 +208,11 @@ type createItemRequest struct {
 	// ParentPluginID links a promoted sub-skill back to its parent plugin item (optional).
 	ParentPluginID *string
 	IsBuiltIn      bool
+	// Git backing (optional). Empty ContentBackend keeps the DB default ('db'),
+	// i.e. content + capability_assets stay the source of truth.
+	SourceRepoURL  string
+	SourceRepoRef  string
+	ContentBackend string
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -433,6 +438,9 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		IsBuiltIn:         req.IsBuiltIn,
 		Status:            "active",
 		CreatedBy:         req.CreatedBy,
+		SourceRepoURL:     req.SourceRepoURL,
+		SourceRepoRef:     req.SourceRepoRef,
+		ContentBackend:    req.ContentBackend,
 	}
 
 	if item.Metadata == nil || len(item.Metadata) == 0 {
@@ -551,9 +559,12 @@ type ItemResponse struct {
 	Favorited           bool                        `json:"favorited"`
 	IsBuiltIn           bool                        `json:"isBuiltIn"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
-	ForkCount           int                         `json:"forkCount"`              // 本 item 被 fork 的次数
-	MyForkItemID        *string                     `json:"myForkItemId,omitempty"` // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
-	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`    // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
+	ForkCount           int                         `json:"forkCount"`                // 本 item 被 fork 的次数
+	MyForkItemID        *string                     `json:"myForkItemId,omitempty"`   // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
+	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`      // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
+	ContentBackend      string                      `json:"contentBackend,omitempty"` // db | git — 内容真相源；git 时正文/文件树在仓库里
+	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`  // 仅 git-backed：仓库地址
+	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`  // 仅 git-backed：分支
 }
 
 type ItemAssetsResponse struct {
@@ -710,6 +721,13 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		ExperienceScore:     item.ExperienceScore,
 		Tags:                item.Tags,
 		CurrentVersionLabel: services.NewContentHashService().BuildVersionLabel(item.CurrentRevision),
+		ContentBackend:      item.ContentBackend,
+	}
+	// Repo coordinate only makes sense for git-backed items; db-backed rows
+	// carry the column defaults ('' / 'main') which would read as noise.
+	if isGitBacked(&item) {
+		resp.SourceRepoURL = item.SourceRepoURL
+		resp.SourceRepoRef = item.SourceRepoRef
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
@@ -2560,20 +2578,34 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		return
 	}
 
+	// Git-backed fork: a marketplace plugin mirrored on the tenant's Gitea is
+	// forked into the user's own Gitea namespace instead of being copied row by
+	// row. Runs BEFORE any DB write so a Gitea failure leaves nothing behind
+	// (see capability_item_fork_git.go). Returns (nil, nil) for every item that
+	// stays on the legacy DB path.
+	gitPlan, gitErr := planGitBackedFork(c, userID, src)
+	if gitErr != nil {
+		c.JSON(gitErr.status, gitErr.body)
+		return
+	}
+
 	// Read source text assets to copy (IDs/ItemID re-assigned by persistNewItem).
-	var srcAssets []models.CapabilityAsset
-	h.db.Where("item_id = ?", src.ID).Order("rel_path asc").Find(&srcAssets)
-	forkedAssets := make([]models.CapabilityAsset, 0, len(srcAssets))
-	for _, a := range srcAssets {
-		forkedAssets = append(forkedAssets, models.CapabilityAsset{
-			RelPath:        a.RelPath,
-			TextContent:    a.TextContent,
-			StorageBackend: a.StorageBackend,
-			StorageKey:     a.StorageKey,
-			MimeType:       a.MimeType,
-			FileSize:       a.FileSize,
-			ContentSHA:     a.ContentSHA,
-		})
+	// Git-backed forks store metadata only — their content lives in the repo.
+	forkedAssets := make([]models.CapabilityAsset, 0)
+	if gitPlan == nil {
+		var srcAssets []models.CapabilityAsset
+		h.db.Where("item_id = ?", src.ID).Order("rel_path asc").Find(&srcAssets)
+		for _, a := range srcAssets {
+			forkedAssets = append(forkedAssets, models.CapabilityAsset{
+				RelPath:        a.RelPath,
+				TextContent:    a.TextContent,
+				StorageBackend: a.StorageBackend,
+				StorageKey:     a.StorageKey,
+				MimeType:       a.MimeType,
+				FileSize:       a.FileSize,
+				ContentSHA:     a.ContentSHA,
+			})
+		}
 	}
 
 	// Read source tags to carry over.
@@ -2595,6 +2627,12 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	// source never collide on the base slug and exhaust the small retry range.
 	uidSum := sha256.Sum256([]byte(userID))
 	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
+
+	// Git-backed forks carry the repo coordinate instead of copied content.
+	var sourceRepoURL, sourceRepoRef, contentBackend string
+	if gitPlan != nil {
+		sourceRepoURL, sourceRepoRef, contentBackend = gitPlan.RepoURL, gitPlan.RepoRef, contentBackendGit
+	}
 
 	var item *models.CapabilityItem
 	var err error
@@ -2626,6 +2664,9 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			CreatedBy:         userID,
 			ForkedFromItemID:  &srcItemID,
 			ForkedFromOwnerID: &srcOwnerID,
+			SourceRepoURL:     sourceRepoURL,
+			SourceRepoRef:     sourceRepoRef,
+			ContentBackend:    contentBackend,
 		}, createItemAssets{Records: records})
 		if err == nil {
 			break
@@ -2658,7 +2699,12 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		item.Descriptions = src.Descriptions
 	}
 
-	enqueueScanAsync(item.ID, 1, "fork")
+	// Git-backed forks have no DB content to scan — enqueueing would only
+	// produce a permanently unscannable job. Their scanning gap is tracked in
+	// the git-backing design (§6) and surfaced in the UI.
+	if gitPlan == nil {
+		enqueueScanAsync(item.ID, 1, "fork")
+	}
 
 	// Carry over tags.
 	if h.tagSvc != nil && len(tagIDs) > 0 {
@@ -2671,7 +2717,9 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	// (parent_plugin_id). Fork those too so the user gets their own editable
 	// copies, re-linked to the new plugin fork. Best-effort: per-child failures
 	// are logged and skipped — the plugin fork itself already succeeded.
-	if src.ItemType == "plugin" {
+	// Git-backed forks skip this: the repo already carries every sub-asset, so
+	// duplicating them as DB rows would create a second, diverging truth.
+	if src.ItemType == "plugin" && gitPlan == nil {
 		h.forkPluginChildren(srcItemID, item.ID, userID)
 	}
 

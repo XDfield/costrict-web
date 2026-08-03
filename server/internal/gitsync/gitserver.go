@@ -43,6 +43,15 @@ type Repo struct {
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
 	Private  bool   `json:"private"`
+	// DefaultBranch is the repo's HEAD branch ("main" on repos we create).
+	// Consumed by ForkRepo callers that persist the forked repo's ref.
+	DefaultBranch string `json:"default_branch"`
+	// Fork / Parent describe this repo's lineage. ForkRepo needs them to tell
+	// "this is already my fork of that source" apart from "an unrelated repo of
+	// mine happens to share the source's bare name" — Gitea answers both with
+	// the same 409, so the name alone cannot distinguish them.
+	Fork   bool  `json:"fork"`
+	Parent *Repo `json:"parent"`
 }
 
 // CreateRepoOptions is the input shape for CreateRepo. Mirrors Gitea's

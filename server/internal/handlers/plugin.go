@@ -240,6 +240,22 @@ func DownloadPluginZip(c *gin.Context) {
 		}
 	}
 
+	// Git-backed plugins keep no assets in the DB — zipping them would yield a
+	// one-file archive that looks like a successful download but isn't the
+	// plugin. Fail loudly and hand back the repo coordinate instead. Serving
+	// the real bundle from Gitea's archive endpoint belongs to the follow-up
+	// git-backing task.
+	if isGitBacked(&item) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      "This plugin is stored in git; download it from its repository instead",
+			"error_code": "GIT_BACKED_ITEM",
+			"repoUrl":    item.SourceRepoURL,
+			"repoRef":    item.SourceRepoRef,
+			"archiveUrl": gitArchiveURL(item.SourceRepoURL, item.SourceRepoRef),
+		})
+		return
+	}
+
 	var assets []models.CapabilityAsset
 	if err := db.Where("item_id = ?", item.ID).Find(&assets).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
