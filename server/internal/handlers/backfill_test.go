@@ -195,5 +195,6 @@ func TestBackfillHandler_ClampsMaxUsers(t *testing.T) {
 func newRealProvisionService(t *testing.T, db *gorm.DB) *gitsync.UserProvisionService {
 	t.Helper()
 	resolver := gitserver.NewDBResolver(db)
-	return gitsync.NewUserProvisionService(db, resolver, zap.NewNop())
+	// crypto=nil: these tests never mint PATs, only user accounts.
+	return gitsync.NewUserProvisionService(db, resolver, nil, zap.NewNop())
 }
