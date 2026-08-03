@@ -162,17 +162,18 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 	if adminCli == nil {
 		return unavailable("git server is not usable")
 	}
-	candidates := make([][2]string, 0, 3)
+	candidates := make([]repoCandidate, 0, 3)
 	if srcRepoOK {
-		candidates = append(candidates, [2]string{srcRepoOwner, srcRepoName})
+		// Persisted coordinate — already verified when it was written.
+		candidates = append(candidates, repoCandidate{srcRepoOwner, srcRepoName, true})
 	}
 	if src.Slug != "" {
-		candidates = append(candidates, [2]string{pluginGitMirrorOwner(), src.Slug})
+		candidates = append(candidates, repoCandidate{pluginGitMirrorOwner(), src.Slug, false})
 	}
 	if hasMarketplace {
-		candidates = append(candidates, [2]string{mpOwner, mpRepo})
+		candidates = append(candidates, repoCandidate{mpOwner, mpRepo, false})
 	}
-	srcOwner, srcName, srcBranch, err := locateGiteaSourceRepo(ctx, adminCli, candidates)
+	srcOwner, srcName, srcBranch, err := locateGiteaSourceRepo(ctx, adminCli, candidates, pluginNameOf(src.Metadata))
 	if err != nil {
 		if errors.Is(err, errNoGiteaMirror) {
 			return unavailable("its repository was not found on the git server")
@@ -213,6 +214,20 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		TargetOwner: binding.GitUsername,
 	})
 	if err != nil {
+		// A name clash with a repo that isn't a fork of this source is not a
+		// transient failure: the user's namespace holds something we must not
+		// touch, and retrying can never succeed. Give it its own code so the UI
+		// can tell them to rename/remove that repo instead of retrying forever.
+		if errors.Is(err, gitsync.ErrUsernameTaken) {
+			return nil, &httpErr{
+				status: http.StatusConflict,
+				body: gin.H{
+					"error":      "a repository of that name already exists in your git namespace and is not a fork of this item; rename or remove it, then try again",
+					"error_code": "GIT_FORK_NAME_TAKEN",
+					"repoName":   srcName,
+				},
+			}
+		}
 		return nil, &httpErr{
 			status: http.StatusBadGateway,
 			body: gin.H{
@@ -277,28 +292,103 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 //
 // Returns errNoGiteaMirror when no candidate exists; any other error is a real
 // lookup failure and must not be mistaken for "not mirrored".
-func locateGiteaSourceRepo(ctx context.Context, cli *gitsync.Client, candidates [][2]string) (owner, name, defaultBranch string, err error) {
+func locateGiteaSourceRepo(
+	ctx context.Context, cli *gitsync.Client, candidates []repoCandidate, wantPlugin string,
+) (owner, name, defaultBranch string, err error) {
 	seen := map[string]bool{}
 	for _, cand := range candidates {
-		if cand[0] == "" || cand[1] == "" {
+		if cand.owner == "" || cand.name == "" {
 			continue
 		}
-		key := cand[0] + "/" + cand[1]
+		key := cand.owner + "/" + cand.name
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 
-		repo, lookupErr := cli.GetRepo(ctx, cand[0], cand[1])
+		repo, lookupErr := cli.GetRepo(ctx, cand.owner, cand.name)
 		if lookupErr != nil {
 			return "", "", "", lookupErr
 		}
 		if repo == nil {
 			continue // 404 — try the next candidate
 		}
-		return cand[0], cand[1], repo.DefaultBranch, nil
+		// A guessed coordinate that exists is not proof it belongs to THIS item:
+		// the namespace may hold an unrelated repo of the same name. Confirm via
+		// the plugin manifest before forking somebody else's content.
+		if !cand.trusted && !repoManifestMatches(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin) {
+			continue
+		}
+		return cand.owner, cand.name, repo.DefaultBranch, nil
 	}
 	return "", "", "", errNoGiteaMirror
+}
+
+// repoCandidate is a coordinate to probe. trusted marks a coordinate we already
+// verified and persisted (the item's own source_repo_url); untrusted ones are
+// guesses from naming conventions and must be confirmed against the manifest.
+type repoCandidate struct {
+	owner   string
+	name    string
+	trusted bool
+}
+
+// pluginManifestPaths are the marketplace layouts a mirrored plugin may use.
+var pluginManifestPaths = []string{".claude-plugin/plugin.json", ".plugin.json", "plugin.json"}
+
+// repoManifestMatches reports whether the repo's plugin manifest names the
+// plugin we're looking for.
+//
+// Verdict when no manifest can be read: ACCEPT, with a warning. Being strict
+// here would break mirrors that use a layout we don't know, turning a working
+// fork into a silent DB-copy fallback. The check exists to catch the realistic
+// failure — a name collision with a repo that IS a plugin but a different one —
+// and that case does yield a readable, mismatching manifest.
+func repoManifestMatches(ctx context.Context, cli *gitsync.Client, owner, name, branch, wantPlugin string) bool {
+	if wantPlugin == "" {
+		return true // nothing to compare against
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	for _, path := range pluginManifestPaths {
+		raw, err := cli.ReadFile(ctx, owner, name, branch, path)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		var manifest struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &manifest) != nil || manifest.Name == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(manifest.Name), wantPlugin) {
+			return true
+		}
+		log.Printf("fork: repo %s/%s holds plugin %q, not %q — skipping candidate",
+			owner, name, manifest.Name, wantPlugin)
+		return false
+	}
+	log.Printf("fork: repo %s/%s has no readable plugin manifest; accepting %q on name match alone",
+		owner, name, wantPlugin)
+	return true
+}
+
+// pluginNameOf reads metadata.install.plugin_name — the marketplace identifier
+// a mirrored repo's manifest should carry.
+func pluginNameOf(metadata datatypes.JSON) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	var meta struct {
+		Install struct {
+			PluginName string `json:"plugin_name"`
+		} `json:"install"`
+	}
+	if json.Unmarshal(metadata, &meta) != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Install.PluginName)
 }
 
 // splitRepoURL extracts the owner/name pair from a stored repo URL

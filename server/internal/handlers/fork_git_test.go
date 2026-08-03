@@ -8,6 +8,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ type fakeForkGitea struct {
 	adminToken string
 	// repos holds "owner/name" → default branch.
 	repos map[string]string
+	// manifests holds "owner/name" → the plugin name its manifest declares,
+	// backing the contents endpoint used to verify a guessed mirror.
+	manifests map[string]string
 	// forkParents holds "owner/name" → parent "owner/name", mirroring Gitea's
 	// `parent` payload. ForkRepo's conflict recovery verifies lineage through
 	// it, so a repo listed here reads as "a fork of that source".
@@ -59,6 +63,7 @@ func newFakeForkGitea(adminToken string) *fakeForkGitea {
 		adminToken:      adminToken,
 		repos:           map[string]string{},
 		forkParents:     map[string]string{},
+		manifests:       map[string]string{},
 		forkCreatesRepo: true,
 	}
 }
@@ -111,6 +116,29 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 501, "name": parts[1], "full_name": "10001/" + parts[1],
 			"default_branch": branch, "private": false,
+		})
+		return
+	}
+
+	// GET /repos/{owner}/{repo}/contents/{path} — plugin manifest lookup used to
+	// confirm a guessed mirror coordinate really holds the plugin we want.
+	if r.Method == http.MethodGet && strings.Contains(path, "/contents/") {
+		repoAndPath := strings.TrimPrefix(path, "/repos/")
+		idx := strings.Index(repoAndPath, "/contents/")
+		repoName := repoAndPath[:idx]
+		f.mu.Lock()
+		plugin := f.manifests[repoName]
+		f.mu.Unlock()
+		if plugin == "" {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
+		body, _ := json.Marshal(map[string]string{"name": plugin})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"encoding": "base64",
+			"content":  base64.StdEncoding.EncodeToString(body),
 		})
 		return
 	}
@@ -402,6 +430,35 @@ func TestForkItem_Git_PrefersMirrorSlugOverUpstreamRepo(t *testing.T) {
 	}
 	if fx.gitea.forkCalls[0].srcOwner != "costrict-plugins-repo" {
 		t.Errorf("fork source owner: want the mirror, got %q", fx.gitea.forkCalls[0].srcOwner)
+	}
+}
+
+// The mirror coordinate is a guess from the naming convention, so a repo that
+// merely shares the slug is not proof: if its manifest names a DIFFERENT
+// plugin, forking it would hand the user somebody else's content. The guess
+// must be rejected and the next candidate tried.
+func TestForkItem_Git_SkipsMirrorHoldingADifferentPlugin(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-imp", "common-name", "upstream-org/real-mirror")
+	// A same-slug repo exists in the mirror namespace, but it holds another plugin.
+	fx.gitea.repos["costrict-plugins-repo/common-name"] = "main"
+	fx.gitea.manifests["costrict-plugins-repo/common-name"] = "some-other-plugin"
+	// The upstream coordinate is the genuine one (seedPluginSource uses plugin_name "p").
+	fx.gitea.repos["upstream-org/real-mirror"] = "main"
+	fx.gitea.manifests["upstream-org/real-mirror"] = "p"
+
+	w := forkReq(newForkRouter("bob"), "plug-imp")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	if len(fx.gitea.forkCalls) == 0 {
+		t.Fatal("no fork was attempted")
+	}
+	if got := fx.gitea.forkCalls[0].srcOwner + "/" + fx.gitea.forkCalls[0].srcRepo; got != "upstream-org/real-mirror" {
+		t.Errorf("must skip the impostor and fork the real mirror, forked %q instead", got)
 	}
 }
 
