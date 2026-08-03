@@ -212,6 +212,7 @@ type createItemRequest struct {
 	// i.e. content + capability_assets stay the source of truth.
 	SourceRepoURL  string
 	SourceRepoRef  string
+	SourceRepoPath string
 	ContentBackend string
 }
 
@@ -440,6 +441,7 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		CreatedBy:         req.CreatedBy,
 		SourceRepoURL:     req.SourceRepoURL,
 		SourceRepoRef:     req.SourceRepoRef,
+		SourceRepoPath:    req.SourceRepoPath,
 		ContentBackend:    req.ContentBackend,
 	}
 
@@ -565,6 +567,7 @@ type ItemResponse struct {
 	ContentBackend      string                      `json:"contentBackend,omitempty"` // db | git — 内容真相源；git 时正文/文件树在仓库里
 	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`  // 仅 git-backed：仓库地址
 	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`  // 仅 git-backed：分支
+	SourceRepoPath      string                      `json:"sourceRepoPath,omitempty"` // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
 }
 
 type ItemAssetsResponse struct {
@@ -728,6 +731,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 	if isGitBacked(&item) {
 		resp.SourceRepoURL = item.SourceRepoURL
 		resp.SourceRepoRef = item.SourceRepoRef
+		resp.SourceRepoPath = item.SourceRepoPath
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
@@ -2629,9 +2633,10 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
 
 	// Git-backed forks carry the repo coordinate instead of copied content.
-	var sourceRepoURL, sourceRepoRef, contentBackend string
+	var sourceRepoURL, sourceRepoRef, sourceRepoPath, contentBackend string
 	if gitPlan != nil {
 		sourceRepoURL, sourceRepoRef, contentBackend = gitPlan.RepoURL, gitPlan.RepoRef, contentBackendGit
+		sourceRepoPath = gitPlan.RepoPath
 	}
 
 	var item *models.CapabilityItem
@@ -2666,6 +2671,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			ForkedFromOwnerID: &srcOwnerID,
 			SourceRepoURL:     sourceRepoURL,
 			SourceRepoRef:     sourceRepoRef,
+			SourceRepoPath:    sourceRepoPath,
 			ContentBackend:    contentBackend,
 		}, createItemAssets{Records: records})
 		if err == nil {

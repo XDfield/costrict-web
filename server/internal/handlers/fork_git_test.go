@@ -38,6 +38,11 @@ type fakeForkGitea struct {
 	// manifests holds "owner/name" → the plugin name its manifest declares,
 	// backing the contents endpoint used to verify a guessed mirror.
 	manifests map[string]string
+	// manifestPaths pins "owner/name" → the single repo-relative path its
+	// manifest is served at; every other path 404s the way a real repo would.
+	// Unset means "served at whichever path is asked for", which is what the
+	// tests that only care about the name verdict want.
+	manifestPaths map[string]string
 	// forkParents holds "owner/name" → parent "owner/name", mirroring Gitea's
 	// `parent` payload. ForkRepo's conflict recovery verifies lineage through
 	// it, so a repo listed here reads as "a fork of that source".
@@ -64,6 +69,7 @@ func newFakeForkGitea(adminToken string) *fakeForkGitea {
 		repos:           map[string]string{},
 		forkParents:     map[string]string{},
 		manifests:       map[string]string{},
+		manifestPaths:   map[string]string{},
 		forkCreatesRepo: true,
 	}
 }
@@ -126,10 +132,12 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		repoAndPath := strings.TrimPrefix(path, "/repos/")
 		idx := strings.Index(repoAndPath, "/contents/")
 		repoName := repoAndPath[:idx]
+		filePath := repoAndPath[idx+len("/contents/"):]
 		f.mu.Lock()
 		plugin := f.manifests[repoName]
+		wantPath := f.manifestPaths[repoName]
 		f.mu.Unlock()
-		if plugin == "" {
+		if plugin == "" || (wantPath != "" && wantPath != filePath) {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 			return
 		}
@@ -321,6 +329,7 @@ type gitForkResp struct {
 	ContentBackend string `json:"contentBackend"`
 	SourceRepoURL  string `json:"sourceRepoUrl"`
 	SourceRepoRef  string `json:"sourceRepoRef"`
+	SourceRepoPath string `json:"sourceRepoPath"`
 }
 
 // ---------------------------------------------------------------- happy path
@@ -459,6 +468,121 @@ func TestForkItem_Git_SkipsMirrorHoldingADifferentPlugin(t *testing.T) {
 	}
 	if got := fx.gitea.forkCalls[0].srcOwner + "/" + fx.gitea.forkCalls[0].srcRepo; got != "upstream-org/real-mirror" {
 		t.Errorf("must skip the impostor and fork the real mirror, forked %q instead", got)
+	}
+}
+
+// --------------------------------------------------------- main file probe
+
+// The "edit in Gitea" hand-off links straight at the plugin manifest, and Gitea
+// 404s on a path that isn't there — so the path must be the one the repo really
+// serves. The catalog's source_path (.plugin.json) is no substitute: mirrored
+// repos overwhelmingly use .claude-plugin/plugin.json.
+func TestForkItem_Git_PersistsProbedManifestPath(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-path", "layout-nested", "costrict-plugins-repo/layout-nested")
+	fx.gitea.repos["costrict-plugins-repo/layout-nested"] = "main"
+	fx.gitea.manifests["costrict-plugins-repo/layout-nested"] = "p"
+	fx.gitea.manifestPaths["costrict-plugins-repo/layout-nested"] = ".claude-plugin/plugin.json"
+
+	w := forkReq(newForkRouter("bob"), "plug-path")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.SourceRepoPath != ".claude-plugin/plugin.json" {
+		t.Errorf("sourceRepoPath: want the probed path, got %q", resp.SourceRepoPath)
+	}
+	var stored models.CapabilityItem
+	database.GetDB().First(&stored, "id = ?", resp.ID)
+	if stored.SourceRepoPath != ".claude-plugin/plugin.json" {
+		t.Errorf("stored source_repo_path: got %q", stored.SourceRepoPath)
+	}
+}
+
+// A repo using the flat layout is probed down the candidate list, so the path
+// recorded is the second one, not the first that was tried.
+func TestForkItem_Git_ProbeFallsThroughToFlatLayout(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-flat", "layout-flat", "costrict-plugins-repo/layout-flat")
+	fx.gitea.repos["costrict-plugins-repo/layout-flat"] = "main"
+	fx.gitea.manifests["costrict-plugins-repo/layout-flat"] = "p"
+	fx.gitea.manifestPaths["costrict-plugins-repo/layout-flat"] = "plugin.json"
+
+	w := forkReq(newForkRouter("bob"), "plug-flat")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.SourceRepoPath != "plugin.json" {
+		t.Errorf("sourceRepoPath: want plugin.json, got %q", resp.SourceRepoPath)
+	}
+}
+
+// An unreadable manifest must stay a non-event: the fork still succeeds (that
+// "accept on name match alone" fallback keeps unknown mirror layouts working),
+// it just records no path, and the UI falls back to the repo home page.
+func TestForkItem_Git_NoManifestLeavesPathEmptyAndStillForks(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-nopath", "layout-unknown", "costrict-plugins-repo/layout-unknown")
+	fx.gitea.repos["costrict-plugins-repo/layout-unknown"] = "main"
+	// No manifest entry at all: every contents lookup 404s.
+
+	w := forkReq(newForkRouter("bob"), "plug-nopath")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("an undetectable manifest must not block the fork: %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.ContentBackend != "git" {
+		t.Errorf("fork must stay git-backed, got %q", resp.ContentBackend)
+	}
+	if resp.SourceRepoPath != "" {
+		t.Errorf("sourceRepoPath: want empty, got %q", resp.SourceRepoPath)
+	}
+}
+
+// Forking a fork probes the item's own (trusted) repo too — a trusted
+// coordinate skips the *verdict*, not the path lookup, otherwise every fork of
+// a fork would lose the edit link.
+func TestForkItem_Git_ProbesTrustedCoordinateForPath(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "carol", "10001", true)
+	if err := database.GetDB().Create(&models.CapabilityItem{
+		ID: "fork-src3", RegistryID: PublicRegistryID, RepoID: "public", Slug: "plug-fork-2345",
+		ItemType: "plugin", Name: "Bob's fork", Descriptions: datatypes.JSON([]byte(`{}`)),
+		Content: "# summary", Metadata: datatypes.JSON([]byte(`{}`)), SourcePath: ".plugin.json",
+		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
+		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
+	}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	fx.gitea.repos["10002/plug"] = "main"
+	// Metadata carries no plugin_name, so there is nothing to match against —
+	// the probe runs purely to learn the path.
+	fx.gitea.manifests["10002/plug"] = "whatever"
+	fx.gitea.manifestPaths["10002/plug"] = ".claude-plugin/plugin.json"
+
+	w := forkReq(newForkRouter("carol"), "fork-src3")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.SourceRepoPath != ".claude-plugin/plugin.json" {
+		t.Errorf("a trusted coordinate must still yield its manifest path, got %q", resp.SourceRepoPath)
 	}
 }
 

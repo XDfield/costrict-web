@@ -76,8 +76,9 @@ func pluginGitMirrorOwner() string {
 // gitForkPlan is the outcome of a successful Gitea fork: the coordinate to
 // persist on the new item.
 type gitForkPlan struct {
-	RepoURL string // normalized <endpoint>/<owner>/<name>
-	RepoRef string // branch name
+	RepoURL  string // normalized <endpoint>/<owner>/<name>
+	RepoRef  string // branch name
+	RepoPath string // repo-relative main file (manifest) path; "" when undetected
 }
 
 // planGitBackedFork performs the Gitea side of a plugin fork and returns the
@@ -173,7 +174,7 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 	if hasMarketplace {
 		candidates = append(candidates, repoCandidate{mpOwner, mpRepo, false})
 	}
-	srcOwner, srcName, srcBranch, err := locateGiteaSourceRepo(ctx, adminCli, candidates, pluginNameOf(src.Metadata))
+	srcOwner, srcName, srcBranch, srcPath, err := locateGiteaSourceRepo(ctx, adminCli, candidates, pluginNameOf(src.Metadata))
 	if err != nil {
 		if errors.Is(err, errNoGiteaMirror) {
 			return unavailable("its repository was not found on the git server")
@@ -274,6 +275,9 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		// must be the public one, not the API endpoint.
 		RepoURL: gitWebBase(cfg) + "/" + owner + "/" + name,
 		RepoRef: ref,
+		// A fork is a byte-identical copy of the source tree, so the manifest
+		// path probed on the source is equally valid on the fork.
+		RepoPath: srcPath,
 	}, nil
 }
 
@@ -289,7 +293,8 @@ func gitWebBase(cfg *gitserver.Config) string {
 }
 
 // locateGiteaSourceRepo returns the first candidate coordinate that actually
-// exists on the git server, along with its default branch.
+// exists on the git server, along with its default branch and the repo-relative
+// path its plugin manifest was found at ("" when none was readable).
 //
 // Callers order candidates by confidence:
 //
@@ -307,7 +312,7 @@ func gitWebBase(cfg *gitserver.Config) string {
 // lookup failure and must not be mistaken for "not mirrored".
 func locateGiteaSourceRepo(
 	ctx context.Context, cli *gitsync.Client, candidates []repoCandidate, wantPlugin string,
-) (owner, name, defaultBranch string, err error) {
+) (owner, name, defaultBranch, manifestPath string, err error) {
 	seen := map[string]bool{}
 	for _, cand := range candidates {
 		if cand.owner == "" || cand.name == "" {
@@ -321,20 +326,25 @@ func locateGiteaSourceRepo(
 
 		repo, lookupErr := cli.GetRepo(ctx, cand.owner, cand.name)
 		if lookupErr != nil {
-			return "", "", "", lookupErr
+			return "", "", "", "", lookupErr
 		}
 		if repo == nil {
 			continue // 404 — try the next candidate
 		}
+		// Probed for EVERY candidate, trusted or not: besides confirming a guess,
+		// the probe is the only way to learn where the manifest actually lives,
+		// and that path is what the "edit in Gitea" link needs.
+		path, matches := probeRepoManifest(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin)
 		// A guessed coordinate that exists is not proof it belongs to THIS item:
-		// the namespace may hold an unrelated repo of the same name. Confirm via
-		// the plugin manifest before forking somebody else's content.
-		if !cand.trusted && !repoManifestMatches(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin) {
+		// the namespace may hold an unrelated repo of the same name. Only guesses
+		// are rejected on a mismatch — a trusted coordinate was already verified
+		// when it was persisted.
+		if !cand.trusted && !matches {
 			continue
 		}
-		return cand.owner, cand.name, repo.DefaultBranch, nil
+		return cand.owner, cand.name, repo.DefaultBranch, path, nil
 	}
-	return "", "", "", errNoGiteaMirror
+	return "", "", "", "", errNoGiteaMirror
 }
 
 // repoCandidate is a coordinate to probe. trusted marks a coordinate we already
@@ -349,25 +359,29 @@ type repoCandidate struct {
 // pluginManifestPaths are the marketplace layouts a mirrored plugin may use.
 var pluginManifestPaths = []string{".claude-plugin/plugin.json", ".plugin.json", "plugin.json"}
 
-// repoManifestMatches reports whether the repo's plugin manifest names the
-// plugin we're looking for.
+// probeRepoManifest locates the repo's plugin manifest and reports whether it
+// names the plugin we're looking for. It returns the repo-relative path the
+// manifest was found at — the item's "main file", which the edit hand-off links
+// straight at.
 //
-// Verdict when no manifest can be read: ACCEPT, with a warning. Being strict
-// here would break mirrors that use a layout we don't know, turning a working
-// fork into a silent DB-copy fallback. The check exists to catch the realistic
-// failure — a name collision with a repo that IS a plugin but a different one —
-// and that case does yield a readable, mismatching manifest.
-func repoManifestMatches(ctx context.Context, cli *gitsync.Client, owner, name, branch, wantPlugin string) bool {
-	if wantPlugin == "" {
-		return true // nothing to compare against
-	}
+// Verdict when no manifest can be read: ACCEPT (path ""), with a warning. Being
+// strict here would break mirrors that use a layout we don't know, turning a
+// working fork into a silent DB-copy fallback. The check exists to catch the
+// realistic failure — a name collision with a repo that IS a plugin but a
+// different one — and that case does yield a readable, mismatching manifest.
+// An empty path likewise never blocks a fork; it only means the link falls back
+// to the repo home page instead of a file that may not be there.
+func probeRepoManifest(ctx context.Context, cli *gitsync.Client, owner, name, branch, wantPlugin string) (path string, matches bool) {
 	if branch == "" {
 		branch = "main"
 	}
-	for _, path := range pluginManifestPaths {
-		raw, err := cli.ReadFile(ctx, owner, name, branch, path)
+	for _, candidatePath := range pluginManifestPaths {
+		raw, err := cli.ReadFile(ctx, owner, name, branch, candidatePath)
 		if err != nil || len(raw) == 0 {
 			continue
+		}
+		if wantPlugin == "" {
+			return candidatePath, true // nothing to compare against
 		}
 		var manifest struct {
 			Name string `json:"name"`
@@ -376,15 +390,19 @@ func repoManifestMatches(ctx context.Context, cli *gitsync.Client, owner, name, 
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(manifest.Name), wantPlugin) {
-			return true
+			return candidatePath, true
 		}
 		log.Printf("fork: repo %s/%s holds plugin %q, not %q — skipping candidate",
 			owner, name, manifest.Name, wantPlugin)
-		return false
+		// The path is still reported: rejection is the caller's call (a trusted
+		// coordinate keeps it), and the manifest does live there either way.
+		return candidatePath, false
 	}
-	log.Printf("fork: repo %s/%s has no readable plugin manifest; accepting %q on name match alone",
-		owner, name, wantPlugin)
-	return true
+	if wantPlugin != "" {
+		log.Printf("fork: repo %s/%s has no readable plugin manifest; accepting %q on name match alone",
+			owner, name, wantPlugin)
+	}
+	return "", true
 }
 
 // pluginNameOf reads metadata.install.plugin_name — the marketplace identifier

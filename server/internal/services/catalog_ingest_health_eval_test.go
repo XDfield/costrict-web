@@ -46,7 +46,7 @@ func newIngestTestDB(t *testing.T) *gorm.DB {
 			health TEXT DEFAULT '{}', evaluation TEXT DEFAULT '{}',
 			source_path TEXT, catalog_entry_dir TEXT NOT NULL DEFAULT '', source_sha TEXT, source_type TEXT DEFAULT 'direct',
 			source TEXT DEFAULT '', forked_from_item_id TEXT, forked_from_owner_id TEXT, parent_plugin_id TEXT,
-			source_repo_url TEXT NOT NULL DEFAULT '', source_repo_ref TEXT NOT NULL DEFAULT 'main', content_backend TEXT NOT NULL DEFAULT 'db', is_built_in INTEGER DEFAULT 0, preview_count INTEGER DEFAULT 0,
+			source_repo_url TEXT NOT NULL DEFAULT '', source_repo_ref TEXT NOT NULL DEFAULT 'main', source_repo_path TEXT NOT NULL DEFAULT '', content_backend TEXT NOT NULL DEFAULT 'db', is_built_in INTEGER DEFAULT 0, preview_count INTEGER DEFAULT 0,
 			install_count INTEGER DEFAULT 0, favorite_count INTEGER DEFAULT 0,
 			status TEXT DEFAULT 'active', security_status TEXT DEFAULT 'unscanned',
 			last_scan_id TEXT, created_by TEXT NOT NULL, updated_by TEXT,

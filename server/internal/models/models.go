@@ -478,6 +478,7 @@ type CapabilityItem struct {
 	// ContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。
 	SourceRepoURL     string               `gorm:"type:text;not null;default:''" json:"sourceRepoUrl,omitempty"`                 // 规范化仓库地址（git_server endpoint + owner/repo）；db-backed 为空
 	SourceRepoRef     string               `gorm:"type:varchar(64);not null;default:'main'" json:"sourceRepoRef,omitempty"`      // 仓库 ref（分支）
+	SourceRepoPath    string               `gorm:"type:text;not null;default:''" json:"sourceRepoPath,omitempty"`                // 主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页
 	ContentBackend    string               `gorm:"type:varchar(16);not null;default:'db'" json:"contentBackend,omitempty"`       // db | git
 	PreviewCount      int                  `gorm:"default:0" json:"previewCount"`
 	InstallCount      int                  `gorm:"default:0" json:"installCount"`

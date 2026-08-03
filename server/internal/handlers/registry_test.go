@@ -116,6 +116,7 @@ func setupTestDB(t *testing.T) func() {
 			parent_plugin_id     TEXT,
 			source_repo_url      TEXT NOT NULL DEFAULT '',
 			source_repo_ref      TEXT NOT NULL DEFAULT 'main',
+			source_repo_path     TEXT NOT NULL DEFAULT '',
 			content_backend      TEXT NOT NULL DEFAULT 'db',
 			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
