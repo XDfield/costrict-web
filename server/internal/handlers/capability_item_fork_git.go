@@ -405,9 +405,14 @@ func splitRepoURL(raw string) (owner, name string, ok bool) {
 	return splitOwnerRepoPath(parts[len(parts)-2] + "/" + parts[len(parts)-1])
 }
 
-// resolveForkUserBinding loads the caller's Gitea identity. A missing or
-// unsynced binding is a 409 with an actionable hint — never a silent fallback
-// to the DB fork, which would look like success while producing no repo.
+// resolveForkUserBinding loads the caller's Gitea identity, provisioning the
+// account on the fly when it is missing or stale — the same self-healing
+// kb.EnsureUserRepo does, so a user whose account was never provisioned (or
+// whose provisioning failed once) doesn't have to go re-login to fork.
+//
+// If it still isn't usable afterwards, that's a 409 with an actionable hint —
+// never a silent fallback to the DB fork, which would look like success while
+// producing no repo.
 func resolveForkUserBinding(ctx context.Context, userID, tenantID string) (*models.UserGitBinding, *httpErr) {
 	var binding models.UserGitBinding
 	err := gitsyncDB.WithContext(ctx).
@@ -418,6 +423,23 @@ func resolveForkUserBinding(ctx context.Context, userID, tenantID string) (*mode
 			status: http.StatusInternalServerError,
 			body:   gin.H{"error": "failed to load your git account: " + err.Error(), "error_code": "GIT_BINDING_LOOKUP_FAILED"},
 		}
+	}
+	// Fallback provisioning, mirroring kb.resolveBinding: best-effort, then
+	// re-read. ProvisionUser is idempotent, so a concurrent caller is harmless.
+	if (errors.Is(err, gorm.ErrRecordNotFound) || binding.SyncStatus != models.GitSyncStatusSynced) &&
+		gitsyncUserProvisionSvc != nil {
+		short := strings.ReplaceAll(userID, "-", "")
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		_ = gitsyncUserProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
+			SubjectID: userID,
+			TenantID:  tenantID,
+			ShortID:   "u-" + short,
+		})
+		err = gitsyncDB.WithContext(ctx).
+			Where("user_subject_id = ? AND tenant_id = ?", userID, tenantID).
+			First(&binding).Error
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) || binding.GitUsername == "" || binding.SyncStatus != models.GitSyncStatusSynced {
 		status := "missing"
