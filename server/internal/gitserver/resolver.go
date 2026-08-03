@@ -48,6 +48,13 @@ type Config struct {
 	AdminToken    string
 	AdminUser     string
 	AdminPassword string
+	// WebURL is the browser-facing base URL of the git server, used to build
+	// links a user clicks (repo pages) and addresses their device clones from.
+	// Endpoint is the API address, which on split internal/external deployments
+	// is a cluster-internal host the browser cannot reach — and Gitea's own
+	// html_url can't be trusted either when its ROOT_URL is misconfigured.
+	// Optional: empty means "same as Endpoint".
+	WebURL string
 }
 
 // Resolver is the minimal surface callers depend on.
@@ -119,6 +126,7 @@ func (r *DBResolver) Resolve(ctx context.Context, tenantID string) (*Config, err
 		AdminToken:    parsed.AdminToken,
 		AdminUser:     parsed.AdminUser,
 		AdminPassword: parsed.AdminPassword,
+		WebURL:        parsed.WebURL,
 	}, nil
 }
 
@@ -127,6 +135,7 @@ type gitServerConfigJSON struct {
 	AdminToken    string `json:"admin_token"`
 	AdminUser     string `json:"admin_user,omitempty"`
 	AdminPassword string `json:"admin_password,omitempty"`
+	WebURL        string `json:"web_url,omitempty"`
 }
 
 // parseConfig decodes the config JSONB blob. Empty / "{}" → zero-value

@@ -267,12 +267,25 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 
 	ref := firstNonEmpty(repo.DefaultBranch, srcBranch, "main")
 	return &gitForkPlan{
-		// Normalized from the tenant's configured endpoint rather than Gitea's
-		// html_url: a misconfigured Gitea ROOT_URL currently reports
-		// https://gitea_upstream/... which is not resolvable by clients.
-		RepoURL: strings.TrimRight(cfg.Endpoint, "/") + "/" + owner + "/" + name,
+		// Built from the tenant's configured browser-facing base rather than
+		// Gitea's html_url: a misconfigured Gitea ROOT_URL currently reports
+		// https://gitea_upstream/... which no client can resolve. This address
+		// is handed to browsers (repo links) and to devices (csc clone), so it
+		// must be the public one, not the API endpoint.
+		RepoURL: gitWebBase(cfg) + "/" + owner + "/" + name,
 		RepoRef: ref,
 	}, nil
+}
+
+// gitWebBase returns the browser-facing base URL of the tenant's git server,
+// falling back to the API endpoint when no separate web URL is configured
+// (single-address deployments, including local dev).
+func gitWebBase(cfg *gitserver.Config) string {
+	base := strings.TrimSpace(cfg.WebURL)
+	if base == "" {
+		base = cfg.Endpoint
+	}
+	return strings.TrimRight(base, "/")
 }
 
 // locateGiteaSourceRepo returns the first candidate coordinate that actually
