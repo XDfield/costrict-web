@@ -148,8 +148,14 @@ func main() {
 	// ADR-10, or E4 webhook payload adapter) behind the same interface.
 	// teamResolver is a placeholder until a DB-backed team metadata table
 	// lands — empty map means sync currently returns 404 for any team_id.
-	var aesKey []byte
-	var aesKeyErr error
+	// CS_BOT_TOKEN_KEY guards credentials at rest for BOTH team-namespace bots
+	// and personal-space user PATs. Load it unconditionally: personal-space
+	// (kb ensure, git-backed fork) has no dependency on cs-user RPC, and
+	// loading it only inside the RPC branch below silently disabled those
+	// features on every deployment that doesn't run cs-user — with
+	// aesKeyErr left at its nil zero value, NewAESGCM(nil) failed and the
+	// error was discarded.
+	aesKey, aesKeyErr := loadBotTokenKey()
 
 	if rpcClient, ok := userModule.Reader.(*userpkg.RPCClient); ok && rpcClient.Configured() {
 		teamProvider := gitsync.NewStubProvider()          // TODO(E3b.2): replace with real provider
@@ -167,8 +173,7 @@ func main() {
 		//     user_git_binding lookups)
 		//   - teamns.Service (orchestration)
 		// Missing CS_BOT_TOKEN_KEY → teamns and personal-space stay disabled;
-		// handlers return 503.
-		aesKey, aesKeyErr = loadBotTokenKey()
+		// handlers return 503. (The key itself is loaded above, unconditionally.)
 		if aesKeyErr == nil {
 			aes, err := cryptopkg.NewAESGCM(aesKey)
 			if err != nil {
