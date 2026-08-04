@@ -383,11 +383,31 @@ func (s *Service) DeleteItem(id string) error {
 // deleted. On any hard error nothing is committed and (nil, nil, err) is
 // returned.
 func (s *Service) BatchDeleteItems(ids []string) (deleted, skipped []string, err error) {
-	// W14 (batch) — one Git-backed id refuses the whole request, matching the
-	// all-or-nothing contract this endpoint already documents.
+	// W14 (batch) — a Git-backed id is skipped, not refused. The all-or-nothing
+	// contract above is about hard errors: an id that simply cannot be deleted
+	// (gone, or already removed as a sub-skill) already lands in skipped, and a
+	// Git-backed id is the same kind of outcome. Refusing the batch would cost
+	// the admin every other deletion because of one row.
+	gitBacked := make([]string, 0)
 	if len(ids) > 0 {
-		if gitErr := models.RefuseGitBackedItems(s.db, models.CapabilityItemsWithIDs(ids...)); gitErr != nil {
-			return nil, nil, gitErr
+		blocked, _, findErr := models.FindGitBackedItems(s.db, models.CapabilityItemsWithIDs(ids...))
+		if findErr != nil {
+			return nil, nil, findErr
+		}
+		if len(blocked) > 0 {
+			blockedIDs := make(map[string]struct{}, len(blocked))
+			for _, ref := range blocked {
+				blockedIDs[ref.ID] = struct{}{}
+			}
+			remaining := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if _, isGit := blockedIDs[id]; isGit {
+					gitBacked = append(gitBacked, id)
+					continue
+				}
+				remaining = append(remaining, id)
+			}
+			ids = remaining
 		}
 	}
 
@@ -406,6 +426,7 @@ func (s *Service) BatchDeleteItems(ids []string) (deleted, skipped []string, err
 	if skipped == nil {
 		skipped = []string{}
 	}
+	skipped = append(skipped, gitBacked...)
 	return deleted, skipped, nil
 }
 

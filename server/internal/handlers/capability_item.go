@@ -2042,16 +2042,34 @@ func BatchDeleteItems(c *gin.Context) {
 		authorized = append(authorized, id)
 	}
 
-	// W12 — same refusal as W11. The batch is all-or-nothing by design (see the
-	// endpoint doc), so one Git-backed id refuses the whole request rather than
-	// deleting the rest and reporting a partial result.
+	// W12 — unlike the single-item delete, a Git-backed id is skipped rather
+	// than refused. This endpoint already reports per-id outcomes (skipped for
+	// ids that are gone, forbidden for ids that are not the caller's), so one
+	// undeletable id must not cost the caller the rest of the batch. Refusing
+	// the whole request would also strand the caller: the UI's success handler
+	// never runs, so it cannot even tell them which id was the problem.
+	gitBackedSkipped := make([]string, 0)
 	if len(authorized) > 0 {
-		if err := models.RefuseGitBackedItems(db, models.CapabilityItemsWithIDs(authorized...)); err != nil {
-			if respondGitBackedItemsConflict(c, "Some of these items' content lives in git and cannot be deleted directly; "+gitBackedUnbindHint, err) {
-				return
-			}
+		blocked, _, err := models.FindGitBackedItems(db, models.CapabilityItemsWithIDs(authorized...))
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
 			return
+		}
+		if len(blocked) > 0 {
+			blockedIDs := make(map[string]struct{}, len(blocked))
+			for _, ref := range blocked {
+				blockedIDs[ref.ID] = struct{}{}
+			}
+			remaining := authorized[:0]
+			for _, id := range authorized {
+				if _, isGit := blockedIDs[id]; isGit {
+					gitBackedSkipped = append(gitBackedSkipped, id)
+					continue
+				}
+				remaining = append(remaining, id)
+			}
+			authorized = remaining
+			skipped = append(skipped, gitBackedSkipped...)
 		}
 	}
 
@@ -2073,12 +2091,17 @@ func BatchDeleteItems(c *gin.Context) {
 		skipped = append(skipped, batchSkipped...)
 	}
 
+	// gitBackedIds is additive: the existing counters keep their meaning (a
+	// Git-backed id is counted in `skipped` like any other id that could not be
+	// deleted), while this names the subset so a client can explain why instead
+	// of only reporting a number.
 	c.JSON(http.StatusOK, gin.H{
 		"deleted":      len(deleted),
 		"skipped":      len(skipped),
 		"forbidden":    len(forbidden),
 		"deletedIds":   deleted,
 		"forbiddenIds": forbidden,
+		"gitBackedIds": gitBackedSkipped,
 	})
 }
 

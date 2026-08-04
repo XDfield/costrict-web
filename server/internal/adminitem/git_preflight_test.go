@@ -112,9 +112,11 @@ func TestHandler_DeleteItem_DBBackedStillDeletes(t *testing.T) {
 	}
 }
 
-// The batch is all-or-nothing by contract, so one Git-backed id refuses the
-// whole request instead of deleting the rest and reporting a partial result.
-func TestHandler_BatchDeleteItems_GitBackedRefusesWholeBatch(t *testing.T) {
+// A Git-backed id is skipped, not refused: the endpoint already reports per-id
+// outcomes, so one undeletable row must not cost the admin the rest of the
+// batch. gate-matrix §1.3 fixes this semantics for W12/W14, and the manager UI
+// reads `skipped` to tell the user how many rows it left alone.
+func TestHandler_BatchDeleteItems_GitBackedIsSkippedNotRefused(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupTestDB(t)
 	addGitBackingColumns(t, db)
@@ -126,13 +128,30 @@ func TestHandler_BatchDeleteItems_GitBackedRefusesWholeBatch(t *testing.T) {
 
 	c, rec := newCtx(t, http.MethodPost, "/admin/items/batch-delete", "admin1", `{"ids":["bd1","bg1"]}`)
 	m.BatchDeleteItemsHandler()(c)
-	assertGitBackedConflictBody(t, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Deleted    int      `json:"deleted"`
+		Skipped    int      `json:"skipped"`
+		SkippedIDs []string `json:"skippedIds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if body.Deleted != 1 || body.Skipped != 1 {
+		t.Fatalf("expected 1 deleted and 1 skipped, got %+v", body)
+	}
+	if len(body.SkippedIDs) != 1 || body.SkippedIDs[0] != "bg1" {
+		t.Fatalf("the git-backed id must be named in skippedIds, got %v", body.SkippedIDs)
+	}
 
 	if adminItemCount(t, db, "bg1") != 1 {
 		t.Fatal("git-backed item was deleted by the admin batch")
 	}
-	if adminItemCount(t, db, "bd1") != 1 {
-		t.Fatal("the refused batch still deleted the db-backed item")
+	if adminItemCount(t, db, "bd1") != 0 {
+		t.Fatal("the db-backed item should still have been deleted")
 	}
 }
 
@@ -170,7 +189,16 @@ func TestService_DeleteItem_GitBackedReturnsSentinel(t *testing.T) {
 	if err := svc.DeleteItem("gs1"); !errors.Is(err, models.ErrGitBackedItemsPresent) {
 		t.Fatalf("expected ErrGitBackedItemsPresent, got %v", err)
 	}
-	if _, _, err := svc.BatchDeleteItems([]string{"gs1"}); !errors.Is(err, models.ErrGitBackedItemsPresent) {
-		t.Fatalf("expected ErrGitBackedItemsPresent from batch, got %v", err)
+	// The batch reports the id as skipped instead of failing — same outcome as
+	// an id that no longer exists, which this endpoint already handles that way.
+	deleted, skipped, err := svc.BatchDeleteItems([]string{"gs1"})
+	if err != nil {
+		t.Fatalf("batch must not fail on a git-backed id: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("nothing should have been deleted, got %v", deleted)
+	}
+	if len(skipped) != 1 || skipped[0] != "gs1" {
+		t.Fatalf("expected the git-backed id in skipped, got %v", skipped)
 	}
 }

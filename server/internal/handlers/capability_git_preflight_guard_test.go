@@ -265,7 +265,12 @@ func TestDeleteItem_DBBackedStillDeletes(t *testing.T) {
 
 // The batch is all-or-nothing by contract, so one Git-backed id refuses the
 // whole request rather than deleting the rest and reporting a partial result.
-func TestBatchDeleteItems_GitBackedRefusesWholeBatch(t *testing.T) {
+// W12 — a Git-backed id is skipped rather than refusing the batch. This
+// endpoint already reports per-id outcomes (skipped / forbidden), and the
+// manager UI reads `skipped` to tell the user how many rows it left alone, so
+// refusing outright would strand the caller with no success handler.
+// gate-matrix §1.3 fixes this semantics.
+func TestBatchDeleteItems_GitBackedIsSkippedNotRefused(t *testing.T) {
 	defer setupTestDB(t)()
 	createTestRepository(t, "repo-pf-del", "private")
 	database.DB.Create(&models.CapabilityRegistry{
@@ -277,13 +282,29 @@ func TestBatchDeleteItems_GitBackedRefusesWholeBatch(t *testing.T) {
 	w := doJSON(t, newItemRouter("u1"), http.MethodDelete, "/api/items", map[string]any{
 		"ids": []string{"pf-batch-db", "pf-batch-git"},
 	})
-	assertGitBackedConflict(t, w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Deleted      int      `json:"deleted"`
+		Skipped      int      `json:"skipped"`
+		GitBackedIDs []string `json:"gitBackedIds"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if body.Deleted != 1 || body.Skipped != 1 {
+		t.Fatalf("expected 1 deleted and 1 skipped, got %+v", body)
+	}
+	if len(body.GitBackedIDs) != 1 || body.GitBackedIDs[0] != "pf-batch-git" {
+		t.Fatalf("the git-backed id must be named, got %v", body.GitBackedIDs)
+	}
 
 	if itemCount(t, "pf-batch-git") != 1 {
 		t.Fatal("git-backed item was deleted by the batch")
 	}
-	if itemCount(t, "pf-batch-db") != 1 {
-		t.Fatal("the refused batch still deleted the db-backed item")
+	if itemCount(t, "pf-batch-db") != 0 {
+		t.Fatal("the db-backed item should still have been deleted")
 	}
 }
 
