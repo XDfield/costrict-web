@@ -1,0 +1,621 @@
+// Package handlers — provisioning a capability repository in the caller's own
+// Gitea namespace.
+//
+// Three entry points need the same thing: "make a repository that already holds
+// this capability, and only then create the DB row". Cloud's create-new form,
+// a fork whose source is DB-backed (there is no upstream repository to fork),
+// and the S6 migration script all go through provisionGitCapabilityRepo so the
+// ordering constraint below is derived once instead of three times.
+//
+// The order is repository → content → verified readable → DB row, and it may
+// not be reordered. A row flipped to content_backend='git' before its
+// repository holds the content is a row every read path resolves into a 404 at
+// the git server, and nothing repairs it: the sync worker reconciles a
+// projection from a repository, it never invents content. A repository without
+// a row, by contrast, is inert — the next attempt reuses it.
+//
+// Failure is always reported. There is no silent fallback to the DB channel:
+// a DB copy of something that should have been git-backed is exactly the
+// "second source of truth" this whole rollout exists to remove.
+
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/costrict/costrict-web/server/internal/gitserver"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/services"
+	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
+)
+
+// gitCapabilityRepoBranch is the default branch every provisioned capability
+// repository is created with. Discovery reads the repository's own
+// default_branch, so this only fixes what a fresh repository starts as.
+const gitCapabilityRepoBranch = "main"
+
+// gitCapabilityManifestPath returns the repo-relative path a standalone
+// capability repository keeps its top-level manifest at (V4 §5.1).
+//
+// These names are deliberately NOT contentFilename (registry.go). That function
+// names the attachment of an HTTP download and answers "<slug>.md" for
+// subagent/command — and a repository file called <slug>.md is invisible to
+// classifyGitCapabilityManifest, whose root table only knows skill.md /
+// agent.md / command.md / mcp.json. A repository provisioned under the download
+// naming would push cleanly and then produce no capability at all. The two
+// functions answer different questions and must stay apart; neither may be
+// changed into the other.
+func gitCapabilityManifestPath(itemType string) (string, bool) {
+	switch itemType {
+	case "skill":
+		return "skill.md", true
+	case "subagent":
+		return "agent.md", true
+	case "command":
+		return "command.md", true
+	case "mcp":
+		return "mcp.json", true
+	}
+	return "", false
+}
+
+// gitCapabilityRepoName validates a slug as a Gitea repository name. Gitea
+// accepts alphanumerics plus '-', '_' and '.'; our slugs are already
+// slugified, so a rejection here means the caller built one from something
+// that was never a slug.
+var gitCapabilityRepoName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// gitCapabilityProvisionSpec describes the repository to create and the
+// capability it must contain.
+type gitCapabilityProvisionSpec struct {
+	ItemType    string
+	Slug        string // repository name and item slug — the two stay identical
+	Name        string
+	Description string
+	Category    string
+	Version     string
+	Tags        []string
+	Author      string
+	License     string
+	// Content, when non-empty, is written to the manifest verbatim. That is the
+	// DB-backed fork path: the source text is the contract the device installs
+	// byte for byte, so it is never re-serialized. Empty means "generate the
+	// skeleton from the fields above".
+	Content string
+	// WantEntryKey pins which entry of a multi-entry MCP manifest this row owns.
+	// Empty asks for the only entry, and a manifest with several then fails
+	// rather than picking one at random.
+	WantEntryKey string
+}
+
+// provisionGitCapabilityRepo creates <short_id>/<slug> on the tenant's Gitea,
+// writes the capability manifest into it, proves the manifest reads back
+// byte-identical, and returns the coordinate to persist.
+//
+// It writes nothing to capability_items: the caller persists the row only after
+// this returns successfully, which is what keeps "flipped but empty" out of
+// existence.
+func provisionGitCapabilityRepo(c *gin.Context, userID string, spec gitCapabilityProvisionSpec) (*gitForkPlan, *httpErr) {
+	manifestPath, supported := gitCapabilityManifestPath(spec.ItemType)
+	if !supported {
+		return nil, &httpErr{
+			status: http.StatusBadRequest,
+			body: gin.H{
+				"error":      "capabilities of type " + spec.ItemType + " cannot be stored in git yet",
+				"error_code": "GIT_ITEM_TYPE_UNSUPPORTED",
+			},
+		}
+	}
+	if !gitCapabilityRepoName.MatchString(spec.Slug) {
+		return nil, &httpErr{
+			status: http.StatusBadRequest,
+			body: gin.H{
+				"error":      "slug " + spec.Slug + " cannot be used as a repository name; use letters, digits, '-', '_' and '.'",
+				"error_code": "GIT_REPO_NAME_INVALID",
+			},
+		}
+	}
+
+	content, err := buildGitCapabilityManifest(spec)
+	if err != nil {
+		return nil, &httpErr{
+			status: http.StatusBadRequest,
+			body:   gin.H{"error": err.Error(), "error_code": "GIT_MANIFEST_INVALID"},
+		}
+	}
+	entryKey, err := gitCapabilityEntryKey(spec.ItemType, content, spec.WantEntryKey)
+	if err != nil {
+		return nil, &httpErr{
+			status: http.StatusConflict,
+			body:   gin.H{"error": err.Error(), "error_code": "GIT_MANIFEST_AMBIGUOUS"},
+		}
+	}
+
+	ctx := c.Request.Context()
+	tenantID := resolveTenantID(c)
+	cfg, herr := resolveGitBackingConfig(ctx, tenantID)
+	if herr != nil {
+		return nil, herr
+	}
+	binding, herr := resolveForkUserBinding(ctx, userID, tenantID)
+	if herr != nil {
+		return nil, herr
+	}
+	token, herr := resolveForkUserToken(ctx, cfg, userID, tenantID, binding)
+	if herr != nil {
+		return nil, herr
+	}
+
+	// Repository creation goes through the admin path (POST
+	// /admin/users/{owner}/repos), which names its owner explicitly — unlike
+	// ForkRepo, which can only ever land on the token's own identity. The
+	// content write then uses the user's PAT so the commit is authored by the
+	// person who owns the namespace, and so a broken credential surfaces here
+	// rather than on their first push.
+	adminCli := gitsync.NewClient(cfg.Endpoint, cfg.AdminToken)
+	userCli := gitsync.NewUserClient(cfg.Endpoint, token)
+	if adminCli == nil || userCli == nil {
+		return nil, &httpErr{
+			status: http.StatusInternalServerError,
+			body:   gin.H{"error": "failed to build git client", "error_code": "GIT_CLIENT_UNAVAILABLE"},
+		}
+	}
+
+	owner, name := binding.GitUsername, spec.Slug
+	repo, herr := ensureGitCapabilityRepo(ctx, adminCli, owner, name, spec, manifestPath)
+	if herr != nil {
+		return nil, herr
+	}
+	branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
+
+	if err := userCli.WriteFile(ctx, owner, name, branch, manifestPath, content,
+		"feat("+spec.Slug+"): publish capability manifest"); err != nil {
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to write the capability manifest to git: " + err.Error(),
+				"error_code": "GIT_REPO_WRITE_FAILED",
+			},
+		}
+	}
+
+	// Read-back is not paranoia. WriteFile reports a pre-existing file as
+	// success (its conflict branch), so without comparing the bytes a
+	// repository that already held a different manifest would be adopted as if
+	// we had just written ours — and every read path would then serve content
+	// this row never produced.
+	stored, err := userCli.ReadFile(ctx, owner, name, branch, manifestPath)
+	if err != nil {
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to verify the capability manifest in git: " + err.Error(),
+				"error_code": "GIT_REPO_VERIFY_FAILED",
+			},
+		}
+	}
+	if !bytes.Equal(stored, content) {
+		log.Printf("provision: %s/%s manifest %s did not read back identical (%d bytes stored, %d written)",
+			owner, name, manifestPath, len(stored), len(content))
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "the capability manifest in git does not match what was written; the repository already holds different content",
+				"error_code": "GIT_REPO_VERIFY_MISMATCH",
+			},
+		}
+	}
+
+	warnMissingGitWebhook(ctx, cfg.ServerID, owner, name)
+
+	return &gitForkPlan{
+		RepoURL:     gitWebBase(cfg) + "/" + owner + "/" + name,
+		RepoRef:     branch,
+		RepoPath:    manifestPath,
+		GitServerID: cfg.ServerID,
+		GitRepoID:   repo.ID,
+		EntryKey:    entryKey,
+		Content:     string(content),
+	}, nil
+}
+
+// resolveGitBackingConfig loads the tenant's git server, mapping every "this
+// deployment cannot do git backing" case onto the shared 503 so callers that
+// must fail closed and callers that may fall back both see one contract.
+func resolveGitBackingConfig(ctx context.Context, tenantID string) (*gitserver.Config, *httpErr) {
+	unavailable := func(reason string) *httpErr {
+		return &httpErr{
+			status: http.StatusServiceUnavailable,
+			body: gin.H{
+				"error":      "this capability is stored in git and cannot be provisioned right now: " + reason,
+				"error_code": "GIT_BACKING_UNAVAILABLE",
+			},
+		}
+	}
+	if !gitBackingWired() {
+		return nil, unavailable("git backing is not configured on this deployment")
+	}
+	cfg, err := gitsyncResolver.Resolve(ctx, tenantID)
+	if err != nil {
+		if errors.Is(err, gitserver.ErrTenantMissingGitServer) {
+			return nil, unavailable("no git server is bound to this tenant")
+		}
+		return nil, &httpErr{
+			status: http.StatusServiceUnavailable,
+			body: gin.H{
+				"error":      "git server unavailable: " + err.Error(),
+				"error_code": "GIT_SERVER_UNAVAILABLE",
+			},
+		}
+	}
+	if strings.TrimSpace(cfg.ServerID) == "" {
+		return nil, &httpErr{
+			status: http.StatusServiceUnavailable,
+			body: gin.H{
+				"error":      "git server is missing its stable server identity; contact your platform admin",
+				"error_code": "GIT_SERVER_ID_MISSING",
+			},
+		}
+	}
+	return cfg, nil
+}
+
+// gitBackingWired reports whether the personal-space dependencies are present.
+// Absent them the whole git-backing feature is off for this deployment.
+func gitBackingWired() bool {
+	return gitsyncDB != nil && gitsyncResolver != nil && gitsyncCrypt != nil
+}
+
+// ensureGitCapabilityRepo returns the repository to write into, creating it
+// when it does not exist.
+//
+// An existing repository of that name is the hard case. Retrying after a failed
+// write must converge on the same repository, but adopting whatever happens to
+// carry the name would let a capability row point at an unrelated project of
+// the user's and record it as content truth — the same mistake the fork path's
+// lineage check exists to prevent. So an existing repository is reused only
+// when it holds no OTHER capability manifest: nothing to shadow, nothing to
+// misclaim.
+func ensureGitCapabilityRepo(
+	ctx context.Context, cli *gitsync.Client, owner, name string,
+	spec gitCapabilityProvisionSpec, manifestPath string,
+) (*gitsync.Repo, *httpErr) {
+	lookupFailed := func(err error) *httpErr {
+		return &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to look up your git namespace: " + err.Error(),
+				"error_code": "GIT_REPO_LOOKUP_FAILED",
+			},
+		}
+	}
+
+	existing, err := cli.GetRepo(ctx, owner, name)
+	if err != nil {
+		return nil, lookupFailed(err)
+	}
+	if existing != nil {
+		if herr := assertRepoFreeForCapability(ctx, cli, existing, owner, name, manifestPath); herr != nil {
+			return nil, herr
+		}
+		return existing, nil
+	}
+
+	created, err := cli.CreateRepo(ctx, owner, gitsync.CreateRepoOptions{
+		Name:        name,
+		Description: firstNonEmpty(spec.Description, spec.Name),
+		// Public: these rows land in the public registry, and the device clones
+		// the repository directly. A private repository would publish an address
+		// no consumer can read.
+		Private:       false,
+		AutoInit:      true,
+		DefaultBranch: gitCapabilityRepoBranch,
+	})
+	if err != nil {
+		// Lost a race with a concurrent create (or with the user). Re-read and
+		// apply the same adoption rule rather than failing a retryable request.
+		if errors.Is(err, gitsync.ErrGiteaUsernameTaken) {
+			raced, lookupErr := cli.GetRepo(ctx, owner, name)
+			if lookupErr != nil {
+				return nil, lookupFailed(lookupErr)
+			}
+			if raced != nil {
+				if herr := assertRepoFreeForCapability(ctx, cli, raced, owner, name, manifestPath); herr != nil {
+					return nil, herr
+				}
+				return raced, nil
+			}
+		}
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to create the repository on the git server: " + err.Error(),
+				"error_code": "GIT_REPO_CREATE_FAILED",
+			},
+		}
+	}
+	if created == nil || created.ID <= 0 {
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "git server created the repository without a stable identity; contact your platform admin",
+				"error_code": "GIT_REPO_ID_INVALID",
+			},
+		}
+	}
+	return created, nil
+}
+
+// assertRepoFreeForCapability refuses a pre-existing repository that already
+// describes some other capability. A repository holding only our own manifest
+// path (or none at all — the auto-init state a failed first attempt leaves
+// behind) is free to reuse.
+func assertRepoFreeForCapability(
+	ctx context.Context, cli *gitsync.Client, repo *gitsync.Repo, owner, name, manifestPath string,
+) *httpErr {
+	taken := func(reason string) *httpErr {
+		return &httpErr{
+			status: http.StatusConflict,
+			body: gin.H{
+				"error": "a repository named " + name + " already exists in your git namespace and " + reason +
+					"; rename or remove it, then try again",
+				"error_code": "GIT_REPO_NAME_TAKEN",
+				"repoName":   name,
+			},
+		}
+	}
+	branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
+	tree, err := cli.ListTree(ctx, owner, name, branch)
+	if err != nil {
+		// An empty repository has no tree to read. Anything else is a real
+		// failure and must not be read as "free".
+		if strings.Contains(err.Error(), "status=404") || strings.Contains(err.Error(), "status=409") {
+			return nil
+		}
+		return &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to inspect the existing repository: " + err.Error(),
+				"error_code": "GIT_REPO_LOOKUP_FAILED",
+			},
+		}
+	}
+	for _, entry := range tree {
+		if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
+			continue
+		}
+		if entry.Path == manifestPath {
+			continue
+		}
+		if services.IsGitCapabilityManifestPath(entry.Path) {
+			return taken("already describes another capability (" + entry.Path + ")")
+		}
+	}
+	return nil
+}
+
+// warnMissingGitWebhook logs when the tenant's git server carries no webhook
+// secret. The push hook is a SERVER-level system hook, reconciled by the worker
+// and covering repositories created later, so provisioning registers nothing
+// per repository. Its absence does not break this operation — the first index
+// pass is queued explicitly by the caller — but it does mean later edits in
+// Gitea will not flow back, which is worth saying out loud rather than
+// discovering as a stale item.
+func warnMissingGitWebhook(ctx context.Context, serverID, owner, name string) {
+	if gitsyncDB == nil {
+		return
+	}
+	var raw string
+	if err := gitsyncDB.WithContext(ctx).Table("git_servers").
+		Where("server_id = ?", serverID).Select("config").Scan(&raw).Error; err != nil {
+		return
+	}
+	var cfg struct {
+		WebhookSecret string `json:"webhook_secret"`
+	}
+	if json.Unmarshal([]byte(raw), &cfg) != nil {
+		return
+	}
+	if strings.TrimSpace(cfg.WebhookSecret) == "" {
+		log.Printf("provision: git server %s has no webhook_secret; edits pushed to %s/%s will not flow back until it is configured",
+			serverID, owner, name)
+	}
+}
+
+// buildGitCapabilityManifest renders the file that goes into the repository.
+//
+// A caller-supplied Content is written verbatim: it is the source item's text,
+// the device installs it byte for byte, and content_md5 is computed over those
+// exact bytes. Re-serializing it would drift key order and quoting on every
+// round trip and make the sync worker see a change that never happened.
+func buildGitCapabilityManifest(spec gitCapabilityProvisionSpec) ([]byte, error) {
+	if strings.TrimSpace(spec.Content) != "" {
+		return []byte(spec.Content), nil
+	}
+	if spec.ItemType == "mcp" {
+		return buildMCPSkeleton(spec)
+	}
+	return buildMarkdownSkeleton(spec)
+}
+
+// buildMarkdownSkeleton renders the V4 §5.2 frontmatter plus a placeholder
+// body. The body is a placeholder on purpose: Cloud registers and discovers,
+// Gitea is where the capability is written (user decision U3), so the skeleton
+// exists to make the repository self-describing, not to be the finished text.
+//
+// Field order is fixed so two runs of the same spec produce identical bytes —
+// a Go map would not, and an unstable rendering turns every re-provision into
+// a spurious diff.
+func buildMarkdownSkeleton(spec gitCapabilityProvisionSpec) ([]byte, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return nil, errors.New("name is required")
+	}
+	var b strings.Builder
+	b.WriteString("---\n")
+	writeYAMLScalar(&b, "slug", spec.Slug)
+	writeYAMLScalar(&b, "type", spec.ItemType)
+	writeYAMLScalar(&b, "name", spec.Name)
+	if spec.Description != "" {
+		writeYAMLScalar(&b, "description", spec.Description)
+	}
+	if spec.Category != "" {
+		writeYAMLScalar(&b, "category", spec.Category)
+	}
+	writeYAMLScalar(&b, "version", firstNonEmpty(spec.Version, "1.0.0"))
+	// metadata.* per V4 §5.2. Note the parser projects the WHOLE frontmatter map
+	// into CapabilityItem.Metadata, so these land under metadata.metadata.* and
+	// are not read back as item tags — tags on the row come from the create
+	// request and stay in the user tag domain, which is what keeps the git sync
+	// from fighting them.
+	if len(spec.Tags) > 0 || spec.Author != "" || spec.License != "" {
+		b.WriteString("metadata:\n")
+		if len(spec.Tags) > 0 {
+			b.WriteString("  tags:\n")
+			for _, tag := range spec.Tags {
+				b.WriteString("    - ")
+				b.WriteString(yamlScalar(tag))
+				b.WriteString("\n")
+			}
+		}
+		if spec.Author != "" {
+			b.WriteString("  author: " + yamlScalar(spec.Author) + "\n")
+		}
+		if spec.License != "" {
+			b.WriteString("  license: " + yamlScalar(spec.License) + "\n")
+		}
+	}
+	b.WriteString("---\n\n")
+	b.WriteString("# " + spec.Name + "\n\n")
+	if spec.Description != "" {
+		b.WriteString(spec.Description + "\n\n")
+	}
+	b.WriteString("<!-- Write the capability here, then commit. This repository is the source of truth. -->\n")
+	return []byte(b.String()), nil
+}
+
+// buildMCPSkeleton renders a single-entry .mcp.json. The map key is the entry
+// identity the sync worker matches on (source_git_entry_key), so it is the slug
+// and nothing else.
+func buildMCPSkeleton(spec gitCapabilityProvisionSpec) ([]byte, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return nil, errors.New("name is required")
+	}
+	server := map[string]any{
+		"name":    spec.Name,
+		"command": "",
+		"args":    []string{},
+	}
+	if spec.Description != "" {
+		server["description"] = spec.Description
+	}
+	payload := map[string]any{"mcpServers": map[string]any{spec.Slug: server}}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
+}
+
+func writeYAMLScalar(b *strings.Builder, key, value string) {
+	b.WriteString(key)
+	b.WriteString(": ")
+	b.WriteString(yamlScalar(value))
+	b.WriteString("\n")
+}
+
+// yamlScalar quotes a value whenever plain style would change its meaning.
+// Double quotes with escaped backslashes/quotes are always valid YAML, so the
+// rule is "quote unless obviously safe" rather than a full style analysis.
+func yamlScalar(value string) string {
+	safe := value != "" &&
+		!strings.ContainsAny(value, ":#{}[]&*!|>'\"%@`,\n\r\t") &&
+		!strings.HasPrefix(value, " ") && !strings.HasSuffix(value, " ") &&
+		!strings.HasPrefix(value, "-")
+	if safe {
+		return value
+	}
+	escaped := strings.ReplaceAll(value, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+	escaped = strings.ReplaceAll(escaped, "\r", `\r`)
+	escaped = strings.ReplaceAll(escaped, "\t", `\t`)
+	return `"` + escaped + `"`
+}
+
+// gitCapabilityEntryKey returns the manifest entry identity to persist in
+// source_git_entry_key. Only MCP has one: a .mcp.json describes N servers and
+// the sync worker matches a row by (source_repo_path, source_git_entry_key), so
+// a wrong or missing key makes the very next push treat the row as removed and
+// archive it.
+//
+// wantKey is the key the source row already carried, if any. It is preferred
+// over guessing so a fork of one entry out of a multi-server manifest stays
+// bound to that entry.
+func gitCapabilityEntryKey(itemType string, content []byte, wantKey string) (string, error) {
+	if itemType != "mcp" {
+		return "", nil
+	}
+	var doc struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(content, &doc); err != nil {
+		return "", fmt.Errorf("mcp manifest is not valid JSON: %w", err)
+	}
+	// No mcpServers block: ParseMCPJSON yields the single "mcp-config" item,
+	// whose entry key is empty.
+	if len(doc.MCPServers) == 0 {
+		return "", nil
+	}
+	if wantKey != "" {
+		if _, ok := doc.MCPServers[wantKey]; ok {
+			return wantKey, nil
+		}
+		return "", fmt.Errorf("mcp manifest does not contain server %q", wantKey)
+	}
+	if len(doc.MCPServers) > 1 {
+		return "", errors.New("mcp manifest describes multiple servers but this item names none; " +
+			"split it into one server per capability first")
+	}
+	for key := range doc.MCPServers {
+		return key, nil
+	}
+	return "", nil
+}
+
+// mcpEntryKeyOf reads metadata.key — the entry identity ParseMCPJSON stamps on
+// every server it projects, and therefore what a DB-backed MCP row carries.
+func mcpEntryKeyOf(metadata datatypes.JSON) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	var meta struct {
+		Key string `json:"key"`
+	}
+	if json.Unmarshal(metadata, &meta) != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Key)
+}
+
+// parsedCapabilityName reads the capability name a markdown manifest declares.
+// Uses the same parser the sync worker uses, so "what the repository says this
+// is" cannot drift between the fork guard and the projection.
+func parsedCapabilityName(content []byte, sourcePath string) (string, error) {
+	parsed, err := (&services.ParserService{}).ParseSKILLMD(content, sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if parsed == nil {
+		return "", errors.New("manifest produced no capability")
+	}
+	return strings.TrimSpace(parsed.Name), nil
+}

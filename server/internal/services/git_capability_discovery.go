@@ -408,6 +408,18 @@ func discoverGitCapabilityCandidates(entries []gitsync.GitTreeEntry) []gitCapabi
 	return result
 }
 
+// IsGitCapabilityManifestPath reports whether a repository path would be
+// classified as a capability manifest by discovery.
+//
+// Exported for the provisioning path in package handlers: before reusing a
+// repository that already exists in the user's namespace it has to know whether
+// that repository already describes some other capability, and the only correct
+// answer is the one discovery itself would give.
+func IsGitCapabilityManifestPath(filePath string) bool {
+	_, ok := classifyGitCapabilityManifest(filePath)
+	return ok
+}
+
 func classifyGitCapabilityManifest(filePath string) (gitCapabilityCandidate, bool) {
 	normalized := strings.TrimSpace(strings.ReplaceAll(filePath, "\\", "/"))
 	if normalized == "" || strings.HasPrefix(normalized, "/") || path.Clean(normalized) != normalized || strings.HasPrefix(normalized, "../") {

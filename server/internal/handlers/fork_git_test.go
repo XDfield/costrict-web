@@ -52,9 +52,25 @@ type fakeForkGitea struct {
 	// `parent` payload. ForkRepo's conflict recovery verifies lineage through
 	// it, so a repo listed here reads as "a fork of that source".
 	forkParents map[string]string
+	// files holds "owner/name" → repo-relative path → bytes, backing the
+	// contents API for repositories provisioned by this test server (as opposed
+	// to the synthetic plugin-manifest responses below).
+	files map[string]map[string][]byte
+	// ids holds "owner/name" → numeric repository identity for repositories
+	// this server created. Repos seeded straight into `repos` fall back to a
+	// fixed id, which is all the fork tests ever needed.
+	ids map[string]int64
 
-	forkCalls  []forkCall
-	tokenCalls int
+	forkCalls   []forkCall
+	createCalls []createRepoCall
+	writeCalls  []writeFileCall
+	tokenCalls  int
+	// nextRepoID hands out stable repository identities to created repos.
+	nextRepoID int64
+	// createStatus overrides the create-repo response status (0 = 201).
+	createStatus int
+	// writeStatus overrides the write-file response status (0 = 201).
+	writeStatus int
 
 	// forkStatus overrides the fork response status (0 = 202 happy path).
 	forkStatus int
@@ -72,6 +88,18 @@ type forkCall struct {
 	body              string
 }
 
+type createRepoCall struct {
+	owner string
+	auth  string
+	body  string
+}
+
+type writeFileCall struct {
+	repo, path string
+	auth       string
+	content    []byte
+}
+
 func newFakeForkGitea(adminToken string) *fakeForkGitea {
 	return &fakeForkGitea{
 		adminToken:          adminToken,
@@ -80,9 +108,28 @@ func newFakeForkGitea(adminToken string) *fakeForkGitea {
 		manifests:           map[string]string{},
 		manifestPaths:       map[string]string{},
 		unreadableManifests: map[string]bool{},
+		files:               map[string]map[string][]byte{},
+		ids:                 map[string]int64{},
 		forkCreatesRepo:     true,
 		forkResponseRepoID:  501,
+		nextRepoID:          9000,
 	}
+}
+
+// putFile seeds a repository file, the way a push would.
+func (f *fakeForkGitea) putFile(repo, path string, content []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files[repo] == nil {
+		f.files[repo] = map[string][]byte{}
+	}
+	f.files[repo][path] = content
+}
+
+func (f *fakeForkGitea) fileOf(repo, path string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.files[repo][path]
 }
 
 func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -118,9 +165,19 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			auth: r.Header.Get("Authorization"), body: string(raw),
 		})
 		status := f.forkStatus
-		branch := f.repos[parts[0]+"/"+parts[1]]
+		srcFull := parts[0] + "/" + parts[1]
+		branch := f.repos[srcFull]
 		if f.forkCreatesRepo {
-			f.repos["10001/"+parts[1]] = branch
+			forkFull := "10001/" + parts[1]
+			f.repos[forkFull] = branch
+			// A fork is a byte-identical copy of the source tree.
+			if src := f.files[srcFull]; len(src) > 0 {
+				copied := make(map[string][]byte, len(src))
+				for path, content := range src {
+					copied[path] = content
+				}
+				f.files[forkFull] = copied
+			}
 		}
 		f.mu.Unlock()
 
@@ -137,19 +194,149 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /repos/{owner}/{repo}/contents/{path} — plugin manifest lookup used to
-	// confirm a guessed mirror coordinate really holds the plugin we want.
+	// POST /admin/users/{owner}/repos — repository creation. Unlike a fork this
+	// names its owner explicitly, so it is the admin path.
+	if r.Method == http.MethodPost && strings.HasPrefix(path, "/admin/users/") && strings.HasSuffix(path, "/repos") {
+		owner := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/users/"), "/repos")
+		raw, _ := io.ReadAll(r.Body)
+		var opts struct {
+			Name          string `json:"name"`
+			DefaultBranch string `json:"default_branch"`
+		}
+		_ = json.Unmarshal(raw, &opts)
+		f.mu.Lock()
+		f.createCalls = append(f.createCalls, createRepoCall{
+			owner: owner, auth: r.Header.Get("Authorization"), body: string(raw),
+		})
+		status := f.createStatus
+		full := owner + "/" + opts.Name
+		_, exists := f.repos[full]
+		branch := opts.DefaultBranch
+		if branch == "" {
+			branch = "main"
+		}
+		id := f.nextRepoID
+		if status == 0 && !exists {
+			f.nextRepoID++
+			f.repos[full] = branch
+			f.ids[full] = id
+		}
+		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"message":"forced"}`, status)
+			return
+		}
+		if exists {
+			http.Error(w, `{"message":"The repository with the same name already exists."}`, http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "name": opts.Name, "full_name": full,
+			"default_branch": branch, "private": false,
+		})
+		return
+	}
+
+	// GET /repos/{owner}/{repo}/git/trees/{ref} — used to decide whether an
+	// existing repository already describes another capability.
+	if r.Method == http.MethodGet && strings.Contains(path, "/git/trees/") {
+		repoName := strings.TrimPrefix(path[:strings.Index(path, "/git/trees/")], "/repos/")
+		f.mu.Lock()
+		_, repoExists := f.repos[repoName]
+		tree := make([]map[string]any, 0, len(f.files[repoName]))
+		for p := range f.files[repoName] {
+			tree = append(tree, map[string]any{"path": p, "type": "blob"})
+		}
+		f.mu.Unlock()
+		if !repoExists {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tree": tree, "truncated": false, "total_count": len(tree),
+		})
+		return
+	}
+
+	// POST /repos/{owner}/{repo}/contents/{path} — file write.
+	if r.Method == http.MethodPost && strings.Contains(path, "/contents/") {
+		repoAndPath := strings.TrimPrefix(path, "/repos/")
+		idx := strings.Index(repoAndPath, "/contents/")
+		repoName := repoAndPath[:idx]
+		filePath := repoAndPath[idx+len("/contents/"):]
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			Content string `json:"content"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		decoded, _ := base64.StdEncoding.DecodeString(body.Content)
+		f.mu.Lock()
+		status := f.writeStatus
+		_, repoExists := f.repos[repoName]
+		f.writeCalls = append(f.writeCalls, writeFileCall{
+			repo: repoName, path: filePath, auth: r.Header.Get("Authorization"), content: decoded,
+		})
+		if status == 0 && repoExists {
+			if f.files[repoName] == nil {
+				f.files[repoName] = map[string][]byte{}
+			}
+			if _, taken := f.files[repoName][filePath]; !taken {
+				f.files[repoName][filePath] = decoded
+			}
+		}
+		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"message":"forced"}`, status)
+			return
+		}
+		if !repoExists {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"content": map[string]any{"path": filePath}})
+		return
+	}
+
+	// GET /repos/{owner}/{repo}/contents/{path} — real files first, then the
+	// synthetic plugin manifest used to confirm a guessed mirror coordinate
+	// really holds the plugin we want.
 	if r.Method == http.MethodGet && strings.Contains(path, "/contents/") {
 		repoAndPath := strings.TrimPrefix(path, "/repos/")
 		idx := strings.Index(repoAndPath, "/contents/")
 		repoName := repoAndPath[:idx]
 		filePath := repoAndPath[idx+len("/contents/"):]
+		if q := strings.Index(filePath, "?"); q >= 0 {
+			filePath = filePath[:q]
+		}
 		f.mu.Lock()
+		stored, hasStored := f.files[repoName][filePath]
+		hasAnyFile := len(f.files[repoName]) > 0
 		plugin := f.manifests[repoName]
 		wantPath := f.manifestPaths[repoName]
 		_, repoExists := f.repos[repoName]
 		unreadable := f.unreadableManifests[repoName]
 		f.mu.Unlock()
+		if hasStored {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"encoding": "base64",
+				"content":  base64.StdEncoding.EncodeToString(stored),
+			})
+			return
+		}
+		// A repository that holds real files answers only for those: falling
+		// through to the synthetic manifest would make every path readable.
+		if hasAnyFile {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
 		if !repoExists || unreadable || (wantPath != "" && wantPath != filePath) {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 			return
@@ -175,14 +362,18 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		branch, ok := f.repos[name]
 		parent := f.forkParents[name]
+		id := f.ids[name]
 		f.mu.Unlock()
 		if !ok {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 			return
 		}
+		if id == 0 {
+			id = 77
+		}
 		parts := strings.Split(name, "/")
 		payload := map[string]any{
-			"id": 77, "name": parts[1], "full_name": name, "default_branch": branch,
+			"id": id, "name": parts[1], "full_name": name, "default_branch": branch,
 		}
 		if parent != "" {
 			payload["fork"] = true
@@ -480,13 +671,18 @@ func TestForkItem_Git_DerivesOwnContentHash(t *testing.T) {
 			len(stored.ContentMD5), stored.ContentMD5)
 	}
 
-	// And it must be the same hash discovery would compute for that content,
-	// so the two creation paths stay comparable.
+	// The hash is derived from the content the REPOSITORY holds, not from the
+	// row: a git-backed row keeps no content of its own (read-through serves it
+	// from Gitea), so `stored.Content` is empty by design and hashing it would
+	// pin the wrong value.
+	if stored.Content != "" {
+		t.Errorf("a git-backed fork must store no content copy, got %q", stored.Content)
+	}
 	manifestPath := stored.SourceRepoPath
 	if manifestPath == "" {
 		manifestPath = stored.SourcePath
 	}
-	want := services.HashGitCapabilityContent(stored.ItemType, manifestPath, stored.Content)
+	want := services.HashGitCapabilityContent(stored.ItemType, manifestPath, src.Content)
 	if stored.ContentMD5 != want {
 		t.Errorf("fork hash %q != discovery-equivalent hash %q", stored.ContentMD5, want)
 	}
@@ -991,9 +1187,18 @@ func TestForkItem_Git_SourceLookupErrorFailsClosed(t *testing.T) {
 
 // ------------------------------------------------------------- regressions
 
-// Non-plugin items keep the legacy DB fork verbatim, even with the git stack
-// fully wired.
-func TestForkItem_Git_NonPluginKeepsDBFork(t *testing.T) {
+// A non-plugin item used to keep the legacy DB fork even with the git stack
+// wired, because planGitBackedFork returned early for every type but plugin.
+// That gate is gone: a DB-backed skill has no repository to fork, so one is
+// provisioned and the source text copied into it. The old assertion ("skill
+// fork must stay db-backed") described the gate, not a property worth keeping —
+// after read-through, a DB copy of a capability that the platform now stores in
+// git is the second truth this rollout removes.
+//
+// The legacy path is still reachable, and still asserted: see
+// TestForkItem_Git_FeatureUnwiredKeepsDBFork (deployment has no git backing)
+// and TestForkItem_Git_PluginWithoutGiteaSourceKeepsDBFork.
+func TestForkItem_Git_NonPluginProvisionsRepo(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 	fx := setupGitForkFixture(t)
@@ -1010,21 +1215,46 @@ func TestForkItem_Git_NonPluginKeepsDBFork(t *testing.T) {
 	}
 	var resp gitForkResp
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	// The column default must apply when the git path doesn't run — an empty
-	// content_backend would mean the insert wrote a literal '' instead.
-	if resp.ContentBackend != "db" || resp.SourceRepoURL != "" {
-		t.Errorf("skill fork must stay db-backed: backend=%q url=%q", resp.ContentBackend, resp.SourceRepoURL)
+	if resp.ContentBackend != "git" {
+		t.Fatalf("skill fork must be git-backed now: backend=%q", resp.ContentBackend)
 	}
-	if resp.Content != "original content" {
-		t.Errorf("content must still be copied, got %q", resp.Content)
+	// V4 §5.1 naming, NOT contentFilename's "<slug>.md": a root-level <slug>.md
+	// is invisible to the discovery classifier, so a repository written under
+	// the download naming would never produce a capability.
+	if resp.SourceRepoPath != "skill.md" {
+		t.Errorf("skeleton path: want skill.md, got %q", resp.SourceRepoPath)
+	}
+	wantURL := fx.srv.URL + "/10001/my-skill-fork-" // slug carries a per-user hash suffix
+	if !strings.HasPrefix(resp.SourceRepoURL, wantURL) {
+		t.Errorf("repo must live under the caller's namespace: got %q, want prefix %q", resp.SourceRepoURL, wantURL)
+	}
+
+	// The source text is copied byte for byte. Rebuilding it from the row's
+	// columns would drop frontmatter keys that have no column at all.
+	var src models.CapabilityItem
+	database.GetDB().First(&src, "id = ?", "skill-1")
+	repoName := strings.TrimPrefix(resp.SourceRepoURL, fx.srv.URL+"/")
+	if got := string(fx.gitea.fileOf(repoName, "skill.md")); got != src.Content {
+		t.Errorf("repository content must equal the source verbatim:\n got %q\nwant %q", got, src.Content)
+	}
+
+	// Metadata-only row: no content copy, no assets.
+	var stored models.CapabilityItem
+	database.GetDB().First(&stored, "id = ?", resp.ID)
+	if stored.Content != "" {
+		t.Errorf("git-backed fork must store no content copy, got %q", stored.Content)
 	}
 	var assetCount int64
 	database.GetDB().Model(&models.CapabilityAsset{}).Where("item_id = ?", resp.ID).Count(&assetCount)
-	if assetCount != 1 {
-		t.Errorf("db fork must copy assets, got %d", assetCount)
+	if assetCount != 0 {
+		t.Errorf("git-backed fork must not copy assets, got %d", assetCount)
 	}
+	// Provisioning creates a repository; it never forks one.
 	if fx.gitea.forkCount() != 0 {
-		t.Errorf("non-plugin fork must not touch Gitea: %d calls", fx.gitea.forkCount())
+		t.Errorf("a db-backed source has nothing to fork: %d fork calls", fx.gitea.forkCount())
+	}
+	if len(fx.gitea.createCalls) != 1 {
+		t.Fatalf("expected exactly one repo creation, got %d", len(fx.gitea.createCalls))
 	}
 }
 

@@ -2915,12 +2915,22 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		return
 	}
 
-	// Git-backed fork: a marketplace plugin mirrored on the tenant's Gitea is
-	// forked into the user's own Gitea namespace instead of being copied row by
+	// Fork slug: srcSlug-fork-<hash8>, with -N suffix retry on collision.
+	// Hash the FULL user ID (not userID[:8]) so distinct users forking the same
+	// source never collide on the base slug and exhaust the small retry range.
+	//
+	// Computed before the Gitea side runs because a git-backed fork names its
+	// repository after this slug, and the repository has to exist before the row
+	// does.
+	uidSum := sha256.Sum256([]byte(userID))
+	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
+
+	// Git-backed fork: an item whose content lives in a repository — or one that
+	// is being moved there — is forked on Gitea instead of being copied row by
 	// row. Runs BEFORE any DB write so a Gitea failure leaves nothing behind
 	// (see capability_item_fork_git.go). Returns (nil, nil) for every item that
 	// stays on the legacy DB path.
-	gitPlan, gitErr := planGitBackedFork(c, userID, src)
+	gitPlan, gitErr := planGitBackedFork(c, userID, baseSlug, src)
 	if gitErr != nil {
 		c.JSON(gitErr.status, gitErr.body)
 		return
@@ -2959,24 +2969,28 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	srcItemID := src.ID
 	srcOwnerID := src.CreatedBy
 
-	// Fork slug: srcSlug-fork-<hash8>, with -N suffix retry on collision.
-	// Hash the FULL user ID (not userID[:8]) so distinct users forking the same
-	// source never collide on the base slug and exhaust the small retry range.
-	uidSum := sha256.Sum256([]byte(userID))
-	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
-
 	// Git-backed forks carry the repo coordinate instead of copied content.
-	var sourceRepoURL, sourceRepoRef, sourceRepoPath, contentBackend, sourceGitServerID, gitSyncStatus string
+	var sourceRepoURL, sourceRepoRef, sourceRepoPath, contentBackend, sourceGitServerID, sourceGitEntryKey, gitSyncStatus string
 	var sourceGitRepoID int64
 	if gitPlan != nil {
 		sourceRepoURL, sourceRepoRef, contentBackend = gitPlan.RepoURL, gitPlan.RepoRef, contentBackendGit
 		sourceRepoPath = gitPlan.RepoPath
 		sourceGitServerID, sourceGitRepoID = gitPlan.GitServerID, gitPlan.GitRepoID
+		sourceGitEntryKey = gitPlan.EntryKey
 		gitSyncStatus = "pending"
 	}
 
-	// A git-backed fork copies src.Content verbatim, so its hash has to be
-	// derived from that content exactly the way discovery derives it. Inheriting
+	// A git-backed row stores no content: the repository holds it and every read
+	// path fetches it from there. Copying it into the column would recreate the
+	// second truth read-through exists to remove — and for a git-backed source
+	// there is nothing to copy anyway, since its own column is already empty.
+	forkContent := src.Content
+	if gitPlan != nil {
+		forkContent = ""
+	}
+
+	// The hash still has to be derived, from the bytes the repository is now
+	// proven to hold, exactly the way discovery derives it. Inheriting
 	// src.ContentMD5 carries over the source row's value, which is empty for
 	// catalog-sourced plugins and a 32-char MD5 for older rows — either way the
 	// fork can never match in CheckItemConsistency.
@@ -2995,7 +3009,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		if manifestPath == "" {
 			manifestPath = src.SourcePath
 		}
-		forkContentMD5 = services.HashGitCapabilityContent(src.ItemType, manifestPath, src.Content)
+		forkContentMD5 = services.HashGitCapabilityContent(src.ItemType, manifestPath, gitPlan.Content)
 	}
 
 	var item *models.CapabilityItem
@@ -3018,7 +3032,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			Description:       src.Description,
 			Category:          src.Category,
 			Version:           src.Version,
-			Content:           src.Content,
+			Content:           forkContent,
 			ContentMD5:        forkContentMD5,
 			Metadata:          src.Metadata,
 			SourcePath:        src.SourcePath,
@@ -3034,6 +3048,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			ContentBackend:    contentBackend,
 			SourceGitServerID: sourceGitServerID,
 			SourceGitRepoID:   sourceGitRepoID,
+			SourceGitEntryKey: sourceGitEntryKey,
 			GitSyncStatus:     gitSyncStatus,
 		}, createItemAssets{Records: records})
 		if err == nil {

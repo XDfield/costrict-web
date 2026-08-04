@@ -674,6 +674,7 @@ func main() {
 
 			authed.GET("/items/my", handlers.ListMyItems)
 			authed.POST("/items", itemHandler.CreateItemDirect)
+			authed.POST("/items/git", itemHandler.CreateGitBackedItem)
 			authed.POST("/plugins/upload", itemHandler.UploadPlugin)
 			api.GET("/plugins/builtin", handlers.ListBuiltinPlugins)
 			authed.PUT("/items/:id", itemHandler.UpdateItem)

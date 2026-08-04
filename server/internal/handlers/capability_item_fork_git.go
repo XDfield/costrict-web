@@ -144,31 +144,75 @@ func pluginGitMirrorOwner() string {
 	return defaultPluginGitMirrorOwner
 }
 
-// gitForkPlan is the outcome of a successful Gitea fork: the coordinate to
-// persist on the new item.
+// gitForkPlan is the outcome of a successful Gitea-side operation — a fork, or
+// a repository provisioned from scratch (capability_item_git_provision.go) —
+// carrying the coordinate to persist on the new item.
 type gitForkPlan struct {
 	RepoURL     string // normalized <endpoint>/<owner>/<name>
 	RepoRef     string // branch name
 	RepoPath    string // repo-relative main file (manifest) path; "" when undetected
 	GitServerID string // stable git_servers.server_id
 	GitRepoID   int64  // stable Gitea repository numeric ID
+	// EntryKey identifies which entry of a multi-entry manifest this row owns.
+	// Only MCP has one; the sync worker matches rows by (path, entry key).
+	EntryKey string
+	// Content is the manifest text the repository is now proven to hold. The
+	// row stores no copy of it — after read-through the DB column is empty for
+	// every git-backed row — but content_md5 must be derived from exactly these
+	// bytes, the way discovery derives it, or the row can never match in
+	// CheckItemConsistency.
+	Content string
 }
 
-// planGitBackedFork performs the Gitea side of a plugin fork and returns the
+// gitForkableItemTypes are the capability types that can be backed by a git
+// repository. rule/template are excluded deliberately: ParseGitDiscoveryFile
+// rejects them, so a git-backed row of either type could be created but never
+// re-indexed.
+var gitForkableItemTypes = map[string]struct{}{
+	"skill":    {},
+	"subagent": {},
+	"command":  {},
+	"mcp":      {},
+	"plugin":   {},
+}
+
+func isGitForkableItemType(itemType string) bool {
+	_, ok := gitForkableItemTypes[itemType]
+	return ok
+}
+
+// planGitBackedFork performs the Gitea side of a fork and returns the
 // coordinate to persist, or:
 //
 //   - (nil, nil)      → not a git-backed fork; caller runs the legacy DB fork
-//     (non-plugin, no marketplace metadata, feature not wired
-//     for this tenant, or no mirror repo on Gitea)
+//     (a type that cannot live in git, a plugin with no
+//     marketplace metadata or no mirror on Gitea, or git
+//     backing not wired for this deployment/tenant)
 //   - (nil, *httpErr) → the fork IS git-backed but failed; caller must abort
 //     WITHOUT writing anything to the DB
 //
-// The (nil, nil) cases are deliberate: they are all "this deployment/item has
-// no git backing at all". Two situations are explicitly NOT among them, because
-// a DB copy there would look like success while producing nothing usable:
-// a user whose Gitea account isn't ready (409), and a source item that is
-// already git-backed and therefore has no DB content to copy (503).
-func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem) (*gitForkPlan, *httpErr) {
+// The (nil, nil) cases are deliberate and are all "this deployment/item has no
+// git backing at all". They stop there: once git backing applies, a DB copy
+// would look like success while producing something unusable, so every later
+// failure is surfaced.
+//
+// Three source shapes reach this function, and which one applies is decided by
+// the source row, never by what a probe happens to find:
+//
+//  1. the source is already git-backed → fork ITS repository, which is also
+//     what preserves the `parent` lineage the conflict guard checks;
+//  2. the source is a DB-backed marketplace plugin → fork its Gitea mirror;
+//  3. the source is a DB-backed skill/subagent/command/mcp → there is no
+//     repository to fork, so one is provisioned and the source text copied
+//     into it verbatim.
+//
+// Case 3 exists because a DB copy of a git-backed source is no longer merely
+// stale: git-backed rows keep no content in the DB, so copying one produces an
+// empty row.
+func planGitBackedFork(c *gin.Context, userID, forkSlug string, src models.CapabilityItem) (*gitForkPlan, *httpErr) {
+	if !isGitForkableItemType(src.ItemType) {
+		return nil, nil
+	}
 	mpOwner, mpRepo, hasMarketplace := parseMarketplaceRepo(src.Metadata)
 	// Forking a fork: the source already lives in git, so its own repo is the
 	// fork source and the DB holds nothing worth copying.
@@ -186,14 +230,17 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 			}
 		}
 	}
-	if src.ItemType != "plugin" || (!hasMarketplace && !srcIsGit) {
+	// A DB-backed plugin without marketplace metadata has no mirror convention
+	// to look up, so it stays on the legacy path. Non-plugin DB rows do not need
+	// one: they are provisioned rather than located.
+	if src.ItemType == "plugin" && !hasMarketplace && !srcIsGit {
 		return nil, nil
 	}
 
-	// unavailable decides what "git backing can't be used here" means. For a
-	// marketplace plugin it means "fall back to the legacy DB fork"; for a
-	// source that is ALREADY git-backed a DB fork would produce an item with
-	// no content at all, so it must fail instead.
+	// unavailable decides what "git backing can't be used here" means. Only
+	// deployment- and tenant-level gaps may fall back to the legacy DB fork; a
+	// source that is ALREADY git-backed has no DB content to copy, so for it a
+	// DB fork would produce an item with nothing in it.
 	unavailable := func(reason string) (*gitForkPlan, *httpErr) {
 		if !srcIsGit {
 			return nil, nil
@@ -209,7 +256,7 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 
 	// Personal-space deps are wired in main.go via InitUserSpaceService; absent
 	// them the whole git-backing feature is off.
-	if gitsyncDB == nil || gitsyncResolver == nil || gitsyncCrypt == nil {
+	if !gitBackingWired() {
 		return unavailable("git backing is not configured on this deployment")
 	}
 
@@ -239,6 +286,13 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		}
 	}
 
+	// Case 3: nothing to fork. Provision the repository and copy the source text
+	// into it. Reached only for a DB-backed non-plugin, so src.Content is the
+	// real text and not the empty column a git-backed row carries.
+	if !srcIsGit && src.ItemType != "plugin" {
+		return planProvisionedFork(c, userID, forkSlug, src)
+	}
+
 	// Locate the source repo with the ADMIN token: this is a read-only probe
 	// and must not depend on the user having a PAT yet.
 	adminCli := gitsync.NewClient(cfg.Endpoint, cfg.AdminToken)
@@ -253,21 +307,27 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 			kind:  repoCandidateTrusted,
 		})
 	}
-	if src.Slug != "" {
-		candidates = append(candidates, repoCandidate{
-			owner: pluginGitMirrorOwner(),
-			name:  src.Slug,
-			kind:  repoCandidatePerItemMirror,
-		})
+	// The mirror convention and the upstream marketplace coordinate are plugin
+	// layout assumptions. A non-plugin source is only ever forked from its own
+	// repository, so guessing further coordinates for it could only ever find
+	// somebody else's content.
+	if src.ItemType == "plugin" {
+		if src.Slug != "" {
+			candidates = append(candidates, repoCandidate{
+				owner: pluginGitMirrorOwner(),
+				name:  src.Slug,
+				kind:  repoCandidatePerItemMirror,
+			})
+		}
+		if hasMarketplace {
+			candidates = append(candidates, repoCandidate{
+				owner: mpOwner,
+				name:  mpRepo,
+				kind:  repoCandidateMarketplace,
+			})
+		}
 	}
-	if hasMarketplace {
-		candidates = append(candidates, repoCandidate{
-			owner: mpOwner,
-			name:  mpRepo,
-			kind:  repoCandidateMarketplace,
-		})
-	}
-	srcOwner, srcName, srcBranch, srcPath, err := locateGiteaSourceRepo(ctx, adminCli, candidates, pluginNameOf(src.Metadata))
+	srcOwner, srcName, srcBranch, srcPath, srcContent, err := locateGiteaSourceRepo(ctx, adminCli, candidates, src)
 	if err != nil {
 		if errors.Is(err, errNoGiteaMirror) {
 			return unavailable("its repository was not found on the git server")
@@ -276,7 +336,7 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 			return nil, &httpErr{
 				status: http.StatusConflict,
 				body: gin.H{
-					"error":      "the source repository does not contain a valid manifest for this plugin; contact your platform admin",
+					"error":      "the source repository does not contain a valid manifest for this item; contact your platform admin",
 					"error_code": "GIT_SOURCE_MANIFEST_INVALID",
 				},
 			}
@@ -391,7 +451,52 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		RepoPath:    srcPath,
 		GitServerID: cfg.ServerID,
 		GitRepoID:   repo.ID,
+		// Carried over verbatim: a fork of one MCP entry must stay bound to that
+		// entry, or the next push matches nothing and archives the row.
+		EntryKey: src.SourceGitEntryKey,
+		Content:  srcContent,
 	}, nil
+}
+
+// planProvisionedFork forks a DB-backed non-plugin item by building the
+// repository it never had: create <short_id>/<fork slug>, copy the source text
+// into it, then hand the coordinate back.
+//
+// The text is copied byte for byte — not regenerated from the row's projected
+// columns. The device writes it straight to SKILL.md / <slug>.md, its
+// frontmatter carries fields (allowed-tools, hooks, disable-model-invocation)
+// that have no column at all, and content_md5 is computed over the original
+// bytes. Rebuilding it would silently drop those fields and make every sync see
+// a change that never happened.
+func planProvisionedFork(c *gin.Context, userID, forkSlug string, src models.CapabilityItem) (*gitForkPlan, *httpErr) {
+	content := src.Content
+	if strings.TrimSpace(content) == "" {
+		// A DB-backed row with no content has nothing to publish, and an empty
+		// repository would be worse than the DB copy it replaced.
+		return nil, &httpErr{
+			status: http.StatusConflict,
+			body: gin.H{
+				"error":      "this item has no content to publish to git; contact your platform admin",
+				"error_code": "GIT_SOURCE_CONTENT_EMPTY",
+			},
+		}
+	}
+	// The source row's own entry key wins when the manifest still contains it: a
+	// fork of one server out of a multi-server .mcp.json must stay that server.
+	wantEntryKey := ""
+	if src.ItemType == "mcp" {
+		wantEntryKey = firstNonEmpty(src.SourceGitEntryKey, mcpEntryKeyOf(src.Metadata))
+	}
+	return provisionGitCapabilityRepo(c, userID, gitCapabilityProvisionSpec{
+		ItemType:     src.ItemType,
+		Slug:         forkSlug,
+		Name:         src.Name,
+		Description:  src.Description,
+		Category:     src.Category,
+		Version:      src.Version,
+		Content:      content,
+		WantEntryKey: wantEntryKey,
+	})
 }
 
 // enqueueForkGitSync schedules the first index sync for a freshly forked
@@ -459,16 +564,18 @@ func gitWebBase(cfg *gitserver.Config) string {
 }
 
 // locateGiteaSourceRepo returns the first candidate coordinate that actually
-// exists on the git server and has a readable, valid plugin manifest matching
-// the catalog plugin. The manifest is the minimum usable content for a plugin
+// exists on the git server and has a readable, valid manifest matching the
+// source item. The manifest is the minimum usable content for a git-backed
 // fork: accepting a repository without it would create a permanently broken
-// git-backed item.
+// item, and accepting one whose manifest names something else would hand the
+// user somebody else's content and record it as truth.
 //
 // Callers order candidates by confidence:
 //
-//  1. the source item's own repo (forking a fork),
-//  2. <mirror owner>/<item slug> — the mirror convention: every catalog plugin
-//     is published to the mirror namespace under its own slug,
+//  1. the source item's own repo (forking a fork) — the only candidate a
+//     non-plugin ever has,
+//  2. <mirror owner>/<item slug> — the plugin mirror convention: every catalog
+//     plugin is published to the mirror namespace under its own slug,
 //  3. metadata.install.marketplace_repo verbatim — correct for first-party
 //     plugins whose marketplace repo IS the Gitea repo.
 //
@@ -478,12 +585,16 @@ func gitWebBase(cfg *gitserver.Config) string {
 //
 // Returns errNoGiteaMirror when no candidate exists. A candidate that exists
 // but lacks a valid matching manifest returns errGiteaMirrorManifestInvalid;
-// it is not a legacy DB-backed plugin, so callers must not silently fall back.
+// it is not a legacy DB-backed item, so callers must not silently fall back.
 // Any other error is a real lookup failure and must not be mistaken for "not
 // mirrored".
+//
+// The accepted manifest's bytes come back with the coordinate: they are the
+// content the fork will carry, and its content_md5 has to be derived from them
+// rather than from the source row's (empty, for a git-backed source) column.
 func locateGiteaSourceRepo(
-	ctx context.Context, cli *gitsync.Client, candidates []repoCandidate, wantPlugin string,
-) (owner, name, defaultBranch, manifestPath string, err error) {
+	ctx context.Context, cli *gitsync.Client, candidates []repoCandidate, src models.CapabilityItem,
+) (owner, name, defaultBranch, manifestPath, manifestContent string, err error) {
 	seen := map[string]bool{}
 	sawInvalidCandidate := false
 	for _, cand := range candidates {
@@ -498,7 +609,7 @@ func locateGiteaSourceRepo(
 
 		repo, lookupErr := cli.GetRepo(ctx, cand.owner, cand.name)
 		if lookupErr != nil {
-			return "", "", "", "", lookupErr
+			return "", "", "", "", "", lookupErr
 		}
 		if repo == nil {
 			continue // 404 — try the next candidate
@@ -506,9 +617,9 @@ func locateGiteaSourceRepo(
 		// Probed for EVERY candidate. A persisted coordinate is only trusted for
 		// routing; it is not trusted as content evidence after a later force-push
 		// or manual repository replacement.
-		path, verdict, probeErr := probeRepoManifest(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin)
+		path, content, verdict, probeErr := probeCapabilityManifest(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, src)
 		if probeErr != nil {
-			return "", "", "", "", probeErr
+			return "", "", "", "", "", probeErr
 		}
 		if verdict != manifestProbeMatch {
 			// The source item's own coordinate cannot be redirected to a guess.
@@ -519,17 +630,114 @@ func locateGiteaSourceRepo(
 			// collision, so continue to the next candidate.
 			if cand.kind == repoCandidateTrusted ||
 				(cand.kind == repoCandidatePerItemMirror && verdict != manifestProbeNameMismatch) {
-				return "", "", "", "", errGiteaMirrorManifestInvalid
+				return "", "", "", "", "", errGiteaMirrorManifestInvalid
 			}
 			sawInvalidCandidate = true
 			continue
 		}
-		return cand.owner, cand.name, repo.DefaultBranch, path, nil
+		return cand.owner, cand.name, repo.DefaultBranch, path, content, nil
 	}
 	if sawInvalidCandidate {
-		return "", "", "", "", errGiteaMirrorManifestInvalid
+		return "", "", "", "", "", errGiteaMirrorManifestInvalid
 	}
-	return "", "", "", "", errNoGiteaMirror
+	return "", "", "", "", "", errNoGiteaMirror
+}
+
+// probeCapabilityManifest asks a repository to prove it holds the source item,
+// dispatching on the item's type. Plugins are identified by their manifest's
+// `name`; the four standalone types by the capability the manifest declares.
+// The verdict vocabulary is shared so the candidate-priority policy above is
+// written once for every type.
+func probeCapabilityManifest(
+	ctx context.Context, cli *gitsync.Client, owner, name, branch string, src models.CapabilityItem,
+) (path, content string, result manifestProbeResult, err error) {
+	if src.ItemType == "plugin" {
+		// Plugins keep their own probe: the identity lives in a JSON manifest,
+		// and the content the row carries is a synthesized summary rather than
+		// that manifest, so the bytes read here are evidence, not content.
+		path, result, err = probeRepoManifest(ctx, cli, owner, name, branch, pluginNameOf(src.Metadata))
+		return path, src.Content, result, err
+	}
+	return probeStandaloneManifest(ctx, cli, owner, name, branch, src)
+}
+
+// standaloneManifestPaths lists where a repository may keep the top-level
+// manifest of a given capability type, most specific first. The row's own
+// source_repo_path is tried ahead of these by the caller.
+func standaloneManifestPaths(itemType string) []string {
+	switch itemType {
+	case "skill":
+		return []string{"skill.md", "SKILL.md"}
+	case "subagent":
+		return []string{"agent.md", "agents.md", "subagent.md"}
+	case "command":
+		return []string{"command.md"}
+	case "mcp":
+		return []string{"mcp.json", ".mcp.json", "mcp.md"}
+	}
+	return nil
+}
+
+// probeStandaloneManifest verifies that a repository's manifest describes the
+// source item, and returns its bytes.
+//
+// Identity is the capability NAME for markdown types and the mcpServers entry
+// key for MCP — in both cases the value the sync worker itself projects onto
+// the row, so "what the repository says" and "what the row says" are compared
+// on the same terms they were written on. A repository that holds a valid
+// manifest for a different capability is a name collision (recoverable, the
+// caller may try the next candidate); anything unreadable is not.
+func probeStandaloneManifest(
+	ctx context.Context, cli *gitsync.Client, owner, name, branch string, src models.CapabilityItem,
+) (string, string, manifestProbeResult, error) {
+	if branch == "" {
+		branch = "main"
+	}
+	paths := make([]string, 0, 4)
+	if p := strings.TrimSpace(src.SourceRepoPath); p != "" {
+		paths = append(paths, p)
+	}
+	for _, p := range standaloneManifestPaths(src.ItemType) {
+		if len(paths) == 0 || paths[0] != p {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		log.Printf("fork: repo %s/%s cannot be verified: no manifest layout known for type %q", owner, name, src.ItemType)
+		return "", "", manifestProbeMissingOrInvalid, nil
+	}
+
+	for _, candidatePath := range paths {
+		raw, readErr := cli.ReadFile(ctx, owner, name, branch, candidatePath)
+		if readErr != nil {
+			return "", "", manifestProbeMissingOrInvalid, readErr
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		if src.ItemType == "mcp" {
+			wantKey := firstNonEmpty(src.SourceGitEntryKey, mcpEntryKeyOf(src.Metadata))
+			if _, keyErr := gitCapabilityEntryKey("mcp", raw, wantKey); keyErr != nil {
+				log.Printf("fork: repo %s/%s manifest %s does not carry mcp entry %q: %v",
+					owner, name, candidatePath, wantKey, keyErr)
+				return candidatePath, "", manifestProbeNameMismatch, nil
+			}
+			return candidatePath, string(raw), manifestProbeMatch, nil
+		}
+		manifestName, parseErr := parsedCapabilityName(raw, candidatePath)
+		if parseErr != nil || manifestName == "" {
+			log.Printf("fork: repo %s/%s has an unreadable manifest at %s: %v", owner, name, candidatePath, parseErr)
+			return candidatePath, "", manifestProbeMissingOrInvalid, nil
+		}
+		if !strings.EqualFold(manifestName, strings.TrimSpace(src.Name)) {
+			log.Printf("fork: repo %s/%s holds capability %q, not %q — skipping candidate",
+				owner, name, manifestName, src.Name)
+			return candidatePath, "", manifestProbeNameMismatch, nil
+		}
+		return candidatePath, string(raw), manifestProbeMatch, nil
+	}
+	log.Printf("fork: repo %s/%s has no readable %s manifest for %q", owner, name, src.ItemType, src.Name)
+	return "", "", manifestProbeMissingOrInvalid, nil
 }
 
 // repoCandidate is a coordinate to probe. Candidate kind defines whether an
