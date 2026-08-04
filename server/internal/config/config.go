@@ -29,7 +29,8 @@ type Config struct {
 	BindStateSecret string
 	CookieSecure              bool     // Set auth cookie with Secure flag (HTTPS only); default true
 	CookieDomain              string  // Optional Domain attribute for auth cookies; empty (default) = host-only
-	CORSAllowedOrigins        []string // Allowed CORS origins; empty means allow all (insecure, dev only)
+	CORSAllowedOrigins        []string // Allowed CORS origins; empty + CORSDevMode=false denies cross-origin (safe default)
+	CORSDevMode               bool     // Opt into reflect-any-Origin behavior when AllowedOrigins is empty (DEV ONLY)
 	Casdoor                   CasdoorConfig
 	Channels                  ChannelSystemConfig
 	LLM                       LLMConfig
@@ -48,45 +49,21 @@ type Config struct {
 	// means no bootstrap (zero behaviour change).
 	BootstrapPlatformAdmins []string
 	ClawAgent               ClawAgentConfig // ClawAgent personal AI assistant config
-	// JWTSignMode controls the A8 灰度 (gradual rollout) state for JWT
-	// self-signing. Three states (off → dual → single) per ROADMAP §9.4:
-	//
-	//   - JWTSignModeOff:    Casdoor JWT authoritative; OAuth callback
-	//                        does NOT call ReissueToken. Default. Matches
-	//                        pre-A8 behavior exactly.
-	//   - JWTSignModeDual:   cs-user-signed JWT becomes the cookie value
-	//                        (OAuth callback calls ReissueToken), but
-	//                        the verifier still accepts BOTH cs-user and
-	//                        Casdoor JWKS. Use during the 30-day
-	//                        crossover window so existing sessions with
-	//                        Casdoor tokens keep working.
-	//   - JWTSignModeSingle: cs-user JWT only. Casdoor JWKS dropped from
-	//                        the verifier chain. End-state after the 30-day
-	//                        灰度 closes.
-	//
-	// When mode != off, requires USER_SERVICE_BACKEND=rpc (RPCWriter) so
-	// the OAuth callback can reach cs-user's reissue-token endpoint, AND
-	// USER_SERVICE_URL must be set so the JWKS provider can fetch
-	// cs-user's /.well-known/jwks.
-	//
-	// Migration: JWT_SELF_SIGN_ENABLED=true (A7b vocabulary) maps to
-	// "dual"; false/unset maps to "off". JWT_SIGN_MODE wins when both
-	// are set.
-	JWTSignMode string
 	// ProfileGateEnabled (R3 of REGISTRATION_PROFILE_DESIGN): when true,
 	// first-time users without profile_completed_at get 403 profile_incomplete
 	// on all non-whitelisted routes until they finish /register/complete.
 	// Default false for staged rollout (dev → canary → prod). When false,
 	// middleware.RequireProfileComplete is a no-op.
 	ProfileGateEnabled bool
+	// SwaggerEnabled gates the public Swagger UI route (/swagger/*any).
+	// Default false — the route is NOT mounted, so the full API attack
+	// surface (every handler's parameters, response shapes, internal
+	// headers) is not exposed to unauthenticated callers. Dev / CI set
+	// ENABLE_SWAGGER=true to mount the UI for local iteration. The
+	// generated spec (via swag init) is unaffected — only the HTTP route
+	// is gated.
+	SwaggerEnabled bool
 }
-
-// JWTSignMode values for Config.JWTSignMode.
-const (
-	JWTSignModeOff    = "off"
-	JWTSignModeDual   = "dual"
-	JWTSignModeSingle = "single"
-)
 
 // UserServiceConfig selects and configures the read backend for user data.
 // Phase 0/P0-7: default is local (read from server's own DB). Setting
@@ -241,7 +218,12 @@ func Load() *Config {
 
 	cfg := &Config{
 		Port:                      getEnv("PORT", "8080"),
-		DatabaseURL:               getEnv("DATABASE_URL", "postgres://costrict:costrict_password@localhost:5432/costrict_db?sslmode=disable"),
+		// DatabaseURL: no hardcoded default. A DSN with a real password baked
+		// into the binary is an extraction-away-from-disaster anti-pattern
+		// (see security report — CVSS 9.2). Load() fatals below if DATABASE_URL
+		// is empty, so every entry point (api/worker/migrate/...) fails fast
+		// instead of silently using a known shared password.
+		DatabaseURL:               getEnv("DATABASE_URL", ""),
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
 		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
@@ -256,6 +238,7 @@ func Load() *Config {
 		CookieSecure:              getEnvBool("COOKIE_SECURE", true),
 		CookieDomain:              getEnv("COOKIE_DOMAIN", ""),
 		CORSAllowedOrigins:        getEnvSlice("CORS_ALLOWED_ORIGINS", nil),
+		CORSDevMode:               getEnvBool("CORS_DEV_MODE", false),
 		Casdoor: CasdoorConfig{
 			Endpoint:         getEnv("CASDOOR_ENDPOINT", "http://localhost:8000"),
 			InternalEndpoint: getEnv("CASDOOR_INTERNAL_ENDPOINT", ""),
@@ -340,12 +323,18 @@ func Load() *Config {
 				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
-		// Phase A8: three-state JWT self-sign mode. Loader prefers
-		// JWT_SIGN_MODE (off|dual|single) and falls back to the A7b
-		// bool vocabulary (JWT_SELF_SIGN_ENABLED=true → dual). Default
-		// OFF — Casdoor JWT stays authoritative until operator flips.
-		JWTSignMode:        loadJWTSignMode(),
+		// ProfileGateEnabled (R3): default off for staged rollout.
 		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
+		// SwaggerEnabled: default off — Swagger UI is not mounted unless
+		// explicitly enabled. See field doc above.
+		SwaggerEnabled: getEnvBool("ENABLE_SWAGGER", false),
+	}
+
+	// DatabaseURL must be provided. Refuses to start when unset (or
+	// whitespace-only — mirrors resolveBindStateSecret's TrimSpace check
+	// below). See comment at the field above.
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		log.Fatal("DATABASE_URL must be set; refusing to start without a database configuration (hardcoded default removed for security)")
 	}
 
 	// BindStateSecret: prefer dedicated env, fallback to InternalSecret for
@@ -390,30 +379,6 @@ func resolveBindStateSecret(bindStateSecret, internalSecret string) (string, err
 		return internalSecret, nil
 	}
 	return "", ErrBindStateSecretMissing
-}
-
-// loadJWTSignMode resolves the JWT self-sign mode from environment.
-//
-// Resolution order:
-//  1. JWT_SIGN_MODE (preferred, A8 vocabulary): must be off|dual|single,
-//     case-insensitive. Invalid values are fatal — silent fallback would
-//     mask a typo as "off" and accidentally disable 灰度 mid-cutover.
-//  2. JWT_SELF_SIGN_ENABLED (A7b vocabulary, retained for migration):
-//     strconv.ParseBool true → dual, anything else → off.
-//  3. Default: off.
-func loadJWTSignMode() string {
-	if raw := strings.ToLower(strings.TrimSpace(getEnv("JWT_SIGN_MODE", ""))); raw != "" {
-		switch raw {
-		case JWTSignModeOff, JWTSignModeDual, JWTSignModeSingle:
-			return raw
-		default:
-			log.Fatalf("invalid JWT_SIGN_MODE %q: must be one of off|dual|single", raw)
-		}
-	}
-	if getEnvBool("JWT_SELF_SIGN_ENABLED", false) {
-		return JWTSignModeDual
-	}
-	return JWTSignModeOff
 }
 
 func getEnv(key, defaultValue string) string {

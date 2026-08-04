@@ -13,6 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -265,11 +266,19 @@ func DownloadPluginZip(c *gin.Context) {
 	// Deduplication guard: if an asset path matches SourcePath, prefer the asset.
 	sourcePathCovered := false
 	for _, asset := range assets {
+		// Sink-layer Zip Slip guard: relPath is DB-stored and could have been
+		// polluted through the JSON item API before the source-side guard
+		// existed. Re-validate at write time so a malicious entry can't
+		// escape the extraction directory on the consumer's host.
+		safePath, err := services.NormalizeArchivePath(asset.RelPath)
+		if err != nil {
+			continue
+		}
 		if asset.RelPath == item.SourcePath {
 			sourcePathCovered = true
 		}
 		w, err := zw.CreateHeader(&zip.FileHeader{
-			Name:     asset.RelPath,
+			Name:     safePath,
 			Method:   zip.Deflate,
 			Modified: now,
 		})
@@ -290,13 +299,16 @@ func DownloadPluginZip(c *gin.Context) {
 
 	// If the main content (e.g. CLAUDE.md) wasn't stored as an asset, write it explicitly.
 	if !sourcePathCovered && item.Content != "" && item.SourcePath != "" {
-		w, err := zw.CreateHeader(&zip.FileHeader{
-			Name:     item.SourcePath,
-			Method:   zip.Deflate,
-			Modified: now,
-		})
-		if err == nil {
-			_, _ = w.Write([]byte(item.Content))
+		// Same sink-layer guard for SourcePath as for asset.RelPath above.
+		if safePath, err := services.NormalizeArchivePath(item.SourcePath); err == nil {
+			w, err := zw.CreateHeader(&zip.FileHeader{
+				Name:     safePath,
+				Method:   zip.Deflate,
+				Modified: now,
+			})
+			if err == nil {
+				_, _ = w.Write([]byte(item.Content))
+			}
 		}
 	}
 }

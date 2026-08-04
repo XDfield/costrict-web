@@ -1,8 +1,6 @@
 package services
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -27,7 +25,7 @@ func (s *ContentHashService) HashTextContent(itemType string, content string) (s
 	if err != nil {
 		return "", err
 	}
-	return md5Hex(normalized), nil
+	return sha256Hex(normalized), nil
 }
 
 func (s *ContentHashService) HashArchiveContent(mainPath string, mainContent []byte, assets []ArchiveAsset) (string, error) {
@@ -62,7 +60,7 @@ func (s *ContentHashService) HashArchiveManifest(entries []ArchiveManifestEntry)
 	}
 
 	sort.Strings(manifest)
-	return md5Hex([]byte(strings.Join(manifest, "\n")))
+	return sha256Hex([]byte(strings.Join(manifest, "\n")))
 }
 
 func (s *ContentHashService) BuildVersionLabel(revision int) string {
@@ -80,15 +78,15 @@ func (s *ContentHashService) hashArchiveFile(relPath string, content []byte) (st
 			if err != nil {
 				return "", err
 			}
-			return md5Hex(canonical), nil
+			return sha256Hex(canonical), nil
 		}
 	}
 
 	if isBinary(content) {
-		return md5Hex(content), nil
+		return sha256Hex(content), nil
 	}
 
-	return md5Hex([]byte(normalizeNewlines(string(content)))), nil
+	return sha256Hex([]byte(normalizeNewlines(string(content)))), nil
 }
 
 func (s *ContentHashService) normalizeTextContent(itemType string, content string) ([]byte, error) {
@@ -126,9 +124,4 @@ func isJSONPath(relPath string) bool {
 
 func normalizeManifestPath(relPath string) string {
 	return strings.ReplaceAll(relPath, "\\", "/")
-}
-
-func md5Hex(data []byte) string {
-	sum := md5.Sum(data)
-	return hex.EncodeToString(sum[:])
 }

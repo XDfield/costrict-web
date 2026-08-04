@@ -324,35 +324,25 @@ func main() {
 		casdoorEndpoint = cfg.Casdoor.Endpoint
 	}
 
-	// Initialize JWKS provider for JWT signature verification.
-	//
-	// Phase A8 灰度 mode controls which JWKS sources feed the verifier:
-	//   - off:    Casdoor only (pre-A8 behavior)
-	//   - dual:   cs-user + Casdoor (crossover window — old sessions with
-	//             Casdoor tokens keep working alongside new cs-user JWTs)
-	//   - single: cs-user only (end-state — Casdoor signing fully retired)
-	//
-	// dual/single require USER_SERVICE_URL set; boot fails fast otherwise so
-	// an operator can't accidentally flip 灰度 with no cs-user endpoint
-	// reachable.
-	var jwksProvider *middleware.JWKSProvider
-	switch cfg.JWTSignMode {
-	case config.JWTSignModeOff:
-		jwksProvider = middleware.NewJWKSProvider(casdoorEndpoint)
-	case config.JWTSignModeDual:
-		if cfg.UserService.BaseURL == "" {
-			logger.Fatal("[A8] JWT_SIGN_MODE=dual requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
-		}
-		jwksProvider = middleware.NewMultiJWKSProvider([]string{cfg.UserService.BaseURL, casdoorEndpoint})
-	case config.JWTSignModeSingle:
-		if cfg.UserService.BaseURL == "" {
-			logger.Fatal("[A8] JWT_SIGN_MODE=single requires USER_SERVICE_URL to be set so the verifier can fetch cs-user's /.well-known/jwks")
-		}
-		jwksProvider = middleware.NewJWKSProvider(cfg.UserService.BaseURL)
-	default:
-		logger.Fatal("[A8] internal error: unhandled JWTSignMode %q (expected off|dual|single)", cfg.JWTSignMode)
+	// JWT verification is delegated to cs-user's internal introspection
+	// endpoint (POST /api/internal/auth/verify) — that service holds the
+	// signing keys and does full signature + expiration checks. Server
+	// middleware caches successful introspections for 5 minutes per token
+	// (SHA-256 keyed) so the RPC stays off the per-request hot path.
+	// RequireAuth fails closed (503) when cs-user is unreachable; there is
+	// no fallback to local unverified decoding — that was the original
+	// SSRF/JWT bypass. Fast-fail at boot if cs-user isn't wired.
+	if cfg.UserService.BaseURL == "" {
+		logger.Fatal("[auth] USER_SERVICE_URL must be set so the JWT verifier can reach cs-user's /api/internal/auth/verify")
 	}
-	jwksProvider.Preload()
+	if cfg.UserService.InternalToken == "" {
+		logger.Fatal("[auth] USER_SERVICE_INTERNAL_TOKEN must be set so the JWT verifier can authenticate to cs-user's /api/internal/auth/verify")
+	}
+	middleware.SetTokenVerifier(
+		cfg.UserService.BaseURL,
+		cfg.UserService.InternalToken,
+		time.Duration(cfg.UserService.TimeoutSec)*time.Second,
+	)
 	// Subject-id resolution for Casdoor JWTs (iss != "cs-user"). cs-user is
 	// the single source of truth for identity → subject_id mapping; when the
 	// RPC client is configured we resolve via cs-user's by-identity endpoint
@@ -444,7 +434,10 @@ func main() {
 	)
 	userModule.Service.SetPostLoginHook(bootstrapGranter.ApplyOnLogin)
 
-	r.Use(middleware.CORS(middleware.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins}))
+	r.Use(middleware.CORS(middleware.CORSConfig{
+		AllowedOrigins: cfg.CORSAllowedOrigins,
+		DevMode:        cfg.CORSDevMode,
+	}))
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
@@ -460,7 +453,7 @@ func main() {
 	deviceSvc := &services.DeviceService{DB: db}
 	r.POST("/api/devices/:deviceID/heartbeat", handlers.DeviceHeartbeatHandler(deviceSvc))
 
-	r.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
+	r.Use(middleware.OptionalAuth())
 
 	// Phase B3b.2c: cross-tenant mismatch detection. Compares the
 	// tenant_slug claim embedded in cs-user-signed JWTs (Phase A7) against
@@ -483,7 +476,14 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	// Swagger UI is gated by ENABLE_SWAGGER (default false). Production
+	// deployments leave this off so the full API surface (handler
+	// parameters, response shapes, internal headers) is not exposed to
+	// unauthenticated callers. Dev / CI set ENABLE_SWAGGER=true to mount
+	// the UI for local iteration. The generated spec is unaffected.
+	if cfg.SwaggerEnabled {
+		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	}
 	updateSvc := &services.UpdateService{DB: db, ReleaseDownloadURL: cfg.ReleaseDownloadBaseURL}
 	workspaceSvc := &services.WorkspaceService{DB: db, DeviceService: deviceSvc}
 
@@ -515,7 +515,7 @@ func main() {
 		}
 	})
 
-	authzModule, err := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{}, casdoorEndpoint, jwksProvider)
+	authzModule, err := authz.New(db, systemrole.NewSystemRoleService(db), systemrole.CapabilityProvider{})
 	if err != nil {
 		log.Fatalf("failed to initialize authz module: %v", err)
 	}
@@ -534,7 +534,7 @@ func main() {
 		{
 			auth.GET("/callback", handlers.AuthCallback)
 			auth.GET("/login", handlers.Login)
-			auth.GET("/resolve", middleware.RequireAuth(casdoorEndpoint, jwksProvider), handlers.ResolveAuthUser)
+			auth.GET("/resolve", middleware.RequireAuth(), handlers.ResolveAuthUser)
 			auth.POST("/logout", handlers.Logout)
 			auth.GET("/bind/callback", handlers.AuthCallback)
 		}
@@ -601,7 +601,7 @@ func main() {
 
 		// All routes below require authentication
 		authed := api.Group("")
-		authed.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+		authed.Use(middleware.RequireAuth())
 		// R3 (REGISTRATION_PROFILE_DESIGN): profile-completion gate.
 		// Mounted AFTER RequireAuth so UserIDKey is populated. No-op when
 		// PROFILE_GATE_ENABLED=false (default). Whitelists the registration
@@ -984,9 +984,9 @@ func main() {
 		log.Fatalf("Failed to initialize ClawAgent: %v", err)
 	}
 	channelModule.Service.SetMessageHandler(clawRT)
-	clawRT.RegisterRoutes(r.Group("/api", middleware.RequireAuth(casdoorEndpoint, jwksProvider)))
+	clawRT.RegisterRoutes(r.Group("/api", middleware.RequireAuth()))
 	// Setup OpenAI-compatible API endpoint
-	clawRT.SetupOpenAIHandler(r.Group("/"), middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+	clawRT.SetupOpenAIHandler(r.Group("/"), middleware.RequireAuth())
 
 	internalGroup := r.Group("/internal")
 	internalGroup.Use(middleware.InternalAuth(cfg.InternalSecret))
@@ -1123,18 +1123,18 @@ func main() {
 	cloudModule.Dispatcher = disp
 
 	cloudGroup := r.Group("/cloud")
-	cloudGroup.Use(middleware.RequireAuth(casdoorEndpoint, jwksProvider))
+	cloudGroup.Use(middleware.RequireAuth())
 	cloudModule.RegisterRoutes(cloudGroup, deviceSvc, casdoorEndpoint)
 
 	deviceCloudGroup := r.Group("/cloud")
 	cloudModule.RegisterDeviceRoutes(deviceCloudGroup, deviceSvc)
 
 	// Device proxy: require user auth + device ownership check
-	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
+	r.Any("/cloud/device/:deviceID/proxy/*path", middleware.RequireAuth(), gateway.DeviceProxyHandler(gatewayRegistry, gatewayClient, deviceSvc))
 
 		// Session proxy for Design Two: resolve session_id via Multica and proxy to
 		// the device that owns the bound CSC session. Requires user auth.
-		r.Any("/cloud/sessions/:sessionID/proxy/*path", middleware.RequireAuth(casdoorEndpoint, jwksProvider), gateway.SessionProxyHandler(gatewayRegistry, gatewayClient, cfg.MulticaAPIURL))
+		r.Any("/cloud/sessions/:sessionID/proxy/*path", middleware.RequireAuth(), gateway.SessionProxyHandler(gatewayRegistry, gatewayClient, cfg.MulticaAPIURL))
 
 	// Cloud Team module
 	teamModule := teampkg.New(db, redisClient)
@@ -1176,7 +1176,7 @@ func main() {
 	teamAPIGroup := r.Group("/api")
 	teamAPIGroup.Use(requireUserOrDeviceAuth(deviceSvc))
 	teamWSGroup := r.Group("/ws")
-	teamWSGroup.Use(middleware.OptionalAuth(casdoorEndpoint, jwksProvider))
+	teamWSGroup.Use(middleware.OptionalAuth())
 	teamModule.RegisterRoutes(teamAPIGroup, teamWSGroup)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}

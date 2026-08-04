@@ -95,7 +95,7 @@ func newTestService(t *testing.T, db *gorm.DB) *Service {
 	svc, err := NewService(db, roleProviderStub{roles: map[string][]string{
 		"admin_user": {systemrole.SystemRolePlatformAdmin},
 		"biz_user":   {systemrole.SystemRoleBusinessAdmin},
-	}}, systemrole.CapabilityProvider{}, "", nil)
+	}}, systemrole.CapabilityProvider{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}

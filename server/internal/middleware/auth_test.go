@@ -1,20 +1,16 @@
 package middleware
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"sync"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,41 +26,6 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
-// generateTestRSAKey generates a 2048-bit RSA key pair for testing.
-func generateTestRSAKey(t *testing.T) *rsa.PrivateKey {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate RSA key: %v", err)
-	}
-	return key
-}
-
-// signTestJWT creates an RS256-signed JWT with the given claims and key ID.
-func signTestJWT(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClaims) string {
-	t.Helper()
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	if kid != "" {
-		token.Header["kid"] = kid
-	}
-	tokenStr, err := token.SignedString(key)
-	if err != nil {
-		t.Fatalf("sign JWT: %v", err)
-	}
-	return tokenStr
-}
-
-// newTestJWKSProvider creates a JWKSProvider with pre-cached keys (no HTTP needed).
-func newTestJWKSProvider(keys map[string]*rsa.PublicKey) *JWKSProvider {
-	return &JWKSProvider{
-		sources:    []string{"http://localhost:0/.well-known/jwks"}, // won't be called
-		keys:       keys,
-		minRefresh: 5 * time.Minute,
-		lastFetch:  time.Now(), // mark as recently fetched so refresh is skipped
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-	}
-}
-
 // performRequest executes a handler with the given request and returns the recorder.
 func performRequest(handler http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
@@ -72,12 +33,69 @@ func performRequest(handler http.Handler, req *http.Request) *httptest.ResponseR
 	return w
 }
 
-// rsaPubKeyToJWKParams encodes an RSA public key to base64url n and e values for JWK.
-func rsaPubKeyToJWKParams(pub *rsa.PublicKey) (n, e string) {
-	n = base64.RawURLEncoding.EncodeToString(pub.N.Bytes())
-	eBig := big.NewInt(int64(pub.E))
-	e = base64.RawURLEncoding.EncodeToString(eBig.Bytes())
-	return
+const testInternalToken = "test-internal-token"
+
+// stubCSUser spawns an httptest server that mimics cs-user's
+// POST /api/internal/auth/verify endpoint. behavior describes what to return
+// for each call (status code + JSON body). Returns the URL to feed into
+// SetTokenVerifier; the server is auto-closed on test cleanup.
+//
+// The server also asserts that the X-Internal-Token header matches
+// testInternalToken — a missing/wrong token gets a 401 so tests catching
+// misconfigured wiring fail loudly rather than silently passing.
+type stubCSUser struct {
+	server   *httptest.Server
+	calls    atomic.Int32
+	bodies   atomic.Value // []string
+	behavior func(w http.ResponseWriter, r *http.Request, call int32)
+}
+
+func newStubCSUser(t *testing.T, behavior func(w http.ResponseWriter, r *http.Request, call int32)) *stubCSUser {
+	t.Helper()
+	s := &stubCSUser{behavior: behavior}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Internal-Token") != testInternalToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		call := s.calls.Add(1)
+		body := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(body)
+		prev, _ := s.bodies.Load().([]string)
+		s.bodies.Store(append(prev, string(body)))
+		s.behavior(w, r, call)
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+// installVerifier configures SetTokenVerifier to point at the stub cs-user
+// server, using the shared testInternalToken. Restores the previous verifier
+// on cleanup so tests don't leak state into each other.
+func installVerifier(t *testing.T, url string) {
+	t.Helper()
+	SetTokenVerifier(url, testInternalToken, 2*time.Second)
+	t.Cleanup(func() {
+		// Reset to disabled so the next test starts clean.
+		SetTokenVerifier("", "", 0)
+	})
+}
+
+// verifyOK builds the 200 response cs-user returns for a successful
+// introspection. Mirrors the verifyTokenResponse JSON shape from
+// cs-user/internal/handlers/auth.go.
+func verifyOK(subject, tenantID, tenantSlug string) map[string]any {
+	return map[string]any{
+		"active":      true,
+		"token_source": "cs-user",
+		"sub":         subject,
+		"universal_id": "uni-" + subject,
+		"name":        subject + "-name",
+		"email":       subject + "@example.test",
+		"tenant_id":   tenantID,
+		"tenant_slug": tenantSlug,
+		"iss":         "cs-user",
+	}
 }
 
 // ===========================================================================
@@ -108,7 +126,6 @@ func TestInternalAuth_MissingHeaderRejects(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/internal", nil)
-	// No header set
 	w := performRequest(router, req)
 
 	if w.Code != http.StatusForbidden {
@@ -200,452 +217,307 @@ func TestExtractToken_BearerHeaderTakesPriorityOverCookie(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// 3. parseJWTToken
-// ===========================================================================
+func TestExtractToken_BearerPrefixOnlyReturnsEmpty(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Request.Header.Set("Authorization", "Bearer ")
 
-func TestParseJWTToken_ValidRS256(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-123",
-		"name":               "Test User",
-		"preferred_username": "testuser",
-		"email":              "test@example.com",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if info.Sub != "user-123" {
-		t.Errorf("expected sub 'user-123', got %q", info.Sub)
-	}
-	if info.Name != "Test User" {
-		t.Errorf("expected name 'Test User', got %q", info.Name)
-	}
-	if info.PreferredUsername != "testuser" {
-		t.Errorf("expected preferred_username 'testuser', got %q", info.PreferredUsername)
-	}
-	if info.Email != "test@example.com" {
-		t.Errorf("expected email 'test@example.com', got %q", info.Email)
+	token := ExtractToken(c)
+	if token != "" {
+		t.Errorf("expected empty token for 'Bearer ' header, got %q", token)
 	}
 }
 
-func TestParseJWTToken_ForgedUnsignedJWT(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
+func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Request.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	c.Request.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "fallback-cookie"})
 
-	// Create a token with "none" algorithm by manually constructing it
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"hacker","name":"Evil","exp":` +
-		fmt.Sprintf("%d", time.Now().Add(1*time.Hour).Unix()) + `}`))
-	forgedToken := header + "." + payload + "."
-
-	_, err := parseJWTToken(forgedToken, jwks)
-	if err == nil {
-		t.Fatal("expected error for forged unsigned JWT, got nil")
-	}
-}
-
-func TestParseJWTToken_WrongKeyRejects(t *testing.T) {
-	signingKey := generateTestRSAKey(t)
-	wrongKey := generateTestRSAKey(t)
-	kid := "test-kid-1"
-
-	// JWKS has the wrong public key
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &wrongKey.PublicKey})
-
-	tokenStr := signTestJWT(t, signingKey, kid, jwt.MapClaims{
-		"sub": "user-123",
-		"exp": time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	_, err := parseJWTToken(tokenStr, jwks)
-	if err == nil {
-		t.Fatal("expected error for JWT signed with wrong key, got nil")
-	}
-}
-
-func TestParseJWTToken_MissingSubClaim(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	// Token with no "sub" and no "universal_id"
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"name": "No Sub User",
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	_, err := parseJWTToken(tokenStr, jwks)
-	if err == nil {
-		t.Fatal("expected error for missing sub claim, got nil")
-	}
-	if got := err.Error(); got != "no id, sub or universal_id in token" {
-		t.Errorf("expected 'no id, sub or universal_id in token', got %q", got)
-	}
-}
-
-func TestParseJWTToken_UniversalIDFallback(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	// Token with "universal_id" instead of "sub"
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"universal_id": "uid-456",
-		"name":         "Fallback User",
-		"exp":          time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if info.Sub != "uid-456" {
-		t.Errorf("expected sub 'uid-456' from universal_id fallback, got %q", info.Sub)
-	}
-}
-
-func TestParseJWTToken_NilJWKSProvider(t *testing.T) {
-	_, err := parseJWTToken("some.jwt.token", nil)
-	if err == nil {
-		t.Fatal("expected error for nil JWKS provider, got nil")
-	}
-	if got := err.Error(); got != "JWKS provider not configured" {
-		t.Errorf("expected 'JWKS provider not configured', got %q", got)
-	}
-}
-
-func TestParseJWTToken_HS256Rejected(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	// Create a token signed with HS256 (HMAC, not RSA)
-	hmacToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "user-123",
-		"exp": time.Now().Add(1 * time.Hour).Unix(),
-	})
-	hmacToken.Header["kid"] = kid
-	tokenStr, err := hmacToken.SignedString([]byte("hmac-secret"))
-	if err != nil {
-		t.Fatalf("sign HMAC JWT: %v", err)
-	}
-
-	_, err = parseJWTToken(tokenStr, jwks)
-	if err == nil {
-		t.Fatal("expected error for HS256-signed JWT, got nil")
-	}
-}
-
-func TestParseJWTToken_PreferredUsernameFallsBackToName(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid-1"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	// Token without preferred_username
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":  "user-789",
-		"name": "Fallback Name",
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if info.PreferredUsername != "Fallback Name" {
-		t.Errorf("expected preferred_username to fall back to 'Fallback Name', got %q", info.PreferredUsername)
+	token := ExtractToken(c)
+	if token != "fallback-cookie" {
+		t.Errorf("expected 'fallback-cookie' when Authorization is not Bearer, got %q", token)
 	}
 }
 
 // ===========================================================================
-// 4. JWKSProvider
+// 3. introspectToken (cs-user verify contract)
 // ===========================================================================
 
-func TestJWKSProvider_GetKeyCached(t *testing.T) {
-	key := generateTestRSAKey(t)
-	provider := newTestJWKSProvider(map[string]*rsa.PublicKey{"kid-1": &key.PublicKey})
-
-	pub, err := provider.GetKey("kid-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pub.N.Cmp(key.PublicKey.N) != 0 || pub.E != key.PublicKey.E {
-		t.Error("returned key does not match cached key")
-	}
-}
-
-func TestJWKSProvider_GetKeyEmptyKidReturnsFirstAvailable(t *testing.T) {
-	key := generateTestRSAKey(t)
-	provider := newTestJWKSProvider(map[string]*rsa.PublicKey{"some-kid": &key.PublicKey})
-
-	pub, err := provider.GetKey("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pub.N.Cmp(key.PublicKey.N) != 0 || pub.E != key.PublicKey.E {
-		t.Error("returned key does not match the only available key")
-	}
-}
-
-func TestJWKSProvider_GetKeyFetchesFromRemoteOnCacheMiss(t *testing.T) {
-	key := generateTestRSAKey(t)
-	nStr, eStr := rsaPubKeyToJWKParams(&key.PublicKey)
-
-	fetchCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fetchCount++
-		resp := jwksResponse{
-			Keys: []jwkKey{
-				{
-					Kty: "RSA",
-					Use: "sig",
-					Kid: "remote-kid",
-					Alg: "RS256",
-					N:   nStr,
-					E:   eStr,
-				},
-			},
-		}
+// TestParseToken_ValidTokenMapsFields pins the response→CasdoorUserInfo field
+// mapping: the contract between cs-user's verifyTokenResponse JSON and the
+// middleware. Silent drift in either direction fails this test.
+func TestParseToken_ValidTokenMapsFields(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active":       true,
+			"token_source": "cs-user",
+			"sub":          "usr_alice_001",
+			"universal_id": "u-alice-001",
+			"short_id":     "alice",
+			"name":         "Alice Admin",
+			"email":        "alice@corp.acme.test",
+			"phone":        "+1-555-0100",
+			"tenant_id":    "t-acme",
+			"tenant_slug":  "acme",
+			"iss":          "cs-user",
+		})
+	})
+	installVerifier(t, stub.server.URL)
 
-	provider := &JWKSProvider{
-		sources:    []string{server.URL},
-		keys:       make(map[string]*rsa.PublicKey), // empty cache
-		minRefresh: 0,                               // no rate limiting for test
-		httpClient: server.Client(),
-	}
-
-	pub, err := provider.GetKey("remote-kid")
+	info, err := ParseToken("valid-token-A")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("ParseToken: %v", err)
 	}
-	if pub.N.Cmp(key.PublicKey.N) != 0 {
-		t.Error("fetched key does not match expected key")
+	if info.Sub != "usr_alice_001" {
+		t.Errorf("Sub = %q, want usr_alice_001", info.Sub)
 	}
-	if fetchCount != 1 {
-		t.Errorf("expected 1 fetch, got %d", fetchCount)
+	if info.ID != "usr_alice_001" {
+		t.Errorf("ID = %q, want usr_alice_001 (mirrors Sub)", info.ID)
+	}
+	if info.UniversalID != "u-alice-001" {
+		t.Errorf("UniversalID = %q, want u-alice-001", info.UniversalID)
+	}
+	if info.Name != "Alice Admin" {
+		t.Errorf("Name = %q, want Alice Admin", info.Name)
+	}
+	if info.PreferredUsername != "Alice Admin" {
+		t.Errorf("PreferredUsername = %q, want Alice Admin (mirrors Name)", info.PreferredUsername)
+	}
+	if info.Email != "alice@corp.acme.test" {
+		t.Errorf("Email = %q", info.Email)
+	}
+	if info.Phone != "+1-555-0100" {
+		t.Errorf("Phone = %q", info.Phone)
+	}
+	if info.TenantID != "t-acme" {
+		t.Errorf("TenantID = %q, want t-acme", info.TenantID)
+	}
+	if info.TenantSlug != "acme" {
+		t.Errorf("TenantSlug = %q, want acme", info.TenantSlug)
+	}
+	if info.Issuer != "cs-user" {
+		t.Errorf("Issuer = %q, want cs-user", info.Issuer)
+	}
+	// Phase C1 fields stay zero — server no longer trusts local JWT claims.
+	if info.PlatformAdmin || info.PlatformScope != "" || info.TenantRoles != nil {
+		t.Errorf("Phase C1 fields must be zero, got admin=%v scope=%q roles=%v", info.PlatformAdmin, info.PlatformScope, info.TenantRoles)
 	}
 }
 
-func TestJWKSProvider_RateLimitingPreventsExcessiveFetches(t *testing.T) {
-	key := generateTestRSAKey(t)
-	nStr, eStr := rsaPubKeyToJWKParams(&key.PublicKey)
+// TestParseToken_EmptyTokenRejected guards the cheap path — an empty bearer
+// never reaches cs-user.
+func TestParseToken_EmptyTokenRejected(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		t.Errorf("cs-user must not be called for empty token")
+	})
+	installVerifier(t, stub.server.URL)
 
-	var mu sync.Mutex
-	fetchCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		fetchCount++
-		mu.Unlock()
-		resp := jwksResponse{
-			Keys: []jwkKey{
-				{
-					Kty: "RSA",
-					Use: "sig",
-					Kid: "rate-kid",
-					Alg: "RS256",
-					N:   nStr,
-					E:   eStr,
-				},
-			},
+	_, err := ParseToken("")
+	if !isErrInvalidToken(err) {
+		t.Fatalf("empty token: err = %v, want errInvalidToken", err)
+	}
+}
+
+// TestParseToken_RejectedByCSUser pins the 401 path: cs-user explicitly
+// rejecting the token surfaces as errInvalidToken (NOT errVerifierUnavailable).
+func TestParseToken_RejectedByCSUser(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	installVerifier(t, stub.server.URL)
+
+	_, err := ParseToken("rejected-token")
+	if !isErrInvalidToken(err) {
+		t.Fatalf("rejected token: err = %v, want errInvalidToken", err)
+	}
+}
+
+// TestParseToken_InactiveTokenRejected pins the active=false path — cs-user
+// returned 200 but active=false means the token was revoked.
+func TestParseToken_InactiveTokenRejected(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"active": false, "sub": "usr_x"})
+	})
+	installVerifier(t, stub.server.URL)
+
+	_, err := ParseToken("revoked-token")
+	if !isErrInvalidToken(err) {
+		t.Fatalf("inactive token: err = %v, want errInvalidToken", err)
+	}
+}
+
+// TestParseToken_EmptySubjectRejected guards against a misbehaving cs-user
+// returning active=true with no sub — we must not mint an auth context for
+// an unknown subject.
+func TestParseToken_EmptySubjectRejected(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": ""})
+	})
+	installVerifier(t, stub.server.URL)
+
+	_, err := ParseToken("no-sub-token")
+	if !isErrInvalidToken(err) {
+		t.Fatalf("empty subject: err = %v, want errInvalidToken", err)
+	}
+}
+
+// TestParseToken_CSUser5xxFailsClosed pins the fail-closed guarantee: a 5xx
+// from cs-user MUST surface as errVerifierUnavailable (NOT errInvalidToken),
+// so RequireAuth returns 503 and the request never silently degrades.
+func TestParseToken_CSUser5xxFailsClosed(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	installVerifier(t, stub.server.URL)
+
+	_, err := ParseToken("some-token")
+	if !isErrVerifierUnavailable(err) {
+		t.Fatalf("5xx: err = %v, want errVerifierUnavailable", err)
+	}
+}
+
+// TestParseToken_CSUserUnreachableFailsClosed pins the network-error path:
+// a closed stub connection surfaces as errVerifierUnavailable, never as
+// errInvalidToken (which would let an outage masquerade as a bad token).
+func TestParseToken_CSUserUnreachableFailsClosed(t *testing.T) {
+	// Start then immediately close a server to get an unreachable URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	installVerifier(t, url)
+
+	_, err := ParseToken("any-token")
+	if !isErrVerifierUnavailable(err) {
+		t.Fatalf("unreachable: err = %v, want errVerifierUnavailable", err)
+	}
+}
+
+// TestParseToken_VerifierUnconfiguredFailsClosed verifies that with no
+// SetTokenVerifier call, introspectToken fails closed rather than panicking.
+func TestParseToken_VerifierUnconfiguredFailsClosed(t *testing.T) {
+	SetTokenVerifier("", "", 0)
+	_, err := ParseToken("any-token")
+	if !isErrVerifierUnavailable(err) {
+		t.Fatalf("unconfigured: err = %v, want errVerifierUnavailable", err)
+	}
+}
+
+// TestParseToken_CachesSuccessfulLookups verifies the SHA-256-keyed cache:
+// two ParseToken calls with the same token produce one cs-user round-trip.
+func TestParseToken_CachesSuccessfulLookups(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("usr_cached", "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
+
+	for i := 0; i < 2; i++ {
+		info, err := ParseToken("same-token-twice")
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	provider := &JWKSProvider{
-		sources:    []string{server.URL},
-		keys:       make(map[string]*rsa.PublicKey),
-		minRefresh: 1 * time.Hour, // very long interval
-		httpClient: server.Client(),
-	}
-
-	// First call: should fetch
-	_, err := provider.GetKey("rate-kid")
-	if err != nil {
-		t.Fatalf("first GetKey: %v", err)
-	}
-
-	// Second call with unknown kid: should NOT fetch again due to rate limit
-	_, err = provider.GetKey("unknown-kid")
-	// This should fail because the key is not found and rate limit prevents refresh
-	if err == nil {
-		t.Error("expected error for unknown-kid when rate limited, got nil")
-	}
-
-	mu.Lock()
-	if fetchCount != 1 {
-		t.Errorf("expected exactly 1 fetch (rate limited), got %d", fetchCount)
-	}
-	mu.Unlock()
-}
-
-func TestParseRSAPublicKey_CorrectlyParsesJWK(t *testing.T) {
-	key := generateTestRSAKey(t)
-	nStr, eStr := rsaPubKeyToJWKParams(&key.PublicKey)
-
-	jwk := jwkKey{
-		Kty: "RSA",
-		N:   nStr,
-		E:   eStr,
-	}
-
-	pub, err := parseRSAPublicKey(jwk)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pub.N.Cmp(key.PublicKey.N) != 0 {
-		t.Error("parsed N does not match original")
-	}
-	if pub.E != key.PublicKey.E {
-		t.Errorf("parsed E=%d does not match original E=%d", pub.E, key.PublicKey.E)
-	}
-}
-
-func TestParseRSAPublicKey_InvalidBase64(t *testing.T) {
-	jwk := jwkKey{
-		Kty: "RSA",
-		N:   "!!!invalid-base64!!!",
-		E:   "AQAB",
-	}
-	_, err := parseRSAPublicKey(jwk)
-	if err == nil {
-		t.Fatal("expected error for invalid base64 N, got nil")
-	}
-}
-
-func TestJWKSProvider_EmptyKidUsesDefaultKey(t *testing.T) {
-	// Simulate what happens when JWKS contains a key with empty kid —
-	// the refresh() code maps it to "_default".
-	key := generateTestRSAKey(t)
-	nStr, eStr := rsaPubKeyToJWKParams(&key.PublicKey)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := jwksResponse{
-			Keys: []jwkKey{
-				{
-					Kty: "RSA",
-					Use: "sig",
-					Kid: "", // empty kid
-					Alg: "RS256",
-					N:   nStr,
-					E:   eStr,
-				},
-			},
+		if info.Sub != "usr_cached" {
+			t.Fatalf("call %d: Sub = %q", i, info.Sub)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	provider := &JWKSProvider{
-		sources:    []string{server.URL},
-		keys:       make(map[string]*rsa.PublicKey),
-		minRefresh: 0,
-		httpClient: server.Client(),
 	}
-
-	// GetKey with empty kid should get the key mapped to "_default"
-	pub, err := provider.GetKey("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pub.N.Cmp(key.PublicKey.N) != 0 {
-		t.Error("fetched key does not match expected key for empty kid")
+	if got := stub.calls.Load(); got != 1 {
+		t.Errorf("expected cs-user called once (cached), got %d", got)
 	}
 }
 
-func TestJWKSProvider_RemoteServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("server error"))
-	}))
-	defer server.Close()
+// TestParseToken_InvalidateCacheForcesRefresh verifies
+// InvalidateTokenCache drops the cache entry so the next call re-queries.
+func TestParseToken_InvalidateCacheForcesRefresh(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("usr_invalidate", "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
 
-	provider := &JWKSProvider{
-		sources:    []string{server.URL},
-		keys:       make(map[string]*rsa.PublicKey),
-		minRefresh: 0,
-		httpClient: server.Client(),
+	if _, err := ParseToken("invalidate-token"); err != nil {
+		t.Fatalf("first call: %v", err)
 	}
+	InvalidateTokenCache("invalidate-token")
+	if _, err := ParseToken("invalidate-token"); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if got := stub.calls.Load(); got != 2 {
+		t.Errorf("expected cs-user called twice after invalidate, got %d", got)
+	}
+}
 
-	_, err := provider.GetKey("any-kid")
-	if err == nil {
-		t.Fatal("expected error when remote server returns 500, got nil")
+// TestParseToken_DifferentTokensBypassCache verifies the cache is keyed by
+// the token (not by some shared subject) so two distinct tokens both hit
+// cs-user.
+func TestParseToken_DifferentTokensBypassCache(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("usr_"+strconv.FormatInt(int64(call), 10), "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
+
+	if _, err := ParseToken("token-one"); err != nil {
+		t.Fatalf("token-one: %v", err)
+	}
+	if _, err := ParseToken("token-two"); err != nil {
+		t.Fatalf("token-two: %v", err)
+	}
+	if got := stub.calls.Load(); got != 2 {
+		t.Errorf("expected cs-user called twice (distinct tokens), got %d", got)
 	}
 }
 
 // ===========================================================================
-// 5. RequireAuth middleware (integration-style)
+// 4. RequireAuth middleware (integration-style via stub cs-user)
 // ===========================================================================
 
 func TestRequireAuth_NoTokenReturns401(t *testing.T) {
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called without a token")
+	})
+	installVerifier(t, stub.server.URL)
+
 	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", nil))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
 	}
 }
 
-func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
-	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-abc",
-		"name":               "Test User",
-		"preferred_username": "testuser",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+func TestRequireAuth_ValidTokenSetsUserID(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("user-abc", "default", "default"))
 	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
 
-	var capturedUserID string
-	var capturedUserName string
-
+	var capturedUserID, capturedUserName string
 	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-		}
-		if uname, ok := c.Get(UserNameKey); ok {
-			capturedUserName = uname.(string)
-		}
+		capturedUserID = c.GetString(UserIDKey)
+		capturedUserName = c.GetString(UserNameKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	req.Header.Set("Authorization", "Bearer valid-token")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
 	}
 	if capturedUserID != "user-abc" {
 		t.Errorf("expected userId 'user-abc', got %q", capturedUserID)
 	}
-	if capturedUserName != "testuser" {
-		t.Errorf("expected userName 'testuser', got %q", capturedUserName)
+	if capturedUserName != "user-abc-name" {
+		t.Errorf("expected userName 'user-abc-name', got %q", capturedUserName)
 	}
 }
 
@@ -653,35 +525,26 @@ func TestRequireAuth_ValidJWTSetsUserID(t *testing.T) {
 // WebSocket handshake, which cannot set an Authorization header. This is the
 // cross-origin path used when the SameSite=Lax session cookie is not sent.
 func TestRequireAuth_TokenFromQueryForWebSocketUpgrade(t *testing.T) {
-	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-ws",
-		"name":               "WS User",
-		"preferred_username": "wsuser",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("user-ws", "default", "default"))
 	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
 
 	var capturedUserID string
 	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-		}
+		capturedUserID = c.GetString(UserIDKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	req := httptest.NewRequest("GET", "/protected?token=ws-token", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
 	}
 	if capturedUserID != "user-ws" {
 		t.Errorf("expected userID 'user-ws', got %q", capturedUserID)
@@ -691,128 +554,190 @@ func TestRequireAuth_TokenFromQueryForWebSocketUpgrade(t *testing.T) {
 // RequireAuth must accept ?token= for an EventSource (SSE) handshake, which
 // also cannot set an Authorization header.
 func TestRequireAuth_TokenFromQueryForSSE(t *testing.T) {
-	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-sse",
-		"name":               "SSE User",
-		"preferred_username": "sseuser",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("user-sse", "default", "default"))
 	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
 
 	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	req := httptest.NewRequest("GET", "/protected?token=sse-token", nil)
 	req.Header.Set("Accept", "text/event-stream")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
 
 // A plain HTTP request that carries the token only in ?token= must NOT be
-// authenticated -- the query fallback is reserved for WS/SSE handshakes so
+// authenticated — the query fallback is reserved for WS/SSE handshakes so
 // tokens don't leak into URLs/access logs for ordinary requests.
 func TestRequireAuth_QueryTokenRejectedForPlainHTTP(t *testing.T) {
-	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-plain",
-		"preferred_username": "plainuser",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called for plain-HTTP query token")
 	})
+	installVerifier(t, stub.server.URL)
 
 	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token="+tokenStr, nil)
+	req := httptest.NewRequest("GET", "/protected?token=plain-token", nil)
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for plain HTTP with query-only token, got %d", w.Code)
 	}
 }
 
-func TestRequireAuth_InvalidJWTReturns401_NoCasdoorFallback(t *testing.T) {
-	SetSubjectResolver(nil)
-	// Casdoor should NOT be contacted in the new auth model — signature
-	// verification is the gateway's responsibility, and the server only
-	// decodes. A malformed token must produce 401 without any network call.
-	casdoorCalled := false
-	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		casdoorCalled = true
+// TestRequireAuth_RejectedTokenReturns401AndClearsCookie pins the security
+// path: cs-user rejecting the token (401/400/inactive) yields 401 and
+// clears the auth cookie. This is the original CVE fix — forged unsigned
+// tokens, alg=none tokens, and revoked tokens are all rejected.
+func TestRequireAuth_RejectedTokenReturns401AndClearsCookie(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
 		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer casdoorServer.Close()
-
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
+	})
+	installVerifier(t, stub.server.URL)
 
 	router := gin.New()
-	router.Use(RequireAuth(casdoorServer.URL, jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer invalid-jwt-token")
+	req.Header.Set("Authorization", "Bearer forged.jwt.token")
 	w := performRequest(router, req)
 
 	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", w.Code)
+		t.Fatalf("expected 401, got %d", w.Code)
 	}
-	if casdoorCalled {
-		t.Errorf("Casdoor must not be contacted in the new auth model")
+	// Cookie should be cleared via Set-Cookie with MaxAge=-1.
+	setCookie := w.Header().Get("Set-Cookie")
+	if !strings.Contains(setCookie, "Max-Age=0") && !strings.Contains(setCookie, "zgsmAdminToken=") {
+		t.Errorf("expected Set-Cookie clearing zgsmAdminToken, got %q", setCookie)
 	}
 }
 
-func TestRequireAuth_InvalidJWTAndCasdoorFailureReturns401(t *testing.T) {
-	// Mock Casdoor server that always fails
-	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"status":"error","msg":"invalid token"}`))
-	}))
-	defer casdoorServer.Close()
-
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
+// TestRequireAuth_CSUser5xxReturns503 pins the fail-closed contract: when
+// cs-user is unavailable (5xx), RequireAuth returns 503 — NOT 401, and NOT
+// a successful pass-through. There is no fallback to local unverified
+// decoding; that was the original CVE.
+func TestRequireAuth_CSUser5xxReturns503(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	installVerifier(t, stub.server.URL)
 
 	router := gin.New()
-	router.Use(RequireAuth(casdoorServer.URL, jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer bad-token")
+	req.Header.Set("Authorization", "Bearer some-token")
 	w := performRequest(router, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 (fail closed), got %d; body=%s", w.Code, w.Body.String())
+	}
+}
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", w.Code)
+// TestRequireAuth_TokenFromCookie covers the cookie path that production
+// browsers hit on every non-API navigation.
+func TestRequireAuth_TokenFromCookie(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("cookie-user", "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
+
+	var capturedUserID string
+	router := gin.New()
+	router.Use(RequireAuth())
+	router.GET("/protected", func(c *gin.Context) {
+		capturedUserID = c.GetString(UserIDKey)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "cookie-token"})
+	w := performRequest(router, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if capturedUserID != "cookie-user" {
+		t.Errorf("expected userId 'cookie-user', got %q", capturedUserID)
+	}
+}
+
+// TestRequireAuth_UsesResolvedSubjectID covers the non-cs-user issuer path
+// — when the issuer is NOT "cs-user" (legacy Casdoor tokens during the
+// crossover window), the resolver bridges universal_id → local subject_id.
+func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
+	defer SetSubjectResolver(nil)
+	SetSubjectResolver(func(claims AuthClaims) (string, string, error) {
+		if claims.UniversalID != "u-legacy-001" {
+			t.Fatalf("resolver: unexpected UniversalID %q", claims.UniversalID)
+		}
+		return "subject-resolved", "resolved-user", nil
+	})
+
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		// cs-user returns a NON-cs-user issuer so the resolver fires.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active":       true,
+			"sub":          "casdoor-sub-1",
+			"universal_id": "u-legacy-001",
+			"name":         "Legacy",
+			"iss":          "https://casdoor.example",
+		})
+	})
+	installVerifier(t, stub.server.URL)
+
+	var capturedUserID, capturedUserName string
+	router := gin.New()
+	router.Use(RequireAuth())
+	router.GET("/protected", func(c *gin.Context) {
+		capturedUserID = c.GetString(UserIDKey)
+		capturedUserName = c.GetString(UserNameKey)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer legacy-token")
+	w := performRequest(router, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if capturedUserID != "subject-resolved" {
+		t.Errorf("expected resolved subject id, got %q", capturedUserID)
+	}
+	if capturedUserName != "resolved-user" {
+		t.Errorf("expected resolved user name, got %q", capturedUserName)
 	}
 }
 
 // ===========================================================================
-// 6. OptionalAuth middleware (integration-style)
+// 5. OptionalAuth middleware (integration-style via stub cs-user)
 // ===========================================================================
 
 func TestOptionalAuth_NoTokenPassesThroughWithoutUserID(t *testing.T) {
-	var hasUserID bool
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called for anonymous request")
+	})
+	installVerifier(t, stub.server.URL)
 
+	var hasUserID bool
 	router := gin.New()
-	router.Use(OptionalAuth("http://localhost:0", nil))
+	router.Use(OptionalAuth())
 	router.GET("/optional", func(c *gin.Context) {
 		_, hasUserID = c.Get(UserIDKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -820,7 +745,6 @@ func TestOptionalAuth_NoTokenPassesThroughWithoutUserID(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/optional", nil)
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
@@ -830,35 +754,25 @@ func TestOptionalAuth_NoTokenPassesThroughWithoutUserID(t *testing.T) {
 }
 
 func TestOptionalAuth_ValidJWTSetsUserID(t *testing.T) {
-	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "optional-user-123",
-		"name":               "Opt User",
-		"preferred_username": "optuser",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("optional-user-123", "default", "default"))
 	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
 
 	var capturedUserID string
 	var hasUserID bool
-
 	router := gin.New()
-	router.Use(OptionalAuth("http://localhost:0", jwks))
+	router.Use(OptionalAuth())
 	router.GET("/optional", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-			hasUserID = true
-		}
+		capturedUserID = c.GetString(UserIDKey)
+		_, hasUserID = c.Get(UserIDKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	req.Header.Set("Authorization", "Bearer opt-token")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
@@ -870,29 +784,26 @@ func TestOptionalAuth_ValidJWTSetsUserID(t *testing.T) {
 	}
 }
 
-func TestOptionalAuth_InvalidJWTAndCasdoorFailureStillPassesThrough(t *testing.T) {
-	// Mock Casdoor server that always fails
-	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestOptionalAuth_RejectedTokenStillPassesThrough pins the optional
+// semantics: a rejected token does NOT 401 — the request proceeds as
+// anonymous. Public routes (swagger, health, etc.) stay reachable.
+func TestOptionalAuth_RejectedTokenStillPassesThrough(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"status":"error","msg":"invalid token"}`))
-	}))
-	defer casdoorServer.Close()
-
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
+	})
+	installVerifier(t, stub.server.URL)
 
 	var hasUserID bool
-
 	router := gin.New()
-	router.Use(OptionalAuth(casdoorServer.URL, jwks))
+	router.Use(OptionalAuth())
 	router.GET("/optional", func(c *gin.Context) {
 		_, hasUserID = c.Get(UserIDKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer invalid-jwt")
+	req.Header.Set("Authorization", "Bearer rejected-token")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 (optional auth should pass through), got %d", w.Code)
 	}
@@ -901,382 +812,42 @@ func TestOptionalAuth_InvalidJWTAndCasdoorFailureStillPassesThrough(t *testing.T
 	}
 }
 
-func TestOptionalAuth_InvalidJWTSilentlyIgnored_NoCasdoorFallback(t *testing.T) {
-	SetSubjectResolver(nil)
-	// New auth model: server decodes JWT without verifying and never calls
-	// Casdoor. A malformed token on an optional route should pass through
-	// without populating the userID, and Casdoor must not be contacted.
-	casdoorCalled := false
-	casdoorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		casdoorCalled = true
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer casdoorServer.Close()
+// TestOptionalAuth_CSUser5xxStillPassesThrough verifies that even when
+// cs-user is unavailable, OptionalAuth degrades to anonymous rather than
+// 503. Required routes fail closed (503); optional routes fail open.
+func TestOptionalAuth_CSUser5xxStillPassesThrough(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	installVerifier(t, stub.server.URL)
 
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{})
-
-	var capturedUserID string
 	var hasUserID bool
-
 	router := gin.New()
-	router.Use(OptionalAuth(casdoorServer.URL, jwks))
+	router.Use(OptionalAuth())
 	router.GET("/optional", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-			hasUserID = true
-		}
+		_, hasUserID = c.Get(UserIDKey)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer invalid.jwt.token")
+	req.Header.Set("Authorization", "Bearer some-token")
 	w := performRequest(router, req)
-
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+		t.Errorf("expected 200 (optional degrades to anonymous on cs-user outage), got %d", w.Code)
 	}
 	if hasUserID {
-		t.Errorf("expected no userId on malformed token, got %q", capturedUserID)
-	}
-	if casdoorCalled {
-		t.Errorf("Casdoor must not be contacted in the new auth model")
+		t.Error("expected no userId when cs-user is unavailable")
 	}
 }
 
-func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
-	defer SetSubjectResolver(nil)
-	SetSubjectResolver(func(claims AuthClaims) (string, string, error) {
-		if claims.UniversalID != "universal-123" {
-			t.Fatalf("expected universal id universal-123, got %+v", claims)
-		}
-		return "subject-123", "resolved-user", nil
-	})
+// ---------------------------------------------------------------------------
+// helpers (errors.Is wrapper so test sites read clearly)
+// ---------------------------------------------------------------------------
 
-	key := generateTestRSAKey(t)
-	kid := "subject-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"id":                 "legacy-id",
-		"sub":                "legacy-sub",
-		"universal_id":       "universal-123",
-		"preferred_username": "legacy-name",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	var capturedUserID string
-	var capturedUserName string
-	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
-	router.GET("/protected", func(c *gin.Context) {
-		capturedUserID = c.GetString(UserIDKey)
-		capturedUserName = c.GetString(UserNameKey)
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenStr)
-	w := performRequest(router, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if capturedUserID != "subject-123" {
-		t.Fatalf("expected resolved subject id, got %q", capturedUserID)
-	}
-	if capturedUserName != "resolved-user" {
-		t.Fatalf("expected resolved user name, got %q", capturedUserName)
-	}
+func isErrInvalidToken(err error) bool {
+	return err == errInvalidToken
 }
 
-// ===========================================================================
-// Additional edge-case tests
-// ===========================================================================
-
-func TestParseJWTToken_ExpiredTokenRejected(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "test-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub": "user-expired",
-		"exp": time.Now().Add(-1 * time.Hour).Unix(), // expired 1 hour ago
-	})
-
-	_, err := parseJWTToken(tokenStr, jwks)
-	if err == nil {
-		t.Fatal("expected error for expired JWT, got nil")
-	}
-}
-
-func TestParseJWTToken_NoKidUsesFirstAvailableKey(t *testing.T) {
-	key := generateTestRSAKey(t)
-	// Cache the key under a specific kid
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{"any-kid": &key.PublicKey})
-
-	// Sign a token WITHOUT a kid header — the keyfunc will call GetKey("") which
-	// returns the first available key from the cache.
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub": "user-no-kid",
-		"exp": time.Now().Add(1 * time.Hour).Unix(),
-	})
-	// Deliberately don't set kid in header
-	tokenStr, err := token.SignedString(key)
-	if err != nil {
-		t.Fatalf("sign JWT: %v", err)
-	}
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if info.Sub != "user-no-kid" {
-		t.Errorf("expected sub 'user-no-kid', got %q", info.Sub)
-	}
-}
-
-func TestRequireAuth_TokenFromCookie(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "cookie-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":  "cookie-user",
-		"name": "Cookie User",
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	var capturedUserID string
-
-	router := gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
-	router.GET("/protected", func(c *gin.Context) {
-		if uid, ok := c.Get(UserIDKey); ok {
-			capturedUserID = uid.(string)
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	req := httptest.NewRequest("GET", "/protected", nil)
-	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: tokenStr})
-	w := performRequest(router, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	if capturedUserID != "cookie-user" {
-		t.Errorf("expected userId 'cookie-user', got %q", capturedUserID)
-	}
-}
-
-func TestJWKSProvider_NoValidRSAKeysInResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := jwksResponse{
-			Keys: []jwkKey{
-				{
-					Kty: "EC", // Not RSA — should be skipped
-					Kid: "ec-key",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	provider := &JWKSProvider{
-		sources:    []string{server.URL},
-		keys:       make(map[string]*rsa.PublicKey),
-		minRefresh: 0,
-		httpClient: server.Client(),
-	}
-
-	_, err := provider.GetKey("ec-key")
-	if err == nil {
-		t.Fatal("expected error when no valid RSA keys in response, got nil")
-	}
-}
-
-func TestExtractToken_BearerPrefixOnlyReturnsEmpty(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/", nil)
-	c.Request.Header.Set("Authorization", "Bearer ")
-
-	token := ExtractToken(c)
-	// "Bearer " with TrimPrefix yields "", so should return empty
-	// But the code checks HasPrefix("Bearer ") first which is true,
-	// then TrimPrefix returns "".
-	if token != "" {
-		t.Errorf("expected empty token for 'Bearer ' header, got %q", token)
-	}
-}
-
-func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/", nil)
-	c.Request.Header.Set("Authorization", "Basic dXNlcjpwYXNz") // Basic auth, not Bearer
-	c.Request.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "fallback-cookie"})
-
-	token := ExtractToken(c)
-	if token != "fallback-cookie" {
-		t.Errorf("expected 'fallback-cookie' when Authorization is not Bearer, got %q", token)
-	}
-}
-
-// ===========================================================================
-// Phase A/B/C enterprise claims round-trip — locks the cs-user → server
-// contract for non-OIDC claims (tenant_id, tenant_slug, platform_admin,
-// platform_scope, tenant_roles). Without this, silent drift in
-// cs-user/internal/auth/claims.go JSON tags vs the manual reads in
-// parseJWTToken would only surface at runtime in production traffic.
-// ===========================================================================
-
-// TestParseJWTToken_EnterpriseClaimsRoundTrip verifies every Phase A/B/C
-// custom claim emitted by cs-user's EnterpriseClaims surfaces in the
-// resulting CasdoorUserInfo. Mirrors the JSON tag keys cs-user emits.
-func TestParseJWTToken_EnterpriseClaimsRoundTrip(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "cs-user-active"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	// Mirror cs-user/internal/auth/claims.go EnterpriseClaims JSON tags
-	// exactly — drift in either direction fails this test.
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		// Standard + OIDC (handled by NormalizeClaimsMap)
-		"iss":                "cs-user",
-		"sub":                "user-base",
-		"aud":                "costrict-web",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
-		"iat":                time.Now().Unix(),
-		"name":               "Alice Admin",
-		"preferred_username": "alice",
-		"email":              "alice@corp.acme.example",
-		"universal_id":       "u-alice-001",
-
-		// Phase A — employment / tenant context
-		"tenant_id":   "t-acme",
-		"tenant_slug": "acme",
-
-		// Phase C1 — platform / tenant-admin permissions
-		"platform_admin": true,
-		"platform_scope": "tenant.read,user.read",
-		"tenant_roles":   []string{"owner", "admin"},
-
-		// Phase B — identity federation (provider side)
-		"provider":         "casdoor",
-		"provider_user_id": "casdoor:alice-001",
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("parseJWTToken: %v", err)
-	}
-
-	// Standard + OIDC. cs-user JWT (iss="cs-user") → Sub is the canonical
-	// cs-user subject_id (usr_<uuid>); universal_id carries Casdoor's
-	// original value separately — they are no longer required to match.
-	// parseJWTToken now branches on iss to honor this contract.
-	if info.Sub != "user-base" {
-		t.Errorf("Sub = %q, want user-base (cs-user JWT uses sub as canonical subject_id)", info.Sub)
-	}
-	if info.UniversalID != "u-alice-001" {
-		t.Errorf("UniversalID = %q, want u-alice-001 (silent drift from cs-user JSON tag 'universal_id')", info.UniversalID)
-	}
-	if info.Name != "Alice Admin" {
-		t.Errorf("Name = %q", info.Name)
-	}
-	if info.Email != "alice@corp.acme.example" {
-		t.Errorf("Email = %q", info.Email)
-	}
-	if info.PreferredUsername != "alice" {
-		t.Errorf("PreferredUsername = %q", info.PreferredUsername)
-	}
-
-	// Phase A/B — tenant context
-	if info.TenantID != "t-acme" {
-		t.Errorf("TenantID = %q, want t-acme (Phase A cs-user canonical tenant PK)", info.TenantID)
-	}
-	if info.TenantSlug != "acme" {
-		t.Errorf("TenantSlug = %q, want acme (Phase A7 custom claim)", info.TenantSlug)
-	}
-
-	// Phase C1 — permission claims
-	if !info.PlatformAdmin {
-		t.Errorf("PlatformAdmin = false, want true (drift from 'platform_admin' JSON tag)")
-	}
-	if info.PlatformScope != "tenant.read,user.read" {
-		t.Errorf("PlatformScope = %q", info.PlatformScope)
-	}
-	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
-		t.Errorf("TenantRoles = %+v, want [owner admin]", info.TenantRoles)
-	}
-
-	// Phase B — federation. cs-user emits a top-level provider_user_id
-	// claim (different shape from Casdoor's nested properties.<provider>.id);
-	// server reads the top-level form for cs-user tokens.
-	if info.ProviderUserID != "casdoor:alice-001" {
-		t.Errorf("ProviderUserID = %q, want casdoor:alice-001 (top-level provider_user_id claim from cs-user)", info.ProviderUserID)
-	}
-}
-
-// TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak verifies a legacy
-// Casdoor-issued token (no tenant_slug / tenant_id / platform_admin /
-// platform_scope / tenant_roles) still parses cleanly via the manual-read
-// path — pre-cutover compat. The middleware must not crash or return
-// non-default values when these custom claims are absent.
-func TestParseJWTToken_PhaseAClaimsAbsentDoesNotBreak(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "casdoor-legacy"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "user-legacy",
-		"name":               "Legacy User",
-		"preferred_username": "legacy",
-		"email":              "legacy@old.example",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("parseJWTToken on legacy Casdoor token: %v", err)
-	}
-	if info.TenantID != "" {
-		t.Errorf("TenantID = %q, want empty for legacy token", info.TenantID)
-	}
-	if info.TenantSlug != "" {
-		t.Errorf("TenantSlug = %q, want empty", info.TenantSlug)
-	}
-	if info.PlatformAdmin {
-		t.Errorf("PlatformAdmin = true, want false")
-	}
-	if info.PlatformScope != "" {
-		t.Errorf("PlatformScope = %q, want empty", info.PlatformScope)
-	}
-	if info.TenantRoles != nil {
-		t.Errorf("TenantRoles = %+v, want nil", info.TenantRoles)
-	}
-}
-
-// TestParseJWTToken_TenantRolesNonStringRejected verifies malformed
-// tenant_roles entries are silently skipped (defensive — a single bad
-// element should not corrupt the whole claim).
-func TestParseJWTToken_TenantRolesNonStringRejected(t *testing.T) {
-	key := generateTestRSAKey(t)
-	kid := "cs-user-active"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-
-	tokenStr := signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":          "u-test",
-		"exp":          time.Now().Add(1 * time.Hour).Unix(),
-		"tenant_roles": []any{"owner", 42, "admin"}, // middle element wrong type
-	})
-
-	info, err := parseJWTToken(tokenStr, jwks)
-	if err != nil {
-		t.Fatalf("parseJWTToken: %v", err)
-	}
-	if len(info.TenantRoles) != 2 || info.TenantRoles[0] != "owner" || info.TenantRoles[1] != "admin" {
-		t.Errorf("TenantRoles = %+v, want [owner admin] (non-string element should be skipped)", info.TenantRoles)
-	}
+func isErrVerifierUnavailable(err error) bool {
+	return err == errVerifierUnavailable
 }

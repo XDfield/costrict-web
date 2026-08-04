@@ -21,7 +21,22 @@ type Scheduler struct {
 	mu         sync.RWMutex
 }
 
+// SyncDisabled 全局禁用 sync scheduler 的周期 clone 触发。
+//
+// 封禁动因：GitService.Clone (services/git_service.go) 对 externalUrl 零 SSRF
+// 防护，scheduler 周期触发 SyncRegistry → Clone → git.PlainClone 会向
+// <externalUrl>/info/refs?service=git-upload-pack 发 HTTP GET，构成 SSRF。
+// 见 secreport 20260731141243580377 (CVSS 5.3)。
+//
+// 回滚：将本常量改为 false 即恢复 scheduler 注册与周期触发；HTTP 触发入口
+// (handlers.TriggerRegistrySync / TriggerRepoSync) 需另行解封。
+const SyncDisabled = true
+
 func (s *Scheduler) Start() error {
+	if SyncDisabled {
+		log.Printf("Scheduler disabled (sync SSRF mitigation; secreport 20260731141243580377)")
+		return nil
+	}
 	cron, err := gocron.NewScheduler()
 	if err != nil {
 		return err
@@ -61,6 +76,10 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) RegisterRegistry(registry *models.CapabilityRegistry) error {
+	if SyncDisabled {
+		// 封禁期间静默跳过 —— 否则 Start 未初始化 s.cron，NewJob 会 panic。
+		return nil
+	}
 	if !registry.SyncEnabled || registry.ExternalURL == "" {
 		s.UnregisterRegistry(registry.ID)
 		return nil

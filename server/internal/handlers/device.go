@@ -363,7 +363,7 @@ func DeleteDeviceHandler(svc *services.DeviceService) gin.HandlerFunc {
 // @Failure      401   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
-// @Router       /devices/{deviceID}/rotate-token [post]
+// @Router       /devices/{deviceID}/token/rotate [post]
 func RotateDeviceTokenHandler(svc *services.DeviceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString(middleware.UserIDKey)

@@ -321,6 +321,26 @@ func (s *RecommendService) rankAndDedupeAll(items []RecommendedItem) []Recommend
 	return result
 }
 
+// publicRegistryIDSubquery returns a subquery selecting IDs of CapabilityRegistry
+// rows whose parent repository is public. Used by the anonymous marketplace
+// feeds (trending / new-and-noteworthy) to exclude items from private repos —
+// those items' UUIDs must not surface in anonymous responses, since they could
+// seed further enumeration against item-scoped endpoints. Mirrors the
+// public/private split enforced by handlers.canAccessItem (CVSS 8.7).
+//
+// Mirrors the established handlers.buildVisibleRegistryIDs pattern:
+//   - CAST(id AS TEXT) so the JOIN matches capability_registries.repo_id (TEXT)
+//     against repositories.id (UUID) under Postgres — without it, the query
+//     errors with `operator does not exist: uuid = text`.
+//   - `OR repo_id = 'public'` retains the canonical virtual "public" registry
+//     (catalog_ingest_service.PublicRepoID), whose repo_id is the string literal
+//     "public" and has no matching repositories row.
+func publicRegistryIDSubquery(db *gorm.DB) *gorm.DB {
+	return db.Model(&models.CapabilityRegistry{}).
+		Select("capability_registries.id").
+		Where("repo_id IN (SELECT CAST(id AS TEXT) FROM repositories WHERE visibility = ?) OR repo_id = ?", "public", "public")
+}
+
 // GetTrendingItems returns trending items
 func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize int, itemTypes []string) ([]models.CapabilityItem, int64, error) {
 	if page <= 0 {
@@ -332,9 +352,12 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize 
 
 	sevenDaysAgo := time.Now().AddDate(0, 0, -7)
 
+	publicRegScope := publicRegistryIDSubquery(database.GetDB())
+
 	var total int64
 	countQuery := database.GetDB().Model(&models.CapabilityItem{}).
-		Where("capability_items.status = ?", "active")
+		Where("capability_items.status = ?", "active").
+		Where("capability_items.registry_id IN (?)", publicRegScope)
 	if len(itemTypes) > 0 {
 		countQuery = countQuery.Where("capability_items.item_type IN ?", itemTypes)
 	}
@@ -351,6 +374,7 @@ func (s *RecommendService) GetTrendingItems(ctx context.Context, page, pageSize 
 		Select("capability_items.*, COUNT(DISTINCT bl.user_id) as recent_activity").
 		Joins("LEFT JOIN behavior_logs bl ON bl.item_id = capability_items.id AND bl.created_at > ? AND COALESCE(bl.user_id, ?) <> ?", sevenDaysAgo, models.AnonymousUserID, models.AnonymousUserID).
 		Where("capability_items.status = ?", "active").
+		Where("capability_items.registry_id IN (?)", publicRegScope).
 		Group("capability_items.id").
 		Order("recent_activity DESC, capability_items.install_count DESC").
 		Offset((page - 1) * pageSize).Limit(pageSize)
@@ -380,7 +404,8 @@ func (s *RecommendService) GetNewAndNoteworthy(ctx context.Context, page, pageSi
 
 	var total int64
 	countQuery := database.GetDB().Model(&models.CapabilityItem{}).
-		Where("status = ? AND created_at > ?", "active", thirtyDaysAgo)
+		Where("status = ? AND created_at > ?", "active", thirtyDaysAgo).
+		Where("registry_id IN (?)", publicRegistryIDSubquery(database.GetDB()))
 	if err := countQuery.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -388,6 +413,7 @@ func (s *RecommendService) GetNewAndNoteworthy(ctx context.Context, page, pageSi
 	var items []models.CapabilityItem
 	result := database.GetDB().Model(&models.CapabilityItem{}).
 		Where("status = ? AND created_at > ?", "active", thirtyDaysAgo).
+		Where("registry_id IN (?)", publicRegistryIDSubquery(database.GetDB())).
 		Order("experience_score DESC, install_count DESC").
 		Offset((page - 1) * pageSize).Limit(pageSize).
 		Find(&items)

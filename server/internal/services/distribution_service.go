@@ -637,10 +637,18 @@ func (s *DistributionService) ListReceipts(ctx context.Context, distID string) (
 	return receipts, nil
 }
 
-// ListItemDistributions lists all distributions for a given item.
-func (s *DistributionService) ListItemDistributions(ctx context.Context, itemID string) ([]models.ItemDistribution, error) {
+// ListItemDistributionsScoped lists distributions for a given item, scoped to the
+// caller. Non-admin callers only see distributions they sent (distributor_id =
+// userID); platform admins see all distributions for the item. Closes the IDOR
+// where any authenticated user could enumerate other users' distribution
+// topology by guessing an item UUID.
+func (s *DistributionService) ListItemDistributionsScoped(ctx context.Context, itemID, userID string, isPlatformAdmin bool) ([]models.ItemDistribution, error) {
 	var distributions []models.ItemDistribution
-	if err := s.db.WithContext(ctx).Where("item_id = ?", itemID).Order("created_at DESC").Find(&distributions).Error; err != nil {
+	q := s.db.WithContext(ctx).Where("item_id = ?", itemID)
+	if !isPlatformAdmin {
+		q = q.Where("distributor_id = ?", userID)
+	}
+	if err := q.Order("created_at DESC").Find(&distributions).Error; err != nil {
 		return nil, err
 	}
 	return distributions, nil

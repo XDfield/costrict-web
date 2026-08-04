@@ -98,7 +98,7 @@ func (a *ArchiveService) ParseArchive(r io.ReaderAt, size int64, filename string
 			return nil, fmt.Errorf("archive exceeds maximum uncompressed size of %d bytes", MaxUncompressedSize)
 		}
 
-		normalizedPath, err := normalizeArchivePath(entry.path)
+		normalizedPath, err := NormalizeArchivePath(entry.path)
 		if err != nil {
 			return nil, err
 		}
@@ -492,7 +492,22 @@ func isBinary(data []byte) bool {
 	return false
 }
 
-func normalizeArchivePath(name string) (string, error) {
+// NormalizeArchivePath cleans a path for use as an in-archive entry name or a
+// persisted item/asset relPath. It rejects absolute paths and any path
+// component equal to ".." (path traversal), and strips empty / "." segments.
+// Backslashes are normalized to forward slashes before validation so Windows-
+// style separators can't sneak past the ".." check.
+//
+// Used by both the archive-upload pipeline (ParseArchive — the original
+// consumer) and, defensively, by the JSON item API (buildTextAssetRecords,
+// SourcePath validation in createItemFromJSON / updateItemFromJSON) and the
+// plugin zip download sink (DownloadPluginZip). The latter two were added to
+// close the Zip Slip path through JSON-created plugins — see secreport
+// 20260731124013641759 (CVSS 6.2). Returning the cleaned form (rather than
+// only validating) lets callers persist the normalized path so DB-stored
+// relPaths stay traversal-free even when older rows predate the source-side
+// guard.
+func NormalizeArchivePath(name string) (string, error) {
 	slashed := strings.ReplaceAll(name, "\\", "/")
 	if path.IsAbs(slashed) {
 		return "", fmt.Errorf("archive entry %q has an absolute path", name)

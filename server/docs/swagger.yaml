@@ -3561,7 +3561,7 @@ paths:
       summary: Update device
       tags:
       - devices
-  /devices/{deviceID}/rotate-token:
+  /devices/{deviceID}/token/rotate:
     post:
       description: Rotate the authentication token for a device
       parameters:

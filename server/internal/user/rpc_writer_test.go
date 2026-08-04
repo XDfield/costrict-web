@@ -1020,7 +1020,7 @@ func TestDualWriter_ReissueToken_BypassesPrimary(t *testing.T) {
 // TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable
 // verifies the nil-Secondary guard. Without Secondary there is no path to
 // cs-user; surfacing ErrSelfSignUnavailable lets the OAuth callback detect
-// the misconfiguration (JWT_SELF_SIGN_ENABLED=true but no RPC backend).
+// the misconfiguration (USER_SERVICE_BACKEND=rpc but no Secondary writer).
 func TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable(t *testing.T) {
 	t.Parallel()
 	primary := &recordingWriter{}

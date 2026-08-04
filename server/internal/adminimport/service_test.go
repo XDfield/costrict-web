@@ -104,11 +104,38 @@ func TestCreateURLJob_Validation(t *testing.T) {
 	}
 }
 
+// TestCreateURLJob_SSRFRejection locks the SSRF mitigation: CreateURLJob must
+// reject URLs whose host is a loopback / link-local / RFC 1918 literal — the
+// classic SSRF targets (cloud-metadata endpoint, localhost services, internal
+// ranges). safetch.ValidateURL runs at write-time; the dial-time re-check at
+// fetch happens via services.CatalogIngestService.httpClient (safetch.NewClient).
+// See secreport 20260731101803384359 + 20260731102217931559 (CVSS 5.1).
+func TestCreateURLJob_SSRFRejection(t *testing.T) {
+	db := setupTestDB(t)
+	svc := NewService(db, nil)
+
+	blocked := []string{
+		"http://localhost/x.tar.gz",
+		"http://127.0.0.1/x.tar.gz",
+		"http://[::1]/x.tar.gz",
+		"http://10.0.0.5/x.tar.gz",          // RFC 1918 private
+		"http://192.168.1.1/x.tar.gz",       // RFC 1918 private
+		"http://172.16.0.1/x.tar.gz",        // RFC 1918 private
+		"http://169.254.169.254/x.tar.gz",   // link-local / cloud metadata
+		"http://foo.localhost/x.tar.gz",     // .localhost suffix
+	}
+	for _, u := range blocked {
+		if _, err := svc.CreateURLJob(u, false, "admin"); !errors.Is(err, ErrInvalidURL) {
+			t.Fatalf("expected ErrInvalidURL for SSRF target %q, got %v", u, err)
+		}
+	}
+}
+
 func TestConfirmJob_NotPreviewed(t *testing.T) {
 	db := setupTestDB(t)
 	svc := NewService(db, nil)
 	// A freshly created job is pending, not previewed.
-	job, _ := svc.CreateURLJob("https://x/b.tar.gz", false, "admin")
+	job, _ := svc.CreateURLJob("https://example.com/b.tar.gz", false, "admin")
 	if err := svc.ConfirmJob(job.ID, false); !errors.Is(err, ErrNotPreviewed) {
 		t.Fatalf("expected ErrNotPreviewed, got %v", err)
 	}

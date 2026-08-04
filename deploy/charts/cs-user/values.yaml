@@ -63,10 +63,11 @@ internalToken:
   existingSecret: ""
   existingSecretKey: internal-token
 
-# Phase A — self-signed JWT (RS256). cs-user mints its own JWT for relying
-# parties (cs-cloud, app-ai-native, csc) when JWT_SIGN_MODE on the server
-# side is moved to dual/single. The signing key is an RSA private key in
-# PEM format; mount it via Secret (chart-managed or existingSecret).
+# Phase A — self-signed JWT (RS256). cs-user mints its own JWT for all
+# relying parties (cs-cloud, app-ai-native, csc); the server validates
+# these tokens by calling cs-user's /api/internal/auth/verify introspection
+# endpoint. The signing key is an RSA private key in PEM format; mount it
+# via Secret (chart-managed or existingSecret).
 jwt:
   # Container path where the PEM is mounted. CS_USER_JWT_SIGNING_KEY_PATH
   # is wired to this value; the file must be readable by the csuser UID.
@@ -81,7 +82,7 @@ jwt:
   ttl: 1h
   # Comma-separated audience claim. List the relying parties that will
   # accept cs-user-issued tokens (cs-cloud, app-ai-native, csc). Empty
-  # omits the claim entirely (acceptable during dual-mode rollout).
+  # omits the claim entirely.
   audience: ""
 
 # Phase B3b — apex domains used for subdomain-based tenant resolution.

@@ -498,8 +498,13 @@ func (rt *ClawAgentRuntime) handleListWorkspaces(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleListDelegationTasks(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	workspaceID := c.Param("id")
-	tasks, err := rt.TaskRegistry.ListByWorkspace(c.Request.Context(), workspaceID)
+	tasks, err := rt.TaskRegistry.ListByWorkspaceForUser(c.Request.Context(), workspaceID, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -508,10 +513,14 @@ func (rt *ClawAgentRuntime) handleListDelegationTasks(c *gin.Context) {
 }
 
 func (rt *ClawAgentRuntime) handleGetDelegationTask(c *gin.Context) {
+	userID := rt.resolveUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	taskID := c.Param("taskId")
-	task, err := rt.TaskRegistry.Get(c.Request.Context(), taskID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+	task, ok := rt.requireOwnedTask(c, c.Request.Context(), taskID, userID)
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, task)

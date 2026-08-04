@@ -12,12 +12,11 @@ import (
 // ErrSelfSignUnavailable is returned by UserService.ReissueToken on the local
 // backend — server has no RSA signing key configured; JWT self-signing
 // requires USER_SERVICE_BACKEND=rpc so the call routes through RPCWriter →
-// cs-user. The OAuth callback treats this as a non-fatal fallback (Phase A8
-// 灰度): when JWT_SIGN_MODE=dual|single and Backend=local, deployment config
-// is contradictory — login falls back to the Casdoor token with a WARN log
-// rather than refusing service.
+// cs-user. The OAuth callback treats this as a non-fatal fallback: with
+// Backend=local the deployment can't mint cs-user JWTs, so login falls back
+// to the Casdoor token with a WARN log rather than refusing service.
 //
-// Added in Phase A7b; docstring updated in Phase A8.
+// Added in Phase A7b; docstring updated when the JWTSignMode gate was removed.
 var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (server has no local signer)")
 
 // UserWriter is the write-side seam over user data, the write-path counterpart

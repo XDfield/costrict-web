@@ -1,35 +1,29 @@
 package middleware
 
 import (
-	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
 )
 
-// statusGateRouter builds a RequireAuth-protected router that signs a valid JWT
-// for subjectResolver-less auth (so c.GetString(UserIDKey) == claims.sub) and
-// returns 200 on the protected route. Caller installs SetStatusChecker.
+// statusGateRouter builds a RequireAuth-protected router that authenticates
+// the bearer against a stub cs-user returning active for `usr_status_subject`,
+// then exercises the account-status gate installed via SetStatusChecker.
 func statusGateRouter(t *testing.T) (router *gin.Engine, token string) {
 	t.Helper()
 	SetSubjectResolver(nil)
-	key := generateTestRSAKey(t)
-	kid := "status-kid"
-	jwks := newTestJWKSProvider(map[string]*rsa.PublicKey{kid: &key.PublicKey})
-	token = signTestJWT(t, key, kid, jwt.MapClaims{
-		"sub":                "usr_status_subject",
-		"name":               "Status User",
-		"preferred_username": "statususer",
-		"exp":                time.Now().Add(1 * time.Hour).Unix(),
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("usr_status_subject", "default", "default"))
 	})
+	installVerifier(t, stub.server.URL)
+	token = "status-test-token"
 
 	router = gin.New()
-	router.Use(RequireAuth("http://localhost:0", jwks))
+	router.Use(RequireAuth())
 	router.GET("/protected", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -112,7 +106,7 @@ func TestRequireAuth_DisabledStatusRejected(t *testing.T) {
 	w := performRequest(router, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("disabled account should be 403, got %d", w.Code)
+		t.Fatalf("disabled account should be 403, got %d; body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -42,7 +42,7 @@ func (s *UserService) ApplyEnterpriseMapping(ctx context.Context, userSubjectID,
 // so the call routes through RPCWriter → cs-user. Returns
 // ErrSelfSignUnavailable unconditionally so callers can detect this path
 // (DualWriter bypasses Primary entirely; OAuth callback must check that the
-// writer isn't a bare *UserService when JWT_SELF_SIGN_ENABLED=true).
+// writer isn't a bare *UserService under USER_SERVICE_BACKEND=local).
 //
 // The audience + rawCasdoorJWT parameters are accepted for interface symmetry
 // with RPCWriter. They're ignored (no signer to honor them).

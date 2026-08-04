@@ -160,11 +160,15 @@ func (c *CasdoorClient) ExchangeCodeForToken(code, callbackURL string) (*Casdoor
 
 	var tokenResp CasdoorTokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token response (body=%s): %w", string(body), err)
+		// Do NOT include body in the error: a malformed 200 response can
+		// still contain access_token / refresh_token / id_token, and the
+		// error string flows into logs and HTTP responses (handlers).
+		return nil, fmt.Errorf("failed to unmarshal token response (len=%d): %w", len(body), err)
 	}
 
 	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("empty access_token in response: %s", string(body))
+		// Same reason as above: the body may still carry other tokens.
+		return nil, fmt.Errorf("empty access_token in response (status=%d, len=%d)", resp.StatusCode, len(body))
 	}
 
 	return &tokenResp, nil

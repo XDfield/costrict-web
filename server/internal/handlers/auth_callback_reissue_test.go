@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/casdoor"
-	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
@@ -23,9 +22,9 @@ import (
 // implemented — the rest panic if accidentally reached, surfacing misuse
 // loudly rather than silently faking behaviour.
 type stubReissueWriter struct {
-	reissueToken    string
-	reissueErr      error
-	gotAudience     []string
+	reissueToken     string
+	reissueErr       error
+	gotAudience      []string
 	gotRawCasdoorJWT string
 }
 
@@ -70,8 +69,10 @@ func (s *stubReissueWriter) SuggestProfile(context.Context, *userpkg.JWTClaims) 
 
 // runAuthCallbackReissueTest performs the common OAuth-callback setup for the
 // ReissueToken cookie-takeover tests: inits a fresh in-memory DB, overrides
-// exchange/getUserInfo to deterministic stubs, swaps jwtSignMode to dual so
-// the ReissueToken branch fires, and points UserModule.Writer at the stub.
+// exchange/getUserInfo to deterministic stubs, and points UserModule.Writer
+// at the stub. The callback always asks cs-user to reissue a self-signed JWT
+// (the old JWTSignMode gating was removed when local unverified JWT decoding
+// was deleted — every cookie now flows through cs-user).
 func runAuthCallbackReissueTest(t *testing.T, stub *stubReissueWriter) (cookieValue, rawCasdoorJWT string) {
 	t.Helper()
 	defer setupTestDB(t)()
@@ -82,11 +83,6 @@ func runAuthCallbackReissueTest(t *testing.T, stub *stubReissueWriter) (cookieVa
 	// local UserService). Reader / TenantResolver stay nil — the callback only
 	// needs Writer for this path.
 	UserModule.Writer = stub
-
-	// Save & restore the package-level knobs the test mutates.
-	prevSignMode := jwtSignMode
-	defer func() { jwtSignMode = prevSignMode }()
-	jwtSignMode = config.JWTSignModeDual
 
 	defer func() {
 		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
@@ -138,11 +134,11 @@ func runAuthCallbackReissueTest(t *testing.T, stub *stubReissueWriter) (cookieVa
 	return "", rawCasdoorJWT
 }
 
-// TestAuthCallback_ReissueTokenSuccess_UsesCsUserToken pins the Phase A8
-// happy path: when jwtSignMode != off and the writer returns a fresh JWT,
-// the zgsmAdminToken cookie carries the cs-user-signed value — NOT the
-// upstream Casdoor access token. This is the moment the platform-layer
-// identity authority switches over.
+// TestAuthCallback_ReissueTokenSuccess_UsesCsUserToken pins the happy path:
+// the OAuth callback always calls ReissueToken, and when the writer returns
+// a fresh JWT the zgsmAdminToken cookie carries the cs-user-signed value —
+// NOT the upstream Casdoor access token. This is the moment the
+// platform-layer identity authority takes over the cookie.
 func TestAuthCallback_ReissueTokenSuccess_UsesCsUserToken(t *testing.T) {
 	stub := &stubReissueWriter{reissueToken: "CS-USER-MINTED-TOKEN"}
 	cookieValue, rawCasdoorJWT := runAuthCallbackReissueTest(t, stub)
@@ -162,11 +158,10 @@ func TestAuthCallback_ReissueTokenSuccess_UsesCsUserToken(t *testing.T) {
 }
 
 // TestAuthCallback_ReissueTokenFails_FallsBackToCasdoorToken pins the
-// non-blocking 灰度 contract: any ReissueToken failure (transport error,
-// ErrSelfSignUnavailable, cs-user 4xx/5xx) MUST NOT block login — the
-// cookie falls back to the Casdoor access token. The Phase A8 dual-sign
-// cutover is intentionally permissive so a cs-user outage cannot take
-// login down with it.
+// non-blocking contract: any ReissueToken failure (transport error,
+// ErrSelfSignUnavailable from local-mode misconfig, cs-user 4xx/5xx) MUST
+// NOT block login — the cookie falls back to the Casdoor access token so a
+// cs-user outage can't take login down with it.
 func TestAuthCallback_ReissueTokenFails_FallsBackToCasdoorToken(t *testing.T) {
 	stub := &stubReissueWriter{reissueErr: errors.New("cs-user unreachable")}
 	cookieValue, rawCasdoorJWT := runAuthCallbackReissueTest(t, stub)
@@ -176,66 +171,6 @@ func TestAuthCallback_ReissueTokenFails_FallsBackToCasdoorToken(t *testing.T) {
 	}
 	if stub.gotRawCasdoorJWT != rawCasdoorJWT {
 		t.Errorf("ReissueToken still called with wrong arg: got %q, want %q", stub.gotRawCasdoorJWT, rawCasdoorJWT)
-	}
-}
-
-// TestAuthCallback_JWTSignModeOff_SkipsReissueToken locks the gate: when
-// jwtSignMode == off the callback MUST NOT call ReissueToken at all. This
-// is the legacy / pre-Phase-A8 posture and must remain inert so operators
-// can roll back by flipping one config knob.
-func TestAuthCallback_JWTSignModeOff_SkipsReissueToken(t *testing.T) {
-	defer setupTestDB(t)()
-	defer InitUserModule(nil)
-	InitUserModule(userpkg.New(database.DB))
-	stub := &stubReissueWriter{reissueToken: "SHOULD-NOT-APPEAR"}
-	UserModule.Writer = stub
-
-	prevSignMode := jwtSignMode
-	defer func() { jwtSignMode = prevSignMode }()
-	jwtSignMode = config.JWTSignModeOff
-
-	defer func() {
-		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
-			return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
-		}
-		getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
-			return CasdoorClient.GetUserInfo(accessToken)
-		}
-	}()
-
-	rawCasdoorJWT := signHandlersTestJWT(t, jwt.MapClaims{
-		"id":  "casdoor-id-2",
-		"sub": "casdoor-sub-2",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
-	exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
-		return &casdoor.CasdoorTokenResponse{AccessToken: rawCasdoorJWT}, nil
-	}
-	getUserInfoFunc = func(accessToken string) (*casdoor.CasdoorUserInfoResponse, error) {
-		return &casdoor.CasdoorUserInfoResponse{User: &casdoor.CasdoorUser{Id: "casdoor-id-2", Sub: "casdoor-sub-2", Name: "bob"}}, nil
-	}
-
-	r := gin.New()
-	r.GET("/api/auth/callback", AuthCallback)
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/auth/callback?code=abc", nil)
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var cookieValue string
-	resp := &http.Response{Header: w.Result().Header}
-	for _, c := range resp.Cookies() {
-		if c.Name == "zgsmAdminToken" {
-			cookieValue = c.Value
-		}
-	}
-	if cookieValue != rawCasdoorJWT {
-		t.Fatalf("cookie: got %q, want raw Casdoor JWT (sign-mode off = no takeover)", cookieValue)
-	}
-	if stub.gotRawCasdoorJWT != "" {
-		t.Errorf("ReissueToken was called even though jwtSignMode=off; arg=%q", stub.gotRawCasdoorJWT)
 	}
 }
 
@@ -258,10 +193,6 @@ func TestAuthCallback_SSOShortcut_ProvisionsUser(t *testing.T) {
 	InitUserModule(userpkg.New(database.DB))
 	stub := &stubReissueWriter{reissueToken: "CS-USER-MINTED-VIA-SSO"}
 	UserModule.Writer = stub
-
-	prevSignMode := jwtSignMode
-	defer func() { jwtSignMode = prevSignMode }()
-	jwtSignMode = config.JWTSignModeDual
 
 	// A pre-existing Casdoor cookie — content is irrelevant because
 	// getUserInfoFunc is stubbed; this is the value the browser would

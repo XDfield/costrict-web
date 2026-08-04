@@ -125,12 +125,6 @@ userService:
     existingSecret: ""   # prod: externally provisioned Secret name
     existingSecretKey: internal-token
 
-# JWT sign mode for gradual cs-user JWT rollout.
-#   off    — server issues all JWTs (legacy, default)
-#   dual   — accept both server-issued and cs-user-issued JWTs
-#   single — only cs-user-issued JWTs are accepted
-jwtSignMode: ""
-
 # OAuth bind-state HMAC secret. Required for /api/auth/bind flow.
 # If left empty the server falls back to INTERNAL_SECRET; if that is also
 # empty the server refuses to start. Set a dedicated random ≥32-byte value
