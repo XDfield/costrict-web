@@ -138,6 +138,51 @@ func metadataJSON(m map[string]any) datatypes.JSON {
 	return datatypes.JSON(b)
 }
 
+// loadSyncItemIndices builds the two lookup indices SyncRegistry matches parsed
+// files against:
+//
+//   - existingByPath — every row of THIS registry keyed by source_path, archived
+//     ones included, so a re-appearing item is an update rather than a
+//     duplicate-key crash. It doubles as the scope of the closing archive sweep.
+//   - slugIndex — "<itemType>:<slug>", seeded from this registry and then widened
+//     to the whole repo so cross-registry duplicates are treated as updates.
+//
+// Both reads are scoped to content_backend = 'db'. The registry-level guard in
+// SyncRegistry only rejects registries that are THEMSELVES git-backed; it says
+// nothing about an individual git-backed row sitting in an ordinary registry —
+// ForkItem's git forks land in the public registry under repo_id='public', which
+// is exactly what the repo-wide slug index reads. Matching such a row routes it
+// into the update branch, whose `s.DB.Save(existing)` rewrites the whole struct
+// (content, source_sha, slug, metadata) from a clone this pipeline performed —
+// a second writer on rows whose truth is a repository GitCapabilitySyncService
+// owns — and the closing sweep would later archive it and delete its assets.
+//
+// Producer-side this pipeline is disabled (scheduler.SyncDisabled, plus 503 on
+// both HTTP triggers), but the consumer is not: queued sync_jobs still reach
+// SyncRegistry, so the guard belongs here and not only at the entry points.
+// Matching positively rather than `<> 'git'` keeps future backend values out by
+// default; see contentBackendDB.
+func (s *SyncService) loadSyncItemIndices(registryID, repoID string) (existingByPath, slugIndex map[string]*models.CapabilityItem) {
+	var existingItems []models.CapabilityItem
+	s.DB.Where("registry_id = ? AND content_backend = ?", registryID, contentBackendDB).Find(&existingItems)
+	existingByPath = make(map[string]*models.CapabilityItem, len(existingItems))
+	slugIndex = make(map[string]*models.CapabilityItem, len(existingItems))
+	for i := range existingItems {
+		existingByPath[existingItems[i].SourcePath] = &existingItems[i]
+		slugIndex[existingItems[i].ItemType+":"+existingItems[i].Slug] = &existingItems[i]
+	}
+
+	var globalItems []models.CapabilityItem
+	s.DB.Where("repo_id = ? AND content_backend = ?", repoID, contentBackendDB).Find(&globalItems)
+	for i := range globalItems {
+		key := globalItems[i].ItemType + ":" + globalItems[i].Slug
+		if _, exists := slugIndex[key]; !exists {
+			slugIndex[key] = &globalItems[i]
+		}
+	}
+	return existingByPath, slugIndex
+}
+
 func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts SyncOptions) (*SyncResult, error) {
 	var registry models.CapabilityRegistry
 	if err := s.DB.First(&registry, "id = ?", registryID).Error; err != nil {
@@ -278,28 +323,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		return result, err
 	}
 
-	// Load all items for the current registry so that archived entries are
-	// also indexed; this prevents duplicate-key violations when a previously
-	// archived item re-appears in the source repo.
-	var existingItems []models.CapabilityItem
-	s.DB.Where("registry_id = ?", registryID).Find(&existingItems)
-	existingByPath := make(map[string]*models.CapabilityItem, len(existingItems))
-	slugIndex := make(map[string]*models.CapabilityItem, len(existingItems))
-	for i := range existingItems {
-		existingByPath[existingItems[i].SourcePath] = &existingItems[i]
-		slugIndex[existingItems[i].ItemType+":"+existingItems[i].Slug] = &existingItems[i]
-	}
-
-	// Index globally existing items by repo+type+slug so that cross-registry
-	// duplicates are treated as updates instead of inserts.
-	var globalItems []models.CapabilityItem
-	s.DB.Where("repo_id = ?", syncRepoID(registry.RepoID)).Find(&globalItems)
-	for i := range globalItems {
-		key := globalItems[i].ItemType + ":" + globalItems[i].Slug
-		if _, exists := slugIndex[key]; !exists {
-			slugIndex[key] = &globalItems[i]
-		}
-	}
+	existingByPath, slugIndex := s.loadSyncItemIndices(registryID, syncRepoID(registry.RepoID))
 
 	seenPaths := make(map[string]bool)
 

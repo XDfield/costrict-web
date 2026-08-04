@@ -469,3 +469,120 @@ func TestBackfillProviderAwareExternalKeys(t *testing.T) {
 		t.Fatalf("expected u2 key unchanged (no auth_provider), got %v", gotU2.ExternalKey)
 	}
 }
+
+// addContentBackendColumn brings the fixture schema up to the git-backing
+// migration (20260802000000), which is what the DB-only filters key off. The
+// base fixture deliberately omits the column so the tests above keep exercising
+// the pre-migration schema.
+func addContentBackendColumn(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec(`ALTER TABLE capability_items ADD COLUMN content_backend TEXT NOT NULL DEFAULT 'db'`).Error; err != nil {
+		t.Fatalf("add content_backend column: %v", err)
+	}
+}
+
+// TestCapabilityItemsDBOnlyPredicate_DegradesOnLegacySchema covers the mechanism
+// W24b/W24c/W24d rely on. Those three write sites are raw SQL or tx.Table(...)
+// and run inside runPreMigrations — before AutoMigrate/goose create
+// content_backend — so the predicate must yield "" there. Getting this wrong
+// makes every first-run deployment migration fail with log.Fatalf.
+func TestCapabilityItemsDBOnlyPredicate_DegradesOnLegacySchema(t *testing.T) {
+	db := newMigrateTestDB(t)
+
+	if pred := capabilityItemsDBOnlyPredicate(db); pred != "" {
+		t.Fatalf("expected empty predicate on schema without content_backend, got %q", pred)
+	}
+
+	addContentBackendColumn(t, db)
+
+	if pred := capabilityItemsDBOnlyPredicate(db); pred != "content_backend = 'db'" {
+		t.Fatalf("expected DB-only predicate once the column exists, got %q", pred)
+	}
+}
+
+// TestBackfillCapabilityContentVersioning_SkipsGitBackedItems covers W24: the
+// content versioning backfill also runs unconditionally on the default migrate
+// path, so it must leave git-backed rows (whose content_md5/current_revision are
+// owned by the git sync worker) untouched instead of rewriting them.
+func TestBackfillCapabilityContentVersioning_SkipsGitBackedItems(t *testing.T) {
+	db := newMigrateTestDB(t)
+	addContentBackendColumn(t, db)
+	db.Create(&models.CapabilityRegistry{ID: publicRegistryID, Name: "public", SourceType: "internal", RepoID: publicRepoID, OwnerID: "system"})
+
+	insert := func(id, slug, backend string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, content_md5, current_revision, status, created_by, metadata, content_backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, publicRegistryID, publicRepoID, slug, "skill", "Demo", "hello\n", "", 0, "active", "system", "{}", backend).Error; err != nil {
+			t.Fatalf("insert %s item: %v", backend, err)
+		}
+	}
+	insert("item-db", "demo-db", "db")
+	insert("item-git", "demo-git", "git")
+
+	if err := backfillCapabilityContentVersioning(db); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var dbItem models.CapabilityItem
+	if err := db.First(&dbItem, "id = ?", "item-db").Error; err != nil {
+		t.Fatalf("reload db-backed item: %v", err)
+	}
+	if dbItem.ContentMD5 == "" {
+		t.Fatal("expected db-backed item content_md5 to be backfilled")
+	}
+	if dbItem.CurrentRevision != 1 {
+		t.Fatalf("expected db-backed current_revision=1, got %d", dbItem.CurrentRevision)
+	}
+
+	var gitItem models.CapabilityItem
+	if err := db.First(&gitItem, "id = ?", "item-git").Error; err != nil {
+		t.Fatalf("reload git-backed item: %v", err)
+	}
+	if gitItem.ContentMD5 != "" {
+		t.Fatalf("expected git-backed content_md5 untouched, got %q", gitItem.ContentMD5)
+	}
+	if gitItem.CurrentRevision != 0 {
+		t.Fatalf("expected git-backed current_revision untouched, got %d", gitItem.CurrentRevision)
+	}
+}
+
+// TestNormalizeLegacyCapabilityVersions_SkipsGitBackedItemRevisions covers W24b.
+// That write goes through tx.Table("capability_items"), which never fires GORM
+// model hooks, so the query-layer filter is the only thing protecting git rows.
+func TestNormalizeLegacyCapabilityVersions_SkipsGitBackedItemRevisions(t *testing.T) {
+	db := newMigrateTestDB(t)
+	addContentBackendColumn(t, db)
+
+	if err := db.Exec(`ALTER TABLE capability_versions ADD COLUMN version TEXT`).Error; err != nil {
+		t.Fatalf("add version column: %v", err)
+	}
+
+	insert := func(id, slug, backend string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_items (id, registry_id, repo_id, slug, item_type, name, content, current_revision, status, created_by, metadata, content_backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, publicRegistryID, publicRepoID, slug, "skill", "Legacy", "content", 0, "active", "system", "{}", backend).Error; err != nil {
+			t.Fatalf("insert %s item: %v", backend, err)
+		}
+	}
+	insert("item-db", "legacy-db", "db")
+	insert("item-git", "legacy-git", "git")
+
+	if err := normalizeLegacyCapabilityVersions(db); err != nil {
+		t.Fatalf("normalize legacy versions: %v", err)
+	}
+
+	revisionOf := func(id string) int64 {
+		t.Helper()
+		var revision int64
+		if err := db.Raw(`SELECT current_revision FROM capability_items WHERE id = ?`, id).Scan(&revision).Error; err != nil {
+			t.Fatalf("read current_revision for %s: %v", id, err)
+		}
+		return revision
+	}
+	if got := revisionOf("item-db"); got != 1 {
+		t.Fatalf("expected db-backed current_revision initialized to 1, got %d", got)
+	}
+	if got := revisionOf("item-git"); got != 0 {
+		t.Fatalf("expected git-backed current_revision untouched, got %d", got)
+	}
+}

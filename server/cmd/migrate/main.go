@@ -757,12 +757,42 @@ func isLikelyPhoneValue(v string) bool {
 	return len(v) >= 6 && len(v) <= 20
 }
 
+// capabilityItemsDBOnlyPredicate returns a SQL predicate restricting a statement
+// to DB-backed capability rows, or "" when the schema predates the
+// content_backend column.
+//
+// Rows with content_backend='git' take their content, identity and revision from
+// the bound Git repository; the legacy backfills in this file would fight the
+// git sync worker over the same columns, so they must not see those rows at all.
+// Several of the call sites below are raw SQL or tx.Table(...), which never run
+// GORM model hooks — filtering here is the only place that can protect them.
+//
+// The predicate matches positively (= 'db') rather than excluding 'git': the
+// column is NOT NULL DEFAULT 'db', so a positive match keeps these backfills off
+// any future backend value by default instead of silently opting it in.
+//
+// Returning "" on old schemas is required rather than defensive: the
+// pre-migrations run before AutoMigrate/goose add the column, and every caller
+// in this file reports failure through log.Fatalf — referencing a column that
+// does not exist yet would turn a first-run deployment migration into a hard
+// stop. A schema without the column has no git-backed rows to protect anyway.
+func capabilityItemsDBOnlyPredicate(db *gorm.DB) string {
+	if !db.Migrator().HasColumn(&models.CapabilityItem{}, "content_backend") {
+		return ""
+	}
+	return "content_backend = 'db'"
+}
+
 func backfillCapabilityContentVersioning(db *gorm.DB) error {
 	hashSvc := services.NewContentHashService()
 
 	return db.Transaction(func(tx *gorm.DB) error {
 		var items []models.CapabilityItem
-		if err := tx.Preload("Assets").Find(&items).Error; err != nil {
+		itemQuery := tx.Preload("Assets")
+		if pred := capabilityItemsDBOnlyPredicate(tx); pred != "" {
+			itemQuery = itemQuery.Where(pred)
+		}
+		if err := itemQuery.Find(&items).Error; err != nil {
 			return fmt.Errorf("load capability items: %w", err)
 		}
 
@@ -1054,7 +1084,11 @@ func normalizeLegacyCapabilityVersions(db *gorm.DB) error {
 			}
 		}
 
-		if err := tx.Table("capability_items").Where("current_revision < 1 OR current_revision IS NULL").Update("current_revision", 1).Error; err != nil {
+		itemRevisions := tx.Table("capability_items").Where("current_revision < 1 OR current_revision IS NULL")
+		if pred := capabilityItemsDBOnlyPredicate(tx); pred != "" {
+			itemRevisions = itemRevisions.Where(pred)
+		}
+		if err := itemRevisions.Update("current_revision", 1).Error; err != nil {
 			return fmt.Errorf("initialize capability item current revisions: %w", err)
 		}
 
@@ -1071,8 +1105,13 @@ func backfillCapabilityItemRepoIDs(db *gorm.DB) error {
 		return nil
 	}
 
+	dbOnly := ""
+	if pred := capabilityItemsDBOnlyPredicate(db); pred != "" {
+		dbOnly = " AND " + pred
+	}
+
 	var needsBackfill int
-	if err := db.Raw(`SELECT 1 FROM capability_items WHERE repo_id = 'public' LIMIT 1`).Scan(&needsBackfill).Error; err != nil {
+	if err := db.Raw(`SELECT 1 FROM capability_items WHERE repo_id = 'public'` + dbOnly + ` LIMIT 1`).Scan(&needsBackfill).Error; err != nil {
 		return fmt.Errorf("checking capability_items repo_id backfill: %w", err)
 	}
 	if needsBackfill != 1 {
@@ -1084,7 +1123,7 @@ func backfillCapabilityItemRepoIDs(db *gorm.DB) error {
 		 FROM capability_registries cr
 		 WHERE cr.id = capability_items.registry_id),
 		'public'
-	) WHERE repo_id = 'public'`).Error; err != nil {
+	) WHERE repo_id = 'public'` + dbOnly).Error; err != nil {
 		return fmt.Errorf("backfilling capability_items.repo_id: %w", err)
 	}
 
@@ -1264,6 +1303,19 @@ func deduplicateSlugs(db *gorm.DB) error {
 		Slug     string
 	}
 
+	// Duplicate detection deliberately still scans every row — a db/git slug
+	// collision only shows up if both sides are visible. What changes is which
+	// row loses its slug: the tie-breaker sorts git-backed rows first so the
+	// row that gets renamed below is always the DB-backed one. A git row's slug
+	// is part of its Git-side identity (and of csc state and front-end URLs),
+	// so it must not drift underneath the repository.
+	dbOnlyTieBreaker := ""
+	dbOnlyRenameGuard := ""
+	if pred := capabilityItemsDBOnlyPredicate(db); pred != "" {
+		dbOnlyTieBreaker = "(" + pred + ") ASC, "
+		dbOnlyRenameGuard = " AND " + pred
+	}
+
 	var rows []row
 	err := db.Raw(`
 		SELECT id, repo_id, item_type, slug
@@ -1273,7 +1325,7 @@ func deduplicateSlugs(db *gorm.DB) error {
 			FROM capability_items
 			GROUP BY repo_id, item_type, slug HAVING COUNT(*) > 1
 		)
-		ORDER BY repo_id, item_type, slug, created_at ASC, id ASC`,
+		ORDER BY repo_id, item_type, slug, ` + dbOnlyTieBreaker + `created_at ASC, id ASC`,
 	).Scan(&rows).Error
 	if err != nil {
 		return fmt.Errorf("querying duplicate slugs: %w", err)
@@ -1320,7 +1372,7 @@ func deduplicateSlugs(db *gorm.DB) error {
 				log.Printf("[deduplicateSlugs] renaming item %s slug %q -> %q (repo=%s, type=%s)",
 					g.ids[i], k.Slug, candidate, k.RepoID, k.ItemType)
 				if err := tx.Exec(
-					`UPDATE capability_items SET slug = ? WHERE id = ?`, candidate, g.ids[i],
+					`UPDATE capability_items SET slug = ? WHERE id = ?`+dbOnlyRenameGuard, candidate, g.ids[i],
 				).Error; err != nil {
 					return fmt.Errorf("renaming slug for item %s: %w", g.ids[i], err)
 				}

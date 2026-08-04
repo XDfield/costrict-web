@@ -84,6 +84,32 @@ const PublicRegistryID = "00000000-0000-0000-0000-000000000001"
 // PublicRepoID matches what migrate's existing path uses.
 const PublicRepoID = "public"
 
+// contentBackendDB is the capability_items.content_backend value for rows whose
+// content truth lives in the DB (the `content` column + capability_assets). The
+// column is VARCHAR(16) NOT NULL DEFAULT 'db', so every pre-existing row already
+// carries it.
+//
+// Every legacy batch pipeline in this package (catalog ingest, the clone-based
+// SyncService) matches this value POSITIVELY — `content_backend = 'db'`, never
+// `<> 'git'`. Two reasons:
+//   - it states what the pipeline owns instead of enumerating what it doesn't;
+//   - it fails safe. A future backend value (say 's3') is excluded from these
+//     pipelines by default rather than silently inheriting DB-write semantics.
+//
+// Git-backed rows are excluded at the QUERY stage rather than rejected at write
+// time on purpose: ingest is a 14k-entry batch, and a per-row rejection would
+// either abort the run or inflate result.Failed by one per git row every pass.
+// "Never enters the candidate set" is silent and costs nothing.
+const contentBackendDB = "db"
+
+// isDBBackedRow is the in-memory counterpart of the `content_backend = 'db'`
+// SQL condition, for the loops that filter an already-loaded slice. An empty
+// value counts as DB-backed: the column defaults to 'db', so a struct built
+// without touching the field is a DB row.
+func isDBBackedRow(item *models.CapabilityItem) bool {
+	return item != nil && (item.ContentBackend == "" || item.ContentBackend == contentBackendDB)
+}
+
 const ingestTriggerUser = "system"
 
 // CatalogIngestService is the entry point for "pull upstream catalog into
@@ -290,8 +316,20 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 	// different upstream entry. Without it, INSERT would crash on the
 	// (repo_id, item_type, slug) unique constraint and the entry would
 	// silently be lost.
+	//
+	// content_backend = 'db' is a load-bearing condition, not a nicety. Git-backed
+	// rows (ForkItem's git forks, and anything Git discovery may place here later)
+	// live in the SAME public registry under repo_id='public', so a catalog entry
+	// whose slug collides with one would fall through to the globalBySlug fallback
+	// in applyChangedEntry and be treated as an UPDATE — updateItem's full-row
+	// Save then overwrites content / item_type / slug on a row whose truth is a
+	// git repository. Filtering here removes them from BOTH indices at once, which
+	// also keeps them out of the metadata-only path and the soft-archive sweep
+	// below (both iterate itemsByEntryDir). See contentBackendDB for why the match
+	// is positive rather than `<> 'git'`.
 	var existingItems []models.CapabilityItem
-	if err := s.DB.Where("registry_id = ?", PublicRegistryID).Find(&existingItems).Error; err != nil {
+	if err := s.DB.Where("registry_id = ? AND content_backend = ?", PublicRegistryID, contentBackendDB).
+		Find(&existingItems).Error; err != nil {
 		return result, fmt.Errorf("load existing items: %w", err)
 	}
 	itemsByEntryDir := indexItemsByEntryDir(existingItems)
@@ -400,12 +438,18 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 		// stays byte-for-byte identical. Reconcile them on every successful
 		// entry pass so subscriptions and distributions always expose the
 		// complete directory, including updates and removals.
+		//
+		// This is a FRESH read, not a slice of the pre-loaded snapshot, so it needs
+		// its own content_backend guard: source_type alone does not exclude a
+		// git-backed row (Git discovery writes source_type='git'), and
+		// syncAssetsForItem rewrites capability_assets wholesale — for a row whose
+		// files live in a repository that means deleting the tree it doesn't own.
 		if !opts.DryRun && !entryWriteFailed && entry.Type == "skill" {
 			var currentItems []models.CapabilityItem
 			if err := s.DB.Select("id").
 				Where(
-					"registry_id = ? AND catalog_entry_dir = ? AND source_type NOT IN ? AND status = ?",
-					PublicRegistryID, paths.EntryDir, []string{"archive", "fork"}, "active",
+					"registry_id = ? AND catalog_entry_dir = ? AND source_type NOT IN ? AND content_backend = ? AND status = ?",
+					PublicRegistryID, paths.EntryDir, []string{"archive", "fork"}, contentBackendDB, "active",
 				).
 				Find(&currentItems).Error; err != nil {
 				result.Failed++
@@ -449,6 +493,19 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 				// items can carry a catalog-shaped source_path but are not
 				// catalog-managed. Mirrors reconcileParentPluginLinks' exclusion.
 				if item.SourceType == "archive" || item.SourceType == "fork" {
+					continue
+				}
+				// Never sweep git-backed rows either. source_type answers "where
+				// did this row come from", content_backend answers "who owns its
+				// content now" — and only the second question matters here. A row
+				// discovered from a repository carries source_type='git', which the
+				// predicate above does not cover, and its source_repo_path can be a
+				// 2-segment catalog-shaped path (git-backed plugins store
+				// `.claude-plugin/plugin.json`), so it does reach this loop. The
+				// pre-load filter already keeps such rows out of itemsByEntryDir;
+				// this is the second line of defence for anything that reaches the
+				// map by another route.
+				if !isDBBackedRow(item) {
 					continue
 				}
 				if err := s.DB.Model(&models.CapabilityItem{}).
@@ -1755,6 +1812,12 @@ func (s *CatalogIngestService) reconcileParentPluginLinks(
 	//      (source_type='archive') and forks, whose source_path can collide
 	//      byte-for-byte with a catalog entryDir (skills/<name>/SKILL.md). The
 	//      catalog reconcile must never link/unlink rows it doesn't own.
+	//    - content_backend: same question asked about ownership rather than
+	//      origin. A git-backed row carries source_type='git', which the clause
+	//      above does not exclude, and its parent link is decided by the manifest
+	//      in the repository — not by a catalog bundle. This is a FRESH read (it
+	//      deliberately re-queries so same-batch inserts are visible), so it does
+	//      not inherit the pre-load filter and needs its own condition.
 	//    - status: archived rows must neither receive new links (a child would
 	//      end up pointing at a parent invisible in the market) nor occupy an
 	//      entryDir slot that shadows the active row.
@@ -1769,8 +1832,8 @@ func (s *CatalogIngestService) reconcileParentPluginLinks(
 
 	var rows []models.CapabilityItem
 	if err := s.DB.
-		Where("registry_id = ? AND item_type IN ? AND source_type NOT IN ? AND status <> 'archived'",
-			PublicRegistryID, childAndPluginTypes, []string{"archive", "fork"}).
+		Where("registry_id = ? AND item_type IN ? AND source_type NOT IN ? AND content_backend = ? AND status <> 'archived'",
+			PublicRegistryID, childAndPluginTypes, []string{"archive", "fork"}, contentBackendDB).
 		Select("id", "item_type", "source_path", "catalog_entry_dir", "parent_plugin_id").
 		Find(&rows).Error; err != nil {
 		logger.Warn("catalog-ingest: load rows for parent-plugin reconcile: %v", err)

@@ -317,3 +317,69 @@ func TestSyncRegistryRejectsGitBackedRegistry(t *testing.T) {
 		t.Errorf("rejected sync mutated sync_status to %q", syncStatus)
 	}
 }
+
+// The registry-level guard above answers "is this REGISTRY git-backed". It says
+// nothing about an individual git-backed ROW living in an ordinary registry, and
+// that is the common case: ForkItem's git forks land in the public registry
+// under repo_id='public', which is precisely the scope of the repo-wide slug
+// index. Matching one routes it into SyncRegistry's update branch, whose
+// s.DB.Save(existing) rewrites the whole struct from a clone, and the closing
+// sweep then archives it and deletes its assets.
+//
+// Producer-side this pipeline is disabled, but queued sync_jobs still reach
+// SyncRegistry, so the exclusion has to hold at the query — not just at the
+// entry points. The clone itself cannot be exercised here (GitService refuses
+// local paths as SSRF defense), so the assertion is on the index builder.
+func TestLoadSyncItemIndices_ExcludesGitBackedRows(t *testing.T) {
+	db := newIngestTestDB(t)
+
+	rows := []models.CapabilityItem{
+		// Same registry as the sync target.
+		{ID: "db-in-registry", RegistryID: "reg-1", RepoID: "public", Slug: "db-thing",
+			ItemType: "skill", Name: "db thing", SourcePath: "skills/db-thing/SKILL.md",
+			SourceType: "direct", Status: "active", CreatedBy: "sync", UpdatedBy: "sync"},
+		{ID: "git-in-registry", RegistryID: "reg-1", RepoID: "public", Slug: "git-thing",
+			ItemType: "skill", Name: "git thing", SourcePath: "skills/git-thing/SKILL.md",
+			SourceType: "git", ContentBackend: "git", Status: "active",
+			CreatedBy: "u-alice", UpdatedBy: "git-sync"},
+		// Other registry, same repo — only reachable through the global slug index.
+		{ID: "git-cross-registry", RegistryID: PublicRegistryID, RepoID: "public", Slug: "git-fork",
+			ItemType: "skill", Name: "git fork", SourcePath: "skill.md",
+			SourceType: "fork", ContentBackend: "git", Status: "active",
+			CreatedBy: "u-alice", UpdatedBy: "git-sync"},
+		{ID: "db-cross-registry", RegistryID: PublicRegistryID, RepoID: "public", Slug: "db-fork",
+			ItemType: "skill", Name: "db fork", SourcePath: "skills/db-fork/SKILL.md",
+			SourceType: "fork", Status: "active", CreatedBy: "u-alice", UpdatedBy: "u-alice"},
+	}
+	for i := range rows {
+		if err := db.Create(&rows[i]).Error; err != nil {
+			t.Fatalf("seed %s: %v", rows[i].ID, err)
+		}
+	}
+
+	svc := &SyncService{DB: db}
+	existingByPath, slugIndex := svc.loadSyncItemIndices("reg-1", "public")
+
+	for _, path := range []string{"skills/git-thing/SKILL.md", "skill.md"} {
+		if got, ok := existingByPath[path]; ok {
+			t.Errorf("git-backed row %s entered existingByPath under %q — the closing sweep would archive it", got.ID, path)
+		}
+	}
+	for _, key := range []string{"skill:git-thing", "skill:git-fork"} {
+		if got, ok := slugIndex[key]; ok {
+			t.Errorf("git-backed row %s entered slugIndex under %q — the update branch would Save over it", got.ID, key)
+		}
+	}
+
+	// Control: DB-backed rows from both scopes must still be indexed, otherwise
+	// the exclusion turned every existing item into a duplicate INSERT.
+	if _, ok := existingByPath["skills/db-thing/SKILL.md"]; !ok {
+		t.Error("db-backed row of the synced registry dropped out of existingByPath")
+	}
+	if _, ok := slugIndex["skill:db-thing"]; !ok {
+		t.Error("db-backed row of the synced registry dropped out of slugIndex")
+	}
+	if _, ok := slugIndex["skill:db-fork"]; !ok {
+		t.Error("db-backed cross-registry row dropped out of the repo-wide slug index")
+	}
+}
