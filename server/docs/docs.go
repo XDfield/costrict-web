@@ -3953,7 +3953,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a .zip, .tar.gz, or .tgz archive. Creates a new version if content changes.",
+                "description": "Update an item by ID. Accepts JSON field updates or a multipart/form-data archive for DB-backed content. Git-backed content-derived fields and archives must be updated through Git; runtime and administrative fields remain writable through this endpoint.",
                 "consumes": [
                     "application/json",
                     "multipart/form-data"
@@ -4034,6 +4034,17 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -14779,6 +14790,9 @@ const docTemplate = `{
                 },
                 "favorited": {
                     "type": "boolean"
+                },
+                "gitLastSyncedAt": {
+                    "type": "string"
                 },
                 "health": {
                     "type": "object"

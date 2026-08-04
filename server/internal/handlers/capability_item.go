@@ -590,13 +590,14 @@ type ItemResponse struct {
 	Favorited           bool                        `json:"favorited"`
 	IsBuiltIn           bool                        `json:"isBuiltIn"`
 	CurrentVersionLabel string                      `json:"currentVersionLabel"`
-	ForkCount           int                         `json:"forkCount"`                // 本 item 被 fork 的次数
-	MyForkItemID        *string                     `json:"myForkItemId,omitempty"`   // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
-	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`      // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
-	ContentBackend      string                      `json:"contentBackend,omitempty"` // db | git — 内容真相源；git 时正文/文件树在仓库里
-	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`  // 仅 git-backed：仓库地址
-	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`  // 仅 git-backed：分支
-	SourceRepoPath      string                      `json:"sourceRepoPath,omitempty"` // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
+	ForkCount           int                         `json:"forkCount"`                 // 本 item 被 fork 的次数
+	MyForkItemID        *string                     `json:"myForkItemId,omitempty"`    // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
+	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`       // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
+	ContentBackend      string                      `json:"contentBackend,omitempty"`  // db | git — 内容真相源；git 时正文/文件树在仓库里
+	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`   // 仅 git-backed：仓库地址
+	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`   // 仅 git-backed：分支
+	SourceRepoPath      string                      `json:"sourceRepoPath,omitempty"`  // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
+	GitLastSyncedAt     *time.Time                  `json:"gitLastSyncedAt,omitempty"` // 仅 git-backed：最近一次成功写入 Git 投影的时间
 }
 
 type ItemAssetsResponse struct {
@@ -761,6 +762,7 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		resp.SourceRepoURL = item.SourceRepoURL
 		resp.SourceRepoRef = item.SourceRepoRef
 		resp.SourceRepoPath = item.SourceRepoPath
+		resp.GitLastSyncedAt = item.GitLastSyncedAt
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)
@@ -1277,7 +1279,7 @@ func ListItemAssets(c *gin.Context) {
 
 // UpdateItem godoc
 // @Summary      Update item
-// @Description  Update skill item by ID. Accepts JSON for field updates or multipart/form-data with a .zip, .tar.gz, or .tgz archive. Creates a new version if content changes.
+// @Description  Update an item by ID. Accepts JSON field updates or a multipart/form-data archive for DB-backed content. Git-backed content-derived fields and archives must be updated through Git; runtime and administrative fields remain writable through this endpoint.
 // @Tags         items
 // @Accept       json,mpfd
 // @Produce      json
@@ -1287,6 +1289,7 @@ func ListItemAssets(c *gin.Context) {
 // @Success      200   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
+// @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items/{id} [put]
 func (h *ItemHandler) UpdateItem(c *gin.Context) {
@@ -1300,6 +1303,11 @@ func (h *ItemHandler) UpdateItem(c *gin.Context) {
 // updateItemFromJSON handles the JSON-body item update path.
 func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	id := c.Param("id")
+	var fields map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&fields); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
 	var req struct {
 		Name        string             `json:"name"`
 		Description string             `json:"description"`
@@ -1315,7 +1323,8 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		IsBuiltIn   *bool              `json:"isBuiltIn"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	payload, err := json.Marshal(fields)
+	if err != nil || json.Unmarshal(payload, &req) != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
@@ -1336,6 +1345,10 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	// checks; this closes the previously-unguarded bare PUT path.)
 	if item.CreatedBy != uid && !callerIsPlatformAdmin(c, db) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can edit this item"})
+		return
+	}
+	if item.ContentBackend == contentBackendGit && gitBackedUpdateTouchesContentProjection(fields) {
+		c.JSON(http.StatusConflict, gin.H{"error": "Git-backed content fields must be updated through Git"})
 		return
 	}
 
@@ -1509,6 +1522,24 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 }
 
+func gitBackedUpdateTouchesContentProjection(fields map[string]json.RawMessage) bool {
+	// These fields are projected from the repository manifest or its binding.
+	// Status and isBuiltIn intentionally remain outside this list because they
+	// are platform runtime/administrative state, not Git-authored content.
+	protected := map[string]struct{}{
+		"slug": {}, "itemtype": {}, "name": {}, "description": {},
+		"descriptions": {}, "category": {}, "version": {}, "content": {},
+		"metadata": {}, "sourcepath": {}, "source": {}, "assets": {},
+		"tags": {}, "visibility": {}, "registryid": {}, "repoid": {},
+	}
+	for field := range fields {
+		if _, exists := protected[strings.ToLower(field)]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 // updateItemFromArchive handles multipart/form-data archive upload item update.
 func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	id := c.Param("id")
@@ -1525,6 +1556,10 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 	callerID := c.GetString(middleware.UserIDKey)
 	if item.CreatedBy != callerID && !callerIsPlatformAdmin(c, db) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can edit this item"})
+		return
+	}
+	if item.ContentBackend == contentBackendGit {
+		c.JSON(http.StatusConflict, gin.H{"error": "Git-backed items must be updated through Git"})
 		return
 	}
 

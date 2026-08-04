@@ -1162,6 +1162,120 @@ func TestUpdateItem_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateItem_GitBackedJSONRejected(t *testing.T) {
+	defer setupTestDB(t)()
+	item := models.CapabilityItem{
+		ID: "item-git-readonly-json", RegistryID: "reg-git-readonly", RepoID: "repo-git-readonly",
+		Slug: "git-readonly", ItemType: "plugin", Name: "Git Source", Content: "original",
+		ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example/u1/plugin",
+		SourceGitServerID: "git-server", SourceGitRepoID: 42, Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create Git-backed item: %v", err)
+	}
+
+	w := putJSON(newItemRouter("u1"), "/api/items/"+item.ID, map[string]interface{}{
+		"name": "DB Override", "content": "mutated",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload Git-backed item: %v", err)
+	}
+	if after.Name != item.Name || after.Content != item.Content {
+		t.Fatalf("rejected Git-backed update mutated DB projection: %+v", after)
+	}
+}
+
+func TestUpdateItem_GitBackedAdministrativeFieldAllowed(t *testing.T) {
+	defer setupTestDB(t)()
+	item := models.CapabilityItem{
+		ID: "item-git-admin-update", RegistryID: "reg-git-admin", RepoID: "repo-git-admin",
+		Slug: "git-admin", ItemType: "plugin", Name: "Git Source", Content: "original",
+		ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example/u1/plugin",
+		SourceGitServerID: "git-server", SourceGitRepoID: 44, Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create Git-backed item: %v", err)
+	}
+
+	w := putJSON(newItemRouter("u1"), "/api/items/"+item.ID, map[string]interface{}{
+		"status": "pending_review",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload Git-backed item: %v", err)
+	}
+	if after.Status != "pending_review" {
+		t.Fatalf("expected runtime status update, got %q", after.Status)
+	}
+	if after.Name != item.Name || after.Content != item.Content {
+		t.Fatalf("administrative update mutated Git projection: %+v", after)
+	}
+}
+
+func TestUpdateItem_GitBackedContentFieldCaseCannotBypassGuard(t *testing.T) {
+	defer setupTestDB(t)()
+	item := models.CapabilityItem{
+		ID: "item-git-case-guard", RegistryID: "reg-git-case", RepoID: "repo-git-case",
+		Slug: "git-case", ItemType: "plugin", Name: "Git Source", Content: "original",
+		ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example/u1/plugin",
+		SourceGitServerID: "git-server", SourceGitRepoID: 45, Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create Git-backed item: %v", err)
+	}
+
+	w := putJSON(newItemRouter("u1"), "/api/items/"+item.ID, map[string]interface{}{
+		"NaMe": "DB Override",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload Git-backed item: %v", err)
+	}
+	if after.Name != item.Name {
+		t.Fatalf("case-variant content field bypassed Git guard: %q", after.Name)
+	}
+}
+
+func TestUpdateItem_GitBackedArchiveRejected(t *testing.T) {
+	defer setupTestDB(t)()
+	item := models.CapabilityItem{
+		ID: "item-git-readonly-archive", RegistryID: "reg-git-readonly", RepoID: "repo-git-readonly",
+		Slug: "git-readonly-archive", ItemType: "skill", Name: "Git Source", Content: "original",
+		ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example/u1/skill",
+		SourceGitServerID: "git-server", SourceGitRepoID: 43, Status: "active", CreatedBy: "u1",
+		Metadata: datatypes.JSON([]byte(`{}`)),
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create Git-backed item: %v", err)
+	}
+	archive := createTestZip(map[string][]byte{"SKILL.md": []byte("# Mutated\n")})
+
+	w := putMultipart(newItemRouter("u1"), "/api/items/"+item.ID, map[string]string{}, archive)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload Git-backed item: %v", err)
+	}
+	if after.Name != item.Name || after.Content != item.Content {
+		t.Fatalf("rejected Git-backed archive mutated DB projection: %+v", after)
+	}
+}
+
 func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{
