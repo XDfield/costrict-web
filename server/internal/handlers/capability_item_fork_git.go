@@ -481,6 +481,35 @@ func planProvisionedFork(c *gin.Context, userID, forkSlug string, src models.Cap
 			},
 		}
 	}
+	// The provisioning primitive writes ONE file: the top-level manifest. An
+	// item that also carries capability_assets is a file tree, and publishing
+	// only its manifest would drop the rest silently — the DB fork that used to
+	// run here copied every asset. Refuse instead: losing files without saying
+	// so is worse than a fork the user cannot complete yet. Multi-file items
+	// reach git through the S6 migration, which owns the whole tree.
+	//
+	// gitsyncDB is non-nil here: this branch is only reached after
+	// gitBackingWired().
+	var assetCount int64
+	if err := gitsyncDB.WithContext(c.Request.Context()).
+		Model(&models.CapabilityAsset{}).Where("item_id = ?", src.ID).
+		Count(&assetCount).Error; err != nil {
+		return nil, &httpErr{
+			status: http.StatusInternalServerError,
+			body:   gin.H{"error": "failed to inspect this item's files: " + err.Error(), "error_code": "GIT_SOURCE_ASSET_LOOKUP_FAILED"},
+		}
+	}
+	if assetCount > 0 {
+		return nil, &httpErr{
+			status: http.StatusConflict,
+			body: gin.H{
+				"error": "this item carries additional files, which cannot be published to git yet; " +
+					"ask your platform admin to migrate it",
+				"error_code": "GIT_SOURCE_HAS_ASSETS",
+				"assetCount": assetCount,
+			},
+		}
+	}
 	// The source row's own entry key wins when the manifest still contains it: a
 	// fork of one server out of a multi-server .mcp.json must stay that server.
 	wantEntryKey := ""
@@ -656,7 +685,22 @@ func probeCapabilityManifest(
 		// and the content the row carries is a synthesized summary rather than
 		// that manifest, so the bytes read here are evidence, not content.
 		path, result, err = probeRepoManifest(ctx, cli, owner, name, branch, pluginNameOf(src.Metadata))
-		return path, src.Content, result, err
+		if err != nil || result != manifestProbeMatch {
+			return path, src.Content, result, err
+		}
+		if src.ContentBackend != contentBackendGit {
+			return path, src.Content, result, nil
+		}
+		// Forking a plugin that is itself Git-backed: its content column is
+		// empty by design, so hashing it would pin the fork to the hash of an
+		// empty string forever — reconcile never recomputes it, and the device
+		// consistency check would report a mismatch on a correctly synced item.
+		// Read the manifest the probe just matched instead.
+		raw, readErr := cli.ReadFile(ctx, owner, name, branch, path)
+		if readErr != nil {
+			return path, "", result, readErr
+		}
+		return path, string(raw), result, nil
 	}
 	return probeStandaloneManifest(ctx, cli, owner, name, branch, src)
 }

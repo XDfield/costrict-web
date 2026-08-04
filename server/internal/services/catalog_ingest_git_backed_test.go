@@ -363,3 +363,64 @@ func TestIngest_GitBackedRow_SurvivesRepeatedRounds(t *testing.T) {
 
 	assertItemUnchanged(t, before, loadItemByID(t, db, "git-5"))
 }
+
+// TestIngest_ProvisionedGitRow_NotRewritten covers the row shape the Git write
+// paths in package handlers now produce for the four standalone types: a fork
+// or a Cloud creation landing in the PUBLIC registry with repo_id='public',
+// carrying NO content at all (read-through serves it from the repository) and a
+// single-segment manifest path.
+//
+// It is a deliberate duplicate of the coverage above, aimed at the dependency
+// rather than the mechanism: the git write paths are only correct because these
+// queries exclude content_backend='git'. Sharing a registry with the catalog is
+// what makes that exclusion load-bearing — if it ever narrows, an ingest round
+// would overwrite name/slug/content on rows a user created, and the empty
+// content column means it would overwrite them with catalog text rather than
+// merely refreshing them.
+func TestIngest_ProvisionedGitRow_NotRewritten(t *testing.T) {
+	for _, tc := range []struct {
+		itemType     string
+		manifestPath string
+		sourceType   string
+	}{
+		{"skill", "skill.md", "fork"},
+		{"subagent", "agent.md", "fork"},
+		{"command", "command.md", "direct"},
+		{"mcp", "mcp.json", "direct"},
+	} {
+		t.Run(tc.itemType, func(t *testing.T) {
+			db := newIngestTestDB(t)
+			svc := newIngestService(db)
+
+			before := seedGitBackedItem(t, db, models.CapabilityItem{
+				ID: "prov-" + tc.itemType, Slug: "provisioned-skill", ItemType: tc.itemType,
+				Name: "user owned", Content: "", SourcePath: tc.manifestPath,
+				SourceRepoPath: tc.manifestPath, SourceType: tc.sourceType,
+				SourceRepoURL: "https://git.example/10001/provisioned-skill",
+				GitSyncStatus: "pending",
+			})
+
+			// A catalog entry deriving the same slug: the collision path that used
+			// to adopt the row across entries.
+			bundle := writeMultiEntryBundle(t,
+				[]catalogEntry{{ID: "provisioned-skill", Type: "skill", Source: "catalog/x",
+					Description: "catalog wants this slug", Category: "tooling"}},
+				map[string]string{"provisioned-skill": skillBodyFor("provisioned-skill")})
+			if _, err := svc.Ingest(context.Background(), IngestSource{Dir: bundle}, IngestOptions{TriggerUser: "tester"}); err != nil {
+				t.Fatalf("ingest: %v", err)
+			}
+
+			after := loadItemByID(t, db, "prov-"+tc.itemType)
+			assertItemUnchanged(t, before, after)
+			if after.ContentBackend != "git" {
+				t.Errorf("content_backend was rewritten: %q", after.ContentBackend)
+			}
+			if after.SourceRepoURL != before.SourceRepoURL {
+				t.Errorf("source_repo_url was rewritten: %q -> %q", before.SourceRepoURL, after.SourceRepoURL)
+			}
+			if after.GitSHA != before.GitSHA {
+				t.Errorf("git_sha was rewritten: %q -> %q", before.GitSHA, after.GitSHA)
+			}
+		})
+	}
+}

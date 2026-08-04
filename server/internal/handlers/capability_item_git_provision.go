@@ -471,21 +471,24 @@ func buildMarkdownSkeleton(spec gitCapabilityProvisionSpec) ([]byte, error) {
 		writeYAMLScalar(&b, "category", spec.Category)
 	}
 	writeYAMLScalar(&b, "version", firstNonEmpty(spec.Version, "1.0.0"))
-	// metadata.* per V4 §5.2. Note the parser projects the WHOLE frontmatter map
-	// into CapabilityItem.Metadata, so these land under metadata.metadata.* and
-	// are not read back as item tags — tags on the row come from the create
-	// request and stay in the user tag domain, which is what keeps the git sync
-	// from fighting them.
-	if len(spec.Tags) > 0 || spec.Author != "" || spec.License != "" {
-		b.WriteString("metadata:\n")
-		if len(spec.Tags) > 0 {
-			b.WriteString("  tags:\n")
-			for _, tag := range spec.Tags {
-				b.WriteString("    - ")
-				b.WriteString(yamlScalar(tag))
-				b.WriteString("\n")
-			}
+	// tags sit at the TOP level, not under `metadata:` as V4 §5.2 draws them.
+	// The parser projects the whole frontmatter map into CapabilityItem.Metadata
+	// and reads tags from Metadata["tags"] (parser_service.go, and
+	// applyExplicitGitIndexFields for the reconcile pass), so a nested list would
+	// be written and then never read — the skeleton would declare tags the
+	// platform ignores. The S0 fixture repositories use the top-level form for
+	// the same reason. author/license have no parser meaning either way, so they
+	// follow the schema.
+	if len(spec.Tags) > 0 {
+		b.WriteString("tags:\n")
+		for _, tag := range spec.Tags {
+			b.WriteString("  - ")
+			b.WriteString(yamlScalar(tag))
+			b.WriteString("\n")
 		}
+	}
+	if spec.Author != "" || spec.License != "" {
+		b.WriteString("metadata:\n")
 		if spec.Author != "" {
 			b.WriteString("  author: " + yamlScalar(spec.Author) + "\n")
 		}

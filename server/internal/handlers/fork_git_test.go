@@ -1204,10 +1204,6 @@ func TestForkItem_Git_NonPluginProvisionsRepo(t *testing.T) {
 	fx := setupGitForkFixture(t)
 	seedUserGitAccount(t, fx.db, "bob", "10001", true)
 	seedForkSourceItem("skill-1", "my-skill", "alice", "direct", "public")
-	text := "asset body"
-	database.GetDB().Create(&models.CapabilityAsset{
-		ID: "asset-s1", ItemID: "skill-1", RelPath: "SKILL.md", TextContent: &text,
-	})
 
 	w := forkReq(newForkRouter("bob"), "skill-1")
 	if w.Code != http.StatusCreated {

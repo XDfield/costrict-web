@@ -508,6 +508,36 @@ func TestForkItem_Git_ProvisionWriteFailureLeavesNoRow(t *testing.T) {
 	}
 }
 
+// The provisioning primitive writes one file, so an item that is really a file
+// tree is refused rather than published with everything but its manifest
+// dropped. The DB fork this replaces copied every asset; losing them silently
+// would be a worse trade than a fork the user cannot complete yet.
+func TestForkItem_Git_ProvisionRefusesItemWithAssets(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedDBBackedSource(t, "db-src", "db-skill", gitBackedTypeCases()[0])
+	body := "reference material"
+	if err := database.GetDB().Create(&models.CapabilityAsset{
+		ID: "asset-1", ItemID: "db-src", RelPath: "reference.md", TextContent: &body,
+	}).Error; err != nil {
+		t.Fatalf("seed asset: %v", err)
+	}
+
+	w := forkReq(newForkRouter("bob"), "db-src")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GIT_SOURCE_HAS_ASSETS") {
+		t.Errorf("expected GIT_SOURCE_HAS_ASSETS, got %s", w.Body.String())
+	}
+	assertNoForkPersisted(t, "db-src", "bob")
+	if len(fx.gitea.createCalls) != 0 {
+		t.Errorf("must refuse before creating a repository: %d", len(fx.gitea.createCalls))
+	}
+}
+
 // A repository already holding some other capability is never adopted. It is
 // the create-path form of the fork lineage check: the user's namespace holds
 // something we must not overwrite, and retrying can never make it right.

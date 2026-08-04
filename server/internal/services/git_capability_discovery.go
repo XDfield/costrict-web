@@ -408,13 +408,25 @@ func discoverGitCapabilityCandidates(entries []gitsync.GitTreeEntry) []gitCapabi
 	return result
 }
 
+// ClassifyGitCapabilityManifestType reports the capability type discovery would
+// infer from a repository path.
+//
+// Exported for the provisioning path in package handlers, which has two
+// questions only this table can answer: whether a repository it is about to
+// reuse already describes some other capability, and whether the manifest name
+// it is about to write is one discovery can find. Answering either from a
+// second copy of the table is how a provisioned repository ends up unable to
+// describe itself.
+func ClassifyGitCapabilityManifestType(filePath string) (string, bool) {
+	candidate, ok := classifyGitCapabilityManifest(filePath)
+	if !ok {
+		return "", false
+	}
+	return candidate.ItemType, true
+}
+
 // IsGitCapabilityManifestPath reports whether a repository path would be
 // classified as a capability manifest by discovery.
-//
-// Exported for the provisioning path in package handlers: before reusing a
-// repository that already exists in the user's namespace it has to know whether
-// that repository already describes some other capability, and the only correct
-// answer is the one discovery itself would give.
 func IsGitCapabilityManifestPath(filePath string) bool {
 	_, ok := classifyGitCapabilityManifest(filePath)
 	return ok
