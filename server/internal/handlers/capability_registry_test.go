@@ -200,6 +200,42 @@ func TestCreateRegistry_MissingRequired(t *testing.T) {
 	}
 }
 
+// TestCreateRegistry_RejectsSSRFExternalURL covers the write-time SSRF gate
+// on CreateRegistry. file://, loopback, and metadata sinkholes must be rejected
+// at ingestion — ExternalURL is later consumed by GitService.Clone during sync.
+// secreport 20260731141243580377 (CVSS 5.3).
+func TestCreateRegistry_RejectsSSRFExternalURL(t *testing.T) {
+	defer setupTestDB(t)()
+
+	blocked := []string{
+		"file:///etc/passwd",
+		"http://127.0.0.1/repo.git",
+		"http://[::1]/repo.git",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://localhost/repo.git",
+		"ftp://example.com/repo.git",
+		"javascript:alert(1)",
+	}
+	for _, url := range blocked {
+		w := postJSON(newRegistryRouter("u1"), "/api/registries", map[string]interface{}{
+			"name":        "ssrf-reg",
+			"externalUrl": url,
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for externalUrl=%q, got %d: %s", url, w.Code, w.Body.String())
+		}
+	}
+
+	// Verify a clean URL is accepted.
+	w := postJSON(newRegistryRouter("u1"), "/api/registries", map[string]interface{}{
+		"name":        "ok-reg",
+		"externalUrl": "https://github.com/org/repo.git",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for valid externalUrl, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetRegistry
 // ---------------------------------------------------------------------------
@@ -263,6 +299,39 @@ func TestUpdateRegistry_NotFound(t *testing.T) {
 	})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+// TestUpdateRegistry_RejectsSSRFExternalURL covers the write-time SSRF gate
+// on UpdateRegistry — prevents a poisoned DB row from later redirecting
+// GitService.Clone to internal sinkholes.
+// secreport 20260731141243580377 (CVSS 5.3).
+func TestUpdateRegistry_RejectsSSRFExternalURL(t *testing.T) {
+	defer setupTestDB(t)()
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-ssrf-upd", Name: "ssrf-upd", SourceType: "internal", OwnerID: "u1",
+	})
+
+	blocked := []string{
+		"file:///etc/passwd",
+		"http://127.0.0.1/repo.git",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://localhost/repo.git",
+	}
+	for _, url := range blocked {
+		w := putJSON(newRegistryRouter("u1"), "/api/registries/reg-ssrf-upd", map[string]interface{}{
+			"externalUrl": url,
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for externalUrl=%q, got %d: %s", url, w.Code, w.Body.String())
+		}
+	}
+
+	// Verify the stored ExternalURL was NOT mutated by the rejected updates.
+	var reg models.CapabilityRegistry
+	database.DB.First(&reg, "id = ?", "reg-ssrf-upd")
+	if reg.ExternalURL != "" {
+		t.Fatalf("ExternalURL should remain empty after rejections, got %q", reg.ExternalURL)
 	}
 }
 
@@ -509,7 +578,6 @@ func TestListMyItems_Unauthenticated(t *testing.T) {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
 }
-
 
 func TestListMyItems_IncludesCreatedByInOtherRegistries(t *testing.T) {
 	defer setupTestDB(t)()

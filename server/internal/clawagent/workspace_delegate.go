@@ -172,6 +172,21 @@ func (r *TaskRegistry) ListByWorkspace(ctx context.Context, workspaceID string) 
 	return tasks, nil
 }
 
+// ListByWorkspaceForUser lists tasks for a workspace scoped to the calling user,
+// closing the IDOR gap where any authenticated user could enumerate other users'
+// tasks by guessing or leaking a workspace_id.
+func (r *TaskRegistry) ListByWorkspaceForUser(ctx context.Context, workspaceID, userID string) ([]WorkspaceTask, error) {
+	var tasks []WorkspaceTask
+	if err := r.db.WithContext(ctx).
+		Where("workspace_id = ? AND user_id = ?", workspaceID, userID).
+		Order("created_at DESC").
+		Limit(50).
+		Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 // ListByUser lists tasks for a user.
 func (r *TaskRegistry) ListByUser(ctx context.Context, userID string) ([]WorkspaceTask, error) {
 	var tasks []WorkspaceTask

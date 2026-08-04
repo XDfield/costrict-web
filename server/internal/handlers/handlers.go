@@ -34,13 +34,6 @@ var allowedOrigins map[string]bool // whitelist of allowed frontend origins
 var UserModule *userpkg.Module
 var bindStateSecret string
 
-// jwtSignMode gates the Phase A8 OAuth-callback takeover. Anything other than
-// config.JWTSignModeOff makes the callback ask cs-user to reissue a
-// self-signed JWT carrying enterprise claims (Phase A5). Set from
-// cfg.JWTSignMode via InitCookieConfig. Default off — Casdoor JWT remains
-// authoritative.
-var jwtSignMode string
-
 var exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
 	return CasdoorClient.ExchangeCodeForToken(code, callbackURL)
 }
@@ -111,11 +104,6 @@ func InitCookieConfig(cfg *config.Config) {
 	// otherwise), so no fallback here. InternalSecret fallback is preserved
 	// inside Config.Load() for backward compatibility.
 	bindStateSecret = cfg.BindStateSecret
-
-	// Phase A8: surface JWT self-sign mode to the OAuth callback without
-	// plumbing cfg through every handler call. Default OFF — Casdoor JWT
-	// stays authoritative until 灰度 activates dual / single.
-	jwtSignMode = cfg.JWTSignMode
 
 	// Build the allowed origins whitelist from FRONTEND_URLS.
 	allowedOrigins = make(map[string]bool)
@@ -445,7 +433,9 @@ func AuthCallback(c *gin.Context) {
 	tokenResp, err := exchangeCodeForTokenFunc(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
 		fmt.Printf("[ERROR] ExchangeCodeForToken failed: err=%v, tokenResp=%+v\n", err, tokenResp)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
+		// Generic message — do NOT echo err to the client. Casdoor error
+		// details (including token-adjacent fields) belong in server logs only.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
 		return
 	}
 
@@ -469,7 +459,9 @@ func AuthCallback(c *gin.Context) {
 func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, isNewUser bool) {
 	// cookieToken holds the value that ends up in the zgsmAdminToken cookie.
 	// Default is the Casdoor access token; Phase A8 overwrites it with a
-	// cs-user-signed JWT when jwtSignMode != off and ReissueToken succeeds.
+	// cs-user-signed JWT. ReissueToken runs on every callback; a transport
+	// failure or local-mode misconfig falls back to the Casdoor token so a
+	// cs-user outage can't take login down.
 	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
 	// (Phase A8) is intentionally non-blocking.
 	cookieToken = accessToken
@@ -555,16 +547,12 @@ func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, is
 	// (which the Casdoor callback harvests from profile.Raw).
 	// Best-effort — employment mapping is a bonus feature and must
 	// never block login.
-	// Phase A8: when mode is dual or single, ask cs-user to mint
-	// a fresh JWT carrying enterprise claims. Best-effort: on any
-	// failure (transport, ErrSelfSignUnavailable from local-mode
-	// misconfig, cs-user 4xx/5xx) we fall back to the Casdoor
-	// token rather than failing login. The difference between
-	// dual and single lives in the verifier (JWKS chain), not
-	// here — the cookie value is the cs-user JWT either way.
-	if jwtSignMode == config.JWTSignModeOff {
-		return
-	}
+	// cs-user always reissues a self-signed JWT carrying enterprise
+	// claims so the cookie value matches what the verifier (also
+	// cs-user) checks. Best-effort: on any failure (transport,
+	// ErrSelfSignUnavailable from local-mode misconfig, cs-user
+	// 4xx/5xx) we fall back to the Casdoor token rather than
+	// failing login.
 	if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), nil, accessToken); err != nil {
 		fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
 	} else {
@@ -684,7 +672,8 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 
 	tokenResp, err := exchangeCodeForTokenFunc(code, state.CallbackURL)
 	if err != nil || tokenResp.AccessToken == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to exchange code for token: %v", err)})
+		// Generic message — see AuthCallback for the rationale.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
 		return
 	}
 	claims, err := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken)

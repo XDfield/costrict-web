@@ -1107,13 +1107,19 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-ui2", Name: "ui-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
+	hashSvc := services.NewContentHashService()
+	originalContent := "v1"
+	originalHash, err := hashSvc.HashTextContent("skill", originalContent)
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui2", RegistryID: "reg-ui2", RepoID: "repo-1", Slug: "versioned", ItemType: "skill",
 		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
-		ContentMD5: "6654c734ccab8f440ff0825eb443dc7f",
+		ContentMD5: originalHash,
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: "v1", ContentMD5: "6654c734ccab8f440ff0825eb443dc7f", CreatedBy: "u1",
+		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: originalContent, ContentMD5: originalHash, CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 

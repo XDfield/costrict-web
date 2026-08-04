@@ -333,13 +333,20 @@ func TestCancelRegistrySync_NoJobService(t *testing.T) {
 // Repo-level sync delegation (404 when no registry)
 // ---------------------------------------------------------------------------
 
+// TestTriggerRepoSync_NoRegistry historically asserted the 404 path when a repo
+// had no registry. With scheduler.SyncDisabled=true (sync SSRF mitigation — see
+// secreport 20260731141243580377), TriggerRepoSync short-circuits to 503 at
+// the first statement, so the registry lookup is unreachable in the test
+// fixture. We assert the 503 to lock the封禁 precedence; the deeper 404 path
+// is covered indirectly by GetRepoSyncStatus_NoRegistry etc. (read paths are
+// NOT gated by SyncDisabled).
 func TestTriggerRepoSync_NoRegistry(t *testing.T) {
 	defer setupSyncDB(t)()
 	database.DB.Create(&models.Repository{ID: "no-repo", Name: "no-reg-repo", OwnerID: "u1", Visibility: "public"})
 	database.DB.Create(&models.RepoMember{ID: "mem-no-repo", RepoID: "no-repo", UserID: "u1", Role: "owner"})
 	w := postJSON(newSyncRouterWithUser("u1"), "/api/repositories/no-repo/sync", nil)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (SyncDisabled short-circuit), got %d", w.Code)
 	}
 }
 
