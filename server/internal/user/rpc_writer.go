@@ -268,7 +268,7 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 }
 
 // ReissueToken calls POST /api/internal/users/reissue-token (Phase A7). The
-// server's OAuth callback invokes this when JWT_SELF_SIGN_ENABLED=true to
+// server's OAuth callback invokes this (under USER_SERVICE_BACKEND=rpc) to
 // swap the Casdoor-validated claims for a cs-user-signed JWT carrying
 // enterprise claims (Phase A5). cs-user verifies the raw Casdoor JWT against
 // its own JWKS, resolves the authoritative user via external_key, reads
