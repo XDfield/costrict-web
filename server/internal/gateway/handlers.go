@@ -14,7 +14,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var closeHTTPClient = &http.Client{Timeout: 5 * time.Second}
+// closeHTTPClient posts session-close notifications to a previous gateway when
+// a device rebinds. Redirects are disabled (http.ErrUseLastResponse) so a
+// polluted InternalURL cannot redirect the POST to an internal sinkhole via
+// 3xx. The URL itself is re-validated against ValidateInternalGatewayURL
+// immediately before dial, defending against a DB row that was poisoned after
+// the registration-time check.
+var closeHTTPClient = &http.Client{
+	Timeout: 5 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 // GatewayRegisterHandler godoc
 // @Summary      Register gateway
@@ -40,6 +51,16 @@ func GatewayRegisterHandler(registry *GatewayRegistry) gin.HandlerFunc {
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+
+		// SSRF write-time gate: reject InternalURLs that point at loopback /
+		// link-local / metadata sinkholes. InternalURL is later reused by
+		// DeviceOnlineHandler to POST close-session notifications, so a
+		// malicious value here would let a rogue gateway redirect server
+		// traffic to internal endpoints. See CVSS 5.1 secreport.
+		if err := ValidateInternalGatewayURL(body.InternalURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid internal url: %v", err)})
 			return
 		}
 
@@ -131,6 +152,14 @@ func DeviceOnlineHandler(registry *GatewayRegistry, client *Client, deviceSvc *s
 		if oldGwID != "" && oldGwID != body.GatewayID {
 			if oldGw := registry.GetGatewayInfo(oldGwID); oldGw != nil {
 				go func() {
+					// Defense-in-depth: re-validate the stored InternalURL before
+					// issuing the POST. Registration already gates this, but a DB
+					// row poisoned after registration must not let the server
+					// dial loopback / link-local / metadata endpoints.
+					if err := ValidateInternalGatewayURL(oldGw.InternalURL); err != nil {
+						logger.Warn("[GatewayRegistry] refusing close to invalid old gateway url %s: %v", oldGw.InternalURL, err)
+						return
+					}
 					closeURL := fmt.Sprintf("%s/internal/device/%s/close", oldGw.InternalURL, body.DeviceID)
 					closeBody, _ := json.Marshal(map[string]string{"connID": oldConnID})
 					req, err := http.NewRequest(http.MethodPost, closeURL, bytes.NewReader(closeBody))
