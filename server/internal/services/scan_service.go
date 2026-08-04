@@ -445,21 +445,31 @@ func (s *ScanService) backfillBuiltinTags(itemID string, suggestedSlugs []string
 	for _, tag := range builtinTags {
 		builtinBySlug[tag.Slug] = tag
 	}
+	// The "is it already there?" check reads every domain (a builtin tag the
+	// user or Git frontmatter already carries needs no backfill), but the write
+	// set is scoped to the `system` domain so this never re-homes another
+	// writer's tags into ours.
 	existingTagMap, err := s.TagSvc.GetItemTags([]string{itemID})
 	if err != nil {
 		return err
 	}
 	existingTags := existingTagMap[itemID]
 	existingBySlug := make(map[string]struct{}, len(existingTags))
-	mergedIDs := make([]string, 0, len(existingTags)+len(suggestedSlugs))
-	seenIDs := make(map[string]struct{}, len(existingTags)+len(suggestedSlugs))
 	for _, tag := range existingTags {
 		existingBySlug[tag.Slug] = struct{}{}
-		if _, ok := seenIDs[tag.ID]; ok {
+	}
+	systemIDs, err := s.TagSvc.GetItemTagIDsBySource(itemID, TagSourceSystem)
+	if err != nil {
+		return err
+	}
+	mergedIDs := make([]string, 0, len(systemIDs)+len(suggestedSlugs))
+	seenIDs := make(map[string]struct{}, len(systemIDs)+len(suggestedSlugs))
+	for _, id := range systemIDs {
+		if _, ok := seenIDs[id]; ok {
 			continue
 		}
-		seenIDs[tag.ID] = struct{}{}
-		mergedIDs = append(mergedIDs, tag.ID)
+		seenIDs[id] = struct{}{}
+		mergedIDs = append(mergedIDs, id)
 	}
 	added := false
 	for _, slug := range normalizeSuggestedTagSlugs(suggestedSlugs) {
@@ -480,7 +490,7 @@ func (s *ScanService) backfillBuiltinTags(itemID string, suggestedSlugs []string
 	if !added {
 		return nil
 	}
-	return s.TagSvc.SetItemTags(itemID, mergedIDs)
+	return s.TagSvc.SetItemTags(itemID, mergedIDs, TagSourceSystem)
 }
 
 func (s *ScanService) callLLMWithRetry(ctx context.Context, userPrompt string) (*ScanReport, string, error) {

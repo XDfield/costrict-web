@@ -276,8 +276,9 @@ func setupTestDB(t *testing.T) func() {
 			id TEXT PRIMARY KEY,
 			item_id TEXT NOT NULL,
 			tag_id TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'legacy',
 			created_at DATETIME,
-			UNIQUE(item_id, tag_id)
+			UNIQUE(item_id, tag_id, source)
 		)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

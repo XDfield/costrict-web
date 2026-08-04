@@ -22,6 +22,35 @@ const (
 	TagClassCustom  = "custom"
 )
 
+// Writer domains for item_tags.source. Three writers rebuild the tag set of the
+// same item with DELETE + re-insert; each one may only delete rows carrying its
+// own domain, otherwise the last writer to run silently drops the others' tags.
+const (
+	// TagSourceGit is owned by the Git capability sync worker (manifest
+	// frontmatter `tags`).
+	TagSourceGit = "git"
+	// TagSourceSystem is owned by the system side: security scan builtin
+	// backfill, catalog ingest, legacy registry sync.
+	TagSourceSystem = "system"
+	// TagSourceUser is owned by user-initiated Cloud API calls.
+	TagSourceUser = "user"
+	// TagSourceLegacy holds rows written before the table was partitioned.
+	// Their writer cannot be reconstructed, so no writer deletes them.
+	TagSourceLegacy = "legacy"
+)
+
+// ErrInvalidTagSource guards against a caller inventing a fourth domain, which
+// would create rows nothing ever rebuilds.
+var ErrInvalidTagSource = errors.New("invalid item tag source")
+
+func validTagSource(source string) bool {
+	switch source {
+	case TagSourceGit, TagSourceSystem, TagSourceUser:
+		return true
+	}
+	return false
+}
+
 var tagSlugPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 type TagService struct {
@@ -159,14 +188,23 @@ func (s *TagService) EnsureTags(slugs []string, tagClass, createdBy string) ([]m
 	return result, nil
 }
 
-// SetItemTags replaces all tags on an item within a transaction.
-func (s *TagService) SetItemTags(itemID string, tagIDs []string) error {
+// SetItemTags replaces the tags an item carries *in one writer domain*.
+//
+// The source argument is required rather than defaulted so every call site has
+// to declare which writer it is: a silent default would put a future caller in
+// somebody else's domain and re-create the very bug this partition removes.
+// Rows in the other domains -- including the unattributable `legacy` rows that
+// predate the partition -- are left untouched.
+func (s *TagService) SetItemTags(itemID string, tagIDs []string, source string) error {
+	if !validTagSource(source) {
+		return ErrInvalidTagSource
+	}
 	return s.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("item_id = ?", itemID).Delete(&models.ItemTag{}).Error; err != nil {
+		if err := tx.Where("item_id = ? AND source = ?", itemID, source).Delete(&models.ItemTag{}).Error; err != nil {
 			return err
 		}
 		for _, tagID := range tagIDs {
-			itemTag := models.ItemTag{ID: uuid.NewString(), ItemID: itemID, TagID: tagID}
+			itemTag := models.ItemTag{ID: uuid.NewString(), ItemID: itemID, TagID: tagID, Source: source}
 			if err := tx.Create(&itemTag).Error; err != nil {
 				if !isUniqueConstraintError(err) {
 					return err
@@ -177,7 +215,26 @@ func (s *TagService) SetItemTags(itemID string, tagIDs []string) error {
 	})
 }
 
-// GetItemTags batch-fetches tags for multiple items.
+// GetItemTagIDsBySource returns the tag ids an item carries in a single writer
+// domain. Callers that need to merge into their own domain (rather than replace
+// it) use this so they don't drag other domains' tags into theirs.
+func (s *TagService) GetItemTagIDsBySource(itemID, source string) ([]string, error) {
+	var itemTags []models.ItemTag
+	if err := s.DB.Where("item_id = ? AND source = ?", itemID, source).Find(&itemTags).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(itemTags))
+	for _, it := range itemTags {
+		ids = append(ids, it.TagID)
+	}
+	return ids, nil
+}
+
+// GetItemTags batch-fetches tags for multiple items across every writer domain.
+// The domain partition is a write-side isolation mechanism, not a user-visible
+// classification, so the union is returned. The same tag may legitimately be
+// owned by two domains (e.g. Git frontmatter and the user both set `auth`), so
+// results are de-duplicated per item.
 func (s *TagService) GetItemTags(itemIDs []string) (map[string][]models.ItemTagDict, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
@@ -207,10 +264,18 @@ func (s *TagService) GetItemTags(itemIDs []string) (map[string][]models.ItemTagD
 	}
 
 	result := make(map[string][]models.ItemTagDict)
+	emitted := make(map[string]struct{}, len(itemTags))
 	for _, it := range itemTags {
-		if t, ok := tagMap[it.TagID]; ok {
-			result[it.ItemID] = append(result[it.ItemID], t)
+		t, ok := tagMap[it.TagID]
+		if !ok {
+			continue
 		}
+		key := it.ItemID + "\x00" + it.TagID
+		if _, dup := emitted[key]; dup {
+			continue
+		}
+		emitted[key] = struct{}{}
+		result[it.ItemID] = append(result[it.ItemID], t)
 	}
 	return result, nil
 }

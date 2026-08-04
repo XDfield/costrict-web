@@ -163,7 +163,8 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, tag_class TEXT NOT NULL, created_by TEXT NOT NULL, created_at DATETIME
 		)`,
 		`CREATE TABLE item_tags (
-			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL, created_at DATETIME, UNIQUE(item_id, tag_id)
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'legacy', created_at DATETIME, UNIQUE(item_id, tag_id, source)
 		)`,
 		`CREATE TABLE git_capability_sync_jobs (
 			id TEXT PRIMARY KEY, git_server_id TEXT NOT NULL, delivery_id TEXT NOT NULL,
@@ -309,12 +310,15 @@ func itemTagSlugs(t *testing.T, db *gorm.DB, itemID string) []string {
 	return result
 }
 
+// seedItemTag plants a tag in the `git` domain, i.e. one a previous sync of the
+// same manifest would have written. Tags in the other domains are the subject of
+// TestGitCapabilitySync_TagPartition_* below.
 func seedItemTag(t *testing.T, db *gorm.DB, itemID, tagID, slug string) {
 	t.Helper()
 	if err := db.Create(&models.ItemTagDict{ID: tagID, Slug: slug, TagClass: TagClassCustom, CreatedBy: "user-1"}).Error; err != nil {
 		t.Fatalf("create tag: %v", err)
 	}
-	if err := db.Create(&models.ItemTag{ID: "link-" + tagID, ItemID: itemID, TagID: tagID}).Error; err != nil {
+	if err := db.Create(&models.ItemTag{ID: "link-" + tagID, ItemID: itemID, TagID: tagID, Source: TagSourceGit}).Error; err != nil {
 		t.Fatalf("link tag: %v", err)
 	}
 }

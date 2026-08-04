@@ -169,11 +169,11 @@ func resolveAssignableTags(tagSvc *services.TagService, slugs []string, createdB
 	return unique, nil
 }
 
-func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []string) error {
+func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []string, source string) error {
 	if tagSvc == nil {
 		return nil
 	}
-	return tagSvc.SetItemTags(itemID, tagIDs)
+	return tagSvc.SetItemTags(itemID, tagIDs, source)
 }
 
 // ---------------------------------------------------------------------------
@@ -2720,7 +2720,7 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	}
 
 	if h.tagSvc != nil {
-		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs); err != nil {
+		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs, services.TagSourceUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign item tags"})
 			return
 		}
@@ -2964,7 +2964,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 
 	// Carry over tags.
 	if h.tagSvc != nil && len(tagIDs) > 0 {
-		if err := assignTagsForItem(h.tagSvc, item.ID, tagIDs); err != nil {
+		if err := assignTagsForItem(h.tagSvc, item.ID, tagIDs, services.TagSourceUser); err != nil {
 			log.Printf("Failed to assign tags to forked item %s: %v", item.ID, err)
 		}
 	}
@@ -3099,7 +3099,7 @@ func (h *ItemHandler) forkPluginChildren(srcPluginID, newPluginID, userID string
 					tids = append(tids, t.ID)
 				}
 				if len(tids) > 0 {
-					_ = assignTagsForItem(h.tagSvc, forked.ID, tids)
+					_ = assignTagsForItem(h.tagSvc, forked.ID, tids, services.TagSourceUser)
 				}
 			}
 		}
@@ -4079,7 +4079,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	}
 
 	if h.tagSvc != nil {
-		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs); err != nil {
+		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs, services.TagSourceUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign item tags"})
 			return
 		}

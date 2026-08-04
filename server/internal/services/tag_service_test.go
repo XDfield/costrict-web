@@ -19,7 +19,7 @@ func setupTagServiceDB(t *testing.T) *gorm.DB {
 	}
 	stmts := []string{
 		`CREATE TABLE item_tag_dicts (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, tag_class TEXT NOT NULL DEFAULT 'custom', created_by TEXT NOT NULL, created_at DATETIME)`,
-		`CREATE TABLE item_tags (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL, created_at DATETIME, UNIQUE(item_id, tag_id))`,
+		`CREATE TABLE item_tags (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'legacy', created_at DATETIME, UNIQUE(item_id, tag_id, source))`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {

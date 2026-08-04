@@ -430,7 +430,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 						for _, t := range tags {
 							tagIDs = append(tagIDs, t.ID)
 						}
-						s.TagSvc.SetItemTags(existing.ID, tagIDs)
+						s.TagSvc.SetItemTags(existing.ID, tagIDs, TagSourceSystem)
 					}
 				}
 				meta := parsed.Metadata
@@ -517,7 +517,7 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 						for _, t := range tags {
 							tagIDs = append(tagIDs, t.ID)
 						}
-						s.TagSvc.SetItemTags(newItem.ID, tagIDs)
+						s.TagSvc.SetItemTags(newItem.ID, tagIDs, TagSourceSystem)
 					}
 				}
 

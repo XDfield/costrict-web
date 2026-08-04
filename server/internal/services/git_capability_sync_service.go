@@ -34,10 +34,12 @@ const (
 )
 
 // gitCapabilityHiddenStatuses are the statuses a human puts a row into to take
-// it off the shelf: admin moderation (adminitem.SetStatus writes 'archived',
-// user_status handlers write 'banned') and PUT /items/:id, which deliberately
-// leaves `status` outside gitBackedUpdateTouchesContentProjection so those
-// administrative actions stay possible on a Git-backed row (R1.6).
+// it off the shelf: adminitem.SetStatus / BatchSetStatus write 'archived', and
+// PUT /items/:id accepts any status from the author or a platform admin — it
+// deliberately leaves `status` outside gitBackedUpdateTouchesContentProjection
+// so those administrative actions stay possible on a Git-backed row (R1.6).
+// 'banned' has no writer of its own on capability_items today; it is the state
+// the original CASE already protected, kept here rather than dropped.
 //
 // That permission is only safe because a push never raises a row out of this
 // set — otherwise "PUT may set archived" plus "every push sets active" combine
@@ -66,10 +68,16 @@ func isGitCapabilityHiddenStatus(status string) bool {
 // already-orphaned row does not clear the marker (git_sync_status is Git-owned,
 // so only this writer can write it), so a returning manifest still republishes
 // it. 'banned' is the moderation state that survives unconditionally.
+//
+// The COALESCE — here and in gitCapabilityArchiveSyncStatus — makes an unset
+// git_sync_status read as "not orphaned", so the guard fails closed. The schema
+// declares the column NOT NULL with an empty-string default, so this only
+// covers hand-built rows and older fixtures; but a NULL comparing false would
+// silently disarm the protection, which is not a failure worth risking.
 func gitCapabilityActivateStatus() clause.Expr {
 	return gorm.Expr(
 		"CASE WHEN status = ? THEN status "+
-			"WHEN status IN (?) AND git_sync_status <> ? THEN status "+
+			"WHEN status IN (?) AND COALESCE(git_sync_status, '') <> ? THEN status "+
 			"ELSE ? END",
 		"banned", gitCapabilityHiddenStatuses, gitCapabilitySyncOrphaned, "active")
 }
@@ -88,7 +96,7 @@ func gitCapabilityArchiveStatus() clause.Expr {
 // human's decision. A row that is already orphaned stays orphaned, so repeated
 // pushes with the manifest still missing do not lose the marker.
 func gitCapabilityArchiveSyncStatus() clause.Expr {
-	return gorm.Expr("CASE WHEN status IN (?) AND git_sync_status <> ? THEN ? ELSE ? END",
+	return gorm.Expr("CASE WHEN status IN (?) AND COALESCE(git_sync_status, '') <> ? THEN ? ELSE ? END",
 		gitCapabilityHiddenStatuses, gitCapabilitySyncOrphaned,
 		gitCapabilitySyncSynced, gitCapabilitySyncOrphaned)
 }
@@ -361,7 +369,10 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				for _, tag := range tags {
 					tagIDs = append(tagIDs, tag.ID)
 				}
-				if err := tagSvc.SetItemTags(entry.item.ID, tagIDs); err != nil {
+				// Only the `git` domain is rebuilt: tags a user set in Cloud and
+				// tags the scanner/catalog produced live in their own domains and
+				// must survive every push.
+				if err := tagSvc.SetItemTags(entry.item.ID, tagIDs, TagSourceGit); err != nil {
 					return err
 				}
 			}

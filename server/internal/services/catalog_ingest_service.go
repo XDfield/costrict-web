@@ -1236,7 +1236,7 @@ func (s *CatalogIngestService) applyTags(itemID string, tags []string) {
 	for _, t := range tagModels {
 		ids = append(ids, t.ID)
 	}
-	if err := s.TagSvc.SetItemTags(itemID, ids); err != nil {
+	if err := s.TagSvc.SetItemTags(itemID, ids, TagSourceSystem); err != nil {
 		logger.Warn("catalog-ingest: set tags failed for %s: %v", itemID, err)
 	}
 }

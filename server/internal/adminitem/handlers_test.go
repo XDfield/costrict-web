@@ -105,7 +105,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			action_type TEXT NOT NULL, context TEXT, created_at DATETIME
 		)`,
 		`CREATE TABLE item_tags (
-			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL, created_at DATETIME
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'legacy', created_at DATETIME
 		)`,
 		`CREATE TABLE user_system_roles (
 			id TEXT PRIMARY KEY, user_id TEXT, role TEXT, created_at DATETIME, deleted_at DATETIME

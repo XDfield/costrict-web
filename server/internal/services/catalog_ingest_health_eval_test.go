@@ -77,7 +77,8 @@ func newIngestTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE item_tags (
 			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL,
-			created_at DATETIME, UNIQUE(item_id, tag_id)
+			source TEXT NOT NULL DEFAULT 'legacy',
+			created_at DATETIME, UNIQUE(item_id, tag_id, source)
 		)`,
 		`CREATE TABLE item_categories (
 			id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, icon TEXT,

@@ -34,7 +34,7 @@ func setupFullSchema(t *testing.T) *gorm.DB {
 		`CREATE TABLE capability_artifacts (id TEXT PRIMARY KEY, item_id TEXT)`,
 		`CREATE TABLE capability_version_assets (id TEXT PRIMARY KEY, version_id TEXT)`,
 		`CREATE TABLE item_favorites (id TEXT PRIMARY KEY, item_id TEXT, user_id TEXT)`,
-		`CREATE TABLE item_tags (id TEXT PRIMARY KEY, item_id TEXT, tag_id TEXT)`,
+		`CREATE TABLE item_tags (id TEXT PRIMARY KEY, item_id TEXT, tag_id TEXT, source TEXT NOT NULL DEFAULT 'legacy')`,
 		`CREATE TABLE behavior_logs (id TEXT PRIMARY KEY, item_id TEXT, action_type TEXT)`,
 		`CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, item_id TEXT)`,
 		`CREATE TABLE security_scans (id TEXT PRIMARY KEY, item_id TEXT)`,

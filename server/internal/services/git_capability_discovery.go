@@ -1017,7 +1017,7 @@ func createDiscoveredCapability(
 	for _, tag := range tags {
 		tagIDs = append(tagIDs, tag.ID)
 	}
-	return tagSvc.SetItemTags(item.ID, tagIDs)
+	return tagSvc.SetItemTags(item.ID, tagIDs, TagSourceGit)
 }
 
 func uniqueDiscoveredCapabilitySlug(entry discoveredGitCapability, used map[string]struct{}) string {

@@ -277,7 +277,7 @@ func SetItemTagsHandler(svc *services.TagService) gin.HandlerFunc {
 			tagIDs = append(tagIDs, tag.ID)
 		}
 
-		if err = svc.SetItemTags(itemID, tagIDs); err != nil {
+		if err = svc.SetItemTags(itemID, tagIDs, services.TagSourceUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set item tags"})
 			return
 		}

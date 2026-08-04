@@ -539,10 +539,15 @@ type ItemTagDict struct {
 }
 
 // ItemTag item-tag 关联表（多对多）
+//
+// Source partitions the table by writer domain (git | system | user | legacy)
+// so the three writers that rebuild an item's tags never delete each other's
+// rows. See migrations/20260804010000_add_item_tags_source.sql.
 type ItemTag struct {
 	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_tag" json:"itemId"`
 	TagID     string    `gorm:"type:uuid;not null;uniqueIndex:idx_item_tag;index" json:"tagId"`
+	Source    string    `gorm:"type:varchar(16);not null;default:'legacy';uniqueIndex:idx_item_tag" json:"source"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
