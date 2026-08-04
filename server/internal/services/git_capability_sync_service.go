@@ -158,8 +158,15 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			items = append(items, item)
 		}
 	}
-	if len(items) == 0 {
-		return result, nil
+	discovered, skipped, err := s.scanGitCapabilityManifestSet(ctx, reader, owner, repoName, headSHA, items)
+	if err != nil {
+		return nil, err
+	}
+	result.Skipped += skipped
+
+	discoveredByIdentity := make(map[string]discoveredGitCapability, len(discovered))
+	for _, entry := range discovered {
+		discoveredByIdentity[gitCapabilityManifestIdentity(entry.Path, entry.EntryKey)] = entry
 	}
 
 	prepared := make([]preparedGitCapability, 0, len(items))
@@ -167,29 +174,17 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		if err := validateGitManifestPath(item.SourceRepoPath); err != nil {
 			return nil, fmt.Errorf("item %s: %w", item.ID, err)
 		}
-		raw, err := reader.ReadFile(ctx, owner, repoName, headSHA, item.SourceRepoPath)
-		if err != nil {
-			return nil, fmt.Errorf("read %s at %s: %w", item.SourceRepoPath, headSHA, err)
-		}
 		entry := preparedGitCapability{item: item}
-		if len(raw) == 0 {
+		discoveredEntry, exists := discoveredByIdentity[gitCapabilityManifestIdentity(item.SourceRepoPath, item.SourceGitEntryKey)]
+		if !exists {
 			entry.removed = true
 			prepared = append(prepared, entry)
 			continue
 		}
-
-		parsed, err := s.Parser.ParseGitIndexFile(raw, item.SourceRepoPath, item.ItemType, item.Slug, item.SourceGitEntryKey)
-		if err != nil {
-			if errors.Is(err, ErrGitCapabilityManifestEntryMissing) {
-				entry.removed = true
-				prepared = append(prepared, entry)
-				continue
-			}
-			return nil, fmt.Errorf("parse %s: %w", item.SourceRepoPath, err)
-		}
-		if err := applyExplicitGitIndexFields(parsed); err != nil {
-			return nil, fmt.Errorf("apply explicit metadata from %s: %w", item.SourceRepoPath, err)
-		}
+		delete(discoveredByIdentity, gitCapabilityManifestIdentity(item.SourceRepoPath, item.SourceGitEntryKey))
+		parsed := discoveredEntry.Parsed
+		parsed.ItemType = item.ItemType
+		parsed.Slug = item.Slug
 		// A real plugin.json often omits marketplace-only display fields. Missing
 		// keys preserve the existing projection; explicit empty values still clear
 		// the field, so Git can intentionally remove a description or category.
@@ -213,18 +208,34 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		entry.updateTags = updateTags
 		prepared = append(prepared, entry)
 	}
+	newEntries := remainingDiscoveredGitCapabilities(discovered, discoveredByIdentity)
 
 	now := time.Now()
 	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
-	ownerID, err := resolveDiscoveredRepositoryOwner(s.DB.WithContext(ctx), cfg.ServerID, gitRepositoryOwnerID(repo), owner)
-	if err != nil {
-		return nil, fmt.Errorf("resolve repository owner %q: %w", owner, err)
-	}
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
-		if err := updateGitCapabilityRepositoryProjection(tx, cfg.ServerID, repoID, repo.FullName, repoURL, branchName, headSHA, repo.Private, ownerID, owner, now); err != nil {
+		// Resolve lazily on the transaction handle. This keeps owner projection in
+		// the same snapshot and avoids self-deadlock in single-connection tests.
+		ownerResolver := newGitCapabilityOwnerResolver(tx, cfg.ServerID, gitRepositoryOwnerID(repo), owner)
+		var binding *models.GitCapabilityRepository
+		var ownerID string
+		if len(newEntries) > 0 {
+			binding, err = ensureGitCapabilityReconciliationBinding(
+				tx, cfg.ServerID, repo, repoURL, branchName, headSHA,
+				inferGitCapabilityRepoKind(repo, discoverGitCapabilityCandidatesFromDiscovered(discovered)), ownerResolver, boundItems, now,
+			)
+			if err != nil {
+				return err
+			}
+			// Newly discovered manifests become owned rows, so this repository
+			// does consume an owner. Memoised, so it costs no extra query.
+			if ownerID, err = ownerResolver.OwnerID(); err != nil {
+				return fmt.Errorf("resolve repository owner: %w", err)
+			}
+		}
+		if err := updateGitCapabilityRepositoryProjection(tx, cfg.ServerID, repoID, repo.FullName, repoURL, branchName, headSHA, repo.Private, ownerResolver, owner, now); err != nil {
 			return err
 		}
 		for _, entry := range prepared {
@@ -239,7 +250,7 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			}
 			if entry.removed {
 				updates["status"] = gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "archived")
-				if entry.item.Status != "banned" {
+				if entry.item.Status != "banned" && entry.item.Status != "archived" {
 					result.Archived++
 				}
 			} else {
@@ -279,6 +290,24 @@ func (s *GitCapabilitySyncService) SyncRepository(
 					return err
 				}
 			}
+		}
+
+		usedSlugs := make(map[string]struct{}, len(boundItems)+len(newEntries))
+		for _, item := range boundItems {
+			usedSlugs[item.ItemType+"\x00"+item.Slug] = struct{}{}
+		}
+		for _, discoveredEntry := range newEntries {
+			discoveredEntry.Parsed.Slug = uniqueDiscoveredCapabilitySlug(discoveredEntry, usedSlugs)
+			item, version, err := buildDiscoveredCapability(
+				binding, cfg.ServerID, repo, repoURL, branchName, headSHA, binding.RepoKind, ownerID, discoveredEntry, now,
+			)
+			if err != nil {
+				return err
+			}
+			if err := createDiscoveredCapability(tx, item, version, discoveredEntry.Parsed.Tags, ownerID); err != nil {
+				return err
+			}
+			result.Created++
 		}
 		return nil
 	})

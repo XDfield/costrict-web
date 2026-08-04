@@ -41,7 +41,21 @@ func (r *fakeGitCapabilityReader) ListTree(_ context.Context, _, _, _ string) ([
 	if r.treeErr != nil {
 		return nil, r.treeErr
 	}
-	return r.tree, nil
+	if r.tree != nil {
+		return r.tree, nil
+	}
+	entries := make([]gitsync.GitTreeEntry, 0, len(r.files))
+	seen := make(map[string]struct{}, len(r.files)+len(r.readErrs))
+	for filePath := range r.files {
+		entries = append(entries, gitsync.GitTreeEntry{Path: filePath, Type: "blob"})
+		seen[filePath] = struct{}{}
+	}
+	for filePath := range r.readErrs {
+		if _, exists := seen[filePath]; !exists {
+			entries = append(entries, gitsync.GitTreeEntry{Path: filePath, Type: "blob"})
+		}
+	}
+	return entries, nil
 }
 
 func (r *fakeGitCapabilityReader) GetRepoByID(_ context.Context, repoID int64) (*gitsync.Repo, error) {
@@ -248,11 +262,11 @@ func newGitCapabilityItem(id, repoID, slug, itemType, sourcePath string) models.
 func createGitCapabilityItem(t *testing.T, db *gorm.DB, item models.CapabilityItem) {
 	t.Helper()
 	if err := db.Exec(`INSERT INTO capability_items (
-		id, registry_id, repo_id, slug, item_type, name, description, category, version,
-		content, metadata, source_repo_url, source_repo_ref, source_repo_path, content_backend,
-		 source_git_server_id, source_git_repo_id, source_git_entry_key, source_sha, git_sha, git_sync_status,
-		 git_sync_error, status, created_by, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, registry_id, repo_id, slug, item_type, name, description, category, version,
+			content, metadata, source_repo_url, source_repo_ref, source_repo_path, content_backend,
+			 source_git_server_id, source_git_repo_id, source_git_entry_key, source_sha, git_sha, git_sync_status,
+			 git_sync_error, status, created_by, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.RegistryID, item.RepoID, item.Slug, item.ItemType, item.Name, item.Description,
 		item.Category, item.Version, item.Content, item.Metadata, item.SourceRepoURL, item.SourceRepoRef,
 		item.SourceRepoPath, item.ContentBackend, item.SourceGitServerID, item.SourceGitRepoID, item.SourceGitEntryKey,
@@ -375,6 +389,7 @@ func TestGitCapabilitySyncService_PreservesPluginInstallMetadata(t *testing.T) {
 	reader := newGitCapabilityReader(map[string][]byte{
 		"plugins/demo/.plugin.json": []byte(`{
   "name": "Demo Plugin",
+  "version": "2.4.0",
   "description": "A plugin",
   "tags": ["plugin"],
   "install": {
@@ -391,7 +406,11 @@ func TestGitCapabilitySyncService_PreservesPluginInstallMetadata(t *testing.T) {
 	if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, lease); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	metadata := itemMetadata(t, loadGitCapabilityItem(t, db, item.ID))
+	updated := loadGitCapabilityItem(t, db, item.ID)
+	if updated.Version != "2.4.0" {
+		t.Fatalf("plugin version = %q, want 2.4.0 from .plugin.json", updated.Version)
+	}
+	metadata := itemMetadata(t, updated)
 	install, ok := metadata["install"].(map[string]any)
 	if !ok || install["plugin_name"] != "demo" || install["marketplace_repo"] != "costrict/demo" || install["marketplace_verified"] != true {
 		t.Errorf("plugin install metadata was lost: %#v", metadata["install"])
@@ -452,6 +471,92 @@ func TestGitCapabilitySyncService_ArchivesMissingManifestAndReactivatesSameRow(t
 	restored := loadGitCapabilityItem(t, db, item.ID)
 	if restored.ID != item.ID || restored.Status != "active" || restored.Name != "Restored" {
 		t.Errorf("manifest restoration did not reuse archived row: %+v", restored)
+	}
+}
+
+func TestGitCapabilitySyncService_ReconcilesAddedManifestAndRestoresStableIdentity(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	existing := newGitCapabilityItem("item-existing-skill", "repo-reconcile", "capabilities", "skill", "SKILL.md")
+	createGitCapabilityItem(t, db, existing)
+	reader := newGitCapabilityReader(map[string][]byte{
+		"SKILL.md":           []byte("---\nname: Existing Skill\n---\nbody"),
+		"commands/review.md": []byte("---\nname: Review Command\ndescription: Review changes\nversion: 2.0.0\n---\nreview"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-add-manifest", "lease-add-manifest"))
+	if err != nil {
+		t.Fatalf("add manifest sync: %v", err)
+	}
+	if result.Created != 1 || result.Updated != 1 || result.Archived != 0 {
+		t.Fatalf("add manifest result = %+v, want one create and one update", result)
+	}
+	var created models.CapabilityItem
+	if err := db.Where("source_git_server_id = ? AND source_git_repo_id = ? AND source_repo_path = ? AND source_git_entry_key = ''",
+		gitCapabilityTestServerID, gitCapabilityTestRepoID, "commands/review.md").First(&created).Error; err != nil {
+		t.Fatalf("load created command: %v", err)
+	}
+	if created.ItemType != "command" || created.Name != "Review Command" || created.Version != "2.0.0" || created.Status != "active" {
+		t.Fatalf("created command projection = %+v", created)
+	}
+	var versionCount int64
+	if err := db.Model(&models.CapabilityVersion{}).Where("item_id = ?", created.ID).Count(&versionCount).Error; err != nil {
+		t.Fatalf("count initial versions: %v", err)
+	}
+	if versionCount != 1 {
+		t.Fatalf("initial version count = %d, want 1", versionCount)
+	}
+
+	delete(reader.files, "commands/review.md")
+	result, err = svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-remove-manifest", "lease-remove-manifest"))
+	if err != nil {
+		t.Fatalf("remove manifest sync: %v", err)
+	}
+	if result.Created != 0 || result.Archived != 1 {
+		t.Fatalf("remove manifest result = %+v, want one archive", result)
+	}
+	if archived := loadGitCapabilityItem(t, db, created.ID); archived.Status != "archived" {
+		t.Fatalf("removed command status = %q, want archived", archived.Status)
+	}
+
+	reader.files["commands/review.md"] = []byte("---\nname: Restored Review\nversion: 2.1.0\n---\nreview")
+	result, err = svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-restore-manifest", "lease-restore-manifest"))
+	if err != nil {
+		t.Fatalf("restore manifest sync: %v", err)
+	}
+	if result.Created != 0 || result.Updated != 2 || result.Archived != 0 {
+		t.Fatalf("restore manifest result = %+v, want two updates and no create", result)
+	}
+	restored := loadGitCapabilityItem(t, db, created.ID)
+	if restored.ID != created.ID || restored.Status != "active" || restored.Name != "Restored Review" || restored.Version != "2.1.0" {
+		t.Fatalf("restored command did not retain stable identity: %+v", restored)
+	}
+}
+
+func TestGitCapabilitySyncService_ReconcilesNewMCPManifestEntry(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	existing := newGitCapabilityItem("mcp-entry-a", "repo-mcp-reconcile", "mcp-a", "mcp", ".mcp.json")
+	existing.SourceGitEntryKey = "a"
+	createGitCapabilityItem(t, db, existing)
+	reader := newGitCapabilityReader(map[string][]byte{
+		".mcp.json": []byte(`{"mcpServers":{"a":{"name":"MCP A","command":"a"},"b":{"name":"MCP B","command":"b"}}}`),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-add-mcp-entry", "lease-add-mcp-entry"))
+	if err != nil {
+		t.Fatalf("add MCP entry sync: %v", err)
+	}
+	if result.Created != 1 || result.Updated != 1 {
+		t.Fatalf("MCP reconciliation result = %+v, want one create and one update", result)
+	}
+	var added models.CapabilityItem
+	if err := db.Where("source_git_server_id = ? AND source_git_repo_id = ? AND source_repo_path = ? AND source_git_entry_key = ?",
+		gitCapabilityTestServerID, gitCapabilityTestRepoID, ".mcp.json", "b").First(&added).Error; err != nil {
+		t.Fatalf("load added MCP entry: %v", err)
+	}
+	if added.ItemType != "mcp" || added.Name != "MCP B" || added.ID == existing.ID {
+		t.Fatalf("added MCP entry projection = %+v", added)
 	}
 }
 
@@ -760,5 +865,158 @@ func TestGitCapabilitySyncService_MissingDefaultBranchOnNonDeletionRetriesInstea
 	after := loadGitCapabilityItem(t, db, item.ID)
 	if after.Status != "active" || after.GitSyncStatus != gitCapabilitySyncError {
 		t.Errorf("non-deletion missing branch must retain active index and mark retry error: %+v", after)
+	}
+}
+
+func seedTenantGitServer(t *testing.T, db *gorm.DB, tenantID string) {
+	t.Helper()
+	if err := db.Exec(
+		`INSERT INTO tenant_git_server_binding (tenant_id, git_server_id, bound_at, updated_at) VALUES (?, ?, ?, ?)`,
+		tenantID, gitCapabilityTestServerID, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed tenant git server binding: %v", err)
+	}
+}
+
+func seedUserGitBinding(t *testing.T, db *gorm.DB, subjectID, tenantID string, gitUID int64, login string) {
+	t.Helper()
+	seedTenantGitServer(t, db, tenantID)
+	if err := db.Exec(
+		`INSERT INTO user_git_binding (user_subject_id, tenant_id, git_uid, git_username, sync_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		subjectID, tenantID, gitUID, login, models.GitSyncStatusSynced, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed user git binding: %v", err)
+	}
+}
+
+// Repositories bound before the discovery pipeline existed (the fork and
+// webhook rollouts) have no repository-level record, so the owner projection
+// is skipped for them entirely. Resolving the owner up front made those rows
+// inherit a failure they can never consume: an ambiguous Git identity would
+// abort the whole repository sync on every push, forever.
+func TestGitCapabilitySyncService_PreBoundRepoSyncsDespiteAmbiguousOwner(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	item := newGitCapabilityItem("item-prebound", "repo-prebound", "skill", "skill", "SKILL.md")
+	createGitCapabilityItem(t, db, item)
+
+	// Two synced bindings claim the same Git identity, which makes owner
+	// resolution ambiguous and therefore an error.
+	seedUserGitBinding(t, db, "user-a", "tenant-a", 1001, "alice")
+	seedUserGitBinding(t, db, "user-b", "tenant-b", 1001, "alice")
+
+	reader := newGitCapabilityReader(map[string][]byte{
+		"SKILL.md": []byte("---\nname: Prebound Skill\ndescription: synced\n---\nbody"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	lease := createGitCapabilityLease(t, db, "job-prebound", "lease-prebound")
+
+	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, lease)
+	if err != nil {
+		t.Fatalf("sync of a pre-bound repository failed on an owner it never uses: %v", err)
+	}
+	if result.Updated != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	synced := loadGitCapabilityItem(t, db, item.ID)
+	if synced.Name != "Prebound Skill" || synced.GitSyncStatus != gitCapabilitySyncSynced {
+		t.Errorf("item was not indexed: %+v", synced)
+	}
+}
+
+// Behaviour guard for the other side of the same change: a repository that does
+// have a repository-level record must still get its owner projected.
+func TestGitCapabilitySyncService_BoundRepositoryStillProjectsOwner(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	item := newGitCapabilityItem("item-bound", "repo-bound", "skill", "skill", "SKILL.md")
+	createGitCapabilityItem(t, db, item)
+	seedUserGitBinding(t, db, "user-alice", "tenant-a", 1001, "alice")
+
+	now := time.Now()
+	if err := db.Exec(
+		`INSERT INTO repositories (id, name, display_name, visibility, repo_type, owner_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"repo-bound", "gitea-101", "alice/capabilities", "public", "sync", "system", now, now,
+	).Error; err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO capability_registries (id, name, source_type, external_url, external_branch, sync_enabled, sync_interval, sync_status, owner_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"registry-1", "alice/capabilities", "git", "https://git.example/alice/capabilities", "main", true, 3600, "idle", "system", now, now,
+	).Error; err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO git_capability_repositories (
+			id, git_server_id, git_repo_id, repository_id, registry_id, full_name, repo_kind,
+			identification_status, visibility, git_remote_url, default_branch, last_synced_commit,
+			last_error, created_by, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"binding-1", gitCapabilityTestServerID, gitCapabilityTestRepoID, "repo-bound", "registry-1",
+		"alice/capabilities", "standalone", models.GitCapabilityIdentificationClean, "public",
+		"https://git.example/alice/capabilities", "main", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"", "system", now, now,
+	).Error; err != nil {
+		t.Fatalf("seed git capability repository: %v", err)
+	}
+
+	reader := newGitCapabilityReader(map[string][]byte{
+		"SKILL.md": []byte("---\nname: Bound Skill\ndescription: synced\n---\nbody"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	lease := createGitCapabilityLease(t, db, "job-bound", "lease-bound")
+
+	if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, lease); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	var ownerID string
+	if err := db.Table("repositories").Where("id = ?", "repo-bound").Select("owner_id").Scan(&ownerID).Error; err != nil {
+		t.Fatalf("read repository owner: %v", err)
+	}
+	if ownerID != "user-alice" {
+		t.Errorf("repository owner = %q, want user-alice (owner projection regressed)", ownerID)
+	}
+
+	// The Git pipeline owns this registry; the legacy clone scheduler must not
+	// be able to adopt it, so every sync converges sync_enabled to false.
+	var syncEnabled bool
+	if err := db.Table("capability_registries").Where("id = ?", "registry-1").Select("sync_enabled").Scan(&syncEnabled).Error; err != nil {
+		t.Fatalf("read sync_enabled: %v", err)
+	}
+	if syncEnabled {
+		t.Error("Git-backed registry still advertises sync_enabled = true to the legacy scheduler")
+	}
+}
+
+func TestGitCapabilityOwnerResolver_ResolvesAtMostOnce(t *testing.T) {
+	calls := 0
+	resolver := &gitCapabilityOwnerResolver{resolve: func() (string, error) {
+		calls++
+		return "user-a", nil
+	}}
+	for i := 0; i < 3; i++ {
+		owner, err := resolver.OwnerID()
+		if err != nil || owner != "user-a" {
+			t.Fatalf("OwnerID() = %q, %v", owner, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("resolver ran %d times, want 1", calls)
+	}
+
+	failCalls := 0
+	failing := &gitCapabilityOwnerResolver{resolve: func() (string, error) {
+		failCalls++
+		return "", errors.New("ambiguous")
+	}}
+	for i := 0; i < 3; i++ {
+		if _, err := failing.OwnerID(); err == nil {
+			t.Fatal("expected the memoized error")
+		}
+	}
+	if failCalls != 1 {
+		t.Errorf("failing resolver ran %d times, want 1 (errors must be memoized too)", failCalls)
 	}
 }

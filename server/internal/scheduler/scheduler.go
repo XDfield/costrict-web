@@ -29,8 +29,14 @@ func (s *Scheduler) Start() error {
 	s.cron = cron
 	s.jobMap = make(map[string]uuid.UUID)
 
+	// Git-backed registries are reconciled from push webhooks, never by cloning
+	// on a timer. COALESCE, not `source_type <> 'git'`: the column is declared
+	// NOT NULL, but a plain inequality evaluates to NULL for any row that was
+	// hand-migrated without a value, which would silently unschedule a
+	// legitimate legacy registry.
 	var registries []models.CapabilityRegistry
-	s.DB.Where("sync_enabled = true AND external_url != ''").Find(&registries)
+	s.DB.Where("sync_enabled = true AND external_url != '' AND COALESCE(source_type, '') <> ?", services.GitRegistrySourceType).
+		Find(&registries)
 
 	for i := range registries {
 		if err := s.RegisterRegistry(&registries[i]); err != nil {
@@ -61,7 +67,9 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) RegisterRegistry(registry *models.CapabilityRegistry) error {
-	if !registry.SyncEnabled || registry.ExternalURL == "" {
+	// Also disarms rows that the discovery pipeline wrote with
+	// sync_enabled = true before that was fixed, so no migration is needed.
+	if !registry.SyncEnabled || registry.ExternalURL == "" || registry.SourceType == services.GitRegistrySourceType {
 		s.UnregisterRegistry(registry.ID)
 		return nil
 	}

@@ -251,6 +251,9 @@ func (p *ParserService) ParsePluginJSON(content []byte, sourcePath string) ([]*P
 		Metadata:   data,
 		SourcePath: sourcePath,
 	}
+	if v, ok := data["version"].(string); ok && strings.TrimSpace(v) != "" {
+		item.Version = v
+	}
 
 	if v, ok := data["description"].(string); ok {
 		item.Description = v

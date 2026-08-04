@@ -135,10 +135,12 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 		}
 	}
 
-	// A later tree suggests a plugin, and frontmatter attempts to change the
-	// existing skill type. Bound rows must skip tree inference and preserve both
-	// locked item types.
-	reader.tree = []gitsync.GitTreeEntry{{Path: "plugin.json", Type: "blob"}}
+	// A later manifest attempts to change the existing skill type. Bound rows
+	// must preserve their locked item types during set reconciliation.
+	reader.tree = []gitsync.GitTreeEntry{
+		{Path: "SKILL.md", Type: "blob"},
+		{Path: "commands/review.md", Type: "blob"},
+	}
 	reader.files["SKILL.md"] = []byte("---\nname: Still Skill\ntype: plugin\n---\n\nChanged")
 	secondLease := createGitCapabilityLease(t, db, "discover-compound-2", "lease-compound-2")
 	second, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false, secondLease)

@@ -148,6 +148,18 @@ func (s *SyncService) SyncRegistry(ctx context.Context, registryID string, opts 
 		return nil, fmt.Errorf("registry has no external URL configured")
 	}
 
+	// Git-backed registries belong to GitCapabilitySyncService, which reconciles
+	// them against the repository HEAD named by a push webhook. Cloning them
+	// here would put a second writer on the same capability_items rows, and the
+	// closing sweep below archives (and drops the assets of) every row whose
+	// source path is absent from this pipeline's include patterns — which is
+	// most of the repository layouts Git discovery accepts. Rejected here as
+	// well as in the scheduler so a stale queued job or a manual trigger cannot
+	// route around the guard.
+	if registry.SourceType == GitRegistrySourceType {
+		return nil, fmt.Errorf("registry %s is Git-backed and is synced from push webhooks, not by the clone pipeline", registryID)
+	}
+
 	// Resolve the user who triggered this sync; fall back to "sync" for
 	// automated / webhook triggers where no user context is available.
 	triggerUser := opts.TriggerUser

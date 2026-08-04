@@ -32,6 +32,7 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	p := &ParserService{}
 	content := []byte(`{
   "name": "GitNexus",
+  "version": "0.7.0",
   "description": "Code intelligence powered by a knowledge graph.",
   "category": "tooling",
   "tags": ["git", "graph"],
@@ -60,6 +61,9 @@ func TestParsePluginJSON_HappyPath(t *testing.T) {
 	}
 	if it.Name != "GitNexus" {
 		t.Errorf("Name = %q, want top-level display name 'GitNexus'", it.Name)
+	}
+	if it.Version != "0.7.0" {
+		t.Errorf("Version = %q, want top-level version 0.7.0", it.Version)
 	}
 	if it.Description != "Code intelligence powered by a knowledge graph." {
 		t.Errorf("Description = %q, want top-level description", it.Description)

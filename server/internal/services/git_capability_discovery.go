@@ -27,6 +27,13 @@ import (
 const (
 	maxGitCapabilityDiscoveryCandidates = 1000
 	gitCapabilityDiscoverySystemOwner   = "system"
+
+	// GitRegistrySourceType marks a CapabilityRegistry owned by
+	// GitCapabilitySyncService: its capabilities are reconciled from Gitea push
+	// webhooks against the repository HEAD. The legacy clone pipeline
+	// (SyncService + scheduler.Scheduler) must never adopt one, so that a
+	// repository never has two independent writers on its capability_items rows.
+	GitRegistrySourceType = "git"
 )
 
 type gitCapabilityCandidate struct {
@@ -40,6 +47,147 @@ type discoveredGitCapability struct {
 	ItemType string
 	EntryKey string
 	Parsed   *ParsedItem
+}
+
+func gitCapabilityManifestIdentity(manifestPath, entryKey string) string {
+	return manifestPath + "\x00" + entryKey
+}
+
+func (s *GitCapabilitySyncService) scanGitCapabilityManifestSet(
+	ctx context.Context,
+	reader GitCapabilityReader,
+	owner, repoName, headSHA string,
+	boundItems []models.CapabilityItem,
+) ([]discoveredGitCapability, int, error) {
+	tree, err := reader.ListTree(ctx, owner, repoName, headSHA)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list repository tree at %s: %w", headSHA, err)
+	}
+	candidates := discoverGitCapabilityReconciliationCandidates(tree, boundItems)
+	if len(candidates) > maxGitCapabilityDiscoveryCandidates {
+		return nil, 0, fmt.Errorf("repository exposes %d capability manifests; limit is %d", len(candidates), maxGitCapabilityDiscoveryCandidates)
+	}
+
+	lockedTypes := make(map[string]string, len(boundItems))
+	for _, item := range boundItems {
+		if locked, exists := lockedTypes[item.SourceRepoPath]; exists && locked != item.ItemType {
+			return nil, 0, fmt.Errorf("manifest %q is bound to conflicting capability types %q and %q", item.SourceRepoPath, locked, item.ItemType)
+		}
+		lockedTypes[item.SourceRepoPath] = item.ItemType
+	}
+
+	discovered := make([]discoveredGitCapability, 0, len(candidates))
+	skipped := 0
+	seenIdentities := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		itemType := candidate.ItemType
+		lockedType, isLocked := lockedTypes[candidate.Path]
+		if isLocked {
+			itemType = lockedType
+		}
+		raw, err := reader.ReadFile(ctx, owner, repoName, headSHA, candidate.Path)
+		if err != nil {
+			return nil, skipped, fmt.Errorf("read manifest candidate %s at %s: %w", candidate.Path, headSHA, err)
+		}
+		if len(raw) == 0 {
+			return nil, skipped, fmt.Errorf("manifest candidate %s at %s is empty", candidate.Path, headSHA)
+		}
+		items, err := s.Parser.ParseGitDiscoveryFile(raw, candidate.Path, itemType)
+		if err != nil {
+			if candidate.Optional && !isLocked && errors.Is(err, errGitCapabilityDiscoveryNotMatched) {
+				skipped++
+				continue
+			}
+			return nil, skipped, fmt.Errorf("parse manifest candidate %s: %w", candidate.Path, err)
+		}
+		for _, parsed := range items {
+			if parsed == nil {
+				continue
+			}
+			if err := applyExplicitGitIndexFields(parsed); err != nil {
+				return nil, skipped, fmt.Errorf("apply explicit metadata from %s: %w", candidate.Path, err)
+			}
+			entryKey := ""
+			if itemType == "mcp" {
+				entryKey, _ = parsed.Metadata["key"].(string)
+			}
+			identity := gitCapabilityManifestIdentity(candidate.Path, entryKey)
+			if _, exists := seenIdentities[identity]; exists {
+				return nil, skipped, fmt.Errorf("manifest candidate %s produced duplicate entry identity %q", candidate.Path, entryKey)
+			}
+			seenIdentities[identity] = struct{}{}
+			parsed.ItemType = itemType
+			parsed.Slug = discoveredCapabilitySlug(parsed, candidate, repoName, entryKey)
+			discovered = append(discovered, discoveredGitCapability{
+				Path: candidate.Path, ItemType: itemType, EntryKey: entryKey, Parsed: parsed,
+			})
+		}
+	}
+	sort.Slice(discovered, func(i, j int) bool {
+		if discovered[i].Path == discovered[j].Path {
+			return discovered[i].EntryKey < discovered[j].EntryKey
+		}
+		return discovered[i].Path < discovered[j].Path
+	})
+	return discovered, skipped, nil
+}
+
+func discoverGitCapabilityReconciliationCandidates(
+	entries []gitsync.GitTreeEntry,
+	boundItems []models.CapabilityItem,
+) []gitCapabilityCandidate {
+	candidates := discoverGitCapabilityCandidates(entries)
+	byPath := make(map[string]gitCapabilityCandidate, len(candidates)+len(boundItems))
+	for _, candidate := range candidates {
+		byPath[candidate.Path] = candidate
+	}
+	treePaths := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
+			continue
+		}
+		treePaths[entry.Path] = struct{}{}
+	}
+	for _, item := range boundItems {
+		if _, exists := treePaths[item.SourceRepoPath]; !exists {
+			continue
+		}
+		if _, exists := byPath[item.SourceRepoPath]; !exists {
+			byPath[item.SourceRepoPath] = gitCapabilityCandidate{Path: item.SourceRepoPath, ItemType: item.ItemType}
+		}
+	}
+	result := make([]gitCapabilityCandidate, 0, len(byPath))
+	for _, candidate := range byPath {
+		result = append(result, candidate)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result
+}
+
+func remainingDiscoveredGitCapabilities(
+	discovered []discoveredGitCapability,
+	remaining map[string]discoveredGitCapability,
+) []discoveredGitCapability {
+	result := make([]discoveredGitCapability, 0, len(remaining))
+	for _, entry := range discovered {
+		if _, exists := remaining[gitCapabilityManifestIdentity(entry.Path, entry.EntryKey)]; exists {
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+func discoverGitCapabilityCandidatesFromDiscovered(discovered []discoveredGitCapability) []gitCapabilityCandidate {
+	candidates := make([]gitCapabilityCandidate, 0, len(discovered))
+	seen := make(map[string]struct{}, len(discovered))
+	for _, entry := range discovered {
+		if _, exists := seen[entry.Path]; exists {
+			continue
+		}
+		seen[entry.Path] = struct{}{}
+		candidates = append(candidates, gitCapabilityCandidate{Path: entry.Path, ItemType: entry.ItemType})
+	}
+	return candidates
 }
 
 var errGitCapabilityDiscoveryNotMatched = errors.New("file did not match the capability heuristic")
@@ -153,31 +301,8 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 			if err != nil {
 				return err
 			}
-			if err := tx.Select(
-				"ID", "RegistryID", "RepoID", "Slug", "ItemType", "Name", "Description", "Descriptions", "Category", "Version",
-				"Content", "ContentMD5", "CurrentRevision", "Metadata", "SourcePath", "SourceSHA", "SourceType", "Source",
-				"SourceRepoURL", "SourceRepoRef", "SourceRepoPath", "ContentBackend", "SourceGitServerID", "SourceGitRepoID",
-				"SourceGitEntryKey", "GitSHA", "GitLastSyncedAt", "GitSyncStatus", "GitSyncError", "Status", "SecurityStatus",
-				"CreatedBy", "UpdatedBy", "IsBuiltIn", "CreatedAt", "UpdatedAt",
-			).Create(item).Error; err != nil {
-				return fmt.Errorf("create discovered capability %s: %w", entry.Path, err)
-			}
-			if err := tx.Create(version).Error; err != nil {
-				return fmt.Errorf("create initial version for %s: %w", entry.Path, err)
-			}
-			if len(entry.Parsed.Tags) > 0 {
-				tagSvc := &TagService{DB: tx}
-				tags, err := tagSvc.ResolveOrCreateForAssignment(entry.Parsed.Tags, ownerID)
-				if err != nil {
-					return err
-				}
-				tagIDs := make([]string, 0, len(tags))
-				for _, tag := range tags {
-					tagIDs = append(tagIDs, tag.ID)
-				}
-				if err := tagSvc.SetItemTags(item.ID, tagIDs); err != nil {
-					return err
-				}
+			if err := createDiscoveredCapability(tx, item, version, entry.Parsed.Tags, ownerID); err != nil {
+				return err
 			}
 			result.Created++
 		}
@@ -517,6 +642,46 @@ func resolveDiscoveredRepositoryOwner(db *gorm.DB, serverID string, gitUID int64
 	return matches[0].UserSubjectID, nil
 }
 
+// gitCapabilityOwnerResolver defers resolveDiscoveredRepositoryOwner until a
+// caller that actually stores the owner asks for it.
+//
+// Repositories bound before the discovery pipeline existed carry no
+// repository-level record, so the owner projection is skipped for them
+// entirely. Resolving eagerly made those rows inherit a failure they can never
+// consume: an ambiguous Git identity aborted the whole repository sync on every
+// push. A stalled sync is not merely an outage — it also leaves the registry's
+// last_sync_sha behind HEAD, which is what lets the legacy clone poller decide
+// the repository has changes worth ingesting.
+//
+// One sync runs in a single goroutine and both consumers sit in the same
+// transaction, so plain fields are enough; the error is memoised too, so an
+// ambiguous identity costs one query rather than one per consumer.
+//
+// Construct it with the index transaction's own handle, never with the pooled
+// *gorm.DB: every consumer runs inside that transaction, so a pooled handle
+// would read outside its snapshot and would deadlock outright against a
+// single-connection pool.
+type gitCapabilityOwnerResolver struct {
+	resolve func() (string, error)
+	done    bool
+	id      string
+	err     error
+}
+
+func newGitCapabilityOwnerResolver(tx *gorm.DB, serverID string, gitUID int64, gitUsername string) *gitCapabilityOwnerResolver {
+	return &gitCapabilityOwnerResolver{resolve: func() (string, error) {
+		return resolveDiscoveredRepositoryOwner(tx, serverID, gitUID, gitUsername)
+	}}
+}
+
+func (r *gitCapabilityOwnerResolver) OwnerID() (string, error) {
+	if !r.done {
+		r.id, r.err = r.resolve()
+		r.done = true
+	}
+	return r.id, r.err
+}
+
 func gitRepositoryOwnerID(repo *gitsync.Repo) int64 {
 	if repo == nil || repo.Owner == nil {
 		return 0
@@ -551,9 +716,16 @@ func ensureGitCapabilityRepositoryBinding(
 		if err := syncDiscoveredRepositoryOwnerMembership(tx, platformRepo.ID, ownerID, strings.Split(repo.FullName, "/")[0]); err != nil {
 			return nil, err
 		}
+		// SyncEnabled stays false: this registry exists to carry the
+		// repository-level projection, and its capabilities are reconciled from
+		// push webhooks. The legacy clone scheduler picks registries by
+		// sync_enabled + external_url alone, and its closing sweep archives (and
+		// drops the assets of) every registry row whose source path its own
+		// include patterns do not match — which is most of the layouts the Git
+		// discovery heuristic accepts. One repository, one sync handler.
 		registry := models.CapabilityRegistry{
 			ID: uuid.NewString(), Name: repo.FullName, Description: "Git-backed capabilities discovered from " + repo.FullName,
-			SourceType: "git", ExternalURL: repoURL, ExternalBranch: branchName, SyncEnabled: true,
+			SourceType: GitRegistrySourceType, ExternalURL: repoURL, ExternalBranch: branchName, SyncEnabled: false,
 			LastSyncedAt: &now, LastSyncSHA: headSHA, SyncStatus: "idle", RepoID: platformRepo.ID, OwnerID: ownerID,
 		}
 		if err := tx.Create(&registry).Error; err != nil {
@@ -579,9 +751,11 @@ func ensureGitCapabilityRepositoryBinding(
 	if err := syncDiscoveredRepositoryOwnerMembership(tx, binding.RepositoryID, ownerID, strings.Split(repo.FullName, "/")[0]); err != nil {
 		return nil, err
 	}
+	// sync_enabled is written on every pass so that registries created before
+	// this guard existed converge to false without a data migration.
 	if err := tx.Model(&models.CapabilityRegistry{}).Where("id = ?", binding.RegistryID).Updates(map[string]any{
 		"name": repo.FullName, "external_url": repoURL, "external_branch": branchName, "last_synced_at": now,
-		"last_sync_sha": headSHA, "sync_status": "idle", "owner_id": ownerID,
+		"last_sync_sha": headSHA, "sync_status": "idle", "owner_id": ownerID, "sync_enabled": false,
 	}).Error; err != nil {
 		return nil, err
 	}
@@ -634,7 +808,8 @@ func updateGitCapabilityRepositoryProjection(
 	repoID int64,
 	fullName, repoURL, branchName, headSHA string,
 	private bool,
-	ownerID, gitUsername string,
+	owner *gitCapabilityOwnerResolver,
+	gitUsername string,
 	now time.Time,
 ) error {
 	var binding models.GitCapabilityRepository
@@ -642,10 +817,16 @@ func updateGitCapabilityRepositoryProjection(
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Pre-bound rows from the incremental rollout have no repository-level
 		// discovery record. They remain valid and are not retroactively inferred.
+		// The owner is deliberately still unresolved at this point: this early
+		// return is what keeps an unresolvable owner from failing their sync.
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	ownerID, err := owner.OwnerID()
+	if err != nil {
+		return fmt.Errorf("resolve repository owner: %w", err)
 	}
 	visibility := "public"
 	if private {
@@ -669,7 +850,60 @@ func updateGitCapabilityRepositoryProjection(
 	return tx.Model(&models.CapabilityRegistry{}).Where("id = ?", binding.RegistryID).Updates(map[string]any{
 		"name": fullName, "external_url": repoURL, "external_branch": branchName,
 		"last_synced_at": now, "last_sync_sha": headSHA, "sync_status": "idle", "owner_id": ownerID,
+		"sync_enabled": false,
 	}).Error
+}
+
+func ensureGitCapabilityReconciliationBinding(
+	tx *gorm.DB,
+	serverID string,
+	repo *gitsync.Repo,
+	repoURL, branchName, headSHA, repoKind string,
+	owner *gitCapabilityOwnerResolver,
+	boundItems []models.CapabilityItem,
+	now time.Time,
+) (*models.GitCapabilityRepository, error) {
+	var binding models.GitCapabilityRepository
+	err := tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, repo.ID).First(&binding).Error
+	if err == nil {
+		return &binding, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if len(boundItems) == 0 {
+		return nil, errors.New("cannot create repository binding without an existing Git-backed item")
+	}
+	repositoryID := boundItems[0].RepoID
+	registryID := boundItems[0].RegistryID
+	if strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(registryID) == "" {
+		return nil, errors.New("existing Git-backed item has no repository or registry identity")
+	}
+	for _, item := range boundItems[1:] {
+		if item.RepoID != repositoryID || item.RegistryID != registryID {
+			return nil, errors.New("Git-backed items for one repository span multiple repository projections")
+		}
+	}
+	ownerID, err := owner.OwnerID()
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository owner: %w", err)
+	}
+	visibility := "public"
+	if repo.Private {
+		visibility = "private"
+	}
+	binding = models.GitCapabilityRepository{
+		ID: uuid.NewString(), GitServerID: serverID, GitRepoID: repo.ID,
+		RepositoryID: repositoryID, RegistryID: registryID, FullName: repo.FullName,
+		RepoKind: repoKind, IdentificationStatus: models.GitCapabilityIdentificationClean,
+		Visibility: visibility, GitRemoteURL: repoURL, DefaultBranch: branchName,
+		LastSyncedCommit: headSHA, LastSyncedAt: &now, CreatedBy: ownerID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := tx.Create(&binding).Error; err != nil {
+		return nil, fmt.Errorf("create Git capability repository binding for reconciliation: %w", err)
+	}
+	return &binding, nil
 }
 
 func buildDiscoveredCapability(
@@ -701,6 +935,57 @@ func buildDiscoveredCapability(
 		CommitMsg: "Discovered from Git at " + headSHA, CreatedBy: ownerID, SourcePath: entry.Path, CreatedAt: now,
 	}
 	return item, version, nil
+}
+
+func createDiscoveredCapability(
+	tx *gorm.DB,
+	item *models.CapabilityItem,
+	version *models.CapabilityVersion,
+	tagSlugs []string,
+	ownerID string,
+) error {
+	if err := tx.Select(
+		"ID", "RegistryID", "RepoID", "Slug", "ItemType", "Name", "Description", "Descriptions", "Category", "Version",
+		"Content", "ContentMD5", "CurrentRevision", "Metadata", "SourcePath", "SourceSHA", "SourceType", "Source",
+		"SourceRepoURL", "SourceRepoRef", "SourceRepoPath", "ContentBackend", "SourceGitServerID", "SourceGitRepoID",
+		"SourceGitEntryKey", "GitSHA", "GitLastSyncedAt", "GitSyncStatus", "GitSyncError", "Status", "SecurityStatus",
+		"CreatedBy", "UpdatedBy", "IsBuiltIn", "CreatedAt", "UpdatedAt",
+	).Create(item).Error; err != nil {
+		return fmt.Errorf("create discovered capability %s: %w", item.SourceRepoPath, err)
+	}
+	if err := tx.Create(version).Error; err != nil {
+		return fmt.Errorf("create initial version for %s: %w", item.SourceRepoPath, err)
+	}
+	if len(tagSlugs) == 0 {
+		return nil
+	}
+	tagSvc := &TagService{DB: tx}
+	tags, err := tagSvc.ResolveOrCreateForAssignment(tagSlugs, ownerID)
+	if err != nil {
+		return err
+	}
+	tagIDs := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tagIDs = append(tagIDs, tag.ID)
+	}
+	return tagSvc.SetItemTags(item.ID, tagIDs)
+}
+
+func uniqueDiscoveredCapabilitySlug(entry discoveredGitCapability, used map[string]struct{}) string {
+	base := normalizeDiscoveredCapabilitySlug(entry.Parsed.Slug)
+	candidate := base
+	for attempt := 0; ; attempt++ {
+		key := entry.ItemType + "\x00" + candidate
+		if _, exists := used[key]; !exists {
+			used[key] = struct{}{}
+			return candidate
+		}
+		suffix := shortDiscoveryHash(entry.Path + "\x00" + entry.EntryKey)
+		candidate = base + "-" + suffix
+		if attempt > 0 {
+			candidate = fmt.Sprintf("%s-%s-%d", base, suffix, attempt+1)
+		}
+	}
 }
 
 func discoveredCapabilitySlug(parsed *ParsedItem, candidate gitCapabilityCandidate, repoName, entryKey string) string {
