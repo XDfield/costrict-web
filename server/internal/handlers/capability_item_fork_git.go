@@ -65,6 +65,21 @@ func isGitBacked(item *models.CapabilityItem) bool {
 	return item != nil && item.ContentBackend == contentBackendGit
 }
 
+// respondGitOwnedFieldConflict maps the models-layer default-deny guard onto
+// the same 409 shape the explicit pre-checks use. The guard is a backstop for
+// writers that never learned about Git backing, so without this mapping a
+// blocked write would surface as an opaque 500.
+func respondGitOwnedFieldConflict(c *gin.Context, err error) bool {
+	if !errors.Is(err, models.ErrGitOwnedField) {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"error":      "Git-backed content fields must be updated through Git",
+		"error_code": "GIT_BACKED_ITEM",
+	})
+	return true
+}
+
 // errNoGiteaMirror signals "this item has no repository on the tenant's Gitea"
 // — not a failure, just a plugin that stays on the DB fork path.
 var errNoGiteaMirror = errors.New("handlers: no gitea mirror for item")

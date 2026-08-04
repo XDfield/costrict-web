@@ -265,7 +265,11 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				}
 			}
 
-			updated := tx.Model(&models.CapabilityItem{}).
+			// Explicit, statement-local opt-out from the Git-owned field guard:
+			// this is the authoritative Git writer, so it is the one caller
+			// allowed to move the projection columns.
+			updated := tx.Set(models.GitSyncBypassSetting, true).
+				Model(&models.CapabilityItem{}).
 				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
 					entry.item.ID, "git", cfg.ServerID, repoID).
 				Updates(updates)
@@ -336,7 +340,9 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 			return err
 		}
 		for _, item := range items {
-			updated := tx.Model(&models.CapabilityItem{}).
+			// Authoritative Git writer — see the marker in SyncRepository.
+			updated := tx.Set(models.GitSyncBypassSetting, true).
+				Model(&models.CapabilityItem{}).
 				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
 					item.ID, "git", serverID, repoID).
 				Updates(map[string]any{
@@ -374,7 +380,9 @@ func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
 		if err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
-		if err := tx.Model(&models.CapabilityItem{}).
+		// Authoritative Git writer — see the marker in SyncRepository.
+		if err := tx.Set(models.GitSyncBypassSetting, true).
+			Model(&models.CapabilityItem{}).
 			Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?", "git", serverID, repoID).
 			Updates(map[string]any{
 				"git_sync_status": gitCapabilitySyncError,

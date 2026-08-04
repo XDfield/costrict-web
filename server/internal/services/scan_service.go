@@ -378,7 +378,11 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		"security_status": report.RiskLevel,
 		"last_scan_id":    scanRecord.ID,
 	}
-	if scanRecord.Category != "" {
+	// security_status/last_scan_id are runtime state both writers may set, but
+	// category is projected from the repository manifest. Leaving it out of the
+	// map for Git-backed rows keeps the scan result itself writable; including
+	// it would make the whole update fail and the worker retry forever.
+	if scanRecord.Category != "" && item.ContentBackend != models.ContentBackendGit {
 		itemUpdates["category"] = scanRecord.Category
 	}
 	s.DB.Model(&item).Updates(itemUpdates)

@@ -670,6 +670,14 @@ func reconcileItemCurrentRevision(db *gorm.DB, item *models.CapabilityItem) {
 	if item == nil || item.ID == "" {
 		return
 	}
+	// This runs from buildItemResponse, so it turns every GET /api/items/:id
+	// into a write. Git-backed rows anchor their version on git_sha and never
+	// grow capability_versions rows, so there is nothing to reconcile — and
+	// current_revision is Git-owned, so writing it here would make the detail
+	// page fail outright.
+	if item.ContentBackend == models.ContentBackendGit {
+		return
+	}
 
 	var latestRevision int
 	if err := db.Model(&models.CapabilityVersion{}).
@@ -1536,6 +1544,9 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 			}
 			return nil
 		}); err != nil {
+			if respondGitOwnedFieldConflict(c, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 			return
 		}
@@ -1544,6 +1555,9 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		}
 	} else {
 		if result := db.Save(&item); result.Error != nil {
+			if respondGitOwnedFieldConflict(c, result.Error) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 			return
 		}

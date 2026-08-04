@@ -247,7 +247,10 @@ func TestMarketplaceJSON_OnlyPublishesInstallableGitRows(t *testing.T) {
 	unbound := base
 	unbound.ID, unbound.Slug = "unbound", "unbound-plugin"
 	seedGitMarketplacePlugin(t, unbound)
-	if err := database.DB.Model(&models.CapabilityItem{}).Where("id = ?", unbound.ID).Updates(map[string]any{
+	// Fixture stands in for the Git sync writer, so it carries that writer's
+	// explicit opt-out from the Git-owned field guard.
+	if err := database.DB.Set(models.GitSyncBypassSetting, true).
+		Model(&models.CapabilityItem{}).Where("id = ?", unbound.ID).Updates(map[string]any{
 		"source_git_server_id": "", "source_git_repo_id": 0,
 	}).Error; err != nil {
 		t.Fatalf("clear stable Git identity: %v", err)
@@ -278,7 +281,9 @@ func TestMarketplaceJSON_ReflectsLatestSyncedVersionAndSHA(t *testing.T) {
 	if len(before.Plugins) != 1 || before.Plugins[0].Version != "1.0.0" || before.Plugins[0].Source.SHA != marketplaceSHA1 {
 		t.Fatalf("unexpected initial projection: %+v", before.Plugins)
 	}
-	if err := database.DB.Model(&models.CapabilityItem{}).Where("id = ?", "updating").Updates(map[string]any{
+	// Same as above: this simulates a completed Git sync, not a Cloud edit.
+	if err := database.DB.Set(models.GitSyncBypassSetting, true).
+		Model(&models.CapabilityItem{}).Where("id = ?", "updating").Updates(map[string]any{
 		"version": "1.1.0", "git_sha": marketplaceSHA2,
 	}).Error; err != nil {
 		t.Fatalf("update synced projection: %v", err)
