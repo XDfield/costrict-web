@@ -1,12 +1,18 @@
 services:
-  # PostgreSQL 数据库
+  # PostgreSQL 数据库.
+  # POSTGRES_PASSWORD 必须由部署者提供 — 没有 hardcoded 默认值（参见
+  # server/internal/config/config.go 的 DATABASE_URL 处理与安全报告 CVSS 9.2）。
+  # 启动方式:
+  #   POSTGRES_PASSWORD=xxx docker compose up
+  # 或:
+  #   POSTGRES_PASSWORD=xxx docker compose --env-file ./.env.local up
   postgres:
     image: pgvector/pgvector:pg16
     container_name: costrict-postgres
     environment:
-      POSTGRES_USER: costrict
-      POSTGRES_PASSWORD: costrict_password
-      POSTGRES_DB: costrict_db
+      POSTGRES_USER: ${POSTGRES_USER:-costrict}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must set — no hardcoded default (CVSS 9.2)}
+      POSTGRES_DB: ${POSTGRES_DB:-costrict_db}
     ports:
       - "5432:5432"
     volumes:
@@ -36,7 +42,7 @@ services:
   #     context: ./server
   #     dockerfile: Dockerfile.worker
   #   environment:
-  #     DATABASE_URL: postgres://costrict:costrict_password@postgres:5432/costrict_db?sslmode=disable
+  #     DATABASE_URL: postgres://costrict:${POSTGRES_PASSWORD}@postgres:5432/costrict_db?sslmode=disable
   #     WORKER_CONCURRENCY: "3"
   #     WORKER_POLL_INTERVAL_SECONDS: "5"
   #     SYNC_TMP_DIR: /tmp/costrict-sync

@@ -37,10 +37,15 @@ tolerations: []
 
 affinity: {}
 
-# PostgreSQL configuration
+# PostgreSQL configuration.
+# `password` has no hardcoded default — operators MUST set it explicitly or
+# provide `existingSecret`. The previous default (`costrict_password`) was
+# identical to the value baked into the server binary and was called out by
+# a security report (CVSS 9.2). templates/secret.yaml uses helm's `required`
+# to fail loudly at install time when neither is provided.
 auth:
   username: costrict
-  password: costrict_password
+  password: ""
   database: costrict_db
   existingSecret: ""
 
