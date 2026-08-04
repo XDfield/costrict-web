@@ -581,32 +581,38 @@ my-plugin.zip
 GET /api/marketplace/:repo/marketplace.json
 ```
 
-返回 csc CLI 可直接消费的 `marketplace.json` 格式，每个 Plugin 的 `source` 字段指向 zip 下载地址。
+返回 csc CLI 可直接消费的标准 `marketplace.json`。平台只投影已经成功同步的 Git-backed Plugin；`source` 固定到最后一次成功同步的 commit SHA，csc 继续使用原生 Git clone 安装链路。
+
+`costrict-plugins` 是 csc cloud reconcile 使用的稳定 Marketplace 身份，当前映射到 `public` registry。`public` registry 是明确发布边界：其他 scoped/private registry 的条目不会进入该 alias；Git source 的最终读取权限仍由 Gitea 在 clone 时执行。`public` 和自定义仓库名路由继续保留用于手工消费。
+
+DB-backed、`git_sync_status` 非 `synced`、缺少稳定 Git Server/repository 身份、Git URL/SHA/path 不完整以及非 active 的 Plugin 不会出现在该安装索引中。`source_repo_url` 必须是 sync worker 从已配置 Git Server 解析并成功读取后的坐标，不能由调用方直接标记为 synced 后发布。
 
 ### 请求参数
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `:repo` | string | 是 | 仓库名称，如 `public` 或自定义仓库名 |
+| `:repo` | string | 是 | `costrict-plugins`（csc 固定身份），或 `public` / 自定义仓库名 |
 
 ### 响应示例
 
 ```json
 {
-  "name": "public",
+  "name": "costrict-plugins",
   "owner": {
     "name": "costrict",
     "email": "support@costrict.com"
   },
   "plugins": [
     {
-      "name": "cospowers-solution-design",
+      "name": "solution-design",
       "description": "一个 Claude Code 插件...",
       "version": "1.0.0",
       "category": "testing",
       "source": {
-        "source": "zip",
-        "url": "https://api.costrict.com/api/plugins/cospowers-solution-design/download"
+        "source": "url",
+        "url": "https://gitea.costrict.com/costrict-plugins/solution-design.git",
+        "ref": "main",
+        "sha": "0123456789abcdef0123456789abcdef01234567"
       },
       "strict": true,
       "tags": ["testing", "skills"]
@@ -619,11 +625,22 @@ GET /api/marketplace/:repo/marketplace.json
 
 ```bash
 # 添加 marketplace
-csc plugin marketplace add https://api.costrict.com/api/marketplace/public/marketplace.json
+csc plugin marketplace add https://api.costrict.com/api/marketplace/costrict-plugins/marketplace.json
 
 # 安装 marketplace 中的 plugin
-csc plugin install cospowers-solution-design@public
+csc plugin install solution-design@costrict-plugins
 ```
 
-**注意**：csc CLI 需支持 `source: "zip"` 的插件源类型，用于从 HTTP 地址下载 zip 并自动解压。
+pack/monorepo 中的 Plugin 使用 csc 原生 `git-subdir` source：
 
+```json
+{
+  "source": "git-subdir",
+  "url": "https://gitea.costrict.com/costrict-plugins/plugin-pack.git",
+  "path": "plugins/solution-design",
+  "ref": "main",
+  "sha": "0123456789abcdef0123456789abcdef01234567"
+}
+```
+
+**注意**：Plugin Marketplace 不生成 `source: "zip"`。`GET /api/plugins/:slug/download` 仅保留 DB-backed Plugin 的兼容下载能力，不属于 Git-backed Plugin 的 csc 安装链路。

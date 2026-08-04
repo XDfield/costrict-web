@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	pathpkg "path"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
@@ -317,16 +320,64 @@ func DownloadPluginZip(c *gin.Context) {
 	}
 }
 
+var marketplaceGitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+const (
+	cscMarketplaceName   = "costrict-plugins"
+	cscMarketplaceRepoID = "public"
+)
+
+type marketplaceManifest struct {
+	Name    string                   `json:"name"`
+	Owner   marketplaceOwner         `json:"owner"`
+	Plugins []marketplacePluginEntry `json:"plugins"`
+}
+
+type marketplaceOwner struct {
+	Name  string `json:"name"`
+	Email string `json:"email,omitempty"`
+}
+
+type marketplacePluginEntry struct {
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Version     string                  `json:"version,omitempty"`
+	Category    string                  `json:"category,omitempty"`
+	Source      marketplacePluginSource `json:"source"`
+	Strict      bool                    `json:"strict"`
+	Tags        []string                `json:"tags,omitempty"`
+}
+
+type marketplacePluginSource struct {
+	Source string `json:"source"`
+	URL    string `json:"url"`
+	Path   string `json:"path,omitempty"`
+	Ref    string `json:"ref,omitempty"`
+	SHA    string `json:"sha"`
+}
+
 // MarketplaceJSON returns a csc-compatible marketplace.json for a given repo.
 // @Summary      Get marketplace.json
-// @Description  Return a csc-compatible marketplace manifest containing all plugins in the repo.
+// @Description  Return installable Git-backed plugins as a standard csc marketplace manifest. Plugin sources are pinned to the last successfully synced commit.
 // @Tags         marketplace
 // @Produce      json
-// @Param        repo  path  string  true  "Repository name"
-// @Success      200   {object}  object
+// @Param        repo  path  string  true  "Marketplace identity: costrict-plugins, public, or a repository name"
+// @Success      200   {object}  marketplaceManifest
+// @Failure      401   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string}
+// @Failure      404   {object}  object{error=string}
+// @Failure      500   {object}  object{error=string}
 // @Router       /marketplace/{repo}/marketplace.json [get]
 func MarketplaceJSON(c *gin.Context) {
-	repoID, ok := resolveRepoID(c.Param("repo"))
+	marketplaceName := c.Param("repo")
+	repoName := marketplaceName
+	if marketplaceName == cscMarketplaceName {
+		// csc's cloud reconciler always installs plugin@costrict-plugins. Keep
+		// that protocol identity stable while the current aggregate is backed by
+		// the public registry. Private repositories retain their scoped routes.
+		repoName = cscMarketplaceRepoID
+	}
+	repoID, ok := resolveRepoID(repoName)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found"})
 		return
@@ -353,53 +404,141 @@ func MarketplaceJSON(c *gin.Context) {
 	}
 
 	var registryIDs []string
-	db.Model(&models.CapabilityRegistry{}).Where("repo_id = ?", repoID).Pluck("id", &registryIDs)
+	if err := db.Model(&models.CapabilityRegistry{}).Where("repo_id = ?", repoID).Pluck("id", &registryIDs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	var items []models.CapabilityItem
-	db.Where("registry_id IN ? AND item_type = ? AND status = 'active'", registryIDs, "plugin").
+	if err := db.Where("registry_id IN ? AND item_type = ? AND status = 'active'", registryIDs, "plugin").
 		Order("created_at DESC").
-		Find(&items)
+		Find(&items).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	plugins := make([]gin.H, 0, len(items))
+	plugins := make([]marketplacePluginEntry, 0, len(items))
+	seenNames := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		var desc string
-		if item.Description != "" {
-			desc = item.Description
-		} else {
-			desc = item.Slug
+		entry, ok := projectMarketplacePlugin(item)
+		if !ok {
+			continue
 		}
-		entry := gin.H{
-			"name":        item.Slug,
-			"description": desc,
-			"version":     item.Version,
-			"category":    item.Category,
-			"source": gin.H{
-				"source": "zip",
-				"url":    fmt.Sprintf("%s/api/plugins/%s/download", origin(c), item.Slug),
-			},
-			"strict": true,
+		if _, duplicate := seenNames[entry.Name]; duplicate {
+			continue
 		}
-		if item.Metadata != nil {
-			var meta map[string]any
-			_ = json.Unmarshal(item.Metadata, &meta)
-			if tags, ok := meta["tags"].([]any); ok && len(tags) > 0 {
-				strTags := make([]string, 0, len(tags))
-				for _, t := range tags {
-					if s, ok := t.(string); ok {
-						strTags = append(strTags, s)
-					}
-				}
-				entry["tags"] = strTags
-			}
-		}
+		seenNames[entry.Name] = struct{}{}
 		plugins = append(plugins, entry)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"name":    c.Param("repo"),
-		"owner":   gin.H{"name": "costrict", "email": "support@costrict.com"},
-		"plugins": plugins,
+	c.JSON(http.StatusOK, marketplaceManifest{
+		Name:    marketplaceName,
+		Owner:   marketplaceOwner{Name: "costrict", Email: "support@costrict.com"},
+		Plugins: plugins,
 	})
+}
+
+func projectMarketplacePlugin(item models.CapabilityItem) (marketplacePluginEntry, bool) {
+	if !isGitBacked(&item) || item.GitSyncStatus != "synced" ||
+		strings.TrimSpace(item.SourceGitServerID) == "" || item.SourceGitRepoID <= 0 {
+		return marketplacePluginEntry{}, false
+	}
+	repoURL := strings.TrimSpace(item.SourceRepoURL)
+	sha := strings.ToLower(strings.TrimSpace(item.GitSHA))
+	root, ok := pluginRootFromManifestPath(item.SourceRepoPath)
+	if repoURL == "" || !marketplaceGitSHA.MatchString(sha) || !ok {
+		return marketplacePluginEntry{}, false
+	}
+
+	name, tags := marketplacePluginMetadata(item)
+	if name == "" || strings.ContainsAny(name, " \t\r\n") {
+		return marketplacePluginEntry{}, false
+	}
+	description := item.Description
+	if description == "" {
+		description = item.Slug
+	}
+	source := marketplacePluginSource{
+		Source: "url",
+		URL:    repoURL,
+		Ref:    strings.TrimSpace(item.SourceRepoRef),
+		SHA:    sha,
+	}
+	if root != "." {
+		source.Source = "git-subdir"
+		source.Path = root
+	}
+	return marketplacePluginEntry{
+		Name:        name,
+		Description: description,
+		Version:     item.Version,
+		Category:    item.Category,
+		Source:      source,
+		Strict:      true,
+		Tags:        tags,
+	}, true
+}
+
+func marketplacePluginMetadata(item models.CapabilityItem) (string, []string) {
+	meta := make(map[string]any)
+	if len(item.Metadata) > 0 {
+		_ = json.Unmarshal(item.Metadata, &meta)
+	}
+	name := ""
+	if install, ok := meta["install"].(map[string]any); ok {
+		name, _ = install["plugin_name"].(string)
+	}
+	if strings.TrimSpace(name) == "" {
+		name, _ = meta["name"].(string)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = item.Slug
+	}
+
+	rawTags, _ := meta["tags"].([]any)
+	tags := make([]string, 0, len(rawTags))
+	for _, raw := range rawTags {
+		if tag, ok := raw.(string); ok && strings.TrimSpace(tag) != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return strings.TrimSpace(name), tags
+}
+
+// pluginRootFromManifestPath converts the indexed metadata file path into the
+// plugin root expected by csc's git-subdir source. A standard plugin.json lives
+// below .claude-plugin/, while the catalog .plugin.json lives at the root.
+func pluginRootFromManifestPath(manifestPath string) (string, bool) {
+	raw := strings.TrimSpace(strings.ReplaceAll(manifestPath, "\\", "/"))
+	if raw == "" || strings.HasPrefix(raw, "/") {
+		return "", false
+	}
+	clean := pathpkg.Clean(raw)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+
+	var root string
+	switch strings.ToLower(pathpkg.Base(clean)) {
+	case ".plugin.json":
+		root = pathpkg.Dir(clean)
+	case "plugin.json":
+		parent := pathpkg.Dir(clean)
+		if pathpkg.Base(parent) == ".claude-plugin" {
+			root = pathpkg.Dir(parent)
+		} else {
+			root = parent
+		}
+	default:
+		return "", false
+	}
+	if root == "" {
+		root = "."
+	}
+	if root == ".." || strings.HasPrefix(root, "../") {
+		return "", false
+	}
+	return root, true
 }
 
 // origin returns the base URL for constructing absolute download URLs.

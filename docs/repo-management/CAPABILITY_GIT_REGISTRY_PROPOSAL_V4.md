@@ -2,15 +2,15 @@
 
 | 字段 | 内容 |
 |---|---|
-| 状态 | Accepted (v3) · 章节顺序 v4 草稿 |
+| 状态 | Accepted (v4) · Plugin 分发契约已修订 |
 | 作者 | CoStrict 团队 |
 | 创建日期 | 2026-07-06 |
 | 决策日期 | 2026-07-07 |
-| 重排版日期 | 2026-07-07 |
+| 重排版日期 | 2026-07-07；Plugin 分发修订 2026-08-04 |
 | 评审范围 | server / adminitem / services / casdoor / gitea fork |
 | 关联文档 | [`CAPABILITY_GIT_REGISTRY_PROPOSAL.md`](./CAPABILITY_GIT_REGISTRY_PROPOSAL.md)（v3 章节原版，保留对照）、[`CAPABILITY_GIT_REGISTRY_ROADMAP.md`](./CAPABILITY_GIT_REGISTRY_ROADMAP.md)（实施路线图）、[`CAPABILITY_PORTAL_DECISION.md`](./CAPABILITY_PORTAL_DECISION.md)（portal 部署决策）、`IDENTITY_FEDERATION_DECISION.md`、`CATALOG_INGEST.md`、`SCAN_SKILL.md`、`DATABASE_DESIGN.md`、`HTTP_TUNNEL_DESIGN.md` |
 
-> 本文件是 v3 PROPOSAL 的**章节重排版**，无内容删改，仅按"动机 → 静态架构 → 身份权限 → 运行时流程 → 数据与实施 → 附录"的逻辑顺序重新分段。所有决策与字段定义与 v3 一致；若发现冲突以 v3 为准（或反馈修正两边）。
+> 本文件最初是 v3 PROPOSAL 的章节重排版。2026-08-04 起，v4 在此基础上修订 Plugin 分发契约；与 v3 冲突时，以本文的 Plugin Marketplace 投影与 Git source 约束为准。
 
 ---
 
@@ -26,6 +26,8 @@
 - CoStrict 官方精选：可选 mono-repo（`costrict/curated-seed`）；统一动态配置中心独立 org `costrict-config/platform-config`
 
 **发现层**：server 通过 webhook 实时同步 metadata 入 DB（`capability_items` 表），客户端 / AI 调 server REST API 搜索发现，**不**经过 Gitea API。Gitea repo description 由用户自行维护，server 不读不写。
+
+**Plugin 分发层**：costrict-web 从已同步成功的 Git-backed Plugin 索引生成 csc 标准 Marketplace JSON；csc 继续使用现有 `marketplace add / install / update`，并按 entry 中的 Git source clone Plugin 内容。在线环境消费 HTTP Marketplace 投影，离线环境消费由同一 projector 生成的 Gitea snapshot。Plugin 不走平台 zip source，也不走通用 `/api/items/:id/download` 内容下发。
 
 ---
 
@@ -128,7 +130,8 @@ costrict-skills-repo（外部 git 仓库）
 6. **统一审核工作流（双轨制）**：默认通道为 **git push 直推 main**（§7.3 简化方案，与 V2 编辑 UX 一致）；**可选 PR 通道**用于公有能力贡献 / 跨业务线变更 / 重要能力项评审（AI 起草 → 人类审核 merge）；两条通道都触发 sync + health/security check；误推送靠 §11 健康度治理 + git revert 兜底
 7. **消除 catalog bundle 中转**：上游 repo 通过 Gitea mirror 或 git remote 直接接入
 8. **用户中心主权归 costrict-web**（自签 JWT + 业务字段），**Casdoor 退化为多登录源 UI 提供者**（GitHub OAuth / 短信 / LDAP 等社交登录入口），Gitea fork 加 JWT 中间件验证 costrict-web 签发的 JWT + 校验 `user_gitea_binding` 状态（账号由 sync worker 在 `user.created` 时 eager 创建，§6）；用户/AI 在 costrict-web 与 Gitea 之间通过同域 cookie + JWT 实现 SSO
-9. **发现层走 server REST API**：客户端 / AI 通过 `GET /api/capabilities` 搜索发现，server DB（`capability_items`）是唯一发现索引；不维护派生 Git 索引，Gitea repo description 由用户自行维护
+9. **发现层走 server REST API**：客户端 / AI 通过 `GET /api/capabilities` 搜索发现，server DB（`capability_items`）是唯一发现索引；不维护人工编辑的派生 Git 索引，Gitea repo description 由用户自行维护。面向 csc 的标准 Marketplace JSON 是可随时重建的安装协议投影，不承担搜索与内容真相源职责
+10. **csc 零代码适配 Plugin**：平台输出 csc 已支持的标准 Marketplace schema，entry 只引用 Git `url` / `git-subdir` source 并固定 commit SHA；csc 不识别 costrict 私有 registry schema，不增加 zip source
 
 ### 2.2 非目标
 
@@ -190,7 +193,14 @@ costrict-skills-repo（外部 git 仓库）
 │   sync worker（新）        ──►  capability_items 表（运行时索引）            │
 │   security scan worker     ──►  security_status / last_scan_id              │
 │   REST API（发现 + 业务字段）──►  /api/capabilities、favorite_count、...     │
+│   Marketplace projector       ──►  标准 marketplace.json（安装协议投影）   │
 └─────────────────────────────────────────────────────────────────────────────┘
+                               │                    │
+                               │ 在线 HTTP          │ 离线 Gitea snapshot
+                               ▼                    ▼
+                       csc marketplace add / install / update
+                               │
+                               └── 按 url / git-subdir + sha clone 内容 repo
 ```
 
 ### 3.2 数据流方向（单向，关键约束）
@@ -200,7 +210,9 @@ costrict-skills-repo（外部 git 仓库）
 禁止方向：DB → Git
 ```
 
-所有内容变更必须经 Git push。业务字段（计数、状态、扫描结果）的变更走 DB，不影响 Git。**发现层（搜索、列表）走 server REST API 查 DB**，不维护任何派生 Git 索引。
+所有内容变更必须经 Git push。业务字段（计数、状态、扫描结果）的变更走 DB，不影响内容 Git。**发现层（搜索、列表）走 server REST API 查 DB**，不维护人工编辑的派生 Git 索引。
+
+允许从已同步的 DB read model 生成**可丢弃、可重建**的协议投影，包括在线标准 Marketplace JSON 和离线 Gitea snapshot。该投影不得被 sync worker 反向摄取，不得覆盖内容 repo，也不得成为 version/content 的新真相源。
 
 ### 3.3 Git 与 DB 职责边界
 
@@ -217,6 +229,7 @@ costrict-skills-repo（外部 git 仓库）
 | 用户 favorite 关系 | **DB** | 用户私有状态 |
 | `Health` / `Evaluation` | **DB** | 运行时数据 |
 | `Status`（active / archived / banned） | **混合** | archived = Git 删除/移动；banned = DB 行政状态 |
+| Plugin Marketplace JSON | **派生投影** | 从 Git-backed DB 索引生成；仅用于 csc 解析安装坐标，不承载 Plugin 内容 |
 
 **核心原则**：Git 管"是什么"，DB 管"运行得怎么样"。
 
@@ -238,6 +251,8 @@ costrict-skills-repo（外部 git 仓库）
 > **关键约束**：sync handler 永远只读**能力项顶层 metadata 文件**（standalone 是 `skill.md` / `subagent.md` 等，pack 是 `plugins/<id>/.plugin.json`），不深入子目录解析内部 skill/command/mcp 文件。详见 §10.3。
 >
 > **pack 平级原则**：`costrict-plugins/` org 下所有 pack repo **完全平级**——无论是用户自建 / 官方维护 / plugin marketplace 收敛产出的 pack，V3 视角下都是同一种 `pack` kind，按相同规则 sync。pack 内 plugin 数量 / 来源 / 分组方式由 pack owner 自由决定，V3 不规定。marketplace 的 build pipeline（独立项目 `costrict-plugin-marketplace`）只是 pack 内容的**生产侧**，产出的 pack repo 推送到 `costrict-plugins/` 后即成为普通 pack，无任何特殊待遇。
+>
+> **Plugin 安装边界**：pack/standalone repo 是 Plugin 内容真相源；标准 Marketplace JSON 只把该地址投影为 csc 的 `url` 或 `git-subdir` source。在线 HTTP 投影与离线 Gitea snapshot 必须由同一 projector 生成，禁止手工维护两份 version/source。
 
 server webhook 接到不同 kind 的 repo push 时，走不同的 sync handler。
 
@@ -446,7 +461,7 @@ https://gitea.costrict.local/<owner>/<repo>/-/tree/<ref>/<path>
 | 层 | 行为 | 性能权衡 |
 |---|---|---|
 | **发现层**（`GET /api/capabilities` 列表 / 搜索） | **不做权限过滤**——全量返回所有 capability_items，每行带 `visibility: public\|private` 字段 + `owner`（如 `costrict` / `u-alice`） | 纯 DB 查询，零 Gitea API 调用；列表可缓存 |
-| **内容访问层**（`GET /api/capabilities/:id` 详情 / `/download` 内容下发 / `git clone`） | 实时按 Gitea 权限校验：调 `GET /repos/{owner}/{repo}/collaborators/{username}/permission`（5min Redis cache）；无权 → **403 + 告警**"无访问权限，请联系 admin 或申请 collaborator" | 单次 Gitea API 调用，可缓存 |
+| **内容访问层**（详情 / 非 Plugin `/download` / Git clone） | 详情与非 Plugin 下载由 server 实时按 Gitea 权限校验；Plugin 安装由 csc 按 Marketplace source 直接 clone，权限由 Gitea Git 协议执行。无权统一返回 **403** 或 Git 鉴权失败 | server permission 查询可缓存；clone 不经过 server 内容代理 |
 
 **列表面板表现**（前端约定）：
 
@@ -514,9 +529,10 @@ ALTER TABLE capability_registries
 
 **下发与调用层校验**：
 
-- runtime 拉 manifest：server 调 Gitea API 校验 device owner 对该 repo 的 read 权限
+- 非 Plugin runtime 拉 manifest/content：server 调 Gitea API 校验 device owner 对该 repo 的 read 权限
+- Plugin runtime：server 仅返回当前用户可消费的标准 Marketplace entry；csc 使用用户凭据 clone entry 指向的 Gitea repo，由 Gitea 校验 read 权限
 - AI agent 选择能力：同上
-- 校验失败返回 403，不返回 manifest
+- 校验失败返回 403，不返回 manifest/Marketplace entry；clone 阶段的权限失败不得回退为平台 zip 下载
 - public repo（无论 `costrict/` 还是 `u-<username>/`）所有认证用户均有 read；private repo 仅 owner + collaborator
 
 **计费/限额**：暂不实施（out of scope）。
@@ -575,7 +591,7 @@ metadata:
 正文内容...
 ```
 
-> 对 pack 类，`plugins/<id>/.plugin.json` 已是 plugin 体系标准格式，server 直接消费其顶层字段（`name` / `version` / `description` / `install.marketplace_name` 等），不做语义改写。
+> 对 pack 类，`plugins/<id>/.plugin.json` 是平台 Plugin 索引 metadata，server 直接消费其顶层字段（`name` / `version` / `description` / `install.marketplace_name` 等）写入 DB。它**不是** csc 的 `.claude-plugin/marketplace.json`；server 必须按 §5.5 包装成标准 Marketplace entry，不能把 `.plugin.json` 原样下发。
 
 ### 5.3 CapabilityItem 字段映射
 
@@ -607,7 +623,52 @@ metadata:
 - 二进制资源（图片、plugin tarball、demo 视频）：
   - **小于 1 MB**：直接进 Git
   - **大于 1 MB**：使用 **Git LFS** 或 **Gitea Release attachment**
-  - plugin tarball 一律走 Gitea Release，repo 内只放元数据
+  - Plugin 安装内容必须可由 Marketplace entry 指向的 Git source 完整 materialize；Release attachment 可用于非运行时附属制品，但不得作为 csc Plugin 安装 source
+
+### 5.5 Plugin 标准 Marketplace 投影（csc 零代码）
+
+costrict-web 暴露标准 Marketplace HTTP endpoint `GET /api/marketplace/:repo/marketplace.json`。csc cloud reconcile 使用固定 URL `/api/marketplace/costrict-plugins/marketplace.json`，其顶层 `name` 必须为 `costrict-plugins`；当前该稳定别名映射到 `public` registry。`public` registry 是明确发布边界，其他 scoped/private registry 的条目不会进入该 alias；Git source 的最终读取权限仍由 Gitea 在 clone 时执行。按 repo 暴露的路由保留给手工消费。顶层必须包含 csc schema 要求的 `name`、`owner.name` 和 `plugins`；只投影 `content_backend=git`、同步成功、状态可安装且 Git 地址完整的 Plugin。
+
+standalone Plugin 使用 Git repo source：
+
+```json
+{
+  "name": "costrict-plugins",
+  "owner": { "name": "Costrict" },
+  "plugins": [
+    {
+      "name": "example-plugin",
+      "version": "1.1.0",
+      "source": {
+        "source": "url",
+        "url": "https://gitea.example.com/costrict-plugins/example-plugin.git",
+        "sha": "0123456789abcdef0123456789abcdef01234567"
+      }
+    }
+  ]
+}
+```
+
+pack 中的 Plugin 使用目录 source：
+
+```json
+{
+  "source": "git-subdir",
+  "url": "https://gitea.example.com/costrict-plugins/plugin-pack.git",
+  "path": "plugins/example-plugin",
+  "sha": "0123456789abcdef0123456789abcdef01234567"
+}
+```
+
+约束：
+
+- `sha` 取最后一次成功同步的 40 位小写 `git_sha`，不得只指向可移动的 `main`
+- `source_repo_path` 表示顶层 metadata 文件；`git-subdir.path` 必须取其 Plugin 根目录，不能把 `.plugin.json` 文件路径直接下发
+- DB-backed、sync pending/error、缺少稳定 `source_git_server_id + source_git_repo_id`、Git URL/SHA 缺失、archived/banned 的 Plugin 不进入可安装投影
+- `source_repo_url` 必须由 sync worker 从已配置 Git Server 的稳定 repository ID 解析并在成功读取当前 HEAD 后写入；外部调用方不得直接把任意 URL 标记为 synced
+- 在线 HTTP 响应与离线 Gitea snapshot 使用同一个 projector；snapshot 是部署制品，不是可编辑真相源
+- 当前 display-only 阶段继续关闭 Plugin favorite 并由 server 返回 409；激活 favorite/distribute 时只下发 `plugin_name + marketplace_name + marketplace_repo` 期望状态，csc 继续使用现有 `plugin@costrict-plugins` 安装链路
+- Plugin 不生成 `source: "zip"`，Git-backed `/api/plugins/:slug/download` 不属于安装主链路
 
 ---
 
@@ -829,7 +890,7 @@ metadata:
 | **`costrict-system` admin PAT** | sync worker 跨 owner 拉 private repo | admin scope | 仅 §7.2.2 列出的 2 个场景，禁止他用 |
 | 用户/agent | push 到 main / master | **允许**（直接 push） | Gitea PAT + 健康度治理兜底（§11）+ 硬配额（§7.4） |
 | CI（Gitea Actions） | push 后跑校验，标 commit status | 内置 `${{ secrets.GITHUB_TOKEN }}` | 非阻塞，仅信息展示 |
-| csc 设备端 | （不走 git，走 HTTP 代理） | N/A | 见附录 C.2.3 |
+| csc 设备端 | 非 Plugin 走 HTTP 代理；Plugin 按 Marketplace source clone Git | public clone 无凭据；private clone 使用用户 PAT | 见 §5.5 / 附录 C.2.3 |
 
 #### 7.3.2 Branch Protection（简化：仅防历史覆写）
 
@@ -982,7 +1043,7 @@ remote: ERROR: Owner 'costrict' quota is 50 MB. Please remove unused files or co
 | dept-sync 改造 | 加 webhook 推送接口（dept.updated / dept.member_changed）+ costrict-web cache 写入 |
 | sync worker | **零 Gitea API 调用**（不调 team / collaborator API） |
 | 业务线 → capability 关系 | costrict-web `capability_items.business_line` 字段（已有），仅作为 metadata 标签（前端筛选 / 统计），**不参与权限控制** |
-| private capability 鉴权 | A2 链路不变：csc → costrict-web → Gitea permission API（per-user collaborator）反查 |
+| private capability 鉴权 | 非 Plugin 的 A2 链路不变；Plugin 的固定 `costrict-plugins` 投影当前仅含 public registry，私有 Plugin 需使用按 repo Marketplace + Gitea clone 鉴权，暂不进入 cloud 聚合 reconcile |
 | private repo 成员管理 | admin 手动邀请（costrict-web `/admin/private-repos` 页面调 Gitea collaborator API） |
 | 离职清理 | user.disabled/deleted webhook → sync worker → `DELETE /admin/users/{username}/repos` + 禁用 Gitea 账号 |
 | 假设条件 | private capability 占比 < 10%（典型场景），admin 手动邀请成本可接受 |
@@ -1117,7 +1178,7 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
                              costrict-web server（/api/internal/git-sync）
                                        │
                                        ├─ 校验 webhook 签名（HMAC + shared secret）
-                                       ├─ 幂等检查：commit SHA 是否已处理（Redis SETNX）
+                                       ├─ 幂等检查：`git_server_id + X-Gitea-Delivery` 是否已入队
                                        ├─ GET /repos/{owner}/{repo}/compare/{before}...{after}
                                        │    → 拿到 added/modified/removed 文件路径列表
                                        ├─ 路径过滤：只保留**能力项顶层 metadata 文件**
@@ -1132,6 +1193,8 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
                                        │    ├─ 新增：insert，记录 source_repo_url/path/sha
                                        │    ├─ 修改：update content + bump version
                                        │    └─ 删除：标记 status='archived'
+                                       ├─ Plugin 行同步成功后即可被 Marketplace projector 投影
+                                       │    └─ source 固定为 url/git-subdir + after_sha；不生成 zip
                                        ├─ 同步 visibility：调 Gitea GET /repos/{owner}/{repo}
                                        │    读 is_private → 写 capability_items.visibility（§4.7.2）
                                        ├─ 异步触发 SecurityScan（已有）
@@ -1140,13 +1203,15 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
 
 **全程 0 次 exec git 命令**。server 容器只依赖标准库 HTTP client + Gitea PAT。
 
-> **关键简化**：由于能力项粒度 = 顶层 metadata 文件，单次 push 即使改了大量子文件（plugin 内重写、批量改 skill），server 也只拉顶层 metadata。子文件改动对 DB 索引透明，但 commit SHA 仍会更新（用于版本追踪）。
+> **关键简化**：由于能力项粒度 = 顶层 metadata 文件，单次 push 即使改了大量子文件（plugin 内重写、批量改 skill），server 也只拉顶层 metadata。子文件改动对 DB 索引透明，但 commit SHA 仍会更新，并作为 Plugin Marketplace source 的不可变 `sha`。因此，同一 commit 内修改 Plugin 运行时内容但不修改 metadata 时，projector 仍会发布新的 source SHA。
 
 ### 10.4 幂等与一致性
 
 - 每个 registry 维护 `last_synced_commit` 字段（DB）
-- webhook 收到后用 commit SHA 去重（Redis `SETNX` + 24h TTL）；同 SHA 重复推送直接返回 200
-- webhook 失败时 Gitea 自动重试（默认 5 次），server 必须幂等
+- webhook ingress 以 `git_server_id + X-Gitea-Delivery` 建唯一约束；同一 delivery 重投只返回已有 job，不重复入队
+- 不按 commit SHA 永久去重：A→B→A 是合法状态变化，第二次 A 必须处理
+- worker 不信任可能乱序的 payload `after` 作为最终状态；每次处理都读取仓库当前 default branch HEAD，并以当前 HEAD 收敛 DB 投影
+- webhook 失败时 Gitea 自动重试（默认 5 次），server 通过 delivery ID 保证入队幂等
 - 增量 diff 通过 Gitea `compare` API 拿到，不在 server 内做 git log
 - webhook 风暴防护：同 repo 短时多次 push → Redis 队列 debounce 1-2 秒，取最新 commit
 
@@ -1224,6 +1289,7 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
 | 详情页 | 顶部 banner 显示状态 + issues 列表 + 引入 commit 链接 |
 | clone 操作 | 显示状态；polluted 需勾选"我已了解风险" |
 | 能力下发 manifest | 内嵌 `health` 字段，消费端决策 |
+| Plugin Marketplace 投影 | 目标态：`warning` 可发布，`polluted` / `unknown` 默认排除。当前阶段尚无 `identification_status` 持久字段与 evaluator，实际门槛仅为 `active + Git synced + Git URL/path/SHA 有效`；不得把缺失 health 当成 polluted 误排 |
 | AI agent 自动选择 | 默认仅选 `clean` + `warning`；`polluted` 所有 agent 可 override（决策权下放） |
 
 ### 11.4 Manifest 字段示例
@@ -1248,6 +1314,8 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
   }
 }
 ```
+
+上例用于非 Plugin 能力。Plugin 不使用 `content_url`；对应信息通过 §5.5 的标准 Marketplace entry 表达，内容位置由 `source.url/path/sha` 唯一确定。
 
 ### 11.5 消费端默认策略（可配置）
 
@@ -1716,20 +1784,20 @@ CREATE TABLE gitea_ext.config_versions (
 |---|---|---|
 | 仓库数量大（standalone 一 item 一 repo 可能数千） | 中 | Gitea 实测万级 repo 性能可接受；按 org 分组管理；为 AI 提供 index 仓库降低遍历成本 |
 | 大量小文件性能（>5 万） | 中 | 起步阶段 <2 万文件无需处理；超过则评估 sparse checkout 或拆 org |
-| 二进制污染 repo | 高 | 强制 Git LFS 或 Gitea Release，PR CI 拒收大文件 |
+| 二进制污染 repo | 高 | 强制 Git LFS；非运行时附属制品可用 Gitea Release，PR CI 拒收大文件；Plugin 安装内容必须能由 Git source materialize |
 | Gitea 单点故障 | 高 | 部署 HA（共享存储 + 多副本），见附录 A |
 | Gitea REST API 限流（默认 1500 req/h/user） | 中 | 单独 PAT 走服务账号；客户端 token bucket 限速；429 退避重试；大量初始同步改用 trees API 一次性拉取 |
 | Gitea API 偶发 5xx / 网络抖动 | 中 | 指数退避重试（最多 3 次）；失败入死信队列告警；webhook 失败由 Gitea 自动重投 |
 | webhook 投递延迟或丢失 | 中 | webhook 投递失败保留 24h 重试；server 端定时巡检（每小时拉取每个 repo 最新 commit SHA 比对）兜底 |
-| webhook 重复/乱序 | 中 | server 端 commit SHA 幂等去重 + 顺序处理 |
+| webhook 重复/乱序 | 中 | `git_server_id + delivery_id` 唯一约束保证入队幂等；worker 串行化同 repo job并读取当前 default branch HEAD 收敛；不按 commit SHA 永久去重，避免漏掉 A→B→A |
 | PAT 泄漏 | 高 | bot PAT 仅 `read:repository` / `write:repository` 最小 scope；限定 org；定期 90 天轮换；Gitea 审计日志监控异常调用 |
 | fork 关系迁移遗漏 | 中 | 迁移脚本生成 dry-run 报告，人工核对后再切换 |
 | frontmatter schema 演进 | 中 | `.catalog/schema.json` 加 schema_version，server 兼容多版本 |
 | 镜像上游删除/重命名 | 中 | Gitea mirror pull 失败检测 + 标记 archived；本地 repo id 稳定不随上游变更 |
 | 审核员体验下降（vs GitHub） | 低 | 给审核员做 Gitea PR UI 培训，或在 server 端做统一收件箱页面 |
-| 私有部署客户离线场景 | 中 | 提供 Gitea 镜像导出/导入工具，支持完全离线同步 |
+| 私有部署客户离线场景 | 中 | 同一 Marketplace projector 生成 Gitea snapshot，连同 source repo 一起导出/导入；csc 只切换 Marketplace URL |
 | AI agent 误操作 | 中 | scoped PAT 限定目录 + CI 阻断 + 人工 review gate |
-| plugin 内部子文件版本漂移（运行时与 metadata 不一致） | 低 | server 不索引子文件，运行时由 csc 客户端按 .plugin.json 内 manifest 自校验；CI 阶段校验 plugin 内文件 checksum 一致性 |
+| plugin 内部子文件版本漂移（运行时与 metadata 不一致） | 高 | Marketplace entry 固定最后一次成功同步的 `git_sha`；HTTP 与离线 snapshot 由同一 projector 生成；禁止手工维护第二份 version/source；E2E 验证 install/update 后 runtime 版本 |
 
 ---
 
@@ -1753,18 +1821,19 @@ CREATE TABLE gitea_ext.config_versions (
 | 10 | 健康度检测实现位置 | **全 server 端**：capability-check worker 监听 Gitea system webhook（PR 事件 + push 事件 + mirror pull），server 内调 Gitea API 拉文件树 + 启发式识别 + schema 校验，结果写入 `health_issues`；PR 评论由 server 调 Gitea API 写入；**零 Gitea Actions 依赖**（不需要 `act_runner`、不需要 workflow 文件） |
 | 11 | 安全扫描迁移策略 | **保留 LLM + 切触发源**：scan_service / scan_job_service / scan_worker / Plugin 跳过 / 短路机制全部保留；触发源从 `catalog_ingest_service` 迁移到新 sync worker；新增 PR 触发分支（trigger_type=pr-check，不覆盖主表）；短路键 `CurrentRevision` → `git_sha`（双写兼容期）；scan_service 不拆分 |
 | 12 | identification 与 security 关系 | **两个独立维度并存**：`identification_status`（文件结构健康度，capability-check worker 产出）+ `security_status`（内容安全，ScanWorkerPool 产出）；manifest 双字段透传；互不替代 |
-| 13 | 公私能力 visibility 策略 | **纯 Gitea visibility 透传 + 发现层与权限层分离 + 用户默认 public**：取值仅 `public`/`private`（对齐 Gitea 原生，不引入 `internal`/`hidden`）；业务线层级仅作为 metadata 标签（不参与权限控制）；pack 内 plugin 不支持单独私有（拆 pack repo 解决）；**`costrict/` org 仅是官方印章**（admin 审核背书，与 public/private 无关）；用户自建 / fork 走 `u-<username>/` namespace **默认 public**（用户可改 private 作草稿）；公有能力两条路径——用户自主 public（§4.8.1）+ 可选官方认证 PR 升级到 `costrict/`（§4.8.2）；**发现层 API（`GET /api/capabilities`）不做权限过滤**——全量返回所有 item，每行带 `visibility` 字段；**内容访问层（详情 / download / clone）按 Gitea permission API 校验**，无权直接 403（§4.7.1）；server 用 `costrict-system` admin PAT sync 所有 repo（含 private）写 DB，sync worker 同步时把 `is_private` → `visibility` 字段 |
+| 13 | 公私能力 visibility 策略 | **纯 Gitea visibility 透传 + 发现层与权限层分离 + 用户默认 public**：取值仅 `public`/`private`（对齐 Gitea 原生，不引入 `internal`/`hidden`）；业务线层级仅作为 metadata 标签（不参与权限控制）；pack 内 plugin 不支持单独私有（拆 pack repo 解决）；**`costrict/` org 仅是官方印章**（admin 审核背书，与 public/private 无关）；用户自建 / fork 走 `u-<username>/` namespace **默认 public**（用户可改 private 作草稿）；公有能力两条路径——用户自主 public（§4.8.1）+ 可选官方认证 PR 升级到 `costrict/`（§4.8.2）；**发现层 API（`GET /api/capabilities`）不做权限过滤**——全量返回所有 item，每行带 `visibility` 字段；**内容访问层**中详情与非 Plugin download 由 server 调 Gitea permission API，Plugin clone 由 Gitea Git 协议鉴权，无权直接 403/鉴权失败（§4.7.1）；server 用 `costrict-system` admin PAT sync 所有 repo（含 private）写 DB，sync worker 同步时把 `is_private` → `visibility` 字段 |
 | 14 | 用户中心主权归属 | **costrict-web 承担用户中心**（username / email / 密码 / 业务字段主权）；Casdoor 退化为多登录源 UI 提供者；Gitea fork 加 JWT 中间件实现 user 自动同步。否决"Gitea 做用户中心 + HA"方向（见 §18.6） |
 | 15 | Gitea fork 改动范围 | **最小化 fork**：JWT 中间件 + auth 链注册（~250 行）+ 全局 pre-receive hook（~150 行）= **总计 ~400 行**；不动 UI / cron / mirror / webhook 投递 / Actions；fork 维护成本可控，每季度 rebase upstream；详细见 §15 / ROADMAP Stage 0 |
 | 16 | username 主权与可改性 | **costrict-web 自管 username，用户可改**：注册时填写 + 后续可改；变更通过通用 webhook 广播（`user.updated` 事件），Gitea sync worker 调 admin API 改名（Gitea 自动级联 repo ownership + redirect）；跨服务引用统一使用不可变 user_id；commit author 历史不改（git immutable，文档说明） |
 | 17 | 用户变更事件广播 | **通用 webhook 系统**（`webhook_subscriptions` + `webhook_deliveries` 表）：任何业务服务（Gitea-sync / cs-cloud / csc / 其他）可订阅 `user.updated` / `user.disabled` / `user.deleted` 等事件；6 次指数退避重试（1s / 5s / 30s / 2min / 10min / 1h）+ 死信队列 + 日全量校对；HMAC 签名 + event_id 幂等 |
-| 18 | content 下发流程 | **HTTP 代理 + Gitea permission API 反查（A2 方案）**：csc → costrict-web `/api/items/:id/download`（JWT）→ server 调 Gitea `GET /repos/{owner}/{repo}/collaborators/{username}/permission` 反查私有 repo 权限（5min Redis cache + webhook 主动失效）→ fine-grained service PAT（限定 owner）调 Gitea raw API 拉文件 → 返回 csc。csc 端零改造；权限闭环由 Gitea permission API 兜底 |
+| 18 | content 下发流程 | **按能力类型分流**：Skill/Subagent/Command/MCP 保留 HTTP 代理 + Gitea permission API 反查（A2）；Plugin 由 costrict-web 输出标准 Marketplace HTTP 投影，csc 按 `url` / `git-subdir` + `sha` 直接 clone Gitea source。Plugin 不走 `/api/items/:id/download` 或 zip；csc 零代码，权限由 Gitea Git 协议闭环 |
 | 19 | Git 操作权限管理 | **保留 Gitea 原生 git 协议接口**（HTTP + SSH），用户/AI agent 直接 `git clone / push`；**branch protection 仅保留禁 force push + 禁 delete main**（不强制 PR / review / CI 通过门，详见 §7.3.2 简化方案）；AI agent / csc 用 fine-grained 用户 PAT（`read:repository` + `write:repository`，限 owner `costrict` / `costrict-plugins`，90 天轮换，明确禁止共享，D 方案 C 通道）；用户用 SSH key 优先（与 GitHub 体验一致）；deploy key 仅 CI/外部系统使用；误推送兜底靠 §11 健康度治理 + git revert + admin 标 archived + 硬配额（§7.4）|
 | 20 | 硬配额拦截 | **fork Gitea 加全局 pre-receive hook**（~150 行）：单文件大小限制 + repo 总大小配额（owner 默认 + per-repo 覆盖）；commit message 不检查；hook 直连共享 PostgreSQL `gitea_ext.quota_rules` 表，5min TTL cache + sync worker 主动失效；配额查询优先级 repo 级 > owner 级 > 全局 default；mirror owner 单文件不限 |
 | 21 | 统一动态配置中心 | **`costrict-config/platform-config` 仓库 `.gitea/*.yaml` 声明式**：所有 Gitea 动态配置（branch-protection / quota / teams / webhooks / labels / ISSUE_TEMPLATE）通过 yaml 文件管理；PR merge 后 costrict-web `GiteaConfigSyncWorker` 自动 diff + 调 Gitea API 应用；与 §3.2 "Git → DB 单向数据流"对齐；admin UI 仅 fallback（应急通道）；精选能力项 mono-repo 拆到 `costrict/curated-seed`（v3 决策：原 `costrict/registry-seed` 一身二任拆为配置 org + 能力项 repo） |
 | 22 | 业务线层级与 Gitea 关系 | **E4 简化方案**：Gitea 不掺业务组织概念（4 个固定 org + 用户 namespace，无业务 team）；dept-sync 仍是部门树真相源；costrict-web 仅 webhook 接收 + Redis cache；sync worker **零 Gitea API 调用**；private repo collaborator 由 admin 手动邀请（`/admin/private-repos` 页面）；离职清理自动化（user.disabled/deleted → 调 Gitea admin API 移除 collaborator + 禁用账号）；适用前提：private capability 占比 < 10%；未来 private 占比上升可平滑切换到方案 3（dept → Gitea team sync） |
 | 23 | Bot 身份模型 / admin token | **D 混合方案**：用户侧行为（csc push、AI agent 代用户操作、用户自己 git/API）统一按用户自己 PAT 或 JWT（不走 bot）；系统服务侧仅一个 `costrict-system` 账号 + 单一 admin PAT，明确 2 个使用场景（capability 索引同步 / 用户生命周期级联）；marketplace mirror 同步走 Gitea 内置 mirror pull 不需要 token；用户注销时 repo ownership 转给 `costrict-system` 保留历史不归档；admin PAT 90 天自动轮换（`BotTokenRotationWorker`）+ `gitea_admin_audit_log` 全量审计 |
 | 24 | Branch Protection 简化（直接 push 模式） | **放开强制 PR / review / CI 阻塞门**：V3 是认证用户内部协作平台，main 分支仅保留禁 force push + 禁 delete（防历史覆写）；用户/AI agent 可直接 push main，体验与 V2 一致；不要求 PR、不要求 reviewer approve、不要求 CI 必过（capability-check CI 仍跑，仅作 commit status badge，非阻塞）；误推送兜底链路：§11 健康度自动 polluted + git revert 30s 恢复 + admin 标 archived + §7.4 硬配额拦截大文件 + commit author 归因 + Gitea audit log；适用前提：全部认证用户 + 团队 < 10 人；未来如需切回强制 PR 仅改 Gitea 配置无架构改动；实现工时 0 天 |
+| 25 | Plugin Marketplace 与 csc 兼容 | **server 适配现有 csc 协议**：DB 是唯一发现索引；标准 Marketplace JSON 是可重建安装投影。在线走 HTTP endpoint，离线走同一 projector 生成的 Gitea snapshot；固定聚合 marketplace 名称，部署可配置 URL；禁止 costrict 私有 index adapter、zip source 和人工双 manifest |
 
 ---
 
@@ -1933,8 +2002,9 @@ csc（CLI 工具，opencode 改造）
   │   ├─ 用户级（~/.costrict/skills/、~/.costrict/plugins/installed_plugins.json）
   │   └─ 项目级（.costrict/skills/）
   ├─ 远程同步：
-  │   ├─ costrict-web /api/items（metadata + content HTTP 代理）
-  │   └─ favorite → cloudPluginSync.ts 自动同步
+  │   ├─ costrict-web /api/items（发现 metadata + favorite 期望状态）
+  │   ├─ 非 Plugin content：costrict-web HTTP 代理
+  │   └─ Plugin：reconcileCloudPlugins.ts → 聚合 Marketplace → Git source
   └─ 鉴权：JWT（OAuth 流转，存 auth.json）
 
 cs-cloud（设备端，opencode 改造）
@@ -1944,6 +2014,7 @@ cs-cloud（设备端，opencode 改造）
 
 costrict-web（平台，server）
   ├─ /api/items/:id/download（content 下发，DB 直读）
+  ├─ /api/marketplace/:repo/marketplace.json（Plugin 安装投影；旧实现产生 zip source）
   ├─ /api/items/:id/favorite（用户收藏）
   ├─ /api/items/:id/distribute（管理员分发）
   ├─ catalog_ingest_service.go（catalog bundle 摄取）
@@ -1959,8 +2030,9 @@ costrict-web（平台，server）
 | 模块 | V2 行为 | V3 改造 |
 |---|---|---|
 | `GET /api/items` 列表 API | DB content 字段直读 | DB 改为 metadata + business fields 索引；content 不再直读（参考字段）；**全量返回所有 item 含 private**（每行带 `visibility` + `owner` 字段），**不做权限过滤**；权限校验下沉到内容访问层（§4.7.1） |
-| `GET /api/items/:id/download` | DB content 字段返回 | **A2 方案**：调 Gitea `GET /repos/{owner}/{repo}/raw/{ref}/{path}`（fine-grained service PAT），实时拉不缓存；私有 repo 先调 `GET /repos/{owner}/{repo}/collaborators/{username}/permission` 反查（5min Redis cache + webhook 主动失效） |
-| `POST /api/items/:id/favorite` | plugin 类型返回 409 | **方案 B 标记式 favorite**：移除 409 gate（一行删除），plugin 卡片渲染 favorite 按钮；csc 端 favorite plugin 列表加 "Install via marketplace" 跳转 |
+| `GET /api/items/:id/download` | DB content 字段返回 | **非 Plugin A2 方案**：调 Gitea raw API，实时拉不缓存；私有 repo 先做 permission 反查。**Plugin 不使用该 endpoint 安装** |
+| `GET /api/marketplace/:repo/marketplace.json` | Plugin entry 使用平台 `source: zip`，Git-backed download 返回 409 | 按 §5.5 从同步成功的 Git-backed item 生成 csc 标准 `url` / `git-subdir` + `sha` source；不生成 zip，不发布 DB-backed/未同步 item |
+| `POST /api/items/:id/favorite` | plugin 类型返回 409 | 本轮保持 display-only 409 gate；后续激活时复用 item metadata 的 `plugin_name / marketplace_name / marketplace_repo` install envelope，供 csc 现有 reconcile 读取 |
 | `POST /api/items/:id/distribute` | 同上分发逻辑 | 保留语义；target_user_id 引用 user_id（不可变，不受 username 改名影响） |
 | `catalog_ingest_service.go` | 触发 scan Enqueue（L1024, L1130） | **迁移到 sync worker**（监听 Gitea webhook）；Stage 5 下线 |
 | `sync_service.go` | 触发 scan Enqueue（L421, L491） | **迁移到新 sync worker**；Stage 5 下线 |
@@ -1973,9 +2045,9 @@ costrict-web（平台，server）
 | 模块 | V2 行为 | V3 改造 |
 |---|---|---|
 | `internal/cloud/client.go` | HTTP 客户端调 costrict-web `/api/items` | **零改造** |
-| `internal/localserver/favorites_handler.go` | HTTP 代理 csc ↔ costrict-web | **零改造**（不参与 content 下发真实数据流，仅代理） |
+| `internal/localserver/favorites_handler.go` | HTTP 代理 csc ↔ costrict-web | **零改造**（仅代理发现/favorite 期望状态，不代理 Plugin Git 内容） |
 | 数据存储 | 无本地缓存（实时代理） | **零改造**（保持现状，不引入 manifest 缓存） |
-| 与 Gitea 交互 | 无 | **零改造**（csc 直接拉 Gitea，cs-cloud 不参与 git 流程） |
+| 与 Gitea 交互 | 无 | **零改造**（csc 的既有 Plugin manager clone source Git，cs-cloud 不参与 git 流程） |
 
 cs-cloud 整体零改造。
 
@@ -1985,13 +2057,13 @@ cs-cloud 整体零改造。
 |---|---|---|
 | `~/.costrict/skills/` / `~/.costrict/plugins/installed_plugins.json` | 本地缓存优先 | **零改造**（本地副本机制保留） |
 | `costrict/provider/auth.ts` | costrict-web OAuth 流转 + JWT 存 `auth.json` | **零改造**（仍走 costrict-web OAuth，JWT 不变） |
-| `costrict/favorite/cloudPluginSync.ts` | 收藏后从 costrict-web 拉取同步 | **零改造**（同步链路不变，content 下发仍走 costrict-web HTTP 代理） |
+| `costrict/favorite/reconcileCloudPlugins.ts` | 收藏后读取 install envelope，物化聚合 Marketplace 并安装 `plugin@costrict-plugins` | **零代码改造**；部署通过 `COSTRICT_PLUGIN_MARKETPLACE_URL` 指向平台 HTTP 投影或离线 Gitea snapshot |
 | `costrict/favorite/favorite.ts` | saveFavoriteItem / getFavoriteItems | **零改造** |
 | `commands.ts:520,607` | 命令加载本地副本 | **零改造** |
 | `plugins/bundled/`、`skills/bundled/` | 内置能力 | **零改造** |
-| **新增逻辑（plugin favorite 激活）** | favorite plugin 仅展示 | **方案 B**：plugin 卡片渲染 favorite 按钮 + 列表 "Install via marketplace" 跳转按钮（拼接 `marketplace_repo` + `plugin_name` 调 csc 现有 `csc plugin marketplace add / install` 命令）；不自动 install |
+| Plugin install/update/runtime | 标准 Marketplace 已支持 Git clone，但平台投影的 zip source 不兼容 | **零代码改造**：平台改为输出 csc 标准 Marketplace schema；csc 继续执行现有 add/install/update/runtime reload |
 
-csc 端整体轻改造（仅 plugin favorite UI 跳转），其他零改造。
+csc 端整体零代码改造。固定聚合 Marketplace 名称为 `costrict-plugins`；允许部署配置 source URL。若未来要求每个 item 动态选择不同 Marketplace，属于新的 csc 功能，不在本方案内。
 
 #### C.2.4 fork Gitea（新增组件）
 
@@ -2017,8 +2089,10 @@ Stage 1：基础设施（1 周）
 Stage 2：仓库分类与数据导出（2 周）
     ↓
 Stage 3：webhook 接通与双写灰度（2-3 周）
-    ├─ /api/items/:id/download 内部实现切换为 A2（Gitea raw + permission 反查）
-    ├─ /api/items/:id/favorite 移除 plugin 409 gate（方案 B）
+    ├─ 非 Plugin /api/items/:id/download 内部实现切换为 A2（Gitea raw + permission 反查）
+    ├─ Plugin Marketplace endpoint 切换为标准 Git source projection
+    ├─ 保持 Plugin display-only 409 gate；另行灰度激活 favorite/distribute install envelope
+    ├─ 用未改动 csc 验证 HTTP/Gitea Marketplace install + update + runtime
     └─ scan_service 短路键双写（CurrentRevision + git_sha）
     ↓
 Stage 4：mirror 接入自动化（1 周）
@@ -2034,11 +2108,12 @@ Stage 5：下线旧通道与清理（1 周）
 
 | 维度 | V2 现状 | V3 整改后 | 决策编号 |
 |---|---|---|---|
-| content 下发流程 | DB 直读 | HTTP 代理 + Gitea permission API 反查（A2） | §17 第 18 行 |
+| 非 Plugin content 下发 | DB 直读 | HTTP 代理 + Gitea permission API 反查（A2） | §17 第 18 行 |
+| Plugin content 下发 | 平台 zip source / Git-backed 409 | 标准 Marketplace 投影 + csc 直接 clone Git source | §5.5 / §17 第 18、25 行 |
 | 用户中心 | Casdoor + costrict-web 双层 | costrict-web 主权 + Casdoor 退化 + fork 中间件 | §17 第 14-17 行 |
-| plugin favorite | 409 gate（display-only） | 方案 B（标记式 favorite + 跳转 install） | 本附录 C.2.1 / C.2.3 |
+| plugin favorite | 409 gate（display-only） | 本轮保持；后续激活 install envelope 时复用现有 csc 聚合 Marketplace reconcile | 本附录 C.2.1 / C.2.3 |
 | cs-cloud 改造 | - | 零改造 | 本附录 C.2.2 |
-| csc 改造 | - | 仅 plugin favorite UI 跳转 | 本附录 C.2.3 |
+| csc 改造 | - | 零代码；仅部署配置 Marketplace URL | 本附录 C.2.3 |
 | fork Gitea 改动 | - | ~400 行（auth_jwt.go + 全局 pre-receive hook + 注册） | §17 第 15 行 / 本附录 C.2.4 |
 
 ---

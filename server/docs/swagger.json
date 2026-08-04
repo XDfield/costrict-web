@@ -2975,6 +2975,139 @@
                 }
             }
         },
+        "/internal/git-sync/{git_server_id}": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-capability-sync"
+                ],
+                "summary": "Receive a Gitea capability repository push webhook",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Configured git_servers.server_id",
+                        "name": "git_server_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Gitea event type; only push is queued",
+                        "name": "X-Gitea-Event",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Gitea delivery identifier; idempotency key within this git server",
+                        "name": "X-Gitea-Delivery",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "HMAC-SHA256 hex over the raw request body",
+                        "name": "X-Gitea-Signature",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Gitea push payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.giteaPushWebhookPayload"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "duplicate": {
+                                    "type": "boolean"
+                                },
+                                "ignored": {
+                                    "type": "boolean"
+                                },
+                                "job_id": {
+                                    "type": "string"
+                                },
+                                "reason": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/invitations": {
             "get": {
                 "security": [
@@ -5264,6 +5397,79 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/marketplace/{repo}/marketplace.json": {
+            "get": {
+                "description": "Return installable Git-backed plugins as a standard csc marketplace manifest. Plugin sources are pinned to the last successfully synced commit.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "marketplace"
+                ],
+                "summary": "Get marketplace.json",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Marketplace identity: costrict-plugins, public, or a repository name",
+                        "name": "repo",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.marketplaceManifest"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -12547,6 +12753,83 @@
         }
     },
     "definitions": {
+        "internal_handlers.marketplaceManifest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/internal_handlers.marketplaceOwner"
+                },
+                "plugins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.marketplacePluginEntry"
+                    }
+                }
+            }
+        },
+        "internal_handlers.marketplaceOwner": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.marketplacePluginEntry": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "source": {
+                    "$ref": "#/definitions/internal_handlers.marketplacePluginSource"
+                },
+                "strict": {
+                    "type": "boolean"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.marketplacePluginSource": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
+                "sha": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
             "type": "object",
             "properties": {
@@ -14893,6 +15176,34 @@
                 },
                 "versionLabel": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_handlers.giteaPushWebhookPayload": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "type": "string"
+                },
+                "before": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
+                "repository": {
+                    "type": "object",
+                    "properties": {
+                        "default_branch": {
+                            "type": "string"
+                        },
+                        "full_name": {
+                            "type": "string"
+                        },
+                        "id": {
+                            "type": "integer"
+                        }
+                    }
                 }
             }
         },
