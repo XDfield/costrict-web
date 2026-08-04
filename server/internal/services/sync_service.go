@@ -552,7 +552,11 @@ func (s *SyncService) syncAssets(ctx context.Context, localPath, relPath, itemID
 		return failures
 	}
 
-	allFiles, err := s.Git.ListFiles(localPath, []string{dir + "/**"}, nil)
+	// ListFiles walks the tree and emits forward-slashed rel paths, so the
+	// include glob must use forward slashes too. filepath.Dir returns OS-native
+	// separators (backslash on Windows), which would otherwise cause the glob
+	// to match nothing and the stale-row cleanup below to wipe every asset.
+	allFiles, err := s.Git.ListFiles(localPath, []string{filepath.ToSlash(dir) + "/**"}, nil)
 	if err != nil {
 		*errs = append(*errs, fmt.Sprintf("list assets for %s: %v", relPath, err))
 		return failures + 1
