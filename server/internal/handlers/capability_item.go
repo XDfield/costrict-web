@@ -2782,6 +2782,29 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		gitSyncStatus = "pending"
 	}
 
+	// A git-backed fork copies src.Content verbatim, so its hash has to be
+	// derived from that content exactly the way discovery derives it. Inheriting
+	// src.ContentMD5 carries over the source row's value, which is empty for
+	// catalog-sourced plugins and a 32-char MD5 for older rows — either way the
+	// fork can never match in CheckItemConsistency.
+	//
+	// Nothing downstream repairs it: the row is bound to its Git repo from birth
+	// (ContentBackend / SourceGitServerID / SourceGitRepoID are set below), so
+	// SyncRepository always finds it in boundItems and takes the reconcile
+	// branch, which never recomputes the hash. It therefore never reaches
+	// buildDiscoveredCapability, where discovery does its hashing.
+	//
+	// DB-backed forks keep inheriting the source hash: their content may be an
+	// archive whose hash is built from a file manifest rather than from text.
+	forkContentMD5 := src.ContentMD5
+	if gitPlan != nil {
+		manifestPath := sourceRepoPath
+		if manifestPath == "" {
+			manifestPath = src.SourcePath
+		}
+		forkContentMD5 = services.HashGitCapabilityContent(src.ItemType, manifestPath, src.Content)
+	}
+
 	var item *models.CapabilityItem
 	var err error
 	for attempt := 0; attempt < 10; attempt++ {
@@ -2803,7 +2826,7 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			Category:          src.Category,
 			Version:           src.Version,
 			Content:           src.Content,
-			ContentMD5:        src.ContentMD5,
+			ContentMD5:        forkContentMD5,
 			Metadata:          src.Metadata,
 			SourcePath:        src.SourcePath,
 			SourceSHA:         src.SourceSHA,

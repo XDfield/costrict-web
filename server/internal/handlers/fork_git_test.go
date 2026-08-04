@@ -22,6 +22,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -433,6 +434,61 @@ func TestForkItem_Git_HappyPath(t *testing.T) {
 	}
 	if stored.ForkedFromItemID == nil || *stored.ForkedFromItemID != "plug-1" {
 		t.Errorf("fork provenance missing: %+v", stored.ForkedFromItemID)
+	}
+}
+
+// A git-backed fork must derive its own content hash rather than inherit the
+// source row's. Catalog-sourced plugins carry an empty content_md5, and older
+// rows still carry a 32-char MD5; inheriting either leaves the fork permanently
+// unable to match in CheckItemConsistency.
+//
+// Nothing downstream repairs it: the fork is bound to its Git repo from birth,
+// so SyncRepository always finds it in boundItems and takes the reconcile
+// branch, which never recomputes the hash — it never reaches the discovery
+// hashing path at all. That is why this has to be right at creation time.
+func TestForkItem_Git_DerivesOwnContentHash(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-1", "cospowers-requirements", "costrict-plugins-repo/cospowers-requirements")
+	fx.gitea.repos["costrict-plugins-repo/cospowers-requirements"] = "main"
+
+	// Precondition: the source row is what a catalog ingest produces — no hash.
+	var src models.CapabilityItem
+	database.GetDB().First(&src, "id = ?", "plug-1")
+	if src.ContentMD5 != "" {
+		t.Fatalf("fixture drift: source row should have no hash, got %q", src.ContentMD5)
+	}
+
+	w := forkReq(newForkRouter("bob"), "plug-1")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var stored models.CapabilityItem
+	database.GetDB().First(&stored, "id = ?", resp.ID)
+	if stored.ContentBackend != "git" {
+		t.Fatalf("precondition: fork is not git-backed (%q)", stored.ContentBackend)
+	}
+	if len(stored.ContentMD5) != 64 {
+		t.Fatalf("fork must carry a 64-char SHA-256, got %d chars: %q",
+			len(stored.ContentMD5), stored.ContentMD5)
+	}
+
+	// And it must be the same hash discovery would compute for that content,
+	// so the two creation paths stay comparable.
+	manifestPath := stored.SourceRepoPath
+	if manifestPath == "" {
+		manifestPath = stored.SourcePath
+	}
+	want := services.HashGitCapabilityContent(stored.ItemType, manifestPath, stored.Content)
+	if stored.ContentMD5 != want {
+		t.Errorf("fork hash %q != discovery-equivalent hash %q", stored.ContentMD5, want)
 	}
 }
 

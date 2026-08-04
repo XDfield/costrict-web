@@ -927,6 +927,14 @@ func ensureGitCapabilityReconciliationBinding(
 // parser rejects invalid JSON during parsing — so that last fallback is purely
 // defensive. Every branch yields a 64-char SHA-256, keeping the column format
 // uniform across backends.
+// Exported so the fork path in package handlers hashes identically: a forked
+// git-backed row copies the source content verbatim, so it must derive its hash
+// the same way discovery would, not inherit the source row's (possibly empty or
+// still-MD5) value.
+func HashGitCapabilityContent(itemType, manifestPath, content string) string {
+	return hashDiscoveredCapabilityContent(itemType, manifestPath, content)
+}
+
 func hashDiscoveredCapabilityContent(itemType, manifestPath, content string) string {
 	hashSvc := NewContentHashService()
 	if isJSONPath(manifestPath) {
