@@ -37,6 +37,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GitServerStore is the GORM surface the handler consumes. *gorm.DB
@@ -94,24 +95,53 @@ func (s *GormGitServerStore) UpdateGitServer(ctx context.Context, serverID strin
 	return s.GetGitServer(ctx, serverID)
 }
 
-// DeleteGitServer removes the row. Refuses (returns errGitServerInUse) if
-// any tenant_git_server_binding still references it.
+// DeleteGitServer removes a server after it is unbound. Sync jobs are derived
+// operational history and have no meaning without the server configuration,
+// so they are removed in the same transaction before the server row.
 func (s *GormGitServerStore) DeleteGitServer(ctx context.Context, serverID string) error {
-	var count int64
-	if err := s.DB.WithContext(ctx).Model(&models.TenantGitServerBinding{}).
-		Where("git_server_id = ?", serverID).Count(&count).Error; err != nil {
-		return err
-	}
-	if count > 0 {
-		return errGitServerInUse
-	}
-	return s.DB.WithContext(ctx).Where("server_id = ?", serverID).
-		Delete(&models.GitServer{}).Error
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialize deletion against Git-backed capability creation. Writers
+		// take KEY SHARE on this same row before inserting their item, so the
+		// server cannot disappear after the reference counts have passed.
+		serverQuery := tx.Where("server_id = ?", serverID)
+		if tx.Dialector.Name() == "postgres" {
+			serverQuery = serverQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var server models.GitServer
+		if err := serverQuery.First(&server).Error; err != nil {
+			return err
+		}
+
+		var count int64
+		if err := tx.Model(&models.TenantGitServerBinding{}).
+			Where("git_server_id = ?", serverID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return errGitServerInUse
+		}
+		var gitBackedItems int64
+		if err := tx.Model(&models.CapabilityItem{}).
+			Where("content_backend = ? AND source_git_server_id = ?", "git", serverID).
+			Count(&gitBackedItems).Error; err != nil {
+			return err
+		}
+		if gitBackedItems > 0 {
+			return errGitServerHasGitBackedItems
+		}
+		if err := tx.Where("git_server_id = ?", serverID).
+			Delete(&models.GitCapabilitySyncJob{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("server_id = ?", serverID).Delete(&models.GitServer{}).Error
+	})
 }
 
 // errGitServerInUse — DELETE refused because a tenant_git_server_binding
 // still references the row. Operator must unbind first.
 var errGitServerInUse = errors.New("git_server is bound to one or more tenants; unbind before deleting")
+
+var errGitServerHasGitBackedItems = errors.New("git_server is referenced by git-backed capability items; migrate or remove those items before deleting")
 
 // GitServerAPI is the receiver for git_servers CRUD handlers.
 type GitServerAPI struct {
@@ -397,7 +427,7 @@ func (a *GitServerAPI) DeleteGitServer(c *gin.Context) {
 		return
 	}
 	if err := a.Store.DeleteGitServer(c.Request.Context(), serverID); err != nil {
-		if errors.Is(err, errGitServerInUse) {
+		if errors.Is(err, errGitServerInUse) || errors.Is(err, errGitServerHasGitBackedItems) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}

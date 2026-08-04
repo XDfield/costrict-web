@@ -25,6 +25,17 @@ assert_not_contains() {
   fi
 }
 
+assert_env_value() {
+  local file="$1"
+  local name="$2"
+  local value="$3"
+  grep -F -A1 -- "- name: $name" "$file" \
+    | grep -Fq -- "value: \"$value\"" || {
+      echo "expected rendered env $name to equal: $value" >&2
+      exit 1
+    }
+}
+
 helm template local-storage "$CHART_DIR" > "$TEST_DIR/local.yaml"
 assert_not_contains "$TEST_DIR/local.yaml" "kind: PersistentVolumeClaim"
 assert_not_contains "$TEST_DIR/local.yaml" "kind: StorageClass"
@@ -34,6 +45,14 @@ assert_contains "$TEST_DIR/local.yaml" "name: ARTIFACT_STORAGE_BACKEND"
 assert_contains "$TEST_DIR/local.yaml" 'value: "local"'
 assert_contains "$TEST_DIR/local.yaml" "name: ARTIFACT_STORAGE_PATH"
 assert_not_contains "$TEST_DIR/local.yaml" "name: S3_ENDPOINT"
+assert_not_contains "$TEST_DIR/local.yaml" "name: GIT_SYSTEM_WEBHOOK_BASE_URL"
+assert_env_value "$TEST_DIR/local.yaml" "GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS" "300"
+
+helm template webhook-enabled "$CHART_DIR" \
+  --set gitSystemWebhook.baseURL=https://cloud.example/cloud-api \
+  --set gitSystemWebhook.reconcileIntervalSeconds=37 > "$TEST_DIR/webhook-enabled.yaml"
+assert_env_value "$TEST_DIR/webhook-enabled.yaml" "GIT_SYSTEM_WEBHOOK_BASE_URL" "https://cloud.example/cloud-api"
+assert_env_value "$TEST_DIR/webhook-enabled.yaml" "GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS" "37"
 
 helm template local-shared "$CHART_DIR" \
   --set artifactStorage.local.existingClaim=api-artifacts-rwx > "$TEST_DIR/local-shared.yaml"

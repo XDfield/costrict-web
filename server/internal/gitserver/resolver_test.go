@@ -126,6 +126,22 @@ func TestDBResolver_HappyPathReturnsFullConfig(t *testing.T) {
 	}
 }
 
+func TestDBResolver_ResolveByServerIDReturnsWebhookSecret(t *testing.T) {
+	db := setupResolverDB(t)
+	seedServer(t, db, &models.GitServer{
+		ServerID: "gs-1", Kind: "gitea", Endpoint: "https://g.example",
+		DisplayName: "x", Config: `{"admin_token":"tok","webhook_secret":"whsec"}`,
+		Enabled: true,
+	})
+	cfg, err := NewDBResolver(db).ResolveByServerID(context.Background(), "gs-1")
+	if err != nil {
+		t.Fatalf("ResolveByServerID: %v", err)
+	}
+	if cfg.ServerID != "gs-1" || cfg.WebhookSecret != "whsec" || cfg.AdminToken != "tok" {
+		t.Errorf("unexpected config: %+v", cfg)
+	}
+}
+
 func TestDBResolver_FKViolationReturnsNotFound(t *testing.T) {
 	db := setupResolverDB(t)
 	seedBinding(t, db, "t1", "gs-missing")

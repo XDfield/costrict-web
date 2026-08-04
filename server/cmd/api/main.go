@@ -1033,6 +1033,12 @@ func main() {
 	userCreatedAPI := handlers.NewUserCreatedEventAPI(logger.L(), db)
 	internalAPI.POST("/users/created", userCreatedAPI.ReceiveUserCreated)
 
+	// Gitea capability sync webhook is intentionally registered directly on
+	// the engine rather than internalAPI: its HMAC signature is its complete
+	// authentication contract, so InternalAuth must not run before it.
+	gitCapabilityWebhookAPI := handlers.NewGitCapabilityWebhookAPI(db, localGitResolver)
+	r.POST("/api/internal/git-sync/:git_server_id", gitCapabilityWebhookAPI.ReceiveGiteaPush)
+
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)
 

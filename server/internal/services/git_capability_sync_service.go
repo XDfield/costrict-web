@@ -1,0 +1,492 @@
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/costrict/costrict-web/server/internal/gitserver"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
+	"github.com/costrict/costrict-web/server/internal/models"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const (
+	gitCapabilitySyncPending = "pending"
+	gitCapabilitySyncSynced  = "synced"
+	gitCapabilitySyncError   = "error"
+)
+
+type GitCapabilityReader interface {
+	GetRepoByID(ctx context.Context, repoID int64) (*gitsync.Repo, error)
+	GetBranch(ctx context.Context, owner, repo, branch string) (*gitsync.Branch, error)
+	ReadFile(ctx context.Context, owner, repo, ref, filePath string) ([]byte, error)
+}
+
+type GitCapabilitySyncService struct {
+	DB        *gorm.DB
+	Parser    *ParserService
+	NewReader func(*gitserver.Config) GitCapabilityReader
+}
+
+type GitCapabilitySyncResult struct {
+	CommitSHA string
+	Updated   int
+	Archived  int
+	Skipped   int
+}
+
+// GitCapabilitySyncLease fences a worker claim. A worker must still own this
+// token immediately before it commits index updates; reclaimed jobs receive a
+// new token, so a timed-out worker cannot write after its lease has been lost.
+type GitCapabilitySyncLease struct {
+	JobID string
+	Token string
+}
+
+var ErrGitCapabilityLeaseLost = errors.New("git capability sync lease lost")
+
+type preparedGitCapability struct {
+	item       models.CapabilityItem
+	parsed     *ParsedItem
+	metadata   datatypes.JSON
+	updateTags bool
+	removed    bool
+}
+
+// SyncRepository refreshes only capability rows that are already bound to the
+// stable (git server, numeric repo id) identity. Unknown repos and DB-backed
+// rows are deliberately ignored during the incremental rollout.
+func (s *GitCapabilitySyncService) SyncRepository(
+	ctx context.Context,
+	cfg *gitserver.Config,
+	repoID int64,
+	repoFullName string,
+	defaultBranch string,
+	defaultBranchDeleted bool,
+	lease GitCapabilitySyncLease,
+) (result *GitCapabilitySyncResult, retErr error) {
+	if s == nil || s.DB == nil || s.Parser == nil || cfg == nil {
+		return nil, errors.New("git capability sync is not configured")
+	}
+	if cfg.ServerID == "" || repoID <= 0 {
+		return nil, errors.New("git capability sync requires stable server and repository identities")
+	}
+	if strings.TrimSpace(lease.JobID) == "" || strings.TrimSpace(lease.Token) == "" {
+		return nil, errors.New("git capability sync requires an active worker lease")
+	}
+
+	reader := s.reader(cfg)
+	if reader == nil {
+		return nil, errors.New("git capability sync reader is unavailable")
+	}
+
+	var boundItems []models.CapabilityItem
+	if err := s.DB.WithContext(ctx).
+		Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
+			"git", cfg.ServerID, repoID).
+		Order("id ASC").
+		Find(&boundItems).Error; err != nil {
+		return nil, fmt.Errorf("load Git-backed index rows: %w", err)
+	}
+	result = &GitCapabilitySyncResult{}
+	if len(boundItems) == 0 {
+		return result, nil
+	}
+
+	defer func() {
+		if retErr == nil || errors.Is(retErr, ErrGitCapabilityLeaseLost) {
+			return
+		}
+		// A reclaimed worker must never overwrite a newer successful projection
+		// with its late read/parse error. The lease is checked and locked in the
+		// same transaction as this status update.
+		_ = s.markGitCapabilitySyncFailure(context.WithoutCancel(ctx), cfg.ServerID, repoID, lease, retErr)
+	}()
+
+	// Webhook owner/name are mutable hints. Numeric repository ID is the only
+	// identity used to locate current name and default-branch state.
+	repo, err := reader.GetRepoByID(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("load repository %d: %w", repoID, err)
+	}
+	if repo == nil {
+		return nil, fmt.Errorf("repository %d no longer exists (delivery reported %q)", repoID, repoFullName)
+	}
+	if repo.ID != repoID {
+		return nil, fmt.Errorf("repository identity mismatch: requested=%d api=%d", repoID, repo.ID)
+	}
+	owner, repoName, err := splitGitRepoFullName(repo.FullName)
+	if err != nil {
+		return nil, fmt.Errorf("repository API returned invalid full_name: %w", err)
+	}
+	branchName := strings.TrimSpace(repo.DefaultBranch)
+	if branchName == "" {
+		if defaultBranchDeleted {
+			return s.archiveGitCapabilitiesForMissingDefaultBranch(ctx, cfg.ServerID, repoID, lease, boundItems)
+		}
+		return nil, fmt.Errorf("repository %d has no default branch (delivery reported %q)", repoID, defaultBranch)
+	}
+
+	branch, err := reader.GetBranch(ctx, owner, repoName, branchName)
+	if err != nil {
+		return nil, fmt.Errorf("load default branch: %w", err)
+	}
+	if branch == nil {
+		if defaultBranchDeleted {
+			return s.archiveGitCapabilitiesForMissingDefaultBranch(ctx, cfg.ServerID, repoID, lease, boundItems)
+		}
+		return nil, fmt.Errorf("default branch %q does not exist", branchName)
+	}
+	if !validGitSHA(branch.CommitSHA) {
+		return nil, fmt.Errorf("default branch %q has no valid HEAD commit", branchName)
+	}
+	headSHA := strings.ToLower(branch.CommitSHA)
+	result.CommitSHA = headSHA
+
+	items := make([]models.CapabilityItem, 0, len(boundItems))
+	for _, item := range boundItems {
+		if item.SourceRepoPath != "" {
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		return result, nil
+	}
+
+	prepared := make([]preparedGitCapability, 0, len(items))
+	for _, item := range items {
+		if err := validateGitManifestPath(item.SourceRepoPath); err != nil {
+			return nil, fmt.Errorf("item %s: %w", item.ID, err)
+		}
+		raw, err := reader.ReadFile(ctx, owner, repoName, headSHA, item.SourceRepoPath)
+		if err != nil {
+			return nil, fmt.Errorf("read %s at %s: %w", item.SourceRepoPath, headSHA, err)
+		}
+		entry := preparedGitCapability{item: item}
+		if len(raw) == 0 {
+			entry.removed = true
+			prepared = append(prepared, entry)
+			continue
+		}
+
+		parsed, err := s.Parser.ParseGitIndexFile(raw, item.SourceRepoPath, item.ItemType, item.Slug, item.SourceGitEntryKey)
+		if err != nil {
+			if errors.Is(err, ErrGitCapabilityManifestEntryMissing) {
+				entry.removed = true
+				prepared = append(prepared, entry)
+				continue
+			}
+			return nil, fmt.Errorf("parse %s: %w", item.SourceRepoPath, err)
+		}
+		if err := applyExplicitGitIndexFields(parsed); err != nil {
+			return nil, fmt.Errorf("apply explicit metadata from %s: %w", item.SourceRepoPath, err)
+		}
+		// A real plugin.json often omits marketplace-only display fields. Missing
+		// keys preserve the existing projection; explicit empty values still clear
+		// the field, so Git can intentionally remove a description or category.
+		if item.ItemType == "plugin" {
+			if _, present := parsed.Metadata["description"]; !present {
+				parsed.Description = item.Description
+			}
+			if _, present := parsed.Metadata["category"]; !present {
+				parsed.Category = item.Category
+			}
+			if _, present := parsed.Metadata["version"]; !present {
+				parsed.Version = item.Version
+			}
+		}
+		merged, updateTags, err := mergeGitCapabilityMetadata(item.Metadata, parsed.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("merge metadata for item %s: %w", item.ID, err)
+		}
+		entry.parsed = parsed
+		entry.metadata = merged
+		entry.updateTags = updateTags
+		prepared = append(prepared, entry)
+	}
+
+	now := time.Now()
+	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := assertGitCapabilityLease(tx, lease); err != nil {
+			return err
+		}
+		for _, entry := range prepared {
+			updates := map[string]any{
+				"source_repo_url":    repoURL,
+				"source_repo_ref":    branchName,
+				"source_sha":         headSHA,
+				"git_sha":            headSHA,
+				"git_last_synced_at": now,
+				"git_sync_status":    gitCapabilitySyncSynced,
+				"git_sync_error":     "",
+			}
+			if entry.removed {
+				updates["status"] = gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "archived")
+				if entry.item.Status != "banned" {
+					result.Archived++
+				}
+			} else {
+				updates["status"] = gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "active")
+				updates["name"] = entry.parsed.Name
+				updates["description"] = entry.parsed.Description
+				updates["category"] = entry.parsed.Category
+				updates["version"] = entry.parsed.Version
+				updates["metadata"] = entry.metadata
+				if entry.item.Status != "banned" {
+					result.Updated++
+				}
+			}
+
+			updated := tx.Model(&models.CapabilityItem{}).
+				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
+					entry.item.ID, "git", cfg.ServerID, repoID).
+				Updates(updates)
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return fmt.Errorf("Git-backed item %s changed identity during sync", entry.item.ID)
+			}
+
+			if !entry.removed && entry.updateTags {
+				tagSvc := &TagService{DB: tx}
+				tags, err := tagSvc.ResolveOrCreateForAssignment(entry.parsed.Tags, entry.item.CreatedBy)
+				if err != nil {
+					return err
+				}
+				tagIDs := make([]string, 0, len(tags))
+				for _, tag := range tags {
+					tagIDs = append(tagIDs, tag.ID)
+				}
+				if err := tagSvc.SetItemTags(entry.item.ID, tagIDs); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("commit Git capability index: %w", err)
+	}
+	return result, nil
+}
+
+// archiveGitCapabilitiesForMissingDefaultBranch is deliberately available only
+// after the numeric repository lookup has confirmed the same repository and a
+// default-branch deletion delivery has observed no current HEAD. All bound
+// rows are archived, including legacy rows without a manifest path; otherwise
+// those rows would remain active forever with no recoverable Git source.
+func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch(
+	ctx context.Context,
+	serverID string,
+	repoID int64,
+	lease GitCapabilitySyncLease,
+	items []models.CapabilityItem,
+) (*GitCapabilitySyncResult, error) {
+	result := &GitCapabilitySyncResult{}
+	now := time.Now()
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := assertGitCapabilityLease(tx, lease); err != nil {
+			return err
+		}
+		for _, item := range items {
+			updated := tx.Model(&models.CapabilityItem{}).
+				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
+					item.ID, "git", serverID, repoID).
+				Updates(map[string]any{
+					"status":             gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "archived"),
+					"git_last_synced_at": now,
+					"git_sync_status":    gitCapabilitySyncSynced,
+					"git_sync_error":     "",
+				})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return fmt.Errorf("Git-backed item %s changed identity during default-branch archival", item.ID)
+			}
+			if item.Status != "banned" {
+				result.Archived++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("archive Git capabilities for missing default branch: %w", err)
+	}
+	return result, nil
+}
+
+func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
+	ctx context.Context,
+	serverID string,
+	repoID int64,
+	lease GitCapabilitySyncLease,
+	syncErr error,
+) error {
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := assertGitCapabilityLease(tx, lease); err != nil {
+			return err
+		}
+		return tx.Model(&models.CapabilityItem{}).
+			Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?", "git", serverID, repoID).
+			Updates(map[string]any{
+				"git_sync_status": gitCapabilitySyncError,
+				"git_sync_error":  syncErr.Error(),
+			}).Error
+	})
+}
+
+// assertGitCapabilityLease locks the claimed job row with the same
+// transaction that updates capability_items. On PostgreSQL this serializes a
+// concurrent lease-reclaimer behind the index commit; the token is still
+// checked so a lease reclaimed before this point fails closed. SQLite omits
+// FOR UPDATE because its write transaction already serializes the test path.
+func assertGitCapabilityLease(tx *gorm.DB, lease GitCapabilitySyncLease) error {
+	if tx == nil || strings.TrimSpace(lease.JobID) == "" || strings.TrimSpace(lease.Token) == "" {
+		return ErrGitCapabilityLeaseLost
+	}
+	query := tx.Where("id = ? AND status = ? AND lease_token = ?", lease.JobID, models.GitCapabilitySyncJobStatusRunning, lease.Token)
+	if tx.Dialector.Name() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var job models.GitCapabilitySyncJob
+	if err := query.First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrGitCapabilityLeaseLost
+		}
+		return fmt.Errorf("validate Git capability lease: %w", err)
+	}
+	return nil
+}
+
+func (s *GitCapabilitySyncService) reader(cfg *gitserver.Config) GitCapabilityReader {
+	if s.NewReader != nil {
+		return s.NewReader(cfg)
+	}
+	return gitsync.NewClient(cfg.Endpoint, cfg.AdminToken)
+}
+
+func mergeGitCapabilityMetadata(existing datatypes.JSON, incoming map[string]any) (datatypes.JSON, bool, error) {
+	merged := map[string]any{}
+	if len(existing) > 0 && string(existing) != "null" {
+		if err := json.Unmarshal(existing, &merged); err != nil {
+			return nil, false, err
+		}
+	}
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	mergeGitMap(merged, incoming)
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false, err
+	}
+	_, updateTags := incoming["tags"]
+	return datatypes.JSON(encoded), updateTags, nil
+}
+
+// applyExplicitGitIndexFields restores the distinction between an omitted
+// metadata field and one deliberately set to its empty value. Several legacy
+// parsers provide presentation fallbacks (plugin descriptions/tags and
+// SKILL.md body summaries), which are useful for DB ingestion but would make
+// a Git author unable to intentionally clear an indexed description or tag
+// set. Metadata itself remains the authority for this distinction.
+func applyExplicitGitIndexFields(parsed *ParsedItem) error {
+	if parsed == nil {
+		return errors.New("parsed item is nil")
+	}
+	if value, present := parsed.Metadata["description"]; present {
+		description, ok := value.(string)
+		if !ok {
+			return errors.New("description must be a string")
+		}
+		parsed.Description = description
+	}
+	if value, present := parsed.Metadata["tags"]; present {
+		tags, err := explicitGitTags(value)
+		if err != nil {
+			return err
+		}
+		parsed.Tags = tags
+	}
+	return nil
+}
+
+func explicitGitTags(value any) ([]string, error) {
+	if value == nil {
+		return nil, errors.New("tags must be an array of strings")
+	}
+	values, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("tags must be an array of strings")
+	}
+	tags := make([]string, 0, len(values))
+	for _, raw := range values {
+		tag, ok := raw.(string)
+		if !ok {
+			return nil, errors.New("tags must be an array of strings")
+		}
+		tags = append(tags, tag)
+	}
+	return tags, nil
+}
+
+func mergeGitMap(dst, src map[string]any) {
+	for key, value := range src {
+		srcMap, srcOK := value.(map[string]any)
+		dstMap, dstOK := dst[key].(map[string]any)
+		if srcOK && dstOK {
+			mergeGitMap(dstMap, srcMap)
+			continue
+		}
+		dst[key] = value
+	}
+}
+
+func splitGitRepoFullName(fullName string) (string, string, error) {
+	parts := strings.Split(strings.TrimSpace(fullName), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[0] == "." || parts[1] == "." ||
+		parts[0] == ".." || parts[1] == ".." {
+		return "", "", fmt.Errorf("invalid repository full_name %q", fullName)
+	}
+	return parts[0], parts[1], nil
+}
+
+func validateGitManifestPath(filePath string) error {
+	trimmed := strings.TrimSpace(filePath)
+	if trimmed == "" || strings.Contains(trimmed, "\\") || strings.HasPrefix(trimmed, "/") || path.Clean(trimmed) != trimmed ||
+		trimmed == "." || trimmed == ".." || strings.HasPrefix(trimmed, "../") {
+		return fmt.Errorf("invalid Git manifest path %q", filePath)
+	}
+	return nil
+}
+
+func validGitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func firstGitURL(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}

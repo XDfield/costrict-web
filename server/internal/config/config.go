@@ -16,6 +16,7 @@ type Config struct {
 	RedisURL                  string
 	CloudBaseURL              string
 	WebhookBaseURL            string // Public URL for WeCom/WeChat callback; defaults to CloudBaseURL
+	GitSystemWebhookBaseURL   string // Public API base URL for Gitea system hooks; empty disables reconciliation
 	AppURL                    string // Public URL for frontend links in notifications; defaults to CloudBaseURL
 	MulticaAPIURL             string // Multica server API base URL (e.g. http://multica-server:8080), used for session permission checks
 	MulticaIntegrationSecret  string // Shared HMAC secret for the inbound Multica notification bridge (POST /api/integrations/multica/events); endpoint disabled when empty
@@ -245,6 +246,7 @@ func Load() *Config {
 		RedisURL:                  getEnv("REDIS_URL", ""),
 		CloudBaseURL:              cloudBaseURL,
 		WebhookBaseURL:            getEnv("WEBHOOK_BASE_URL", cloudBaseURL),
+		GitSystemWebhookBaseURL:   getEnv("GIT_SYSTEM_WEBHOOK_BASE_URL", ""),
 		AppURL:                    getEnv("APP_URL", cloudBaseURL),
 		MulticaAPIURL:             getEnv("MULTICA_API_URL", ""),
 		MulticaIntegrationSecret:  getEnv("MULTICA_INTEGRATION_SECRET", ""),

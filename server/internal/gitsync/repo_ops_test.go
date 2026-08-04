@@ -103,6 +103,40 @@ func TestClient_GetRepo_NotFoundReturnsNil(t *testing.T) {
 	}
 }
 
+func TestClient_GetRepoByID_UsesStableRepositoryIdentity(t *testing.T) {
+	srv := newDispatchServer(t, dispatch{
+		"GET /api/v1/repositories/42": func(w http.ResponseWriter, r *http.Request) {
+			respondJSON(t, w, http.StatusOK, Repo{ID: 42, Name: "renamed", FullName: "new-owner/renamed", DefaultBranch: "main"})
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+
+	repo, err := c.GetRepoByID(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("GetRepoByID: %v", err)
+	}
+	if repo == nil || repo.ID != 42 || repo.FullName != "new-owner/renamed" {
+		t.Fatalf("unexpected repository: %+v", repo)
+	}
+}
+
+func TestClient_GetRepoByID_NotFoundReturnsNil(t *testing.T) {
+	srv := newDispatchServer(t, dispatch{
+		"GET /api/v1/repositories/42": func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+
+	repo, err := c.GetRepoByID(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("expected nil error on 404, got %v", err)
+	}
+	if repo != nil {
+		t.Fatalf("expected nil repository on 404, got %+v", repo)
+	}
+}
+
 func TestClient_CreateBranch_HappyPath(t *testing.T) {
 	var capturedBody string
 	srv := newDispatchServer(t, dispatch{
@@ -162,12 +196,17 @@ func TestClient_CreateBranch_RaceRejectedIsIdempotent(t *testing.T) {
 func TestClient_GetBranch_HappyPath(t *testing.T) {
 	srv := newDispatchServer(t, dispatch{
 		"GET /api/v1/repos/t-abc12345/wf-my-wf/branches/main": func(w http.ResponseWriter, r *http.Request) {
-			respondJSON(t, w, http.StatusOK, map[string]any{
-				"branch": map[string]any{
-					"name":   "main",
-					"commit": map[string]any{"id": "abc123commitsha"},
-				},
-			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+  "name": "main",
+  "commit": {
+    "id": "abc123commitsha",
+    "message": "index capability metadata"
+  },
+  "protected": false,
+  "required_approvals": 0
+}`))
 		},
 	})
 	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())

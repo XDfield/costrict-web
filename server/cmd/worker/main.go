@@ -14,6 +14,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/llm"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/migration"
@@ -65,7 +66,6 @@ func runWorker() {
 	if err != nil {
 		log.Fatalf("Failed to acquire migration lock: %v", err)
 	}
-	defer unlock()
 
 	if err := runPreMigrations(db); err != nil {
 		log.Fatalf("Failed to run pre-migrations: %v", err)
@@ -137,6 +137,22 @@ func runWorker() {
 		PollInterval: pollInterval,
 	}
 
+	gitCapabilityConcurrency, _ := strconv.Atoi(os.Getenv("GIT_CAPABILITY_WORKER_CONCURRENCY"))
+	if gitCapabilityConcurrency <= 0 {
+		gitCapabilityConcurrency = 2
+	}
+	gitCapabilityPool := &worker.GitCapabilityWorkerPool{
+		DB:       db,
+		Resolver: gitserver.NewDBResolver(db),
+		SyncService: &services.GitCapabilitySyncService{
+			DB:     db,
+			Parser: &services.ParserService{},
+		},
+		Concurrency:  gitCapabilityConcurrency,
+		PollInterval: pollInterval,
+	}
+	gitSystemHookReconciler := newGitSystemHookReconciler(db, cfg)
+
 	scanEnabled := os.Getenv("SCAN_ENABLED")
 	var scanPool *worker.ScanWorkerPool
 	if scanEnabled != "false" {
@@ -186,14 +202,39 @@ func runWorker() {
 
 	pool.Start()
 	log.Printf("Worker pool started with %d workers, polling every %s", concurrency, pollInterval)
+	gitCapabilityPool.Start()
+	log.Printf("Git capability worker pool started with %d workers", gitCapabilityConcurrency)
+	gitSystemHookReconciler.Start()
+	log.Printf("Git system webhook reconciler started, interval=%s", gitSystemHookReconciler.Interval)
 
 	<-ctx.Done()
 	log.Println("Shutting down worker pools...")
+	gitSystemHookReconciler.Stop()
 	pool.Stop()
+	gitCapabilityPool.Stop()
 	if scanPool != nil {
 		scanPool.Stop()
 	}
 	log.Println("Worker pools stopped")
+}
+
+func newGitSystemHookReconciler(db *gorm.DB, cfg *config.Config) *worker.GitSystemHookReconciler {
+	interval := 5 * time.Minute
+	if raw := os.Getenv("GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS"); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			interval = time.Duration(seconds) * time.Second
+		}
+	}
+	baseURL := ""
+	if cfg != nil {
+		baseURL = cfg.GitSystemWebhookBaseURL
+	}
+	return &worker.GitSystemHookReconciler{
+		DB:             db,
+		WebhookBaseURL: baseURL,
+		Interval:       interval,
+		RequestTimeout: 15 * time.Second,
+	}
 }
 
 type latestRevisionRow struct {

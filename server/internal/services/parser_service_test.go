@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestParseMCPJSON_OuterEntryKeyOverridesConflictingChildKey(t *testing.T) {
+	p := &ParserService{}
+	items, err := p.ParseMCPJSON([]byte(`{
+  "mcpServers": {
+    "stable-entry": {
+      "key": "spoofed-entry",
+      "name": "Stable MCP",
+      "command": "serve"
+    }
+  }
+}`), ".mcp.json")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if got := items[0].Metadata["key"]; got != "stable-entry" {
+		t.Fatalf("metadata key = %#v, want outer mcpServers key", got)
+	}
+}
+
 func TestParsePluginJSON_HappyPath(t *testing.T) {
 	p := &ParserService{}
 	content := []byte(`{

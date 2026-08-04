@@ -476,12 +476,16 @@ func (p *ParserService) ParseMCPJSON(content []byte, sourcePath string) ([]*Pars
 
 	items := make([]*ParsedItem, 0, len(servers))
 	for key, val := range servers {
-		serverMeta := map[string]any{"key": key}
+		serverMeta := make(map[string]any)
 		if m, ok := val.(map[string]any); ok {
 			for k, v := range m {
 				serverMeta[k] = v
 			}
 		}
+		// The mcpServers map key is the manifest entry's stable identity. A
+		// child-provided "key" is metadata only and must not be allowed to
+		// redirect sync/archival matching to another entry.
+		serverMeta["key"] = key
 
 		name := key
 		if v, ok := serverMeta["name"].(string); ok && v != "" {

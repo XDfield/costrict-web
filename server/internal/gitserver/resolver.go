@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
@@ -48,6 +49,10 @@ type Config struct {
 	AdminToken    string
 	AdminUser     string
 	AdminPassword string
+	// WebhookSecret verifies inbound Gitea webhook delivery signatures. It
+	// is stored alongside the other per-server secrets in git_servers.config
+	// as webhook_secret, never in a dedicated plaintext database column.
+	WebhookSecret string
 	// WebURL is the browser-facing base URL of the git server, used to build
 	// links a user clicks (repo pages) and addresses their device clones from.
 	// Endpoint is the API address, which on split internal/external deployments
@@ -96,15 +101,29 @@ func (r *DBResolver) Resolve(ctx context.Context, tenantID string) (*Config, err
 		return nil, fmt.Errorf("gitserver: query binding for tenant %q: %w", tenantID, err)
 	}
 
+	return r.ResolveByServerID(ctx, binding.GitServerID)
+}
+
+// ResolveByServerID loads a Git server directly by its stable server_id.
+//
+// It is used by inbound Git webhooks, whose route carries git_server_id and
+// therefore has no tenant context. The returned Config intentionally has the
+// same shape and validation as Resolve so consumers can safely use its API
+// endpoint and admin token after the webhook has been authenticated.
+func (r *DBResolver) ResolveByServerID(ctx context.Context, serverID string) (*Config, error) {
+	if r == nil || r.db == nil || strings.TrimSpace(serverID) == "" {
+		return nil, ErrGitServerNotFound
+	}
+
 	// Load the git_servers row.
 	var gs models.GitServer
-	err = r.db.WithContext(ctx).
-		First(&gs, "server_id = ?", binding.GitServerID).Error
+	err := r.db.WithContext(ctx).
+		First(&gs, "server_id = ?", serverID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrGitServerNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("gitserver: query git_server %q: %w", binding.GitServerID, err)
+		return nil, fmt.Errorf("gitserver: query git_server %q: %w", serverID, err)
 	}
 	if !gs.Enabled {
 		return nil, ErrGitServerDisabled
@@ -126,6 +145,7 @@ func (r *DBResolver) Resolve(ctx context.Context, tenantID string) (*Config, err
 		AdminToken:    parsed.AdminToken,
 		AdminUser:     parsed.AdminUser,
 		AdminPassword: parsed.AdminPassword,
+		WebhookSecret: parsed.WebhookSecret,
 		WebURL:        parsed.WebURL,
 	}, nil
 }
@@ -135,6 +155,7 @@ type gitServerConfigJSON struct {
 	AdminToken    string `json:"admin_token"`
 	AdminUser     string `json:"admin_user,omitempty"`
 	AdminPassword string `json:"admin_password,omitempty"`
+	WebhookSecret string `json:"webhook_secret,omitempty"`
 	WebURL        string `json:"web_url,omitempty"`
 }
 

@@ -480,6 +480,13 @@ type CapabilityItem struct {
 	SourceRepoRef     string               `gorm:"type:varchar(64);not null;default:'main'" json:"sourceRepoRef,omitempty"`      // 仓库 ref（分支）
 	SourceRepoPath    string               `gorm:"type:text;not null;default:''" json:"sourceRepoPath,omitempty"`                // 主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页
 	ContentBackend    string               `gorm:"type:varchar(16);not null;default:'db'" json:"contentBackend,omitempty"`       // db | git
+	SourceGitServerID string               `gorm:"type:varchar(64);not null;default:''" json:"-"`                               // 稳定 Git server 身份；仅 git-backed 使用
+	SourceGitRepoID   int64                `gorm:"not null;default:0" json:"-"`                                                 // Gitea repository.id；URL/owner 改名时保持不变
+	SourceGitEntryKey string               `gorm:"type:text;not null;default:''" json:"-"`                                       // 同一 manifest 内的稳定条目身份；单条文件为空，多 MCP 使用 mcpServers key
+	GitSHA            string               `gorm:"type:varchar(40);not null;default:''" json:"gitSha,omitempty"`                 // 最近成功写入索引的 default-branch commit
+	GitLastSyncedAt   *time.Time           `json:"gitLastSyncedAt,omitempty"`
+	GitSyncStatus     string               `gorm:"type:varchar(16);not null;default:''" json:"gitSyncStatus,omitempty"`          // pending | synced | error；db-backed 为空
+	GitSyncError      string               `gorm:"type:text;not null;default:''" json:"-"`
 	PreviewCount      int                  `gorm:"default:0" json:"previewCount"`
 	InstallCount      int                  `gorm:"default:0" json:"installCount"`
 	FavoriteCount     int                  `gorm:"default:0" json:"favoriteCount"`

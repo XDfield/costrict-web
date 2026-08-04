@@ -44,6 +44,16 @@ func setupHandlersDB(t *testing.T) *gorm.DB {
 			bound_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		)`,
+		`CREATE TABLE git_capability_sync_jobs (
+			id TEXT PRIMARY KEY,
+			git_server_id TEXT NOT NULL
+		)`,
+		`CREATE TABLE capability_items (
+			id TEXT PRIMARY KEY,
+			content_backend TEXT NOT NULL,
+			source_git_server_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active'
+		)`,
 		`CREATE TABLE user_git_binding (
 			user_subject_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -244,6 +254,63 @@ func TestDeleteGitServer_SucceedsWhenUnbound(t *testing.T) {
 	w := doJSON(t, r, "DELETE", "/api/internal/git-servers/gs-1", nil)
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", w.Code)
+	}
+}
+
+func TestDeleteGitServer_DeletesDerivedSyncJobs(t *testing.T) {
+	db := setupHandlersDB(t)
+	now := time.Now()
+	rawInsertServer(t, db, &models.GitServer{
+		ServerID: "gs-1", Kind: "gitea", Endpoint: "https://g",
+		DisplayName: "G", Config: "{}", Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	if err := db.Exec(`INSERT INTO git_capability_sync_jobs (id, git_server_id) VALUES (?, ?)`, "job-1", "gs-1").Error; err != nil {
+		t.Fatalf("insert sync job: %v", err)
+	}
+
+	w := doJSON(t, newTestRouter(db), "DELETE", "/api/internal/git-servers/gs-1", nil)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (%s)", w.Code, w.Body.String())
+	}
+	var jobs int64
+	if err := db.Model(&models.GitCapabilitySyncJob{}).Where("git_server_id = ?", "gs-1").Count(&jobs).Error; err != nil {
+		t.Fatalf("count sync jobs: %v", err)
+	}
+	if jobs != 0 {
+		t.Errorf("sync jobs = %d, want 0", jobs)
+	}
+}
+
+func TestDeleteGitServer_RefusesToOrphanGitBackedCapabilities(t *testing.T) {
+	db := setupHandlersDB(t)
+	now := time.Now()
+	rawInsertServer(t, db, &models.GitServer{
+		ServerID: "gs-1", Kind: "gitea", Endpoint: "https://g",
+		DisplayName: "G", Config: "{}", Enabled: true, CreatedAt: now, UpdatedAt: now,
+	})
+	if err := db.Exec(`INSERT INTO git_capability_sync_jobs (id, git_server_id) VALUES (?, ?)`, "job-1", "gs-1").Error; err != nil {
+		t.Fatalf("insert sync job: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_items (id, content_backend, source_git_server_id, status) VALUES (?, ?, ?, ?)`, "git-item-1", "git", "gs-1", "active").Error; err != nil {
+		t.Fatalf("insert Git-backed item: %v", err)
+	}
+
+	w := doJSON(t, newTestRouter(db), "DELETE", "/api/internal/git-servers/gs-1", nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (%s)", w.Code, w.Body.String())
+	}
+	var servers, jobs, items int64
+	if err := db.Model(&models.GitServer{}).Where("server_id = ?", "gs-1").Count(&servers).Error; err != nil {
+		t.Fatalf("count Git Servers: %v", err)
+	}
+	if err := db.Model(&models.GitCapabilitySyncJob{}).Where("git_server_id = ?", "gs-1").Count(&jobs).Error; err != nil {
+		t.Fatalf("count sync jobs: %v", err)
+	}
+	if err := db.Model(&models.CapabilityItem{}).Where("id = ?", "git-item-1").Count(&items).Error; err != nil {
+		t.Fatalf("count capability items: %v", err)
+	}
+	if servers != 1 || jobs != 1 || items != 1 {
+		t.Errorf("delete refusal changed persisted state: servers=%d jobs=%d items=%d", servers, jobs, items)
 	}
 }
 

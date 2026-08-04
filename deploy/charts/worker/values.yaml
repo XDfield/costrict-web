@@ -44,6 +44,16 @@ config:
   logLevel: "info"
   concurrency: "5"
 
+# Gitea system webhook reconciliation. baseURL is the externally reachable
+# public API base, including the deployment's API ingress path prefix when it
+# has one (for example /cloud-api). The worker appends
+# /api/internal/git-sync/{git_server_id}.
+gitSystemWebhook:
+  # Empty is disabled. Set this only after verifying the deployment-specific
+  # ingress route from Gitea to the API service.
+  baseURL: ""
+  reconcileIntervalSeconds: 300
+
 # Database configuration
 database:
   host: postgres

@@ -127,6 +127,12 @@ spec:
               value: {{ printf "%s/%s" (trimSuffix "/" .Values.artifactStorage.s3.ca.mountPath) .Values.artifactStorage.s3.ca.key | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.gitSystemWebhook.baseURL }}
+            - name: GIT_SYSTEM_WEBHOOK_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS
+              value: {{ required "gitSystemWebhook.reconcileIntervalSeconds is required" .Values.gitSystemWebhook.reconcileIntervalSeconds | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

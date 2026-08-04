@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestLoadGitSystemWebhookBaseURLIsIndependentAndDisabledByDefault(t *testing.T) {
+	t.Setenv("BIND_STATE_SECRET", "test-bind-secret")
+	t.Setenv("JWT_SIGN_MODE", "off")
+	t.Setenv("COSTRICT_CLOUD_BASE_URL", "https://frontend.example/cloud")
+	t.Setenv("WEBHOOK_BASE_URL", "https://callbacks.example/cloud-api")
+	t.Setenv("GIT_SYSTEM_WEBHOOK_BASE_URL", "")
+
+	cfg := Load()
+	if cfg.WebhookBaseURL != "https://callbacks.example/cloud-api" {
+		t.Fatalf("WebhookBaseURL = %q", cfg.WebhookBaseURL)
+	}
+	if cfg.GitSystemWebhookBaseURL != "" {
+		t.Fatalf("GitSystemWebhookBaseURL = %q, want disabled", cfg.GitSystemWebhookBaseURL)
+	}
+}
+
+func TestLoadGitSystemWebhookBaseURLExplicitOptIn(t *testing.T) {
+	t.Setenv("BIND_STATE_SECRET", "test-bind-secret")
+	t.Setenv("JWT_SIGN_MODE", "off")
+	t.Setenv("GIT_SYSTEM_WEBHOOK_BASE_URL", "https://api.example/cloud-api")
+
+	cfg := Load()
+	if cfg.GitSystemWebhookBaseURL != "https://api.example/cloud-api" {
+		t.Fatalf("GitSystemWebhookBaseURL = %q", cfg.GitSystemWebhookBaseURL)
+	}
+}
+
 func TestGetEnvSliceLower(t *testing.T) {
 	const key = "GET_ENV_SLICE_LOWER_TEST"
 

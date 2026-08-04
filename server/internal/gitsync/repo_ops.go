@@ -121,6 +121,34 @@ func (c *Client) GetRepo(ctx context.Context, owner, name string) (*Repo, error)
 	return &r, nil
 }
 
+// GetRepoByID fetches a repository through Gitea's stable numeric identity.
+// It remains valid when its owner or name has changed since an earlier webhook
+// delivery. A 404 returns (nil, nil); transport, authentication, status, and
+// decode failures remain errors so callers can retry safely.
+func (c *Client) GetRepoByID(ctx context.Context, repoID int64) (*Repo, error) {
+	if c == nil {
+		return nil, ErrGiteaUnreachable
+	}
+	if repoID <= 0 {
+		return nil, fmt.Errorf("gitsync: repository ID must be positive")
+	}
+
+	resp, err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repositories/%d", repoID), nil, http.StatusOK)
+	if err != nil {
+		if isHTTPNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var r Repo
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
+	}
+	return &r, nil
+}
+
 // CreateBranch creates newBranch from fromRef (a branch name, tag, or commit
 // SHA). If fromRef is empty, Gitea uses the repo's default branch.
 //
@@ -179,22 +207,19 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	}
 	defer resp.Body.Close()
 
-	// Gitea returns { "branch": { "name":..., "commit": { "id": "sha" } } }
-	// — we project to our flat Branch shape.
+	// Gitea returns { "name":..., "commit": { "id": "sha" } }.
 	var raw struct {
-		Branch struct {
-			Name   string `json:"name"`
-			Commit struct {
-				ID string `json:"id"`
-			} `json:"commit"`
-		} `json:"branch"`
+		Name   string `json:"name"`
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
 	}
 	return &Branch{
-		Name:      raw.Branch.Name,
-		CommitSHA: raw.Branch.Commit.ID,
+		Name:      raw.Name,
+		CommitSHA: raw.Commit.ID,
 	}, nil
 }
 
