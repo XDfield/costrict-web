@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -906,6 +905,36 @@ func ensureGitCapabilityReconciliationBinding(
 	return &binding, nil
 }
 
+// hashDiscoveredCapabilityContent produces the same hash the DB write path
+// produces for manifests the DB path also accepts, and degrades to plain text
+// hashing for the manifest formats only Git discovery accepts.
+//
+// ContentHashService canonicalizes "mcp" and "plugin" content as JSON, which
+// holds for every DB-path row of those types. Git discovery is wider: it also
+// classifies pyproject.toml as "mcp" and stores the raw TOML as Content
+// (parseMCPPyproject below), and falls back to ParseSKILLMD for non-JSON mcp
+// manifests, storing Markdown. Handing those to the JSON canonicalizer fails.
+// Skipping them would silently drop capabilities the previous md5 hash indexed
+// without complaint, so the manifest's own extension decides the normalization
+// and an unexpectedly malformed .json manifest degrades to a byte hash rather
+// than costing us the row. Every branch still yields a 64-char SHA-256, so the
+// column format stays uniform across backends.
+func hashDiscoveredCapabilityContent(itemType, manifestPath, content string) string {
+	hashSvc := NewContentHashService()
+	if isJSONPath(manifestPath) {
+		if hash, err := hashSvc.HashTextContent(itemType, content); err == nil {
+			return hash
+		}
+	}
+	hash, err := hashSvc.HashTextContent("", content)
+	if err != nil {
+		// The empty item type never takes the JSON branch, so this is
+		// unreachable; hash the raw bytes rather than inventing an error path.
+		return sha256Hex([]byte(content))
+	}
+	return hash
+}
+
 func buildDiscoveredCapability(
 	binding *models.GitCapabilityRepository,
 	serverID string,
@@ -915,12 +944,16 @@ func buildDiscoveredCapability(
 	now time.Time,
 ) (*models.CapabilityItem, *models.CapabilityVersion, error) {
 	metadata := metadataJSON(entry.Parsed.Metadata)
-	contentHash := md5.Sum([]byte(entry.Parsed.Content))
+	// Must stay identical to the DB write path (handlers create/update and the
+	// migrate backfill all use ContentHashService), otherwise git-backed rows
+	// hash differently and CheckItemConsistency can never compare across
+	// backends.
+	contentHash := hashDiscoveredCapabilityContent(entry.ItemType, entry.Path, entry.Parsed.Content)
 	item := &models.CapabilityItem{
 		ID: uuid.NewString(), RegistryID: binding.RegistryID, RepoID: binding.RepositoryID,
 		Slug: entry.Parsed.Slug, ItemType: entry.ItemType, Name: entry.Parsed.Name,
 		Description: entry.Parsed.Description, Descriptions: datatypes.JSON([]byte("{}")), Category: entry.Parsed.Category,
-		Version: entry.Parsed.Version, Content: entry.Parsed.Content, ContentMD5: hex.EncodeToString(contentHash[:]), CurrentRevision: 1,
+		Version: entry.Parsed.Version, Content: entry.Parsed.Content, ContentMD5: contentHash, CurrentRevision: 1,
 		Metadata: metadata, SourcePath: entry.Path, SourceSHA: headSHA, SourceType: "git", Source: entry.Parsed.Source,
 		SourceRepoURL: repoURL, SourceRepoRef: branchName, SourceRepoPath: entry.Path, ContentBackend: "git",
 		SourceGitServerID: serverID, SourceGitRepoID: repo.ID, SourceGitEntryKey: entry.EntryKey,
