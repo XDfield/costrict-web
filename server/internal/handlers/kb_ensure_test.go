@@ -111,21 +111,7 @@ func TestKBEnsure_ResolverNil_Returns503(t *testing.T) {
 	// which returns a different error_code).
 	db := setupTeamnsDB(t)
 	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
-	gin.SetMode(gin.TestMode)
-	teamnsService = svc
-	t.Cleanup(func() { teamnsService = nil })
-	teamResolver = nil
-	t.Cleanup(func() { teamResolver = nil })
-	r := gin.New()
-	// KBEnsure rejects a missing subject before it reaches the resolver, so the
-	// subject must be injected here the way newKBEnsureRouter does.
-	r.Use(func(c *gin.Context) {
-		if uid := c.GetHeader("X-Test-Subject"); uid != "" {
-			c.Set(middleware.UserIDKey, uid)
-		}
-		c.Next()
-	})
-	r.POST("/api/kb/ensure", KBEnsure)
+	r := newKBEnsureRouter(t, svc, nil) // teamResolver=nil, X-Test-Subject middleware installed
 
 	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
@@ -350,6 +336,12 @@ func TestKBEnsure_ExplicitTeamID_Member_HappyPath(t *testing.T) {
 	}
 	if got.SpaceType != "team" {
 		t.Errorf("space_type: got %q, want team", got.SpaceType)
+	}
+	// KbRepoPath embeds the resolved team's short namespace prefix
+	// (t-<team_short>/...), proving the explicit SpaceID was honored.
+	wantPath := "t-" + short + "/kb-github.com__o__p"
+	if got.KbRepoPath != wantPath {
+		t.Errorf("kb_repo_path: got %q, want %q", got.KbRepoPath, wantPath)
 	}
 }
 

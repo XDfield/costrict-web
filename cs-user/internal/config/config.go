@@ -96,6 +96,14 @@ type EventBusConfig struct {
 type HTTPConfig struct {
 	Port string
 	Mode string // gin mode: debug / release / test
+	// SwaggerEnabled gates the public Swagger UI route (/swagger/*any).
+	// Default false — the route is NOT mounted, so the cluster-internal
+	// contract (33 endpoints + X-Internal-Token header name) is not
+	// exposed to anyone who can reach the pod. Dev / CI set
+	// CS_USER_SWAGGER_ENABLED=true to mount the UI for local iteration.
+	// The generated spec (via `make swagger`) is unaffected — only the
+	// HTTP route is gated.
+	SwaggerEnabled bool
 }
 
 type PostgresConfig struct {
@@ -200,6 +208,10 @@ func Load() (*Config, error) {
 		HTTP: HTTPConfig{
 			Port: envDefault("CS_USER_HTTP_PORT", "8082"),
 			Mode: envDefault("CS_USER_HTTP_MODE", "debug"),
+			// SwaggerEnabled: default off — UI not mounted in production
+			// (cluster-internal service, attack surface stays hidden).
+			// See field doc above.
+			SwaggerEnabled: envBool("CS_USER_SWAGGER_ENABLED", false),
 		},
 		Postgres: PostgresConfig{
 			Host:     envDefault("CS_USER_POSTGRES_HOST", "localhost"),

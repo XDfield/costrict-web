@@ -43,21 +43,17 @@ type Service struct {
 	db                 *gorm.DB
 	roleProvider       RoleProvider
 	capabilityProvider CapabilityProvider
-	casdoorEndpoint    string
-	jwksProvider       *middleware.JWKSProvider
 	deptProvider       DepartmentProvider
 	menuRegistry       ResourceRegistry
 	apiRegistry        ResourceRegistry
 	mu                 sync.RWMutex
 }
 
-func NewService(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) (*Service, error) {
+func NewService(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider) (*Service, error) {
 	s := &Service{
 		db:                 db,
 		roleProvider:       roleProvider,
 		capabilityProvider: capabilityProvider,
-		casdoorEndpoint:    casdoorEndpoint,
-		jwksProvider:       jwksProvider,
 	}
 	if err := s.loadRegistry(); err != nil {
 		return nil, fmt.Errorf("load authz registry: %w", err)
@@ -232,7 +228,7 @@ func (s *Service) VerifyTokenWithUser(token, resourceCode string) (bool, *Permis
 		return false, nil, "", errors.New("empty token")
 	}
 
-	userInfo, err := middleware.ParseToken(token, s.casdoorEndpoint, s.jwksProvider)
+	userInfo, err := middleware.ParseToken(token)
 	if err != nil {
 		return false, nil, "", fmt.Errorf("parse token: %w", err)
 	}

@@ -263,6 +263,15 @@ func buildTextAssetRecords(payloads []itemAssetPayload, mainPath string) ([]mode
 		if relPath == "" {
 			return nil, nil, fmt.Errorf("asset relPath is required")
 		}
+		// Source-layer Zip Slip guard: reject path traversal / absolute paths
+		// before they reach the DB so the plugin zip download sink never has
+		// anything dangerous to write. Persists the normalized form so any
+		// stray backslashes or "." segments are also cleaned up at the source.
+		normalizedPath, err := services.NormalizeArchivePath(relPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("asset relPath %q is invalid: %w", relPath, err)
+		}
+		relPath = normalizedPath
 		if relPath == mainPath {
 			return nil, nil, fmt.Errorf("asset relPath %q conflicts with sourcePath", relPath)
 		}
@@ -1157,6 +1166,18 @@ func CreateItem(c *gin.Context) {
 		version = "1.0.0"
 	}
 
+	// Source-layer Zip Slip guard: SourcePath is replayed as the zip entry
+	// Name in DownloadPluginZip. Validate / normalize at the HTTP entry so
+	// nothing dangerous reaches the sink or the DB.
+	if req.SourcePath != "" {
+		normalizedSourcePath, err := services.NormalizeArchivePath(req.SourcePath)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sourcePath is invalid: %v", err)})
+			return
+		}
+		req.SourcePath = normalizedSourcePath
+	}
+
 	db := database.GetDB()
 	metadata, err := resolveMetadata(req.ItemType, req.Metadata, req.Content)
 	if err != nil {
@@ -1381,6 +1402,15 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		}
 		if mainPath == "" {
 			mainPath = defaultSourcePathForItemType(item.ItemType)
+		}
+		// Source-layer Zip Slip guard — same as createItemFromJSON. mainPath is
+		// persisted as item.SourcePath and replayed as the zip entry Name in
+		// DownloadPluginZip; reject traversal / absolute paths here.
+		if normalizedMainPath, normErr := services.NormalizeArchivePath(mainPath); normErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sourcePath is invalid: %v", normErr)})
+			return
+		} else {
+			mainPath = normalizedMainPath
 		}
 
 		var newContentMD5 string
@@ -2006,11 +2036,28 @@ func BatchDeleteItems(c *gin.Context) {
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
 // @Success      200  {object}  object{versions=[]VersionResponse}
+// @Failure      403  {object}  object{error=string}
+// @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/versions [get]
 func ListItemVersions(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
+
+	// Object-level access control — mirrors GetItem / ListItemAssets. A previous
+	// version queried versions directly by item_id without checking repository
+	// visibility / membership, allowing anonymous users to read private-repo
+	// item history (IDOR, CVSS 8.7).
+	var item models.CapabilityItem
+	if err := db.Preload("Registry").First(&item, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return
+	}
+
 	var versions []models.CapabilityVersion
 	result := db.Where("item_id = ?", id).Order("revision asc").Find(&versions)
 	if result.Error != nil {
@@ -2033,6 +2080,7 @@ func ListItemVersions(c *gin.Context) {
 // @Param        version  path      integer true  "Version number"
 // @Success      200      {object}  VersionResponse
 // @Failure      400      {object}  object{error=string}
+// @Failure      403      {object}  object{error=string}
 // @Failure      404      {object}  object{error=string}
 // @Router       /items/{id}/versions/{version} [get]
 func GetItemVersion(c *gin.Context) {
@@ -2044,6 +2092,21 @@ func GetItemVersion(c *gin.Context) {
 		return
 	}
 	db := database.GetDB()
+
+	// Object-level access control — mirrors GetItem / ListItemAssets. A previous
+	// version queried the version directly by item_id+revision without checking
+	// repository visibility / membership, allowing anonymous users to read
+	// private-repo item history (IDOR, CVSS 8.7).
+	var item models.CapabilityItem
+	if err := db.Preload("Registry").First(&item, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
+		return
+	}
+	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return
+	}
+
 	var version models.CapabilityVersion
 	query := db
 	if db.Migrator().HasTable(&models.CapabilityVersionAsset{}) {
@@ -2500,6 +2563,19 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 
 	if req.SourcePath == "" {
 		req.SourcePath = defaultSourcePathForItemType(req.ItemType)
+	}
+	// Source-layer Zip Slip guard: SourcePath is persisted and later replayed
+	// as the zip entry Name in DownloadPluginZip — reject traversal / absolute
+	// paths here so the sink never has anything dangerous to write.
+	// command/subagent have no static default (no source file), so an empty
+	// SourcePath is legitimate for those types and poses no traversal risk.
+	if req.SourcePath != "" {
+		normalizedSourcePath, err := services.NormalizeArchivePath(req.SourcePath)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sourcePath is invalid: %v", err)})
+			return
+		}
+		req.SourcePath = normalizedSourcePath
 	}
 	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, uid, callerIsPlatformAdmin(c, h.db))
 	if err != nil {

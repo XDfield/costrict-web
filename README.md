@@ -29,7 +29,6 @@ costrict-web/
 ├── gateway/             # 设备隧道网关（WebSocket + yamux）
 ├── proxy/               # Session Proxy（SSE 过滤 / 审计）
 ├── wecom-bot-proxy/     # 企业微信机器人 sidecar
-├── client/go/           # Go 客户端 SDK
 ├── casdoor/             # Casdoor 配置
 ├── deploy/charts/       # Helm Chart
 ├── docs/                # 设计文档
@@ -45,7 +44,6 @@ costrict-web/
 | **gateway** | 8090 | 设备 WebSocket 隧道接入、InternalSecret 鉴权 |
 | **proxy** | 8091 | Session Proxy（客户端到设备的中间层） |
 | **wecom-bot-proxy** | 8092 | 企业微信回调 sidecar（独立部署） |
-| **client/go** | — | Go SDK（不部署，供其他服务引用） |
 
 ---
 
@@ -80,7 +78,7 @@ podman-compose up -d
 ```
 
 依赖服务端口：
-- PostgreSQL: `localhost:5432`（用户 `costrict` / 密码 `costrict_password` / 库 `costrict_db`）
+- PostgreSQL: `localhost:5432`（用户 `costrict` / 密码 `<set-me>` / 库 `costrict_db`，部署时通过 `POSTGRES_PASSWORD` 环境变量提供）
 - Redis: `localhost:6379`
 - Casdoor: `localhost:8000`
 

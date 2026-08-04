@@ -454,7 +454,7 @@ type CapabilityItem struct {
 	Category          string               `json:"category"`
 	Version           string               `gorm:"default:'1.0.0'" json:"version"`
 	Content           string               `gorm:"type:text" json:"content"`
-	ContentMD5        string               `gorm:"size:32;default:''" json:"contentMd5"`
+	ContentMD5        string               `gorm:"size:64;default:''" json:"contentMd5"`
 	CurrentRevision   int                  `gorm:"not null;default:1" json:"currentRevision"`
 	Metadata          datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	Health            datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
@@ -556,7 +556,7 @@ type CapabilityVersion struct {
 	Category    string                   `json:"category"`
 	Version     string                   `json:"version"`
 	Content     string                   `gorm:"type:text;not null" json:"content"`
-	ContentMD5  string                   `gorm:"size:32;default:''" json:"contentMd5"`
+	ContentMD5  string                   `gorm:"size:64;default:''" json:"contentMd5"`
 	Metadata    datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
 	CommitMsg   string                   `json:"commitMsg"`
 	CreatedBy   string                   `gorm:"not null" json:"createdBy"`

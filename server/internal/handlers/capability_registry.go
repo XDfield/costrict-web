@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -88,6 +90,16 @@ func CreateRegistry(c *gin.Context) {
 	if ownerID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
+	}
+
+	// SSRF write-time gate: ExternalURL is later consumed by GitService.Clone
+	// during sync. Reject file://, non-remote schemes, and loopback / metadata
+	// sinkholes at ingestion. See secreport 20260731141243580377 (CVSS 5.3).
+	if req.ExternalURL != "" {
+		if err := services.ValidateExternalRepoURL(req.ExternalURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid external url: %v", err)})
+			return
+		}
 	}
 
 	if req.RepoID != "" && !requireRepoAdmin(c, req.RepoID) {
@@ -177,6 +189,16 @@ func UpdateRegistry(c *gin.Context) {
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
 		return
+	}
+
+	// SSRF write-time gate (same rationale as CreateRegistry): reject poisoned
+	// ExternalURL values before they reach the registry table and the sync
+	// clone flow. secreport 20260731141243580377 (CVSS 5.3).
+	if req.ExternalURL != "" {
+		if err := services.ValidateExternalRepoURL(req.ExternalURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid external url: %v", err)})
+			return
+		}
 	}
 
 	if registry.RepoID != "" && !requireRepoAdmin(c, registry.RepoID) {

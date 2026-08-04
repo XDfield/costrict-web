@@ -172,10 +172,6 @@ costrict-web 是 **多服务组成的云端控制面**，由 5 个 Go 模块组�
 
 **配置：** 见 `wecom-bot-proxy/config.yaml.example`
 
-### 5. Client/Go（`client/go/`）—— Go SDK
-
-**职责：** 不部署，供其他服务引用的 Go 客户端 SDK。封装了 Server API 的调用方法。
-
 ---
 
 ## 关键数据流

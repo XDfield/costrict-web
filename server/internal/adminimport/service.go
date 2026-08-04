@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/safetch"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/google/uuid"
@@ -128,6 +129,12 @@ func NewService(db *gorm.DB, backend storage.Backend) *Service {
 }
 
 // CreateURLJob records a pending dry-run job for a URL bundle source.
+//
+// Beyond the cheap scheme check, safetch.ValidateURL runs at write-time to
+// reject internal / loopback / private destinations (RFC 1918 etc.) before
+// the URL is persisted. The dial-time re-check at fetch happens in
+// services.CatalogIngestService via safetch.NewClient — see
+// secreport 20260731101803384359 + 20260731102217931559 (CVSS 5.1 SSRF).
 func (s *Service) CreateURLJob(rawURL string, reparse bool, user string) (*models.CapabilityImportJob, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
@@ -135,6 +142,9 @@ func (s *Service) CreateURLJob(rawURL string, reparse bool, user string) (*model
 	}
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		return nil, ErrInvalidURL
+	}
+	if err := safetch.ValidateURL(rawURL); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
 	job := &models.CapabilityImportJob{
 		ID:          uuid.New().String(),

@@ -1,18 +1,19 @@
 package middleware
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/authidentity"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
 )
 
 const UserIDKey = "userId"
@@ -175,8 +176,9 @@ func EnforceAccountStatus(c *gin.Context) bool {
 
 // enforceAccountStatus consults the injected StatusChecker for the resolved
 // subject id and aborts the request when the account is disabled/banned. It is a
-// no-op when no checker is installed, when there is no resolved subject, or when
-// the lookup errors (fail-open). Returns true when the request was aborted.
+// no-op when no checker is installed, when there is no resolved subject, or
+// when the lookup errors (fail-open). Returns true when the request was
+// aborted.
 func enforceAccountStatus(c *gin.Context) bool {
 	if statusChecker == nil {
 		return false
@@ -283,11 +285,229 @@ func acceptsQueryToken(c *gin.Context) bool {
 	return false
 }
 
-// OptionalAuth decodes the JWT without verifying the signature — gateway
-// layer is responsible for signature verification. Tokens that fail to
-// decode are silently ignored (no auth context populated), matching the
-// prior "invalid token on optional route" behavior.
-func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
+// tokenVerifierConfig holds the cs-user internal-verify endpoint wiring
+// installed by SetTokenVerifier. Once set, every RequireAuth / OptionalAuth /
+// ParseToken path delegates signature + expiration verification to cs-user's
+// POST /api/internal/auth/verify (full JWKS / RSA-Public-Key check on its
+// side). The middleware package stays free of crypto imports.
+//
+// Failing closed: when verifier is unconfigured OR the cs-user call returns
+// 5xx / network error, RequireAuth returns 503 (service unavailable) and
+// OptionalAuth silently treats the request as anonymous. We never fall back
+// to local unverified decoding — that was the original SSRF/JWT vuln path.
+type tokenVerifierConfig struct {
+	baseURL       string
+	internalToken string
+	client        *http.Client
+}
+
+var (
+	tokenVerifierMu sync.RWMutex
+	tokenVerifier   tokenVerifierConfig
+)
+
+// tokenCacheTTL bounds how long a successful cs-user introspection is reused
+// for the same bearer token. Long enough to keep the verify RPC off the
+// per-request hot path on a busy page load; short enough that a token
+// revoked server-side is re-checked within minutes. Hashed by SHA-256 so the
+// raw token never lands as a map key in memory dumps.
+const tokenCacheTTL = 5 * time.Minute
+
+type tokenCacheEntry struct {
+	info      *CasdoorUserInfo
+	expiresAt time.Time
+}
+
+var (
+	tokenCacheMu sync.RWMutex
+	tokenCache   = map[string]tokenCacheEntry{}
+)
+
+// errInvalidToken is returned by introspectToken when cs-user explicitly
+// rejects the token (401/400). Mapped to 401 in RequireAuth and silent
+// pass-through in OptionalAuth.
+var errInvalidToken = errors.New("invalid token")
+
+// errVerifierUnavailable is returned by introspectToken when cs-user is
+// unconfigured, unreachable, or returns 5xx. Mapped to 503 in RequireAuth
+// (fail closed — no fallback to unverified decoding) and silent pass-through
+// in OptionalAuth.
+var errVerifierUnavailable = errors.New("token verifier unavailable")
+
+// SetTokenVerifier wires the cs-user introspection endpoint. baseURL is the
+// cs-user HTTP base (e.g. http://cs-user:8080), internalToken is the
+// X-Internal-Token shared secret, timeout bounds each verify call. Passing
+// an empty baseURL disables the verifier — RequireAuth then fails every
+// request with 503 (fail closed); OptionalAuth silently degrades to
+// anonymous. main.go fast-fails at boot when cfg.UserService.BaseURL is
+// empty, so production never hits the disabled branch.
+//
+// Clears the token cache so a hot reload after config changes never serves
+// stale introspection results.
+func SetTokenVerifier(baseURL, internalToken string, timeout time.Duration) {
+	tokenVerifierMu.Lock()
+	tokenVerifier = tokenVerifierConfig{
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		internalToken: internalToken,
+		client: &http.Client{
+			Timeout: timeout,
+		},
+	}
+	tokenVerifierMu.Unlock()
+
+	tokenCacheMu.Lock()
+	tokenCache = map[string]tokenCacheEntry{}
+	tokenCacheMu.Unlock()
+}
+
+// InvalidateTokenCache drops any cached introspection for the given bearer
+// token. Safe to call when the verifier is unconfigured or the token was
+// never cached.
+func InvalidateTokenCache(token string) {
+	if token == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(token))
+	key := hex.EncodeToString(sum[:])
+	tokenCacheMu.Lock()
+	delete(tokenCache, key)
+	tokenCacheMu.Unlock()
+}
+
+// introspectToken delegates JWT signature + expiration verification to
+// cs-user's POST /api/internal/auth/verify. Returns the normalized user
+// info on success. Cache hits (keyed by SHA-256 of the token) bypass the
+// HTTP round-trip; only successful introspections are cached.
+//
+// Error mapping (consumed by RequireAuth / OptionalAuth):
+//   - errInvalidToken:        cs-user returned 401/400 → token rejected.
+//   - errVerifierUnavailable: cs-user unconfigured, network error, or 5xx.
+//                             Caller must NOT fall back to local decoding.
+func introspectToken(token string) (*CasdoorUserInfo, error) {
+	if token == "" {
+		return nil, errInvalidToken
+	}
+
+	sum := sha256.Sum256([]byte(token))
+	cacheKey := hex.EncodeToString(sum[:])
+
+	now := time.Now()
+	tokenCacheMu.RLock()
+	entry, ok := tokenCache[cacheKey]
+	tokenCacheMu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.info, nil
+	}
+
+	tokenVerifierMu.RLock()
+	cfg := tokenVerifier
+	tokenVerifierMu.RUnlock()
+	if cfg.baseURL == "" || cfg.internalToken == "" || cfg.client == nil {
+		return nil, errVerifierUnavailable
+	}
+
+	info, err := introspectTokenViaCSUser(cfg, token)
+	if err != nil {
+		return nil, err
+	}
+
+	tokenCacheMu.Lock()
+	tokenCache[cacheKey] = tokenCacheEntry{info: info, expiresAt: now.Add(tokenCacheTTL)}
+	tokenCacheMu.Unlock()
+	return info, nil
+}
+
+// introspectTokenViaCSUser performs the actual HTTP POST to cs-user. Split
+// from introspectToken so the cache wrapper stays readable.
+func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUserInfo, error) {
+	body, _ := json.Marshal(map[string]string{"token": token})
+	url := cfg.baseURL + "/api/internal/auth/verify"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		// Malformed URL/config — treat as unavailable so boot-time
+		// misconfig surfaces as 503 rather than a panic.
+		logger.Warn("[introspectToken] request build failed: %v", err)
+		return nil, errVerifierUnavailable
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", cfg.internalToken)
+
+	resp, err := cfg.client.Do(req)
+	if err != nil {
+		logger.Warn("[introspectToken] cs-user verify RPC failed: %v", err)
+		return nil, errVerifierUnavailable
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// fall through to decode below
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusBadRequest:
+		return nil, errInvalidToken
+	case resp.StatusCode >= 500:
+		logger.Warn("[introspectToken] cs-user verify returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, errVerifierUnavailable
+	default:
+		// Treat any other 4xx as an invalid token — cs-user is the
+		// authority, and a 4xx means "I will not verify this".
+		logger.Warn("[introspectToken] cs-user verify returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, errInvalidToken
+	}
+
+	var verified struct {
+		Active      bool   `json:"active"`
+		TokenSource string `json:"token_source,omitempty"`
+		Subject     string `json:"sub,omitempty"`
+		UniversalID string `json:"universal_id,omitempty"`
+		ShortID     string `json:"short_id,omitempty"`
+		Name        string `json:"name,omitempty"`
+		Email       string `json:"email,omitempty"`
+		Phone       string `json:"phone,omitempty"`
+		TenantID    string `json:"tenant_id,omitempty"`
+		TenantSlug  string `json:"tenant_slug,omitempty"`
+		Issuer      string `json:"iss,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &verified); err != nil {
+		logger.Warn("[introspectToken] decode cs-user response failed: %v", err)
+		return nil, errVerifierUnavailable
+	}
+	if !verified.Active {
+		return nil, errInvalidToken
+	}
+	if verified.Subject == "" {
+		return nil, errInvalidToken
+	}
+
+	info := &CasdoorUserInfo{
+		ID:                verified.Subject,
+		Sub:               verified.Subject,
+		UniversalID:       verified.UniversalID,
+		Name:              verified.Name,
+		PreferredUsername: verified.Name,
+		Email:             verified.Email,
+		Phone:             verified.Phone,
+		TenantID:          verified.TenantID,
+		TenantSlug:        verified.TenantSlug,
+		Issuer:            verified.Issuer,
+	}
+	if info.Issuer == "" {
+		// cs-user is the only issuer now; default so setAuthContext
+		// always takes the "trust sub directly" branch.
+		info.Issuer = csUserIssuer
+	}
+	return info, nil
+}
+
+// OptionalAuth delegates token verification to cs-user via introspectToken.
+// Tokens that fail verification are silently ignored (no auth context
+// populated) so unauthenticated clients can still hit optional routes.
+// Failures from cs-user (5xx / network) are also silently ignored — the
+// request degrades to anonymous rather than failing closed, because
+// optional routes (public reads, swagger, etc.) must stay reachable even
+// during a cs-user outage.
+func OptionalAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
 		if token == "" {
@@ -295,9 +515,9 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := decodeJWTToken(token)
+		userInfo, err := introspectToken(token)
 		if err != nil {
-			logger.Warn("[OptionalAuth] token decode failed: %v", err)
+			logger.Warn("[OptionalAuth] token verify failed: %v", err)
 			c.Next()
 			return
 		}
@@ -308,11 +528,12 @@ func OptionalAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 	}
 }
 
-// RequireAuth decodes the JWT without verifying the signature — gateway
-// layer is responsible for signature verification before the request
-// reaches this server. The decoded claims populate the auth context.
-// Account-status gate (banned/disabled) runs after the decode succeeds.
-func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
+// RequireAuth delegates token verification to cs-user via introspectToken.
+// A rejected token (errInvalidToken) → 401 and cookie clear. A cs-user
+// outage (errVerifierUnavailable) → 503 (fail closed — no fallback to
+// unverified decoding, since that was the original SSRF/JWT bypass).
+// Account-status gate (banned/disabled) runs after the verify succeeds.
+func RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := ExtractToken(c)
 		if token == "" {
@@ -320,10 +541,14 @@ func RequireAuth(casdoorEndpoint string, jwks *JWKSProvider) gin.HandlerFunc {
 			return
 		}
 
-		userInfo, err := decodeJWTToken(token)
+		userInfo, err := introspectToken(token)
 		if err != nil {
+			if errors.Is(err, errVerifierUnavailable) {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Token service unavailable"})
+				return
+			}
 			ClearAuthCookie(c)
-			logger.Warn("[RequireAuth] token decode failed: %v", err)
+			logger.Warn("[RequireAuth] token verify failed: %v", err)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 			return
 		}
@@ -388,214 +613,18 @@ type CasdoorUserInfo struct {
 	TenantRoles []string `json:"tenant_roles,omitempty"`
 }
 
-type casdoorUserinfoResponse struct {
-	Status      string `json:"status"`
-	Msg         string `json:"msg"`
-	ID          string `json:"id"`
-	Sub         string `json:"sub"`
-	UniversalID string `json:"universal_id"`
-	Name        string `json:"name"`
-	Email       string `json:"email"`
-}
-
 // csUserIssuer is the iss claim value cs-user stamps on its JWTs. Sourced
 // here as a string rather than imported from the cs-user module (separate
 // go.mod) to keep middleware's dependency surface minimal.
 const csUserIssuer = "cs-user"
 
-// parseJWTToken verifies and parses a Casdoor JWT token using JWKS public keys.
-// If jwks is nil or key retrieval fails, returns an error so the caller can fall back.
-//
-// NOTE: currently only referenced by tests; the production auth path
-// (RequireAuth/OptionalAuth/ParseToken) decodes without verifying — the
-// signature check is delegated to the gateway layer.
-func parseJWTToken(tokenString string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
-	if jwks == nil {
-		return nil, fmt.Errorf("JWKS provider not configured")
-	}
-
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Ensure the signing method is RSA
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-
-		kid, _ := token.Header["kid"].(string)
-		return jwks.GetKey(kid)
-	}, jwt.WithValidMethods([]string{"RS256"}))
-
-	if err != nil {
-		return nil, fmt.Errorf("JWT verification failed: %w", err)
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		return nil, fmt.Errorf("invalid token claims")
-	}
-
-	return claimsToUserInfo(claims)
-}
-
-// decodeJWTToken decodes the JWT claims WITHOUT verifying the signature.
-// This is safe only because the gateway layer is responsible for signature
-// verification before the request reaches the server. Doing the decode
-// locally avoids both the JWKS fetch and the Casdoor /api/userinfo network
-// round-trip on every request.
-func decodeJWTToken(tokenString string) (*CasdoorUserInfo, error) {
-	parser := jwt.Parser{}
-	token, _, err := parser.ParseUnverified(tokenString, jwt.MapClaims{})
-	if err != nil {
-		return nil, fmt.Errorf("JWT decode failed: %w", err)
-	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid token claims")
-	}
-	return claimsToUserInfo(claims)
-}
-
-// claimsToUserInfo maps a Casdoor/cs-user JWT claims map to CasdoorUserInfo.
-// Shared by parseJWTToken (verified) and decodeJWTToken (unverified).
-func claimsToUserInfo(claims jwt.MapClaims) (*CasdoorUserInfo, error) {
-	normalized := authidentity.NormalizeClaimsMap(map[string]any(claims))
-
-	// Subject resolution diverges by issuer:
-	//   - cs-user JWT (iss="cs-user"): `sub` is the canonical cs-user
-	//     subject_id (usr_<uuid>). `universal_id` carries Casdoor's
-	//     original universal_id (a separate identifier kept for cross-
-	//     system alignment per MULTI_TENANCY §12.1 — they are no longer
-	//     guaranteed equal). Use `sub` directly.
-	//   - Casdoor JWT (legacy fallback path / pre-cutover tokens):
-	//     `universal_id` is Casdoor's stable user PK; `sub` may be empty
-	//     or unstable for some IdPs. Prefer `universal_id`.
-	// Issuer check happens on the raw claims map (NormalizeClaimsMap does
-	// not surface `iss`).
-	iss, _ := claims["iss"].(string)
-	var sub string
-	if iss == csUserIssuer {
-		sub = normalized.Sub
-		if sub == "" {
-			sub = normalized.UniversalID
-		}
-	} else {
-		sub = normalized.UniversalID
-		if sub == "" {
-			sub = normalized.Sub
-		}
-	}
-	if sub == "" {
-		sub = normalized.ID
-	}
-	logger.Info("[auth-debug] parseJWTToken iss=%q sub=%q universal_id=%q id=%q resolved_sub=%q provider=%q",
-		iss, normalized.Sub, normalized.UniversalID, normalized.ID, sub, normalized.Provider)
-	if sub == "" {
-		return nil, fmt.Errorf("no id, sub or universal_id in token")
-	}
-
-	// tenant_slug is a custom claim issued only by cs-user (Phase A7) —
-	// NormalizeClaimsMap does not handle it. Read straight from the map.
-	tenantSlug, _ := claims["tenant_slug"].(string)
-	// tenant_id: same — cs-user's canonical PK claim. Empty for Casdoor
-	// tokens (pre-cutover); the TenantContext middleware falls back to
-	// tenant.DefaultTenantID before storing in ctx.
-	tenantID, _ := claims["tenant_id"].(string)
-	// Phase C1: platform_admin / platform_scope / tenant_roles — emitted by
-	// cs-user's reissue-token handler post Phase C1 wiring. Read straight
-	// from the map; NormalizeClaimsMap doesn't cover Phase C1 fields.
-	platformAdmin, _ := claims["platform_admin"].(bool)
-	platformScope, _ := claims["platform_scope"].(string)
-	var tenantRoles []string
-	if raw, ok := claims["tenant_roles"].([]any); ok {
-		for _, r := range raw {
-			if s, ok := r.(string); ok {
-				tenantRoles = append(tenantRoles, s)
-			}
-		}
-	}
-
-	// Phase B — provider_user_id. cs-user emits a top-level claim (different
-	// shape from Casdoor's nested properties.<provider>.id which
-	// NormalizeClaimsMap handles). Prefer the explicitly-emitted top-level
-	// value when present; fall back to the nested-extracted one for legacy
-	// Casdoor tokens.
-	providerUserID := normalized.ProviderUserID
-	if v, ok := claims["provider_user_id"].(string); ok && v != "" {
-		providerUserID = v
-	}
-
-	return &CasdoorUserInfo{
-		ID:                normalized.ID,
-		Sub:               sub,
-		Issuer:            iss,
-		UniversalID:       normalized.UniversalID,
-		Name:              normalized.Name,
-		PreferredUsername: normalized.PreferredUsername,
-		Email:             normalized.Email,
-		Provider:          normalized.Provider,
-		ProviderUserID:    providerUserID,
-		Phone:             normalized.Phone,
-		TenantID:          tenantID,
-		TenantSlug:        tenantSlug,
-		PlatformAdmin:     platformAdmin,
-		PlatformScope:     platformScope,
-		TenantRoles:       tenantRoles,
-	}, nil
-}
-
-func fetchUserInfo(endpoint, token string) (*CasdoorUserInfo, error) {
-	url := endpoint + "/api/userinfo"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request to %s failed: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Warn("[fetchUserInfo] casdoor returned %d: %s, url=%s", resp.StatusCode, string(body), url)
-		return nil, fmt.Errorf("casdoor returned status %d", resp.StatusCode)
-	}
-
-	var casdoorResp casdoorUserinfoResponse
-	if err := json.Unmarshal(body, &casdoorResp); err != nil {
-		return nil, fmt.Errorf("decode response failed: %w", err)
-	}
-
-	// Check if Casdoor returned an error
-	if casdoorResp.Status == "error" {
-		return nil, fmt.Errorf("casdoor error: %s", casdoorResp.Msg)
-	}
-
-	if casdoorResp.Sub == "" {
-		return nil, fmt.Errorf("no sub in response")
-	}
-
-	return &CasdoorUserInfo{
-		ID:                casdoorResp.ID,
-		Sub:               casdoorResp.Sub,
-		UniversalID:       casdoorResp.UniversalID,
-		Name:              casdoorResp.Name,
-		PreferredUsername: casdoorResp.Name,
-		Email:             casdoorResp.Email,
-		Provider:          "",
-		ProviderUserID:    "",
-		Phone:             "",
-	}, nil
-}
-
-// ParseToken decodes a JWT without verifying the signature — the gateway
-// layer is responsible for signature verification. The casdoorEndpoint and
-// jwks params are retained for signature compatibility with existing
-// callers (e.g. authz.Service.VerifyTokenWithUser) but are no longer used.
-func ParseToken(token string, casdoorEndpoint string, jwks *JWKSProvider) (*CasdoorUserInfo, error) {
-	return decodeJWTToken(token)
+// ParseToken delegates token verification to cs-user via introspectToken.
+// Used by authz.Service.VerifyTokenWithUser (the internal /auth/verify
+// handler). Mirrors RequireAuth's failure contract: errInvalidToken on
+// explicit rejection, errVerifierUnavailable on cs-user outage — the caller
+// decides how to surface those to its caller.
+func ParseToken(token string) (*CasdoorUserInfo, error) {
+	return introspectToken(token)
 }
 
 func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
@@ -648,12 +677,6 @@ func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
 	c.Set(AuthClaimsKey, authClaims)
 }
 
-// looksLikeJWT returns true if the token has the standard JWT structure
-// of three base64url-encoded segments separated by dots.
-func looksLikeJWT(token string) bool {
-	return strings.Count(token, ".") == 2
-}
-
 // cookieDomain mirrors handlers.cookieDomain — Domain attribute used when
 // setting auth cookies, applied here on ClearAuthCookie so the expired
 // Set-Cookie matches the original cookie's scope. Empty (default) = host-only.
@@ -671,13 +694,4 @@ func ClearAuthCookie(c *gin.Context) {
 	// Set cookie with expired date to effectively delete it
 	// Parameters must match the original cookie settings
 	c.SetCookie(AuthCookieName, "", -1, "/", cookieDomain, false, false)
-}
-
-func strClaim(claims jwt.MapClaims, key string) string {
-	if v, ok := claims[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }

@@ -97,7 +97,7 @@ func setupGrantTestDB(t *testing.T) *gorm.DB {
 
 func newGrantTestService(t *testing.T, db *gorm.DB, dp DepartmentProvider) *Service {
 	t.Helper()
-	svc, err := NewService(db, roleProviderStub{roles: map[string][]string{}}, systemrole.CapabilityProvider{}, "", nil)
+	svc, err := NewService(db, roleProviderStub{roles: map[string][]string{}}, systemrole.CapabilityProvider{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}

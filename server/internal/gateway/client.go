@@ -25,6 +25,16 @@ func NewClient(internalSecret string) *Client {
 		httpClient: &http.Client{
 			Timeout:   0,
 			Transport: &http.Transport{DisableCompression: true},
+			// SSRF defense-in-depth: never follow redirects on the proxy path.
+			// A poisoned InternalURL (direct DB write, SQL injection, or a
+			// legacy pre-fix row) could return a 3xx pointing at a metadata
+			// sinkhole (169.254.169.254) or another loopback service. The
+			// destination is revalidated before every dial (see ProxyRequest),
+			// so a legitimate gateway never needs the server to follow a 3xx
+			// here — gateway replies are always 2xx/4xx/5xx terminal.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		internalSecret: internalSecret,
 	}
@@ -36,6 +46,19 @@ func (c *Client) InternalSecret() string {
 }
 
 func (c *Client) ProxyRequest(gatewayInternalURL, deviceID string, r *http.Request, w http.ResponseWriter) error {
+	// SSRF defense-in-depth: revalidate the stored InternalURL before any
+	// dial. Registration gates this at write time, but a DB row poisoned
+	// after registration (SQL injection, direct DB write, or a legacy
+	// pre-fix row) must not let an EXTERNAL authenticated user trigger a
+	// server-side dial to loopback / link-local / metadata endpoints via
+	// the proxy paths. This is the single chokepoint for all 4 proxy sinks
+	// (DeviceProxyHandler, SessionProxyHandler, ProxyDeviceSessionRequest,
+	// ProxyDeviceSessionRequestRaw) and covers the websocket branch too.
+	if err := ValidateInternalGatewayURL(gatewayInternalURL); err != nil {
+		logger.Warn("[Gateway] refusing to proxy to invalid internal url %s: %v", gatewayInternalURL, err)
+		return fmt.Errorf("invalid gateway internal url")
+	}
+
 	target := fmt.Sprintf("%s/device/%s/proxy%s", gatewayInternalURL, deviceID, r.URL.Path)
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

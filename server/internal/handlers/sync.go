@@ -9,6 +9,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/scheduler"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
 )
@@ -54,6 +55,55 @@ func getRegistryIDForRepo(repoID string) (string, error) {
 	return reg.ID, nil
 }
 
+// registryBelongsToRepo 校验 registry 是否属于指定的 repo。
+// 用于 IDOR 防护:防止用户通过 ?registryId= 越权操作其他 repo 的 registry。
+// 相关报告:secreport 20260731124653436798 (CVSS 5.3 TriggerRepoSync IDOR)
+func registryBelongsToRepo(registryID, repoID string) bool {
+	if registryID == "" || repoID == "" {
+		return false
+	}
+	var count int64
+	database.GetDB().Model(&models.CapabilityRegistry{}).
+		Where("id = ? AND repo_id = ?", registryID, repoID).
+		Count(&count)
+	return count > 0
+}
+
+// requireRegistryAccess 反查 registry 所属 repo 并执行授权检查,闭合
+// /registries/:id/sync* 系列端点的越权访问。
+// write=true 走 requireRepoAdmin(owner/admin),write=false 走 canReadRepo(any member)。
+// registry 不存在返回 404;授权失败按 helper 自身语义返回 403。
+// 相关报告:secreport 20260731124653436798 (CVSS 5.3 TriggerRepoSync IDOR)
+func requireRegistryAccess(c *gin.Context, registryID string, write bool) (string, bool) {
+	var registry models.CapabilityRegistry
+	if err := database.GetDB().First(&registry, "id = ?", registryID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Registry not found"})
+		return "", false
+	}
+	if write {
+		if !requireRepoAdmin(c, registry.RepoID) {
+			return "", false
+		}
+	} else {
+		if !canReadRepo(c, registry.RepoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this registry"})
+			return "", false
+		}
+	}
+	return registry.RepoID, true
+}
+
+// respondSyncDisabled 返回 503 表示 sync 触发入口已被安全策略封禁。
+//
+// 封禁动因：GitService.Clone (services/git_service.go) 对 externalUrl 零 SSRF
+// 防护，HTTP 触发的 sync 会向 <externalUrl>/info/refs?service=git-upload-pack
+// 发 HTTP GET，构成 SSRF。封禁由 scheduler.SyncDisabled 单一开关控制 —— 翻
+// false 即同时解封 HTTP 入口与 scheduler 后台周期触发。
+// 见 secreport 20260731141243580377 (CVSS 5.3)。
+func respondSyncDisabled(c *gin.Context) {
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync is disabled by security policy"})
+}
+
 // TriggerRepoSync godoc
 // @Summary      Trigger repo sync
 // @Description  Manually trigger a sync job for the repository's registry
@@ -65,8 +115,13 @@ func getRegistryIDForRepo(repoID string) (string, error) {
 // @Success      202  {object}  object{jobId=string,status=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      409  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string}  "sync disabled by security policy"
 // @Router       /repositories/{id}/sync [post]
 func TriggerRepoSync(c *gin.Context) {
+	if scheduler.SyncDisabled {
+		respondSyncDisabled(c)
+		return
+	}
 	repoID := c.Param("id")
 	if !requireRepoAdmin(c, repoID) {
 		return
@@ -74,6 +129,10 @@ func TriggerRepoSync(c *gin.Context) {
 
 	registryID := c.Query("registryId")
 	if registryID != "" {
+		if !registryBelongsToRepo(registryID, repoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Registry does not belong to this repository"})
+			return
+		}
 		triggerSync(c, registryID)
 		return
 	}
@@ -118,6 +177,10 @@ func CancelRepoSync(c *gin.Context) {
 	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
+		if !registryBelongsToRepo(registryID, repoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Registry does not belong to this repository"})
+			return
+		}
 		cancelSync(c, registryID)
 		return
 	}
@@ -150,6 +213,10 @@ func GetRepoSyncStatus(c *gin.Context) {
 	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
+		if !registryBelongsToRepo(registryID, repoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Registry does not belong to this repository"})
+			return
+		}
 		getSyncStatus(c, registryID)
 		return
 	}
@@ -216,6 +283,10 @@ func ListRepoSyncLogs(c *gin.Context) {
 	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
+		if !registryBelongsToRepo(registryID, repoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Registry does not belong to this repository"})
+			return
+		}
 		listSyncLogs(c, registryID)
 		return
 	}
@@ -259,6 +330,10 @@ func ListRepoSyncJobs(c *gin.Context) {
 	}
 	registryID := c.Query("registryId")
 	if registryID != "" {
+		if !registryBelongsToRepo(registryID, repoID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Registry does not belong to this repository"})
+			return
+		}
 		listSyncJobs(c, registryID)
 		return
 	}
@@ -296,9 +371,18 @@ func ListRepoSyncJobs(c *gin.Context) {
 // @Param        dryRun  query  bool    false "Dry run mode"
 // @Success      202  {object}  object{jobId=string,status=string}
 // @Failure      409  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string}  "sync disabled by security policy"
 // @Router       /registries/{id}/sync [post]
 func TriggerRegistrySync(c *gin.Context) {
-	triggerSync(c, c.Param("id"))
+	if scheduler.SyncDisabled {
+		respondSyncDisabled(c)
+		return
+	}
+	registryID := c.Param("id")
+	if _, ok := requireRegistryAccess(c, registryID, true); !ok {
+		return
+	}
+	triggerSync(c, registryID)
 }
 
 // CancelRegistrySync godoc
@@ -309,7 +393,11 @@ func TriggerRegistrySync(c *gin.Context) {
 // @Success      200  {object}  object{message=string}
 // @Router       /registries/{id}/sync/cancel [post]
 func CancelRegistrySync(c *gin.Context) {
-	cancelSync(c, c.Param("id"))
+	registryID := c.Param("id")
+	if _, ok := requireRegistryAccess(c, registryID, true); !ok {
+		return
+	}
+	cancelSync(c, registryID)
 }
 
 // GetRegistrySyncStatus godoc
@@ -320,7 +408,11 @@ func CancelRegistrySync(c *gin.Context) {
 // @Success      200  {object}  object{}
 // @Router       /registries/{id}/sync-status [get]
 func GetRegistrySyncStatus(c *gin.Context) {
-	getSyncStatus(c, c.Param("id"))
+	registryID := c.Param("id")
+	if _, ok := requireRegistryAccess(c, registryID, false); !ok {
+		return
+	}
+	getSyncStatus(c, registryID)
 }
 
 // ListRegistrySyncLogs godoc
@@ -331,7 +423,11 @@ func GetRegistrySyncStatus(c *gin.Context) {
 // @Success      200  {object}  object{logs=[]models.SyncLog,total=integer}
 // @Router       /registries/{id}/sync-logs [get]
 func ListRegistrySyncLogs(c *gin.Context) {
-	listSyncLogs(c, c.Param("id"))
+	registryID := c.Param("id")
+	if _, ok := requireRegistryAccess(c, registryID, false); !ok {
+		return
+	}
+	listSyncLogs(c, registryID)
 }
 
 // ListRegistrySyncJobs godoc
@@ -342,7 +438,11 @@ func ListRegistrySyncLogs(c *gin.Context) {
 // @Success      200  {object}  object{jobs=[]models.SyncJob,total=integer}
 // @Router       /registries/{id}/sync-jobs [get]
 func ListRegistrySyncJobs(c *gin.Context) {
-	listSyncJobs(c, c.Param("id"))
+	registryID := c.Param("id")
+	if _, ok := requireRegistryAccess(c, registryID, false); !ok {
+		return
+	}
+	listSyncJobs(c, registryID)
 }
 
 // GetSyncLogDetail godoc
@@ -351,14 +451,21 @@ func ListRegistrySyncJobs(c *gin.Context) {
 // @Produce      json
 // @Param        id  path  string  true  "SyncLog ID"
 // @Success      200  {object}  models.SyncLog
+// @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Router       /sync-logs/{id} [get]
+// GetSyncLogDetail 通过 syncLog.RegistryID 反查所属 registry→repo 并执行
+// canReadRepo 校验,闭合跨仓库日志直读越权。
+// 相关报告:secreport 20260731130222018451 (CVSS 2.3 SyncLog IDOR)
 func GetSyncLogDetail(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 	var log models.SyncLog
 	if err := db.First(&log, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Sync log not found"})
+		return
+	}
+	if _, ok := requireRegistryAccess(c, log.RegistryID, false); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, log)
@@ -370,14 +477,21 @@ func GetSyncLogDetail(c *gin.Context) {
 // @Produce      json
 // @Param        id  path  string  true  "SyncJob ID"
 // @Success      200  {object}  models.SyncJob
+// @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Router       /sync-jobs/{id} [get]
+// GetSyncJobDetail 通过 syncJob.RegistryID 反查所属 registry→repo 并执行
+// canReadRepo 校验,与 GetSyncLogDetail 同根因闭合。
+// 相关报告:secreport 20260731130222018451 (CVSS 2.3 SyncLog IDOR)
 func GetSyncJobDetail(c *gin.Context) {
 	id := c.Param("id")
 	db := database.GetDB()
 	var job models.SyncJob
 	if err := db.First(&job, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Sync job not found"})
+		return
+	}
+	if _, ok := requireRegistryAccess(c, job.RegistryID, false); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, job)

@@ -1,7 +1,6 @@
 package authz
 
 import (
-	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/systemrole"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -13,8 +12,8 @@ type Module struct {
 	systemRoleService *systemrole.SystemRoleService
 }
 
-func New(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider, casdoorEndpoint string, jwksProvider *middleware.JWKSProvider) (*Module, error) {
-	svc, err := NewService(db, roleProvider, capabilityProvider, casdoorEndpoint, jwksProvider)
+func New(db *gorm.DB, roleProvider RoleProvider, capabilityProvider CapabilityProvider) (*Module, error) {
+	svc, err := NewService(db, roleProvider, capabilityProvider)
 	if err != nil {
 		return nil, err
 	}

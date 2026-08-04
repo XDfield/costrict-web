@@ -8,7 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
+
+	"github.com/costrict/costrict-web/server/internal/safetch"
 )
 
 type WebhookConfig struct {
@@ -20,9 +21,16 @@ type WebhookSender struct {
 	client *http.Client
 }
 
+// NewWebhookSender returns a sender whose underlying *http.Client is hardened
+// against SSRF at every stage — DialContext re-resolves and re-checks the IP
+// at dial time (defeating DNS rebinding / TOCTOU) and CheckRedirect re-runs
+// ValidateURL on each redirect hop. Write-time validation is enforced in
+// ValidateUserConfig and Send; send-time re-validation in Send is
+// defense-in-depth for the case where a stored webhook URL is reused later
+// against a target whose DNS now resolves internally.
 func NewWebhookSender() *WebhookSender {
 	return &WebhookSender{
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: safetch.NewClient(safetch.Options{}),
 	}
 }
 
@@ -35,6 +43,9 @@ func (s *WebhookSender) ValidateUserConfig(userConfig json.RawMessage) error {
 	}
 	if cfg.URL == "" {
 		return fmt.Errorf("url is required")
+	}
+	if err := safetch.ValidateURL(cfg.URL); err != nil {
+		return fmt.Errorf("url: %w", err)
 	}
 	return nil
 }
@@ -62,6 +73,14 @@ func (s *WebhookSender) Send(userConfig json.RawMessage, msg NotificationMessage
 	var cfg WebhookConfig
 	if err := json.Unmarshal(userConfig, &cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Re-validate at send time. A webhook URL persisted earlier may later
+	// resolve to an internal address (DNS rotation or rebinding); the
+	// DialContext in safetch.NewClient also guards the connect, but an early
+	// rejection here yields a cleaner error and an additional layer.
+	if err := safetch.ValidateURL(cfg.URL); err != nil {
+		return fmt.Errorf("url: %w", err)
 	}
 
 	body, _ := json.Marshal(msg)

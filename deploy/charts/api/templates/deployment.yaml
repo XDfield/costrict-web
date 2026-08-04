@@ -158,10 +158,6 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-            {{- with .Values.jwtSignMode }}
-            - name: JWT_SIGN_MODE
-              value: {{ . | quote }}
-            {{- end }}
             {{- with .Values.bindStateSecret }}
             {{- if .value }}
             - name: BIND_STATE_SECRET

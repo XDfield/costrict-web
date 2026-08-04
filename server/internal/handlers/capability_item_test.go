@@ -1281,13 +1281,19 @@ func TestUpdateItem_ContentCreatesVersion(t *testing.T) {
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-ui2", Name: "ui-reg2", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
+	hashSvc := services.NewContentHashService()
+	originalContent := "v1"
+	originalHash, err := hashSvc.HashTextContent("skill", originalContent)
+	if err != nil {
+		t.Fatalf("hash content: %v", err)
+	}
 	database.DB.Create(&models.CapabilityItem{
 		ID: "item-ui2", RegistryID: "reg-ui2", RepoID: "repo-1", Slug: "versioned", ItemType: "skill",
 		Name: "Versioned", Status: "active", CreatedBy: "u1", Metadata: datatypes.JSON([]byte("{}")), CurrentRevision: 1,
-		ContentMD5: "6654c734ccab8f440ff0825eb443dc7f",
+		ContentMD5: originalHash,
 	})
 	database.DB.Create(&models.CapabilityVersion{
-		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: "v1", ContentMD5: "6654c734ccab8f440ff0825eb443dc7f", CreatedBy: "u1",
+		ID: "ver-1", ItemID: "item-ui2", Revision: 1, Content: originalContent, ContentMD5: originalHash, CreatedBy: "u1",
 		Metadata: datatypes.JSON([]byte("{}")),
 	})
 
@@ -1736,6 +1742,7 @@ func TestBatchDeleteItems_PlatformAdminDeletesAny(t *testing.T) {
 
 func TestListItemVersions(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-lv1", Name: "lv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1892,6 +1899,7 @@ func TestItemReadAccessByRepositoryVisibility(t *testing.T) {
 
 func TestGetItemVersion_Found(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gv1", Name: "gv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1923,6 +1931,7 @@ func TestGetItemVersion_Found(t *testing.T) {
 
 func TestGetItemVersion_WithVersionAssets(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gv-assets", Name: "gv-assets-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -2287,7 +2296,7 @@ func TestCreateItemDirect_DefaultVersion(t *testing.T) {
 		"itemType": "command", "name": "No Version",
 	})
 	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	var item map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&item)

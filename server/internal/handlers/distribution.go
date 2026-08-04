@@ -145,7 +145,7 @@ func (h *DistributionHandler) ListEligibleUsers(c *gin.Context) {
 
 // ListItemDistributions godoc
 // @Summary      List item distributions
-// @Description  Get all distributions for a specific item
+// @Description  Get distributions for a specific item scoped to the caller. Non-admin callers only see distributions they sent; platform admins see all distributions for the item.
 // @Tags         distributions
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -153,8 +153,14 @@ func (h *DistributionHandler) ListEligibleUsers(c *gin.Context) {
 // @Failure      500  {object}  object{error=string}
 // @Router       /items/{id}/distributions [get]
 func (h *DistributionHandler) ListItemDistributions(c *gin.Context) {
+	userID := c.GetString(middleware.UserIDKey)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	itemID := c.Param("id")
-	distributions, err := h.distSvc.ListItemDistributions(c.Request.Context(), itemID)
+	isAdmin := h.isPlatformAdmin(userID)
+	distributions, err := h.distSvc.ListItemDistributionsScoped(c.Request.Context(), itemID, userID, isAdmin)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

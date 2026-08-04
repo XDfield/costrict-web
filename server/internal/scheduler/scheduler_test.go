@@ -88,6 +88,9 @@ func TestSchedulerRejectsGitBackedRegistryOnDirectRegistration(t *testing.T) {
 // legacy pipeline owns. A NULL source_type is the trap here — `source_type <>
 // 'git'` evaluates to NULL for those rows and would silently drop them.
 func TestSchedulerStillRegistersLegacyRegistries(t *testing.T) {
+	if SyncDisabled {
+		t.Skip("legacy scheduler is globally disabled by the SSRF mitigation")
+	}
 	db := newSchedulerTestDB(t)
 	seedRegistry(t, db, "external-registry", "external", "https://github.com/costrict/catalog", true)
 	seedRegistry(t, db, "internal-registry", "internal", "https://github.com/costrict/seed", true)

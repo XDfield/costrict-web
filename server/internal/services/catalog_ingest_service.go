@@ -63,6 +63,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/safetch"
 	"github.com/costrict/costrict-web/server/internal/storage"
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
@@ -2011,11 +2012,22 @@ func (s *CatalogIngestService) materialize(ctx context.Context, src IngestSource
 	return "", noop, fmt.Errorf("IngestSource has no URL / Tarball / Dir set")
 }
 
+// httpClient returns the client used for catalog-bundle URL fetches.
+//
+// The default is safetch.NewClient, whose Transport.DialContext re-resolves
+// the host and re-validates every resolved IP at dial time, defeating
+// DNS-rebinding TOCTOU between the write-time ValidateURL in adminimport and
+// the actual connect. CheckRedirect re-runs ValidateURL on every redirect
+// hop. Closes the SSRF described in secreport 20260731101803384359 +
+// 20260731102217931559 (CVSS 5.1).
+//
+// Callers that inject s.HTTP (e.g. tests) are responsible for their own
+// dial-time policy.
 func (s *CatalogIngestService) httpClient() *http.Client {
 	if s.HTTP != nil {
 		return s.HTTP
 	}
-	return &http.Client{Timeout: 5 * time.Minute}
+	return safetch.NewClient(safetch.Options{Timeout: 5 * time.Minute})
 }
 
 func downloadTo(ctx context.Context, client *http.Client, url string, w io.Writer) error {

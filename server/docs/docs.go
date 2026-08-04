@@ -2490,7 +2490,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/devices/{deviceID}/rotate-token": {
+        "/devices/{deviceID}/token/rotate": {
             "post": {
                 "description": "Rotate the authentication token for a device",
                 "produces": [
