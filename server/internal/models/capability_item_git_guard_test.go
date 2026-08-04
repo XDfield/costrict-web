@@ -104,6 +104,73 @@ func assertGitOwnedRejected(t *testing.T, err error, label string) {
 	}
 }
 
+// --- upsert backstop ------------------------------------------------------
+
+// db.Save(&[]CapabilityItem{...}) never reaches BeforeUpdate: GORM turns a
+// slice destination into Create + ON CONFLICT UpdateAll (finisher_api.go), so
+// the create callback chain runs instead. That is the shape someone reaches for
+// when writing a batch back-fill, which is exactly the "future developer" case
+// R1.1 exists to cover.
+func TestGitOwnedGuard_RejectsSliceSaveUpsert(t *testing.T) {
+	db := newGuardTestDB(t)
+	item := seedGuardItem(t, db, "git-slice", ContentBackendGit)
+
+	rewritten := item
+	rewritten.Content = "rewritten through a slice save"
+	err := db.Save(&[]CapabilityItem{rewritten}).Error
+	assertGitOwnedRejected(t, err, "Save(&[]CapabilityItem)")
+
+	var after CapabilityItem
+	if err := db.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Content != "seed content" {
+		t.Fatalf("content was written despite the guard: %q", after.Content)
+	}
+}
+
+// A DB-backed row must still be upsertable — the guard may not change existing
+// behaviour for rows it does not own.
+func TestGitOwnedGuard_SliceSaveUpsertAllowedForDBRows(t *testing.T) {
+	db := newGuardTestDB(t)
+	item := seedGuardItem(t, db, "db-slice", ContentBackendDB)
+
+	rewritten := item
+	rewritten.Content = "rewritten"
+	if err := db.Save(&[]CapabilityItem{rewritten}).Error; err != nil {
+		t.Fatalf("db-backed slice save must succeed: %v", err)
+	}
+}
+
+// A plain INSERT has to stay open: Git discovery creates its own rows through
+// the same create callback chain, and a new row cannot overwrite repository
+// truth. Only the upsert form is guarded.
+func TestGitOwnedGuard_PlainInsertOfGitRowIsAllowed(t *testing.T) {
+	db := newGuardTestDB(t)
+	if got := seedGuardItem(t, db, "git-fresh", ContentBackendGit); got.ID != "git-fresh" {
+		t.Fatalf("seeding a git-backed row must succeed, got %+v", got)
+	}
+}
+
+// The Git writer's own upsert goes through, like every other guarded path.
+func TestGitOwnedGuard_SliceSaveUpsertHonoursBypass(t *testing.T) {
+	db := newGuardTestDB(t)
+	item := seedGuardItem(t, db, "git-bypass-slice", ContentBackendGit)
+
+	rewritten := item
+	rewritten.Content = "written by the git writer"
+	if err := db.Set(GitSyncBypassSetting, true).Save(&[]CapabilityItem{rewritten}).Error; err != nil {
+		t.Fatalf("bypassed slice save must succeed: %v", err)
+	}
+	var after CapabilityItem
+	if err := db.First(&after, "id = ?", item.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Content != "written by the git writer" {
+		t.Fatalf("bypass did not write: %q", after.Content)
+	}
+}
+
 // --- W5/W25 backstop: the three write shapes ------------------------------
 
 // Updates(map) — the shape used by reconcileItemCurrentRevision (W23),

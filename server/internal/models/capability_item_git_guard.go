@@ -115,12 +115,99 @@ func IsGitOwnedCapabilityColumn(column string) bool {
 //     ConvertToAssignments does, so a column excluded by Select is not
 //     considered written.
 //
-// Blind spots, stated so they are not mistaken for coverage: raw
-// tx.Exec("UPDATE capability_items ...") and tx.Table("capability_items")
-// bypass model hooks entirely. Those call sites carry their own
-// content_backend = 'db' predicate in SQL.
+// Blind spots, stated so they are not mistaken for coverage:
+//
+//   - raw tx.Exec("UPDATE capability_items ...") and tx.Table("capability_items")
+//     bypass model hooks entirely. Those call sites carry their own
+//     content_backend = 'db' predicate in SQL.
+//   - UpdateColumn / UpdateColumns and Session{SkipHooks: true} skip the hook by
+//     definition; the guard honours stmt.SkipHooks below. Every current caller
+//     writes runtime counters only (behavior_service.go), which are outside the
+//     guarded set anyway — but copying that form onto a content column would
+//     pass silently.
+//   - db.Save(&[]CapabilityItem{...}) never reaches BeforeUpdate at all: GORM
+//     turns a slice destination into Create + ON CONFLICT UpdateAll
+//     (finisher_api.go), so the create callback chain runs instead. Guarded by
+//     BeforeCreate below.
 func (item *CapabilityItem) BeforeUpdate(tx *gorm.DB) error {
 	return guardGitOwnedCapabilityUpdate(item, tx)
+}
+
+// BeforeCreate refuses upserts that would rewrite Git-owned columns.
+//
+// A plain INSERT stays open — Git discovery creates its rows through this same
+// callback chain, and a new row cannot overwrite repository truth. Only the
+// upsert form is guarded, because db.Save(&[]CapabilityItem{...}) silently
+// becomes Create + ON CONFLICT UpdateAll (gorm finisher_api.go) and would
+// rewrite every column of an existing Git-backed row without BeforeUpdate ever
+// running. Batch back-fills are exactly where someone reaches for that form.
+func (item *CapabilityItem) BeforeCreate(tx *gorm.DB) error {
+	return guardGitOwnedCapabilityUpsert(item, tx)
+}
+
+func guardGitOwnedCapabilityUpsert(receiver *CapabilityItem, tx *gorm.DB) error {
+	if tx == nil || tx.Statement == nil || tx.Statement.Schema == nil {
+		return nil
+	}
+	if tx.Statement.SkipHooks {
+		return nil
+	}
+	if bypass, ok := tx.Get(GitSyncBypassSetting); ok {
+		if enabled, _ := bypass.(bool); enabled {
+			return nil
+		}
+	}
+	columns := upsertGitOwnedColumns(tx.Statement)
+	if len(columns) == 0 {
+		return nil
+	}
+	// Without a primary key there is no existing row to collide with, so the
+	// statement can only insert.
+	if receiver == nil || receiver.ID == "" {
+		return nil
+	}
+	if !capabilityItemsHaveContentBackend(tx) {
+		return nil
+	}
+
+	var gitBacked int64
+	if err := tx.Model(&CapabilityItem{}).
+		Where("id = ? AND content_backend = ?", receiver.ID, ContentBackendGit).
+		Count(&gitBacked).Error; err != nil {
+		return err
+	}
+	if gitBacked == 0 {
+		return nil
+	}
+	return gitOwnedFieldError(columns)
+}
+
+// upsertGitOwnedColumns returns the Git-owned columns an ON CONFLICT clause
+// would overwrite. A plain insert, or one that resolves conflicts by doing
+// nothing, returns none.
+func upsertGitOwnedColumns(stmt *gorm.Statement) []string {
+	conflict, ok := stmt.Clauses["ON CONFLICT"]
+	if !ok {
+		return nil
+	}
+	onConflict, ok := conflict.Expression.(clause.OnConflict)
+	if !ok {
+		return nil
+	}
+	if onConflict.DoNothing {
+		return nil
+	}
+	if onConflict.UpdateAll {
+		return GitOwnedCapabilityColumns()
+	}
+	touched := make([]string, 0, len(onConflict.DoUpdates))
+	for _, assignment := range onConflict.DoUpdates {
+		if IsGitOwnedCapabilityColumn(assignment.Column.Name) {
+			touched = append(touched, assignment.Column.Name)
+		}
+	}
+	sort.Strings(touched)
+	return touched
 }
 
 func guardGitOwnedCapabilityUpdate(receiver *CapabilityItem, tx *gorm.DB) error {
@@ -193,24 +280,31 @@ func gitOwnedFieldError(columns []string) error {
 	return fmt.Errorf("%w (fields: %v)", ErrGitOwnedField, columns)
 }
 
-// capabilityContentBackendColumn memoises, per *gorm.Config, that
+// capabilityContentBackendColumn memoises, per connection, that
 // capability_items.content_backend exists. Only the positive answer is cached:
 // a column can be added mid-process (cmd/migrate runs prepareSchema before its
 // backfills), and caching "absent" there would disable the guard for the rest
 // of that run.
-var capabilityContentBackendColumn sync.Map // *gorm.Config -> struct{}
+//
+// Keyed by Dialector, not by *gorm.Config: the tx a hook receives comes from
+// callbacks.callMethod's db.Session(&Session{NewDB: true}), and Session copies
+// the config by value (`Config: &txConfig`), so a Config pointer is freshly
+// allocated on every callback. Keying on it would never hit and would grow this
+// map without bound — one retained Config copy per write. Dialector is the
+// interface value handed to gorm.Open and stays identical across sessions.
+var capabilityContentBackendColumn sync.Map // gorm.Dialector -> struct{}
 
 func capabilityItemsHaveContentBackend(tx *gorm.DB) bool {
-	if tx == nil || tx.Config == nil {
+	if tx == nil || tx.Config == nil || tx.Dialector == nil {
 		return false
 	}
-	if _, cached := capabilityContentBackendColumn.Load(tx.Config); cached {
+	if _, cached := capabilityContentBackendColumn.Load(tx.Dialector); cached {
 		return true
 	}
 	if !tx.Migrator().HasColumn(&CapabilityItem{}, "content_backend") {
 		return false
 	}
-	capabilityContentBackendColumn.Store(tx.Config, struct{}{})
+	capabilityContentBackendColumn.Store(tx.Dialector, struct{}{})
 	return true
 }
 

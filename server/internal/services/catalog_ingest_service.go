@@ -84,10 +84,11 @@ const PublicRegistryID = "00000000-0000-0000-0000-000000000001"
 // PublicRepoID matches what migrate's existing path uses.
 const PublicRepoID = "public"
 
-// contentBackendDB is the capability_items.content_backend value for rows whose
-// content truth lives in the DB (the `content` column + capability_assets). The
-// column is VARCHAR(16) NOT NULL DEFAULT 'db', so every pre-existing row already
-// carries it.
+// contentBackendDB aliases models.ContentBackendDB, the capability_items
+// .content_backend value for rows whose content truth lives in the DB (the
+// `content` column + capability_assets). The column is VARCHAR(16) NOT NULL
+// DEFAULT 'db', so every pre-existing row already carries it. Aliasing rather
+// than redeclaring keeps one source of truth shared with the model guard.
 //
 // Every legacy batch pipeline in this package (catalog ingest, the clone-based
 // SyncService) matches this value POSITIVELY — `content_backend = 'db'`, never
@@ -100,7 +101,7 @@ const PublicRepoID = "public"
 // time on purpose: ingest is a 14k-entry batch, and a per-row rejection would
 // either abort the run or inflate result.Failed by one per git row every pass.
 // "Never enters the candidate set" is silent and costs nothing.
-const contentBackendDB = "db"
+const contentBackendDB = models.ContentBackendDB
 
 // isDBBackedRow is the in-memory counterpart of the `content_backend = 'db'`
 // SQL condition, for the loops that filter an already-loaded slice. An empty
