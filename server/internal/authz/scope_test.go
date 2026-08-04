@@ -13,7 +13,7 @@ import (
 // grant test DB schema (users / user_system_roles / permission_grants).
 func newScopeTestService(t *testing.T, db *gorm.DB, roles map[string][]string, dp DepartmentProvider) *Service {
 	t.Helper()
-	svc, err := NewService(db, roleProviderStub{roles: roles}, systemrole.CapabilityProvider{}, "", nil)
+	svc, err := NewService(db, roleProviderStub{roles: roles}, systemrole.CapabilityProvider{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
