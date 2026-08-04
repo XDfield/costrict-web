@@ -78,4 +78,5 @@
 | [10-database.md](./10-database.md) | 数据库表结构 DDL + 无状态横向扩展 |
 | [11-roadmap.md](./11-roadmap.md) | 分阶段实施计划 |
 | [12-session-design.md](./12-session-design.md) | Session 设计与刷新机制（freshness / reset / prune / announce 协调，对比 openclaw） |
+| [13-unified-brain-refactor.md](./13-unified-brain-refactor.md) | **统一大脑改造方案**：盘点已落地实现相对"业务无关大脑"愿景的偏差，给出 7 阶段渐进式改造路径（Persona 解耦 / 工具分目录 / Task 协议 / Run 合一 / 意图 LLM 化 / 命名收敛） |
 | [~~05-skills-integration.md~~](./05-skills-integration.md) | ~~Skill 与 Capability Hub 对接（DBSkillRepository）~~ **暂时禁用** |
