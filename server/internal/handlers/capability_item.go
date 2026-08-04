@@ -2481,12 +2481,16 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	// Source-layer Zip Slip guard: SourcePath is persisted and later replayed
 	// as the zip entry Name in DownloadPluginZip — reject traversal / absolute
 	// paths here so the sink never has anything dangerous to write.
-	normalizedSourcePath, err := services.NormalizeArchivePath(req.SourcePath)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sourcePath is invalid: %v", err)})
-		return
+	// command/subagent have no static default (no source file), so an empty
+	// SourcePath is legitimate for those types and poses no traversal risk.
+	if req.SourcePath != "" {
+		normalizedSourcePath, err := services.NormalizeArchivePath(req.SourcePath)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sourcePath is invalid: %v", err)})
+			return
+		}
+		req.SourcePath = normalizedSourcePath
 	}
-	req.SourcePath = normalizedSourcePath
 	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, uid, callerIsPlatformAdmin(c, h.db))
 	if err != nil {
 		if errors.Is(err, services.ErrInvalidTagSlug) {

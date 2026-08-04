@@ -148,6 +148,10 @@ func TestGetRegistryIDForRepo_NotFound(t *testing.T) {
 
 func TestGetSyncLogDetail_Found(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-1", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-1", Name: "reg-1", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
 	database.DB.Exec(`INSERT INTO sync_logs (id, registry_id, trigger_type, status, started_at, created_at)
 		VALUES ('log-1', 'reg-1', 'manual', 'success', datetime('now'), datetime('now'))`)
 
@@ -176,6 +180,10 @@ func TestGetSyncLogDetail_NotFound(t *testing.T) {
 
 func TestGetSyncJobDetail_Found(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-1", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-1", Name: "reg-1", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
+	})
 	database.DB.Exec(`INSERT INTO sync_jobs (id, registry_id, trigger_type, status, priority, scheduled_at, created_at)
 		VALUES ('job-1', 'reg-1', 'manual', 'pending', 1, datetime('now'), datetime('now'))`)
 
@@ -204,6 +212,7 @@ func TestGetSyncJobDetail_NotFound(t *testing.T) {
 
 func TestGetRegistrySyncStatus_Found(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-ss1", Name: "sync-reg", SourceType: "internal",
 		RepoID: "repo-1", OwnerID: "u1", SyncStatus: "idle",
@@ -234,6 +243,10 @@ func TestGetRegistrySyncStatus_NotFound(t *testing.T) {
 
 func TestListRegistrySyncLogs_Empty(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-any", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "any-reg", Name: "any-reg", SourceType: "internal", RepoID: "repo-any", OwnerID: "u1",
+	})
 
 	w := get(newSyncRouter(), "/api/registries/any-reg/sync-logs")
 	if w.Code != http.StatusOK {
@@ -248,6 +261,10 @@ func TestListRegistrySyncLogs_Empty(t *testing.T) {
 
 func TestListRegistrySyncLogs_WithData(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-logs", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-logs", Name: "reg-logs", SourceType: "internal", RepoID: "repo-logs", OwnerID: "u1",
+	})
 	database.DB.Exec(`INSERT INTO sync_logs (id, registry_id, trigger_type, status, started_at, created_at)
 		VALUES ('log-a', 'reg-logs', 'manual', 'success', datetime('now'), datetime('now'))`)
 	database.DB.Exec(`INSERT INTO sync_logs (id, registry_id, trigger_type, status, started_at, created_at)
@@ -267,6 +284,10 @@ func TestListRegistrySyncLogs_WithData(t *testing.T) {
 
 func TestListRegistrySyncLogs_Pagination(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-page", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-page", Name: "reg-page", SourceType: "internal", RepoID: "repo-page", OwnerID: "u1",
+	})
 	for i := 0; i < 5; i++ {
 		database.DB.Exec(`INSERT INTO sync_logs (id, registry_id, trigger_type, status, started_at, created_at)
 			VALUES (?, 'reg-page', 'manual', 'success', datetime('now'), datetime('now'))`,
@@ -291,6 +312,10 @@ func TestListRegistrySyncLogs_Pagination(t *testing.T) {
 
 func TestListRegistrySyncJobs_NoJobService(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-jobs", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "any-reg", Name: "any-reg", SourceType: "internal", RepoID: "repo-jobs", OwnerID: "u1",
+	})
 	origJobService := JobService
 	JobService = nil
 	defer func() { JobService = origJobService }()
@@ -319,11 +344,18 @@ func TestTriggerRegistrySync_NoJobService(t *testing.T) {
 
 func TestCancelRegistrySync_NoJobService(t *testing.T) {
 	defer setupSyncDB(t)()
+	createTestRepository(t, "repo-cancel", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "any-reg", Name: "any-reg", SourceType: "internal", RepoID: "repo-cancel", OwnerID: "u1",
+	})
+	database.DB.Create(&models.RepoMember{
+		ID: "mem-cancel", RepoID: "repo-cancel", UserID: "u1", Role: "owner",
+	})
 	origJobService := JobService
 	JobService = nil
 	defer func() { JobService = origJobService }()
 
-	w := postJSON(newSyncRouter(), "/api/registries/any-reg/sync/cancel", nil)
+	w := postJSON(newSyncRouterWithUser("u1"), "/api/registries/any-reg/sync/cancel", nil)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when JobService is nil, got %d", w.Code)
 	}

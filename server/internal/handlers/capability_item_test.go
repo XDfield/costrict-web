@@ -1568,6 +1568,7 @@ func TestBatchDeleteItems_PlatformAdminDeletesAny(t *testing.T) {
 
 func TestListItemVersions(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-lv1", Name: "lv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1724,6 +1725,7 @@ func TestItemReadAccessByRepositoryVisibility(t *testing.T) {
 
 func TestGetItemVersion_Found(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gv1", Name: "gv-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -1755,6 +1757,7 @@ func TestGetItemVersion_Found(t *testing.T) {
 
 func TestGetItemVersion_WithVersionAssets(t *testing.T) {
 	defer setupTestDB(t)()
+	createTestRepository(t, "repo-1", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-gv-assets", Name: "gv-assets-reg", SourceType: "internal", RepoID: "repo-1", OwnerID: "u1",
 	})
@@ -2119,7 +2122,7 @@ func TestCreateItemDirect_DefaultVersion(t *testing.T) {
 		"itemType": "command", "name": "No Version",
 	})
 	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 	var item map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&item)

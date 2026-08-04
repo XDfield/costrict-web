@@ -111,15 +111,9 @@ func TestKBEnsure_ResolverNil_Returns503(t *testing.T) {
 	// which returns a different error_code).
 	db := setupTeamnsDB(t)
 	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
-	gin.SetMode(gin.TestMode)
-	teamnsService = svc
-	t.Cleanup(func() { teamnsService = nil })
-	teamResolver = nil
-	t.Cleanup(func() { teamResolver = nil })
-	r := gin.New()
-	r.POST("/api/kb/ensure", KBEnsure)
+	r := newKBEnsureRouter(t, svc, nil) // teamResolver=nil, X-Test-Subject middleware installed
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("got %d, want 503; body=%s", w.Code, w.Body.String())
@@ -162,7 +156,7 @@ func TestKBEnsure_ZeroTeams_Returns403(t *testing.T) {
 	svc := teamns.NewService(db, nil, nil, mustAESHandler(t), nil)
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: []TeamSummary{}})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403; body=%s", w.Code, w.Body.String())
@@ -181,7 +175,7 @@ func TestKBEnsure_MultiTeams_Returns409(t *testing.T) {
 	}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusConflict {
 		t.Errorf("got %d, want 409; body=%s", w.Code, w.Body.String())
@@ -205,7 +199,8 @@ func TestKBEnsure_ExplicitTeamID_NotMember_Returns403(t *testing.T) {
 
 	body := KBEnsureRequest{
 		CodeRepoURL: "https://github.com/o/p.git",
-		TeamID:      padUUIDHandler(99), // not in user's team list
+		SpaceType:   "team",
+		SpaceID:     padUUIDHandler(99), // not in user's team list
 	}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusForbidden {
@@ -251,7 +246,7 @@ func TestKBEnsure_SingleTeam_HappyPath(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/ownerA/proj.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/ownerA/proj.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d, body=%s", w.Code, w.Body.String())
@@ -267,11 +262,8 @@ func TestKBEnsure_SingleTeam_HappyPath(t *testing.T) {
 	if !got.Created.KbRepo {
 		t.Errorf("expected Created.KbRepo=true")
 	}
-	if got.TeamID != teamID {
-		t.Errorf("team_id: got %q, want %q", got.TeamID, teamID)
-	}
-	if got.TeamResolution != "implicit_single" {
-		t.Errorf("team_resolution: got %q, want implicit_single", got.TeamResolution)
+	if got.SpaceType != "team" {
+		t.Errorf("space_type: got %q, want team", got.SpaceType)
 	}
 	if got.BotCredentials == nil || got.BotCredentials.Token != plaintext {
 		t.Errorf("bot creds: %+v", got.BotCredentials)
@@ -331,7 +323,8 @@ func TestKBEnsure_ExplicitTeamID_Member_HappyPath(t *testing.T) {
 
 	body := KBEnsureRequest{
 		CodeRepoURL: "https://github.com/o/p.git",
-		TeamID:      teamID,
+		SpaceType:   "team",
+		SpaceID:     teamID,
 	}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusOK {
@@ -341,11 +334,14 @@ func TestKBEnsure_ExplicitTeamID_Member_HappyPath(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.TeamResolution != "explicit" {
-		t.Errorf("team_resolution: got %q, want explicit", got.TeamResolution)
+	if got.SpaceType != "team" {
+		t.Errorf("space_type: got %q, want team", got.SpaceType)
 	}
-	if got.TeamID != teamID {
-		t.Errorf("team_id: got %q, want %q", got.TeamID, teamID)
+	// KbRepoPath embeds the resolved team's short namespace prefix
+	// (t-<team_short>/...), proving the explicit SpaceID was honored.
+	wantPath := "t-" + short + "/kb-github.com__o__p"
+	if got.KbRepoPath != wantPath {
+		t.Errorf("kb_repo_path: got %q, want %q", got.KbRepoPath, wantPath)
 	}
 }
 
@@ -411,7 +407,7 @@ func TestKBEnsure_TeamNSMissing_AutoProvisionFails_Returns503(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Ghost", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("got %d, want 503; body=%s", w.Code, w.Body.String())
@@ -471,7 +467,7 @@ func TestKBEnsure_Idempotent_SecondCall_CreatedFalse(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d, body=%s", w.Code, w.Body.String())
@@ -543,7 +539,7 @@ func TestKBEnsure_BotCredsMissing_Returns412(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusPreconditionFailed {
 		t.Errorf("got %d, want 412; body=%s", w.Code, w.Body.String())
@@ -573,7 +569,7 @@ func TestKBEnsure_ProvisioningFailure_Returns502(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("got %d, want 502; body=%s", w.Code, w.Body.String())
@@ -602,7 +598,7 @@ func TestKBEnsure_TenantGitServerUnresolved_Returns503(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git"}
+	body := KBEnsureRequest{CodeRepoURL: "https://github.com/o/p.git", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("got %d, want 503; body=%s", w.Code, w.Body.String())
@@ -627,7 +623,7 @@ func TestKBEnsure_InvalidCodeRepoURL_Returns400(t *testing.T) {
 	teams := []TeamSummary{{TeamID: teamID, DisplayName: "Platform", Role: "owner"}}
 	r := newKBEnsureRouter(t, svc, &stubTeamResolver{teams: teams})
 
-	body := KBEnsureRequest{CodeRepoURL: "ftp://github.com/o/p"}
+	body := KBEnsureRequest{CodeRepoURL: "ftp://github.com/o/p", SpaceType: "team"}
 	w := doKBEnsure(t, r, "user-1", body)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400; body=%s", w.Code, w.Body.String())
