@@ -503,12 +503,21 @@ func TestGitCapabilitySyncService_ReconcilesAddedManifestAndRestoresStableIdenti
 	if created.ItemType != "command" || created.Name != "Review Command" || created.Version != "2.0.0" || created.Status != "active" {
 		t.Fatalf("created command projection = %+v", created)
 	}
+	// A Git-backed row is anchored on its commit, not on a revision chain: it
+	// grows no capability_versions rows at all, and its content stays in the
+	// repository rather than being copied into either table.
 	var versionCount int64
 	if err := db.Model(&models.CapabilityVersion{}).Where("item_id = ?", created.ID).Count(&versionCount).Error; err != nil {
 		t.Fatalf("count initial versions: %v", err)
 	}
-	if versionCount != 1 {
-		t.Fatalf("initial version count = %d, want 1", versionCount)
+	if versionCount != 0 {
+		t.Fatalf("initial version count = %d, want 0", versionCount)
+	}
+	if created.Content != "" {
+		t.Fatalf("created command stored content in the DB: %q", created.Content)
+	}
+	if len(created.ContentMD5) != 64 {
+		t.Fatalf("created command lost its manifest hash: %q", created.ContentMD5)
 	}
 
 	delete(reader.files, "commands/review.md")

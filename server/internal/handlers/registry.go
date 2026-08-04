@@ -252,6 +252,8 @@ func buildRegistryIndex(db *gorm.DB, registryIDs []string) indexJSON {
 // @Success      200 {string}  string  "Markdown content"
 // @Failure      403 {object}  object{error=string}
 // @Failure      404 {object}  object{error=string}
+// @Failure      502 {object}  object{error=string,error_code=string}
+// @Failure      503 {object}  object{error=string,error_code=string}
 // @Router       /items/{id}/download [get]
 func DownloadItem(c *gin.Context) {
 	id := c.Param("id")
@@ -271,6 +273,21 @@ func DownloadItem(c *gin.Context) {
 		return
 	}
 
+	// This endpoint serves a single file, not an archive, so a Git-backed row's
+	// payload is exactly the bytes at source_repo_path — frontmatter included.
+	// The device client writes them to disk verbatim and parses that frontmatter
+	// for the fields that decide whether a skill is offered to the model, so any
+	// rewriting here degrades the capability silently.
+	payload := []byte(item.Content)
+	if isGitBacked(&item) {
+		raw, herr := readGitBackedItemContent(c, &item)
+		if herr != nil {
+			c.JSON(herr.status, herr.body)
+			return
+		}
+		payload = raw
+	}
+
 	go func(item models.CapabilityItem, userID string) {
 		_, _ = services.NewBehaviorService(database.GetDB()).LogBehavior(context.Background(), services.LogBehaviorRequest{
 			UserID:     userID,
@@ -286,7 +303,7 @@ func DownloadItem(c *gin.Context) {
 
 	filename := contentFilename(item.ItemType, item.Slug)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", payload)
 }
 
 func contentFilename(itemType, slug string) string {
@@ -380,8 +397,35 @@ func DownloadRegistryFile(c *gin.Context) {
 
 	mainFilename := contentFilename(item.ItemType, item.Slug)
 	if requestedFile == "" || requestedFile == mainFilename {
+		payload := []byte(item.Content)
+		if isGitBacked(&item) {
+			raw, herr := readGitBackedItemContent(c, &item)
+			if herr != nil {
+				c.JSON(herr.status, herr.body)
+				return
+			}
+			payload = raw
+		}
+		// The advertised name stays the canonical one (SKILL.md, <slug>.md, …)
+		// even when the repository stores the file elsewhere: it is the name the
+		// device client asks for and the name it writes on disk, so deriving it
+		// from source_repo_path instead would make this route unaddressable.
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", mainFilename))
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(item.Content))
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", payload)
+		return
+	}
+
+	// Only the top-level metadata file is served for a Git-backed row. The rest
+	// of the repository tree is not indexed as capability_assets and is not
+	// proxied through this route yet, so answering from the (empty) asset table
+	// below would report "no such file" without saying why.
+	if isGitBacked(&item) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":      "this item's files live in git and only its main file is served here",
+			"error_code": "GIT_ASSET_NOT_SERVED",
+			"repoUrl":    item.SourceRepoURL,
+			"repoRef":    item.SourceRepoRef,
+		})
 		return
 	}
 

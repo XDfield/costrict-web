@@ -26,8 +26,13 @@ func seedGuardedItem(t *testing.T, id, backend string) {
 		item.SourceRepoURL = "https://gitea.example.test/owner/repo"
 		item.SourceRepoRef = "main"
 		item.SourceRepoPath = "skill.md"
-		item.SourceGitServerID = "guard-srv"
-		item.SourceGitRepoID = 4242
+		// Coordinates point at the shared fake git server (see
+		// setupGitContentFixture): reading a Git-backed row now fetches its
+		// content from the repository, so a row bound to a server that does not
+		// exist cannot be read at all. Tests that only write still work without
+		// the fixture — nothing contacts Git on that path.
+		item.SourceGitServerID = gitContentTestServerID
+		item.SourceGitRepoID = gitContentTestRepoID
 		item.GitSyncStatus = "synced"
 	}
 	if err := database.DB.Create(&item).Error; err != nil {
@@ -48,6 +53,8 @@ func seedGuardedItem(t *testing.T, id, backend string) {
 // guard rejects it and the detail page fails.
 func TestGetItem_GitBackedRowIsNotWrittenByRead(t *testing.T) {
 	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", "---\nname: guarded\n---\nbody")
 	createTestRepository(t, "repo-guard", "public")
 	database.DB.Create(&models.CapabilityRegistry{
 		ID: "reg-guard", Name: "guard-reg", SourceType: "internal", RepoID: "repo-guard", OwnerID: "u1",

@@ -317,6 +317,19 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			return err
 		}
 		for _, entry := range prepared {
+			// content / content_md5 are absent from this map by design, not by
+			// oversight — do not "fix" it by adding them.
+			//
+			// A Git-backed row does not store its content: every read path fetches
+			// the file from the repository at request time. Writing it here would
+			// re-create the copy this design removed, and would do it with the
+			// worst possible refresh policy — updated only when a push happens to
+			// be delivered, silently stale whenever the webhook is late or lost.
+			// The hash stays as discovery computed it, describing the manifest
+			// rather than standing in for it.
+			//
+			// What this map does own is the projection: the fields the marketplace
+			// and the listings read without touching Git.
 			updates := map[string]any{
 				"source_repo_url":    repoURL,
 				"source_repo_ref":    branchName,
@@ -384,13 +397,13 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		}
 		for _, discoveredEntry := range newEntries {
 			discoveredEntry.Parsed.Slug = uniqueDiscoveredCapabilitySlug(discoveredEntry, usedSlugs)
-			item, version, err := buildDiscoveredCapability(
+			item, err := buildDiscoveredCapability(
 				binding, cfg.ServerID, repo, repoURL, branchName, headSHA, binding.RepoKind, ownerID, discoveredEntry, now,
 			)
 			if err != nil {
 				return err
 			}
-			if err := createDiscoveredCapability(tx, item, version, discoveredEntry.Parsed.Tags, ownerID); err != nil {
+			if err := createDiscoveredCapability(tx, item, discoveredEntry.Parsed.Tags, ownerID); err != nil {
 				return err
 			}
 			result.Created++

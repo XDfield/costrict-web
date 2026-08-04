@@ -492,6 +492,13 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 			return err
 		}
 
+		// A Git-backed row's version anchor is its commit, so it grows no
+		// capability_versions rows — the same rule discovery follows. A revision
+		// row here would claim to snapshot content the row does not own, and
+		// nothing would ever add a second one: the Git sync path updates the
+		// projection in place and never appends revisions. Its version snapshot
+		// assets are skipped with it, since they hang off the revision.
+		gitBackedRow := item.ContentBackend == contentBackendGit
 		version := models.CapabilityVersion{
 			ID:          uuid.New().String(),
 			ItemID:      item.ID,
@@ -507,8 +514,10 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 			CommitMsg:   "Initial version",
 			CreatedBy:   item.CreatedBy,
 		}
-		if err := tx.Create(&version).Error; err != nil {
-			return err
+		if !gitBackedRow {
+			if err := tx.Create(&version).Error; err != nil {
+				return err
+			}
 		}
 
 		for i := range assets.Records {
@@ -521,10 +530,12 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 			}
 		}
 
-		for _, snapshotAsset := range cloneItemAssetsToVersionAssets(version.ID, assets.Records) {
-			asset := snapshotAsset
-			if err := tx.Create(&asset).Error; err != nil {
-				return err
+		if !gitBackedRow {
+			for _, snapshotAsset := range cloneItemAssetsToVersionAssets(version.ID, assets.Records) {
+				asset := snapshotAsset
+				if err := tx.Create(&asset).Error; err != nil {
+					return err
+				}
 			}
 		}
 
@@ -606,6 +617,7 @@ type ItemResponse struct {
 	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`   // 仅 git-backed：仓库地址
 	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`   // 仅 git-backed：分支
 	SourceRepoPath      string                      `json:"sourceRepoPath,omitempty"`  // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
+	GitSyncStatus       string                      `json:"gitSyncStatus,omitempty"`   // 仅 git-backed：pending | synced | error | orphaned
 	GitLastSyncedAt     *time.Time                  `json:"gitLastSyncedAt,omitempty"` // 仅 git-backed：最近一次成功写入 Git 投影的时间
 }
 
@@ -697,7 +709,29 @@ func reconcileItemCurrentRevision(db *gorm.DB, item *models.CapabilityItem) {
 		Update("current_revision", latestRevision).Error
 }
 
+// buildItemResponse projects an item for the API. Git-backed rows are served
+// without content: see buildItemResponseWithGitContent for the endpoints that
+// can supply it.
 func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, userID string) ItemResponse {
+	return buildItemResponseWithGitContent(c, db, item, userID, "")
+}
+
+// buildItemResponseWithGitContent is buildItemResponse with the repository's
+// content handed in by a caller that already read it through.
+//
+// For a Git-backed row the passed value REPLACES the stored column
+// unconditionally, empty included. capability_items.content is not a fallback
+// for these rows: discovery stopped writing it, and whatever older rows still
+// carry is a snapshot from the moment they were bound. An endpoint that cannot
+// read through returns an error (see readGitBackedItemContent); the ones that
+// deliberately do not read through — every write response here, plus the list —
+// return the field empty rather than seeding a client with a stale copy.
+//
+// DB-backed rows are untouched: gitContent is ignored for them entirely.
+func buildItemResponseWithGitContent(c *gin.Context, db *gorm.DB, item models.CapabilityItem, userID, gitContent string) ItemResponse {
+	if isGitBacked(&item) {
+		item.Content = gitContent
+	}
 	reconcileItemCurrentRevision(db, &item)
 	if TagSvc != nil && item.ID != "" && len(item.Tags) == 0 {
 		if tagsMap, err := TagSvc.GetItemTags([]string{item.ID}); err == nil && tagsMap != nil {
@@ -779,6 +813,10 @@ func buildItemResponse(c *gin.Context, db *gorm.DB, item models.CapabilityItem, 
 		resp.SourceRepoURL = item.SourceRepoURL
 		resp.SourceRepoRef = item.SourceRepoRef
 		resp.SourceRepoPath = item.SourceRepoPath
+		// Sync state is part of the read contract, not diagnostics: a row whose
+		// last push has not been projected yet still serves live content, and the
+		// UI needs to say so rather than present stale metadata as current.
+		resp.GitSyncStatus = item.GitSyncStatus
 		resp.GitLastSyncedAt = item.GitLastSyncedAt
 	}
 	if item.Registry != nil {
@@ -1243,6 +1281,8 @@ func CreateItem(c *gin.Context) {
 // @Success      200  {object}  ItemResponse
 // @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
+// @Failure      502  {object}  object{error=string,error_code=string}
+// @Failure      503  {object}  object{error=string,error_code=string}
 // @Router       /items/{id} [get]
 func GetItem(c *gin.Context) {
 	id := c.Param("id")
@@ -1258,7 +1298,21 @@ func GetItem(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
 		return
 	}
-	c.JSON(http.StatusOK, buildItemResponse(c, db, item, userID))
+
+	// Git-backed content is fetched before the response is built, because the
+	// whole response fails if it cannot be fetched. Serving the metadata with an
+	// empty or stale body would tell the caller this capability has no content,
+	// which is a different — and wrong — statement about the item.
+	gitContent := ""
+	if isGitBacked(&item) {
+		raw, herr := readGitBackedItemContent(c, &item)
+		if herr != nil {
+			c.JSON(herr.status, herr.body)
+			return
+		}
+		gitContent = string(raw)
+	}
+	c.JSON(http.StatusOK, buildItemResponseWithGitContent(c, db, item, userID, gitContent))
 }
 
 // ListItemAssets godoc
@@ -2495,6 +2549,18 @@ func ListAllItems(c *gin.Context) {
 	}
 	out := make([]ItemWithRepo, len(items))
 	for i, item := range items {
+		// Git-backed rows ship an empty content field here, and the list
+		// deliberately does not read through to fill it.
+		//
+		// Nothing consumes it: the device client blanks `content` on every list
+		// entry it parses and fetches the body from the detail endpoint instead.
+		// Reading through would therefore buy a field with no reader at the price
+		// of one Git round trip per row — 20 per page at the default page size.
+		// Leaving the stored column in place is not an option either: it is the
+		// snapshot this change exists to stop serving.
+		if isGitBacked(&item) {
+			item.Content = ""
+		}
 		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID], ForkCount: forkCountMap[item.ID]}
 		if item.Registry != nil {
 			out[i].RepoName = repoNameMap[item.Registry.RepoID]

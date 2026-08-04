@@ -296,11 +296,11 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 			return err
 		}
 		for _, entry := range discovered {
-			item, version, err := buildDiscoveredCapability(binding, cfg.ServerID, repo, repoURL, branchName, headSHA, repoKind, ownerID, entry, now)
+			item, err := buildDiscoveredCapability(binding, cfg.ServerID, repo, repoURL, branchName, headSHA, repoKind, ownerID, entry, now)
 			if err != nil {
 				return err
 			}
-			if err := createDiscoveredCapability(tx, item, version, entry.Parsed.Tags, ownerID); err != nil {
+			if err := createDiscoveredCapability(tx, item, entry.Parsed.Tags, ownerID); err != nil {
 				return err
 			}
 			result.Created++
@@ -951,6 +951,23 @@ func hashDiscoveredCapabilityContent(itemType, manifestPath, content string) str
 	return hash
 }
 
+// buildDiscoveredCapability projects one manifest into an index row.
+//
+// The row carries no content. The repository holds it, every read path fetches
+// it from there, and a copy here would be a second truth that nothing keeps
+// current: the reconcile path updates the projection columns on every push and
+// has never rewritten content, so a stored copy is only ever as fresh as the
+// moment the row was created.
+//
+// content_md5 stays, computed from the manifest bytes this pass read. It is a
+// fingerprint of the source, not a substitute for it, and CheckItemConsistency
+// compares it against hashes the DB path produces — so it must keep being
+// derived exactly the way the DB write path derives it (handlers create/update
+// and the migrate backfill all use ContentHashService).
+//
+// No capability_versions row is produced either: a Git-backed row's version
+// anchor is its commit, and revisions belong to the DB-backed editing flow that
+// these rows do not participate in.
 func buildDiscoveredCapability(
 	binding *models.GitCapabilityRepository,
 	serverID string,
@@ -958,18 +975,14 @@ func buildDiscoveredCapability(
 	repoURL, branchName, headSHA, repoKind, ownerID string,
 	entry discoveredGitCapability,
 	now time.Time,
-) (*models.CapabilityItem, *models.CapabilityVersion, error) {
+) (*models.CapabilityItem, error) {
 	metadata := metadataJSON(entry.Parsed.Metadata)
-	// Must stay identical to the DB write path (handlers create/update and the
-	// migrate backfill all use ContentHashService), otherwise git-backed rows
-	// hash differently and CheckItemConsistency can never compare across
-	// backends.
 	contentHash := hashDiscoveredCapabilityContent(entry.ItemType, entry.Path, entry.Parsed.Content)
 	item := &models.CapabilityItem{
 		ID: uuid.NewString(), RegistryID: binding.RegistryID, RepoID: binding.RepositoryID,
 		Slug: entry.Parsed.Slug, ItemType: entry.ItemType, Name: entry.Parsed.Name,
 		Description: entry.Parsed.Description, Descriptions: datatypes.JSON([]byte("{}")), Category: entry.Parsed.Category,
-		Version: entry.Parsed.Version, Content: entry.Parsed.Content, ContentMD5: contentHash, CurrentRevision: 1,
+		Version: entry.Parsed.Version, ContentMD5: contentHash, CurrentRevision: 1,
 		Metadata: metadata, SourcePath: entry.Path, SourceSHA: headSHA, SourceType: "git", Source: entry.Parsed.Source,
 		SourceRepoURL: repoURL, SourceRepoRef: branchName, SourceRepoPath: entry.Path, ContentBackend: "git",
 		SourceGitServerID: serverID, SourceGitRepoID: repo.ID, SourceGitEntryKey: entry.EntryKey,
@@ -977,33 +990,26 @@ func buildDiscoveredCapability(
 		Status: "active", SecurityStatus: "unscanned", CreatedBy: ownerID, UpdatedBy: ownerID,
 		IsBuiltIn: strings.EqualFold(strings.Split(repo.FullName, "/")[0], "costrict"),
 	}
-	version := &models.CapabilityVersion{
-		ID: uuid.NewString(), ItemID: item.ID, Revision: 1, Name: item.Name, Description: item.Description,
-		Descriptions: datatypes.JSON([]byte("{}")), Category: item.Category, Version: item.Version,
-		Content: item.Content, ContentMD5: item.ContentMD5, Metadata: item.Metadata,
-		CommitMsg: "Discovered from Git at " + headSHA, CreatedBy: ownerID, SourcePath: entry.Path, CreatedAt: now,
-	}
-	return item, version, nil
+	return item, nil
 }
 
 func createDiscoveredCapability(
 	tx *gorm.DB,
 	item *models.CapabilityItem,
-	version *models.CapabilityVersion,
 	tagSlugs []string,
 	ownerID string,
 ) error {
+	// "Content" is absent from this whitelist on purpose, not by omission — the
+	// column keeps its NULL default so nothing can mistake a Git-backed row for
+	// one that carries its own content.
 	if err := tx.Select(
 		"ID", "RegistryID", "RepoID", "Slug", "ItemType", "Name", "Description", "Descriptions", "Category", "Version",
-		"Content", "ContentMD5", "CurrentRevision", "Metadata", "SourcePath", "SourceSHA", "SourceType", "Source",
+		"ContentMD5", "CurrentRevision", "Metadata", "SourcePath", "SourceSHA", "SourceType", "Source",
 		"SourceRepoURL", "SourceRepoRef", "SourceRepoPath", "ContentBackend", "SourceGitServerID", "SourceGitRepoID",
 		"SourceGitEntryKey", "GitSHA", "GitLastSyncedAt", "GitSyncStatus", "GitSyncError", "Status", "SecurityStatus",
 		"CreatedBy", "UpdatedBy", "IsBuiltIn", "CreatedAt", "UpdatedAt",
 	).Create(item).Error; err != nil {
 		return fmt.Errorf("create discovered capability %s: %w", item.SourceRepoPath, err)
-	}
-	if err := tx.Create(version).Error; err != nil {
-		return fmt.Errorf("create initial version for %s: %w", item.SourceRepoPath, err)
 	}
 	if len(tagSlugs) == 0 {
 		return nil
