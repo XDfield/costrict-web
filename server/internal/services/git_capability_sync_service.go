@@ -26,6 +26,7 @@ const (
 type GitCapabilityReader interface {
 	GetRepoByID(ctx context.Context, repoID int64) (*gitsync.Repo, error)
 	GetBranch(ctx context.Context, owner, repo, branch string) (*gitsync.Branch, error)
+	ListTree(ctx context.Context, owner, repo, ref string) ([]gitsync.GitTreeEntry, error)
 	ReadFile(ctx context.Context, owner, repo, ref, filePath string) ([]byte, error)
 }
 
@@ -37,6 +38,7 @@ type GitCapabilitySyncService struct {
 
 type GitCapabilitySyncResult struct {
 	CommitSHA string
+	Created   int
 	Updated   int
 	Archived  int
 	Skipped   int
@@ -60,9 +62,9 @@ type preparedGitCapability struct {
 	removed    bool
 }
 
-// SyncRepository refreshes only capability rows that are already bound to the
-// stable (git server, numeric repo id) identity. Unknown repos and DB-backed
-// rows are deliberately ignored during the incremental rollout.
+// SyncRepository converges Git-backed capability rows using the stable
+// (git server, numeric repo id) identity. Repositories without bound rows run
+// first-discovery; DB-backed rows remain outside this sync path.
 func (s *GitCapabilitySyncService) SyncRepository(
 	ctx context.Context,
 	cfg *gitserver.Config,
@@ -96,9 +98,6 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		return nil, fmt.Errorf("load Git-backed index rows: %w", err)
 	}
 	result = &GitCapabilitySyncResult{}
-	if len(boundItems) == 0 {
-		return result, nil
-	}
 
 	defer func() {
 		if retErr == nil || errors.Is(retErr, ErrGitCapabilityLeaseLost) {
@@ -149,6 +148,9 @@ func (s *GitCapabilitySyncService) SyncRepository(
 	}
 	headSHA := strings.ToLower(branch.CommitSHA)
 	result.CommitSHA = headSHA
+	if len(boundItems) == 0 {
+		return s.discoverGitCapabilities(ctx, cfg, reader, repo, owner, repoName, branchName, headSHA, lease)
+	}
 
 	items := make([]models.CapabilityItem, 0, len(boundItems))
 	for _, item := range boundItems {
@@ -214,8 +216,15 @@ func (s *GitCapabilitySyncService) SyncRepository(
 
 	now := time.Now()
 	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
+	ownerID, err := resolveDiscoveredRepositoryOwner(s.DB.WithContext(ctx), cfg.ServerID, gitRepositoryOwnerID(repo), owner)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository owner %q: %w", owner, err)
+	}
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := assertGitCapabilityLease(tx, lease); err != nil {
+			return err
+		}
+		if err := updateGitCapabilityRepositoryProjection(tx, cfg.ServerID, repoID, repo.FullName, repoURL, branchName, headSHA, repo.Private, ownerID, owner, now); err != nil {
 			return err
 		}
 		for _, entry := range prepared {
@@ -336,12 +345,17 @@ func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
 		if err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
-		return tx.Model(&models.CapabilityItem{}).
+		if err := tx.Model(&models.CapabilityItem{}).
 			Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?", "git", serverID, repoID).
 			Updates(map[string]any{
 				"git_sync_status": gitCapabilitySyncError,
 				"git_sync_error":  syncErr.Error(),
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.GitCapabilityRepository{}).
+			Where("git_server_id = ? AND git_repo_id = ?", serverID, repoID).
+			Updates(map[string]any{"last_error": syncErr.Error(), "updated_at": time.Now().UTC()}).Error
 	})
 }
 

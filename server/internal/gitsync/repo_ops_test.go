@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -134,6 +135,63 @@ func TestClient_GetRepoByID_NotFoundReturnsNil(t *testing.T) {
 	}
 	if repo != nil {
 		t.Fatalf("expected nil repository on 404, got %+v", repo)
+	}
+}
+
+func TestClient_ListTree_PaginatesRecursiveTree(t *testing.T) {
+	requests := 0
+	srv := newDispatchServer(t, dispatch{
+		"GET /api/v1/repos/alice/capabilities/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if got := r.URL.Query().Get("recursive"); got != "true" {
+				t.Fatalf("recursive = %q, want true", got)
+			}
+			page := r.URL.Query().Get("page")
+			if page == "1" {
+				entries := make([]GitTreeEntry, gitTreePageSize)
+				for i := range entries {
+					entries[i] = GitTreeEntry{Path: fmt.Sprintf("skills/s-%03d/SKILL.md", i), Type: "blob"}
+				}
+				respondJSON(t, w, http.StatusOK, map[string]any{"tree": entries, "total_count": 101, "truncated": true})
+				return
+			}
+			if page != "2" {
+				t.Fatalf("unexpected page %q", page)
+			}
+			respondJSON(t, w, http.StatusOK, map[string]any{
+				"tree": []GitTreeEntry{{Path: "commands/final.md", Type: "blob"}}, "total_count": 101,
+			})
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+
+	entries, err := c.ListTree(context.Background(), "alice", "capabilities", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("ListTree: %v", err)
+	}
+	if len(entries) != 101 || entries[100].Path != "commands/final.md" {
+		t.Fatalf("unexpected tree result: count=%d tail=%+v", len(entries), entries[len(entries)-1])
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestClient_ListTree_RejectsIncompleteTree(t *testing.T) {
+	srv := newDispatchServer(t, dispatch{
+		"GET /api/v1/repos/alice/capabilities/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": func(w http.ResponseWriter, r *http.Request) {
+			respondJSON(t, w, http.StatusOK, map[string]any{
+				"tree":        []GitTreeEntry{{Path: "SKILL.md", Type: "blob"}},
+				"total_count": 2,
+				"truncated":   false,
+			})
+		},
+	})
+	c := newClientWithHTTPC(srv.URL, "tok", srv.Client())
+
+	_, err := c.ListTree(context.Background(), "alice", "capabilities", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err == nil || !strings.Contains(err.Error(), "incomplete repository tree") {
+		t.Fatalf("ListTree error = %v, want incomplete-tree error", err)
 	}
 }
 

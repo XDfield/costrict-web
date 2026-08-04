@@ -39,10 +39,14 @@ const (
 // workflow_repo provisioning path. ID is the numeric primary key used in
 // subsequent API calls; FullName is "owner/name" for diagnostics.
 type Repo struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	Private  bool   `json:"private"`
+	ID       int64      `json:"id"`
+	Name     string     `json:"name"`
+	FullName string     `json:"full_name"`
+	Private  bool       `json:"private"`
+	Mirror   bool       `json:"mirror"`
+	Owner    *RepoOwner `json:"owner,omitempty"`
+	// OriginalURL is populated for Gitea mirror repositories.
+	OriginalURL string `json:"original_url"`
 	// DefaultBranch is the repo's HEAD branch ("main" on repos we create).
 	// Consumed by ForkRepo callers that persist the forked repo's ref.
 	DefaultBranch string `json:"default_branch"`
@@ -52,6 +56,14 @@ type Repo struct {
 	// the same 409, so the name alone cannot distinguish them.
 	Fork   bool  `json:"fork"`
 	Parent *Repo `json:"parent"`
+}
+
+// RepoOwner is the stable identity of a repository owner in the Git server.
+// Login remains useful for display and compatibility, but ID is authoritative
+// when mapping a Gitea account back to a platform user.
+type RepoOwner struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
 }
 
 // CreateRepoOptions is the input shape for CreateRepo. Mirrors Gitea's

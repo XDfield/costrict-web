@@ -27,12 +27,21 @@ const (
 type fakeGitCapabilityReader struct {
 	repo      *gitsync.Repo
 	branch    *gitsync.Branch
+	tree      []gitsync.GitTreeEntry
 	files     map[string][]byte
 	readErrs  map[string]error
 	repoErr   error
 	branchErr error
+	treeErr   error
 	onRead    func(string)
 	refs      []string
+}
+
+func (r *fakeGitCapabilityReader) ListTree(_ context.Context, _, _, _ string) ([]gitsync.GitTreeEntry, error) {
+	if r.treeErr != nil {
+		return nil, r.treeErr
+	}
+	return r.tree, nil
 }
 
 func (r *fakeGitCapabilityReader) GetRepoByID(_ context.Context, repoID int64) (*gitsync.Repo, error) {
@@ -84,17 +93,58 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	for _, ddl := range []string{
+		`CREATE TABLE repositories (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, display_name TEXT, description TEXT,
+			visibility TEXT, repo_type TEXT, owner_id TEXT NOT NULL, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE repo_members (
+			id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT,
+			role TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE capability_registries (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, source_type TEXT NOT NULL,
+			external_url TEXT, external_branch TEXT, sync_enabled INTEGER, sync_interval INTEGER,
+			last_synced_at DATETIME, last_sync_sha TEXT, sync_status TEXT, sync_config TEXT,
+			last_sync_log_id TEXT, repo_id TEXT, owner_id TEXT NOT NULL, created_at DATETIME, updated_at DATETIME
+		)`,
 		`CREATE TABLE capability_items (
 			id TEXT PRIMARY KEY, registry_id TEXT NOT NULL, repo_id TEXT NOT NULL, slug TEXT NOT NULL,
 			item_type TEXT NOT NULL, name TEXT NOT NULL, description TEXT, category TEXT, version TEXT,
-			content TEXT, metadata TEXT, source_repo_url TEXT, source_repo_ref TEXT, source_repo_path TEXT,
+			descriptions TEXT, content TEXT, content_md5 TEXT, current_revision INTEGER, metadata TEXT,
+			health TEXT, evaluation TEXT, source_path TEXT, catalog_entry_dir TEXT, source_sha TEXT, source_type TEXT, source TEXT,
+			forked_from_item_id TEXT, forked_from_owner_id TEXT, parent_plugin_id TEXT,
+			source_repo_url TEXT, source_repo_ref TEXT, source_repo_path TEXT,
 			content_backend TEXT NOT NULL, source_git_server_id TEXT, source_git_repo_id INTEGER, source_git_entry_key TEXT NOT NULL DEFAULT '',
-			source_sha TEXT, git_sha TEXT, git_last_synced_at DATETIME, git_sync_status TEXT,
-			git_sync_error TEXT, status TEXT, created_by TEXT, created_at DATETIME, updated_at DATETIME
+			git_sha TEXT, git_last_synced_at DATETIME, git_sync_status TEXT,
+			git_sync_error TEXT, status TEXT, security_status TEXT, created_by TEXT, updated_by TEXT,
+			last_scan_id TEXT, preview_count INTEGER, install_count INTEGER, favorite_count INTEGER,
+			is_built_in INTEGER, experience_score REAL, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE capability_versions (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT,
+			description TEXT, descriptions TEXT, category TEXT, version TEXT, content TEXT NOT NULL,
+			content_md5 TEXT, metadata TEXT, commit_msg TEXT, created_by TEXT NOT NULL, source_path TEXT, created_at DATETIME
+		)`,
+		`CREATE TABLE git_capability_repositories (
+			id TEXT PRIMARY KEY, git_server_id TEXT NOT NULL, git_repo_id INTEGER NOT NULL,
+			repository_id TEXT NOT NULL UNIQUE, registry_id TEXT NOT NULL UNIQUE, full_name TEXT NOT NULL,
+			repo_kind TEXT NOT NULL, identification_status TEXT NOT NULL, visibility TEXT NOT NULL,
+			git_remote_url TEXT NOT NULL, default_branch TEXT NOT NULL, last_synced_commit TEXT NOT NULL,
+			last_synced_at DATETIME, last_error TEXT NOT NULL, created_by TEXT NOT NULL,
+			created_at DATETIME, updated_at DATETIME, UNIQUE(git_server_id, git_repo_id)
+		)`,
+		`CREATE TABLE user_git_binding (
+			user_subject_id TEXT NOT NULL, tenant_id TEXT NOT NULL, git_uid INTEGER, git_username TEXT NOT NULL,
+			provider_kind TEXT, sync_status TEXT NOT NULL, last_synced_at DATETIME, last_error TEXT,
+			created_at DATETIME, updated_at DATETIME, PRIMARY KEY(user_subject_id, tenant_id)
+		)`,
+		`CREATE TABLE tenant_git_server_binding (
+			tenant_id TEXT PRIMARY KEY, git_server_id TEXT NOT NULL, bound_at DATETIME, updated_at DATETIME
 		)`,
 		`CREATE UNIQUE INDEX uq_capability_items_git_manifest
 			ON capability_items (source_git_server_id, source_git_repo_id, source_repo_path, source_git_entry_key)
 			WHERE content_backend = 'git' AND source_git_server_id <> '' AND source_git_repo_id > 0 AND source_repo_path <> ''`,
+		`CREATE UNIQUE INDEX idx_item_repo_type_slug ON capability_items (repo_id, item_type, slug)`,
 		`CREATE TABLE item_tag_dicts (
 			id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, tag_class TEXT NOT NULL, created_by TEXT NOT NULL, created_at DATETIME
 		)`,
@@ -138,6 +188,7 @@ func newGitCapabilityReader(files map[string][]byte) *fakeGitCapabilityReader {
 			ID:            gitCapabilityTestRepoID,
 			FullName:      "alice/capabilities",
 			DefaultBranch: "main",
+			Owner:         &gitsync.RepoOwner{ID: 1001, Login: "alice"},
 		},
 		branch: &gitsync.Branch{Name: "main", CommitSHA: gitCapabilityTestSHA},
 		files:  files,

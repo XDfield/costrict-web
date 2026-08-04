@@ -19,8 +19,9 @@ var ErrGitCapabilityManifestEntryMissing = errors.New("Git manifest entry is mis
 // after the row is created and is never inferred again during webhook sync.
 func (p *ParserService) ParseGitIndexFile(content []byte, sourcePath, itemType, slug, entryKey string) (*ParsedItem, error) {
 	var (
-		items []*ParsedItem
-		err   error
+		items         []*ParsedItem
+		err           error
+		multiEntryMCP bool
 	)
 
 	base := strings.ToLower(filepath.Base(filepath.ToSlash(sourcePath)))
@@ -36,9 +37,36 @@ func (p *ParserService) ParseGitIndexFile(content []byte, sourcePath, itemType, 
 			}
 		}
 	case "mcp":
-		items, err = p.ParseMCPJSON(content, sourcePath)
+		switch base {
+		case "package.json":
+			items, err = p.parseMCPPackageJSON(content, sourcePath)
+		case "pyproject.toml":
+			items, err = p.parseMCPPyproject(content, sourcePath)
+		case "manifest.json":
+			items, err = p.parseMCPManifestJSON(content, sourcePath)
+			multiEntryMCP = entryKey != ""
+		default:
+			multiEntryMCP = strings.HasSuffix(base, ".json")
+			if multiEntryMCP {
+				items, err = p.ParseMCPJSON(content, sourcePath)
+			} else {
+				var item *ParsedItem
+				item, err = p.ParseSKILLMD(content, sourcePath)
+				if item != nil {
+					items = []*ParsedItem{item}
+				}
+			}
+		}
 	case "subagent":
-		items, err = p.ParseAgentsMD(content, sourcePath)
+		if strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml") {
+			var item *ParsedItem
+			item, err = p.parseAgentYAML(content, sourcePath)
+			if item != nil {
+				items = []*ParsedItem{item}
+			}
+		} else {
+			items, err = p.ParseAgentsMD(content, sourcePath)
+		}
 	case "skill", "command", "rule", "template":
 		var item *ParsedItem
 		item, err = p.ParseSKILLMD(content, sourcePath)
@@ -56,7 +84,7 @@ func (p *ParserService) ParseGitIndexFile(content []byte, sourcePath, itemType, 
 	}
 
 	selected := items[0]
-	if itemType == "mcp" {
+	if itemType == "mcp" && multiEntryMCP {
 		selected = selectMCPGitIndexItem(items, slug, entryKey)
 		if selected == nil {
 			identity := entryKey

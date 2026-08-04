@@ -26,6 +26,20 @@ import (
 	"strings"
 )
 
+const (
+	gitTreePageSize   = 100
+	gitTreeMaxEntries = 100000
+)
+
+// GitTreeEntry is the subset of Gitea's recursive tree payload needed by
+// capability discovery. Only blob paths are later considered as manifests.
+type GitTreeEntry struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+	Size int64  `json:"size"`
+}
+
 // ErrGiteaNotFound is the generic 404 sentinel. doJSON currently maps every
 // 404 to ErrGiteaTeamNotFound (legacy from the team-member sync surface);
 // consumers that need a Kind-agnostic 404 sniff call isHTTPNotFound on the
@@ -147,6 +161,80 @@ func (c *Client) GetRepoByID(ctx context.Context, repoID int64) (*Repo, error) {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrGiteaUnreachable, err)
 	}
 	return &r, nil
+}
+
+// ListTree returns the complete recursive file tree at ref. Gitea paginates
+// large trees, so callers must not assume a single response is exhaustive.
+// A hard entry cap prevents a malformed server from making discovery allocate
+// without bound.
+func (c *Client) ListTree(ctx context.Context, owner, repo, ref string) ([]GitTreeEntry, error) {
+	if c == nil {
+		return nil, ErrGiteaUnreachable
+	}
+	if owner == "" || repo == "" || ref == "" {
+		return nil, fmt.Errorf("gitsync: owner, repo, and ref are required")
+	}
+
+	entries := make([]GitTreeEntry, 0)
+	expectedTotal := -1
+	for page := 1; ; page++ {
+		reqPath := repoPath(owner, repo) + "/git/trees/" + url.PathEscape(ref) +
+			"?recursive=true&page=" + fmt.Sprintf("%d", page) +
+			"&per_page=" + fmt.Sprintf("%d", gitTreePageSize)
+		resp, err := c.doJSON(ctx, http.MethodGet, reqPath, nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Tree       []GitTreeEntry `json:"tree"`
+			Truncated  bool           `json:"truncated"`
+			TotalCount *int           `json:"total_count"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("%w: decode tree response: %v", ErrGiteaUnreachable, decodeErr)
+		}
+		if payload.TotalCount != nil {
+			if *payload.TotalCount < 0 || *payload.TotalCount > gitTreeMaxEntries {
+				return nil, fmt.Errorf("gitsync: repository tree reports invalid total_count %d", *payload.TotalCount)
+			}
+			if expectedTotal >= 0 && expectedTotal != *payload.TotalCount {
+				return nil, fmt.Errorf("gitsync: repository tree total_count changed from %d to %d during pagination", expectedTotal, *payload.TotalCount)
+			}
+			expectedTotal = *payload.TotalCount
+		}
+		if len(entries)+len(payload.Tree) > gitTreeMaxEntries {
+			return nil, fmt.Errorf("gitsync: repository tree exceeds %d entries", gitTreeMaxEntries)
+		}
+		entries = append(entries, payload.Tree...)
+
+		if expectedTotal >= 0 {
+			if len(entries) > expectedTotal {
+				return nil, fmt.Errorf("gitsync: repository tree returned %d entries, exceeding total_count %d", len(entries), expectedTotal)
+			}
+			if len(entries) == expectedTotal {
+				if payload.Truncated {
+					return nil, fmt.Errorf("gitsync: repository tree is truncated after reported total_count %d", expectedTotal)
+				}
+				break
+			}
+			if len(payload.Tree) == 0 || !payload.Truncated {
+				return nil, fmt.Errorf("gitsync: incomplete repository tree: received %d of %d entries", len(entries), expectedTotal)
+			}
+		} else {
+			if !payload.Truncated {
+				break
+			}
+			if len(payload.Tree) == 0 {
+				return nil, fmt.Errorf("gitsync: repository tree is truncated but returned no entries")
+			}
+		}
+		if page >= gitTreeMaxEntries/gitTreePageSize {
+			return nil, fmt.Errorf("gitsync: repository tree pagination exceeded limit")
+		}
+	}
+	return entries, nil
 }
 
 // CreateBranch creates newBranch from fromRef (a branch name, tag, or commit

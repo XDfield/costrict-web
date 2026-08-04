@@ -225,8 +225,8 @@ func (p *GitCapabilityWorkerPool) finalizeJob(job *models.GitCapabilitySyncJob, 
 	if syncErr == nil {
 		updates["status"] = models.GitCapabilitySyncJobStatusSuccess
 		updates["last_error"] = nil
-		logger.Info("Git capability sync succeeded jobID=%s serverID=%s repoID=%d sha=%s updated=%d archived=%d",
-			job.ID, job.GitServerID, job.RepoID, resultSHA(result), resultUpdated(result), resultArchived(result))
+		logger.Info("Git capability sync succeeded jobID=%s serverID=%s repoID=%d sha=%s created=%d updated=%d archived=%d",
+			job.ID, job.GitServerID, job.RepoID, resultSHA(result), resultCreated(result), resultUpdated(result), resultArchived(result))
 	} else if job.RetryCount+1 < job.MaxAttempts {
 		backoff := time.Duration(math.Pow(10, float64(job.RetryCount+1))) * 3 * time.Second
 		updates["status"] = models.GitCapabilitySyncJobStatusPending
@@ -264,6 +264,13 @@ func resultUpdated(result *services.GitCapabilitySyncResult) int {
 		return 0
 	}
 	return result.Updated
+}
+
+func resultCreated(result *services.GitCapabilitySyncResult) int {
+	if result == nil {
+		return 0
+	}
+	return result.Created
 }
 
 func resultArchived(result *services.GitCapabilitySyncResult) int {
