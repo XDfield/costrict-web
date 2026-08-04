@@ -623,6 +623,13 @@ type ItemResponse struct {
 
 type ItemAssetsResponse struct {
 	Assets []itemAssetPayload `json:"assets"`
+	// AssetsBackend says where the item's files live when that is not the DB.
+	// It is set only for Git-backed rows — their manifest is legitimately empty,
+	// and without the marker "this item has no assets" reads the same as "its
+	// assets have not been ingested yet". Absent means DB-backed, which is what
+	// every response meant before Git backing existed, so DB-backed responses
+	// stay byte-identical rather than gaining a field that says nothing new.
+	AssetsBackend string `json:"assetsBackend,omitempty"`
 }
 
 type VersionResponse struct {
@@ -1317,7 +1324,7 @@ func GetItem(c *gin.Context) {
 
 // ListItemAssets godoc
 // @Summary      List item assets
-// @Description  Get the DB-backed manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility.
+// @Description  Get the manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility. A Git-backed item keeps its files in its repository and is not indexed here: it answers with an empty list and assetsBackend="git".
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -1337,6 +1344,23 @@ func ListItemAssets(c *gin.Context) {
 	}
 	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return
+	}
+
+	// A Git-backed row's files live in its repository and only its top-level
+	// metadata file is served (see DownloadRegistryFile); nothing about it is
+	// indexed in capability_assets. Querying the table would return the same
+	// empty list by accident — say it deliberately, and name the backend so the
+	// caller stops expecting DB assets instead of assuming ingestion is pending.
+	//
+	// The slice must be non-nil. A nil slice marshals to `null`, and the device
+	// installer throws on a non-array `assets` and aborts the whole install,
+	// while `[]` is its ordinary "no assets" path.
+	if isGitBacked(&item) {
+		c.JSON(http.StatusOK, ItemAssetsResponse{
+			Assets:        make([]itemAssetPayload, 0),
+			AssetsBackend: contentBackendGit,
+		})
 		return
 	}
 
@@ -2188,6 +2212,20 @@ func ListItemVersions(c *gin.Context) {
 		return
 	}
 
+	// A Git-backed row has no DB version history: its version anchor is git_sha
+	// and discovery no longer creates revision rows. Rows discovered before that
+	// change still carry a revision 1 whose content is the snapshot taken at
+	// discovery time, and serving it here would hand out exactly the stale copy
+	// read-through exists to eliminate — on the same item that answers with live
+	// content everywhere else.
+	if isGitBacked(&item) {
+		c.JSON(http.StatusOK, gin.H{
+			"versions":       make([]VersionResponse, 0),
+			"versionBackend": contentBackendGit,
+		})
+		return
+	}
+
 	var versions []models.CapabilityVersion
 	result := db.Where("item_id = ?", id).Order("revision asc").Find(&versions)
 	if result.Error != nil {
@@ -2234,6 +2272,19 @@ func GetItemVersion(c *gin.Context) {
 	}
 	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+		return
+	}
+
+	// See ListItemVersions: a Git-backed row has no DB version history, and any
+	// revision row left over from before discovery stopped creating them holds
+	// the snapshot taken at discovery time. Serving it would contradict every
+	// other read path on the same item.
+	if isGitBacked(&item) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":          "this item is versioned by its git history; the platform keeps no revision snapshots for it",
+			"error_code":     "GIT_VERSION_NOT_SERVED",
+			"versionBackend": contentBackendGit,
+		})
 		return
 	}
 

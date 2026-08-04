@@ -508,6 +508,78 @@ func TestDBBackedReadPathsAreUnchanged(t *testing.T) {
 	}
 }
 
+// A Git-backed row owns no capability_assets, so its asset manifest is empty —
+// and it must serialize as [] rather than null.
+//
+// The distinction is load-bearing on the device: the installer treats a missing
+// `assets` key as "none" but throws on a non-array, aborting the whole install.
+// Go marshals a nil slice to null, so the empty response only stays safe while
+// ListItemAssets builds a non-nil slice (make(..., 0, n)) and the field carries
+// no omitempty. This pins both, since Git-backed rows are what make the empty
+// case the common one.
+func TestListItemAssets_GitBackedReturnsEmptyArrayNotNull(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	seedGitContentItem(t, "gc-assets", "skill", "skill.md")
+
+	w := get(newItemRouter(""), "/api/items/gc-assets/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"assets":[]`) {
+		t.Fatalf("assets must serialize as an empty array, got: %s", w.Body.String())
+	}
+	var payload struct {
+		Assets        []map[string]any `json:"assets"`
+		AssetsBackend string           `json:"assetsBackend"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Assets == nil {
+		t.Fatal("assets decoded as null; the device installer aborts on that")
+	}
+	if payload.AssetsBackend != "git" {
+		t.Fatalf(`assetsBackend must mark where the files really are, got %q`, payload.AssetsBackend)
+	}
+	// The manifest is answered from the row alone: no repository tree is walked
+	// and no file is fetched, which is what "assets are not indexed" means.
+	if repoLookups, rawReads := gitea.counts(); repoLookups != 0 || rawReads != 0 {
+		t.Fatalf("the empty manifest made %d repo lookups and %d raw reads", repoLookups, rawReads)
+	}
+}
+
+// Control group: a DB-backed row's manifest keeps its exact previous shape —
+// the same payload, and no assetsBackend field, since its absence is what every
+// response meant before Git backing existed.
+func TestListItemAssets_DBBackedResponseIsUnchanged(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	seedDBContentItem(t, "gc-dbassets")
+	text := "hello asset"
+	if err := database.DB.Create(&models.CapabilityAsset{
+		ID: "asset-gc-dbassets", ItemID: "gc-dbassets", RelPath: "docs/notes.md",
+		TextContent: &text, MimeType: "text/markdown", FileSize: int64(len(text)),
+		ContentSHA: strings.Repeat("b", 64),
+	}).Error; err != nil {
+		t.Fatalf("seed asset: %v", err)
+	}
+
+	w := get(newItemRouter(""), "/api/items/gc-dbassets/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	want := `{"assets":[{"relPath":"docs/notes.md","textContent":"hello asset","mimeType":"text/markdown","fileSize":11,"contentSha":"` +
+		strings.Repeat("b", 64) + `"}]}`
+	if got := strings.TrimSpace(w.Body.String()); got != want {
+		t.Fatalf("db-backed manifest changed:\n got: %s\nwant: %s", got, want)
+	}
+	if repoLookups, rawReads := gitea.counts(); repoLookups != 0 || rawReads != 0 {
+		t.Fatalf("a db-backed manifest contacted the git server: %d lookups, %d raw reads", repoLookups, rawReads)
+	}
+}
+
 // The repository is located by its numeric id, so a rename on the git server
 // must not break the read — the URL stored on the row is stale by then.
 func TestGetItem_GitBackedFollowsRepositoryRename(t *testing.T) {
@@ -531,5 +603,56 @@ func TestGetItem_GitBackedFollowsRepositoryRename(t *testing.T) {
 	defer gitea.mu.Unlock()
 	if len(gitea.rawReads) != 1 || !strings.HasSuffix(gitea.rawReads[0], "?ref=main") {
 		t.Fatalf("unexpected raw reads: %v", gitea.rawReads)
+	}
+}
+
+// A Git-backed row left over from before discovery stopped creating revision
+// rows still has one, and its content is the snapshot taken at discovery time.
+// Serving that snapshot would hand out exactly the stale copy read-through
+// exists to eliminate — on the same item that answers with live content
+// everywhere else.
+func TestItemVersions_GitBackedNeverServeStoredSnapshots(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	seedGitContentItem(t, "gc-versions", "skill", "skill.md")
+
+	// A pre-existing revision row, exactly as older discovery would have left it.
+	stale := "---\nname: stale\n---\n\nthe snapshot taken when this row was discovered\n"
+	if err := database.DB.Create(&models.CapabilityVersion{
+		ID: "gc-versions-r1", ItemID: "gc-versions", Revision: 1,
+		Name: "FIX", Descriptions: datatypes.JSON([]byte(`{}`)),
+		Version: "1.0.0", Content: stale, Metadata: datatypes.JSON([]byte(`{}`)),
+		CreatedBy: "u1",
+	}).Error; err != nil {
+		t.Fatalf("seed stale version: %v", err)
+	}
+
+	w := get(newItemRouter(""), "/api/items/gc-versions/versions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list versions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "snapshot taken when") {
+		t.Fatalf("the stale snapshot leaked through the version list: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"versionBackend":"git"`) {
+		t.Fatalf("the response must say where versioning lives: %s", w.Body.String())
+	}
+
+	w = get(newItemRouter(""), "/api/items/gc-versions/versions/1")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("get version: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "snapshot taken when") {
+		t.Fatalf("the stale snapshot leaked through the single-version route: %s", w.Body.String())
+	}
+
+	// Control: the item itself still answers with the live repository content.
+	w = get(newItemRouter(""), "/api/items/gc-versions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail: expected 200, got %d", w.Code)
+	}
+	if body := decodeItemBody(t, w.Body.Bytes()); body["content"] != gitContentSkillFile {
+		t.Fatalf("detail content did not come from git: %q", body["content"])
 	}
 }
