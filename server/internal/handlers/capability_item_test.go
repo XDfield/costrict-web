@@ -25,6 +25,66 @@ import (
 	"gorm.io/datatypes"
 )
 
+func TestPersistNewItem_GitBackedRequiresExistingGitServer(t *testing.T) {
+	defer setupTestDB(t)()
+	if err := database.GetDB().Exec(`CREATE TABLE git_servers (server_id TEXT PRIMARY KEY)`).Error; err != nil {
+		t.Fatalf("create git_servers fixture: %v", err)
+	}
+
+	item, err := persistNewItem(database.GetDB(), createItemRequest{
+		ID:                "git-item-missing-server",
+		RegistryID:        PublicRegistryID,
+		RepoID:            "public",
+		Slug:              "git-item-missing-server",
+		ItemType:          "plugin",
+		Name:              "Git item",
+		Version:           "1.0.0",
+		Metadata:          datatypes.JSON([]byte(`{}`)),
+		SourceType:        "fork",
+		CreatedBy:         "user-1",
+		ContentBackend:    contentBackendGit,
+		SourceGitServerID: "gs-missing",
+		SourceGitRepoID:   42,
+	}, createItemAssets{})
+	if !errors.Is(err, errGitServerUnavailable) {
+		t.Fatalf("persist error = %v, want errGitServerUnavailable", err)
+	}
+	if item != nil {
+		t.Fatalf("item = %+v, want nil", item)
+	}
+	var count int64
+	if err := database.GetDB().Model(&models.CapabilityItem{}).
+		Where("id = ?", "git-item-missing-server").Count(&count).Error; err != nil {
+		t.Fatalf("count item: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("persisted items = %d, want 0", count)
+	}
+}
+
+func TestPersistNewItem_DBBackedDoesNotRequireGitServer(t *testing.T) {
+	defer setupTestDB(t)()
+
+	item, err := persistNewItem(database.GetDB(), createItemRequest{
+		ID:         "db-item-without-server",
+		RegistryID: PublicRegistryID,
+		RepoID:     "public",
+		Slug:       "db-item-without-server",
+		ItemType:   "skill",
+		Name:       "DB item",
+		Version:    "1.0.0",
+		Metadata:   datatypes.JSON([]byte(`{}`)),
+		SourceType: "direct",
+		CreatedBy:  "user-1",
+	}, createItemAssets{})
+	if err != nil {
+		t.Fatalf("persist DB-backed item: %v", err)
+	}
+	if item == nil || item.ID != "db-item-without-server" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
 func newItemRouter(userID string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -183,6 +183,8 @@ func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []stri
 // ErrSlugConflict is returned when an item with the same slug already exists.
 var ErrSlugConflict = errors.New("slug conflict")
 
+var errGitServerUnavailable = errors.New("git server unavailable for Git-backed capability")
+
 // createItemRequest contains all fields needed to persist a new item.
 type createItemRequest struct {
 	ID          string
@@ -210,10 +212,14 @@ type createItemRequest struct {
 	IsBuiltIn      bool
 	// Git backing (optional). Empty ContentBackend keeps the DB default ('db'),
 	// i.e. content + capability_assets stay the source of truth.
-	SourceRepoURL  string
-	SourceRepoRef  string
-	SourceRepoPath string
-	ContentBackend string
+	SourceRepoURL     string
+	SourceRepoRef     string
+	SourceRepoPath    string
+	ContentBackend    string
+	SourceGitServerID string
+	SourceGitRepoID   int64
+	SourceGitEntryKey string
+	GitSyncStatus     string
 }
 
 // createItemAssets holds asset and artifact records to be created alongside the item.
@@ -443,6 +449,10 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		SourceRepoRef:     req.SourceRepoRef,
 		SourceRepoPath:    req.SourceRepoPath,
 		ContentBackend:    req.ContentBackend,
+		SourceGitServerID: req.SourceGitServerID,
+		SourceGitRepoID:   req.SourceGitRepoID,
+		SourceGitEntryKey: req.SourceGitEntryKey,
+		GitSyncStatus:     req.GitSyncStatus,
 	}
 
 	if item.Metadata == nil || len(item.Metadata) == 0 {
@@ -450,6 +460,25 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 	}
 
 	err := db.Transaction(func(tx *gorm.DB) error {
+		if item.ContentBackend == contentBackendGit {
+			if strings.TrimSpace(item.SourceGitServerID) == "" {
+				return fmt.Errorf("%w: source_git_server_id is required", errGitServerUnavailable)
+			}
+			serverQuery := tx.Where("server_id = ?", item.SourceGitServerID)
+			if tx.Dialector.Name() == "postgres" {
+				// KEY SHARE is compatible with concurrent capability writers but
+				// conflicts with the UPDATE lock held by DeleteGitServer.
+				serverQuery = serverQuery.Clauses(clause.Locking{Strength: "KEY SHARE"})
+			}
+			var server models.GitServer
+			if err := serverQuery.First(&server).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return fmt.Errorf("%w: %s", errGitServerUnavailable, item.SourceGitServerID)
+				}
+				return fmt.Errorf("lock Git server %q: %w", item.SourceGitServerID, err)
+			}
+		}
+
 		if err := tx.Omit("Embedding").Create(&item).Error; err != nil {
 			return err
 		}
@@ -2633,10 +2662,13 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
 
 	// Git-backed forks carry the repo coordinate instead of copied content.
-	var sourceRepoURL, sourceRepoRef, sourceRepoPath, contentBackend string
+	var sourceRepoURL, sourceRepoRef, sourceRepoPath, contentBackend, sourceGitServerID, gitSyncStatus string
+	var sourceGitRepoID int64
 	if gitPlan != nil {
 		sourceRepoURL, sourceRepoRef, contentBackend = gitPlan.RepoURL, gitPlan.RepoRef, contentBackendGit
 		sourceRepoPath = gitPlan.RepoPath
+		sourceGitServerID, sourceGitRepoID = gitPlan.GitServerID, gitPlan.GitRepoID
+		gitSyncStatus = "pending"
 	}
 
 	var item *models.CapabilityItem
@@ -2673,6 +2705,9 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			SourceRepoRef:     sourceRepoRef,
 			SourceRepoPath:    sourceRepoPath,
 			ContentBackend:    contentBackend,
+			SourceGitServerID: sourceGitServerID,
+			SourceGitRepoID:   sourceGitRepoID,
+			GitSyncStatus:     gitSyncStatus,
 		}, createItemAssets{Records: records})
 		if err == nil {
 			break
@@ -2710,6 +2745,11 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	// the git-backing design (§6) and surfaced in the UI.
 	if gitPlan == nil {
 		enqueueScanAsync(item.ID, 1, "fork")
+	} else {
+		// Forking pushes nothing, so no webhook will ever arrive for this repo.
+		// Queue the first sync here or the row never leaves 'pending' and stays
+		// invisible to the Marketplace projection.
+		enqueueForkGitSync(h.db, item.ID, gitPlan)
 	}
 
 	// Carry over tags.

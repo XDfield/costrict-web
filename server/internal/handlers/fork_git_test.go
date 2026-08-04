@@ -20,6 +20,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
+	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
@@ -38,6 +39,9 @@ type fakeForkGitea struct {
 	// manifests holds "owner/name" → the plugin name its manifest declares,
 	// backing the contents endpoint used to verify a guessed mirror.
 	manifests map[string]string
+	// unreadableManifests makes a repository behave like an empty shell: its
+	// contents endpoint returns 404 for every supported manifest path.
+	unreadableManifests map[string]bool
 	// manifestPaths pins "owner/name" → the single repo-relative path its
 	// manifest is served at; every other path 404s the way a real repo would.
 	// Unset means "served at whichever path is asked for", which is what the
@@ -55,6 +59,10 @@ type fakeForkGitea struct {
 	forkStatus int
 	// forkCreatesRepo=false emulates "conflict, repo already there".
 	forkCreatesRepo bool
+	// forkResponseRepoID is Gitea's numeric repository identity returned from
+	// the fork API. It must be present before the handler can persist a
+	// git-backed capability row.
+	forkResponseRepoID int64
 }
 
 type forkCall struct {
@@ -65,12 +73,14 @@ type forkCall struct {
 
 func newFakeForkGitea(adminToken string) *fakeForkGitea {
 	return &fakeForkGitea{
-		adminToken:      adminToken,
-		repos:           map[string]string{},
-		forkParents:     map[string]string{},
-		manifests:       map[string]string{},
-		manifestPaths:   map[string]string{},
-		forkCreatesRepo: true,
+		adminToken:          adminToken,
+		repos:               map[string]string{},
+		forkParents:         map[string]string{},
+		manifests:           map[string]string{},
+		manifestPaths:       map[string]string{},
+		unreadableManifests: map[string]bool{},
+		forkCreatesRepo:     true,
+		forkResponseRepoID:  501,
 	}
 }
 
@@ -120,7 +130,7 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": 501, "name": parts[1], "full_name": "10001/" + parts[1],
+			"id": f.forkResponseRepoID, "name": parts[1], "full_name": "10001/" + parts[1],
 			"default_branch": branch, "private": false,
 		})
 		return
@@ -136,10 +146,17 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		plugin := f.manifests[repoName]
 		wantPath := f.manifestPaths[repoName]
+		_, repoExists := f.repos[repoName]
+		unreadable := f.unreadableManifests[repoName]
 		f.mu.Unlock()
-		if plugin == "" || (wantPath != "" && wantPath != filePath) {
+		if !repoExists || unreadable || (wantPath != "" && wantPath != filePath) {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 			return
+		}
+		if plugin == "" {
+			// Most test sources use plugin_name="p". The explicit map is only
+			// needed when a test exercises a mismatch or a different manifest.
+			plugin = "p"
 		}
 		body, _ := json.Marshal(map[string]string{"name": plugin})
 		w.Header().Set("Content-Type", "application/json")
@@ -411,9 +428,31 @@ func TestForkItem_Git_HappyPath(t *testing.T) {
 	if stored.ContentBackend != "git" || stored.SourceRepoURL != wantURL || stored.SourceRepoRef != "main" {
 		t.Errorf("stored row: backend=%q url=%q ref=%q", stored.ContentBackend, stored.SourceRepoURL, stored.SourceRepoRef)
 	}
+	if stored.SourceGitServerID != "gs-1" || stored.SourceGitRepoID != 501 || stored.GitSyncStatus != "pending" {
+		t.Errorf("stored Git identity: server=%q repo=%d sync=%q", stored.SourceGitServerID, stored.SourceGitRepoID, stored.GitSyncStatus)
+	}
 	if stored.ForkedFromItemID == nil || *stored.ForkedFromItemID != "plug-1" {
 		t.Errorf("fork provenance missing: %+v", stored.ForkedFromItemID)
 	}
+}
+
+func TestForkItem_Git_RejectsForkWithoutStableRepositoryID(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-no-repo-id", "no-repo-id", "costrict-plugins-repo/no-repo-id")
+	fx.gitea.repos["costrict-plugins-repo/no-repo-id"] = "main"
+	fx.gitea.forkResponseRepoID = 0
+
+	w := forkReq(newForkRouter("bob"), "plug-no-repo-id")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("fork without repository identity: expected 502, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GIT_FORK_REPO_ID_INVALID") {
+		t.Errorf("expected invalid repository identity error, got %s", w.Body.String())
+	}
+	assertNoForkPersisted(t, "plug-no-repo-id", "bob")
 }
 
 // The Gitea coordinate of a mirrored plugin is <mirror owner>/<slug>; the
@@ -471,6 +510,37 @@ func TestForkItem_Git_SkipsMirrorHoldingADifferentPlugin(t *testing.T) {
 	}
 }
 
+// A per-item mirror is the catalog's authoritative coordinate. When that repo
+// exists but is an empty shell, falling through to marketplace_repo would hide
+// corrupted mirror state and fork a different source. Only a readable manifest
+// for a different plugin is treated as a harmless same-name collision.
+func TestForkItem_Git_EmptyPerItemMirrorRejectsBeforeMarketplaceFallback(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-empty-mirror", "empty-mirror", "upstream-org/valid-plugin")
+
+	fx.gitea.repos["costrict-plugins-repo/empty-mirror"] = "main"
+	fx.gitea.unreadableManifests["costrict-plugins-repo/empty-mirror"] = true
+	// This would be a valid lower-priority candidate if the mirror were merely
+	// a same-name collision. It must not be considered for an empty mirror.
+	fx.gitea.repos["upstream-org/valid-plugin"] = "main"
+	fx.gitea.manifests["upstream-org/valid-plugin"] = "p"
+
+	w := forkReq(newForkRouter("bob"), "plug-empty-mirror")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GIT_SOURCE_MANIFEST_INVALID") {
+		t.Errorf("expected manifest error, got %s", w.Body.String())
+	}
+	if fx.gitea.forkCount() != 0 {
+		t.Errorf("must not fork the marketplace fallback after an empty mirror: %d", fx.gitea.forkCount())
+	}
+	assertNoForkPersisted(t, "plug-empty-mirror", "bob")
+}
+
 // --------------------------------------------------------- main file probe
 
 // The "edit in Gitea" hand-off links straight at the plugin manifest, and Gitea
@@ -526,30 +596,29 @@ func TestForkItem_Git_ProbeFallsThroughToFlatLayout(t *testing.T) {
 	}
 }
 
-// An unreadable manifest must stay a non-event: the fork still succeeds (that
-// "accept on name match alone" fallback keeps unknown mirror layouts working),
-// it just records no path, and the UI falls back to the repo home page.
-func TestForkItem_Git_NoManifestLeavesPathEmptyAndStillForks(t *testing.T) {
+// An existing repository with no readable manifest is not a mirror of a
+// usable plugin. It must fail closed instead of creating a git-backed dead
+// shell or silently falling through to a DB fork.
+func TestForkItem_Git_EmptySourceRepoIsRejectedBeforeFork(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
 	fx := setupGitForkFixture(t)
 	seedUserGitAccount(t, fx.db, "bob", "10001", true)
 	seedPluginSource(t, "plug-nopath", "layout-unknown", "costrict-plugins-repo/layout-unknown")
 	fx.gitea.repos["costrict-plugins-repo/layout-unknown"] = "main"
-	// No manifest entry at all: every contents lookup 404s.
+	fx.gitea.unreadableManifests["costrict-plugins-repo/layout-unknown"] = true
 
 	w := forkReq(newForkRouter("bob"), "plug-nopath")
-	if w.Code != http.StatusCreated {
-		t.Fatalf("an undetectable manifest must not block the fork: %d (%s)", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("empty source repo: expected 409, got %d (%s)", w.Code, w.Body.String())
 	}
-	var resp gitForkResp
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.ContentBackend != "git" {
-		t.Errorf("fork must stay git-backed, got %q", resp.ContentBackend)
+	if !strings.Contains(w.Body.String(), "GIT_SOURCE_MANIFEST_INVALID") {
+		t.Errorf("expected manifest error, got %s", w.Body.String())
 	}
-	if resp.SourceRepoPath != "" {
-		t.Errorf("sourceRepoPath: want empty, got %q", resp.SourceRepoPath)
+	if fx.gitea.forkCount() != 0 {
+		t.Errorf("must reject before Gitea fork, got %d calls", fx.gitea.forkCount())
 	}
+	assertNoForkPersisted(t, "plug-nopath", "bob")
 }
 
 // Forking a fork probes the item's own (trusted) repo too — a trusted
@@ -570,9 +639,14 @@ func TestForkItem_Git_ProbesTrustedCoordinateForPath(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	fx.gitea.repos["10002/plug"] = "main"
-	// Metadata carries no plugin_name, so there is nothing to match against —
-	// the probe runs purely to learn the path.
-	fx.gitea.manifests["10002/plug"] = "whatever"
+	// Git-backed sources must retain the authoritative manifest identity too;
+	// a persisted coordinate alone is not enough to accept its content.
+	if err := database.GetDB().Model(&models.CapabilityItem{}).
+		Where("id = ?", "fork-src3").
+		Update("metadata", datatypes.JSON([]byte(`{"install":{"plugin_name":"p"}}`))).Error; err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+	fx.gitea.manifests["10002/plug"] = "p"
 	fx.gitea.manifestPaths["10002/plug"] = ".claude-plugin/plugin.json"
 
 	w := forkReq(newForkRouter("carol"), "fork-src3")
@@ -584,6 +658,39 @@ func TestForkItem_Git_ProbesTrustedCoordinateForPath(t *testing.T) {
 	if resp.SourceRepoPath != ".claude-plugin/plugin.json" {
 		t.Errorf("a trusted coordinate must still yield its manifest path, got %q", resp.SourceRepoPath)
 	}
+}
+
+// A source_repo_url is a routing hint, not permanent proof of content. If a
+// user later replaces that repository's manifest, a fork must stop instead of
+// accepting the stale trusted coordinate or finding a different guessed repo.
+func TestForkItem_Git_TrustedCoordinateWithWrongManifestIsRejected(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "carol", "10001", true)
+	if err := database.GetDB().Create(&models.CapabilityItem{
+		ID: "fork-src-invalid", RegistryID: PublicRegistryID, RepoID: "public", Slug: "plug-fork-invalid",
+		ItemType: "plugin", Name: "Bob's fork", Descriptions: datatypes.JSON([]byte(`{}`)),
+		Content: "# summary", Metadata: datatypes.JSON([]byte(`{"install":{"plugin_name":"expected"}}`)), SourcePath: ".plugin.json",
+		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
+		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
+	}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	fx.gitea.repos["10002/plug"] = "main"
+	fx.gitea.manifests["10002/plug"] = "another-plugin"
+
+	w := forkReq(newForkRouter("carol"), "fork-src-invalid")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GIT_SOURCE_MANIFEST_INVALID") {
+		t.Errorf("expected manifest error, got %s", w.Body.String())
+	}
+	if fx.gitea.forkCount() != 0 {
+		t.Errorf("must not fork a trusted coordinate with stale content: %d", fx.gitea.forkCount())
+	}
+	assertNoForkPersisted(t, "fork-src-invalid", "carol")
 }
 
 // ------------------------------------------------------------- idempotency
@@ -718,6 +825,44 @@ func TestForkItem_Git_BindingNotReadyFailsLoudly(t *testing.T) {
 	assertNoForkPersisted(t, "plug-5", "carol")
 	if fx.gitea.forkCount() != 0 {
 		t.Errorf("must not call Gitea without a ready account: %d calls", fx.gitea.forkCount())
+	}
+}
+
+// A fork request must not use subject_id as a substitute for cs-user's
+// ShortID. Even with a provisioner wired, account creation is event/reconciler
+// driven; otherwise an old subject[:8] guess can permanently reserve another
+// user's Gitea namespace.
+func TestForkItem_Git_MissingBindingDoesNotProvisionWithGuessedShortID(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedPluginSource(t, "plug-no-guess", "no-guess", "costrict-plugins-repo/no-guess")
+	fx.gitea.repos["costrict-plugins-repo/no-guess"] = "main"
+
+	// If ForkItem invoked this provisioner, it would at least insert a pending
+	// binding before its fake Gitea CreateUser call failed. A valid fork path
+	// must never invoke it without an authoritative ShortID.
+	provisioner := gitsync.NewUserProvisionService(fx.db, gitserver.NewDBResolver(fx.db), nil, nil)
+	InitUserSpaceService(fx.db, mustAESHandler(t), gitserver.NewDBResolver(fx.db), provisioner)
+
+	w := forkReq(newForkRouter("usr_550e8400-e29b-41d4-a716-446655440000"), "plug-no-guess")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GIT_ACCOUNT_NOT_READY") {
+		t.Errorf("expected account-not-ready response, got %s", w.Body.String())
+	}
+	var count int64
+	if err := fx.db.Model(&models.UserGitBinding{}).
+		Where("user_subject_id = ?", "usr_550e8400-e29b-41d4-a716-446655440000").
+		Count(&count).Error; err != nil {
+		t.Fatalf("count bindings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("fork must not create a guessed binding, found %d", count)
+	}
+	if fx.gitea.forkCount() != 0 {
+		t.Errorf("must not call Gitea fork without a ready binding: %d", fx.gitea.forkCount())
 	}
 }
 
@@ -895,7 +1040,7 @@ func TestForkItem_Git_ForkOfForkUsesSourceRepo(t *testing.T) {
 	if err := database.GetDB().Create(&models.CapabilityItem{
 		ID: "fork-src", RegistryID: PublicRegistryID, RepoID: "public", Slug: "plug-fork-abcd",
 		ItemType: "plugin", Name: "Bob's fork", Descriptions: datatypes.JSON([]byte(`{}`)),
-		Content: "# summary", Metadata: datatypes.JSON([]byte(`{}`)), SourcePath: ".plugin.json",
+		Content: "# summary", Metadata: datatypes.JSON([]byte(`{"install":{"plugin_name":"p"}}`)), SourcePath: ".plugin.json",
 		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
 		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
 	}).Error; err != nil {
@@ -987,3 +1132,125 @@ func assertNoForkPersisted(t *testing.T, srcID, userID string) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// createGitCapabilitySyncJobTable mirrors the production DDL for the sync-job
+// queue. setupTestDB only builds the capability tables, and the fork path is
+// the one non-webhook producer of jobs, so the table has to exist here for the
+// enqueue to be observable rather than swallowed as a best-effort failure.
+func createGitCapabilitySyncJobTable(t *testing.T) {
+	t.Helper()
+	ddl := `CREATE TABLE IF NOT EXISTS git_capability_sync_jobs (
+		id TEXT PRIMARY KEY,
+		git_server_id TEXT NOT NULL,
+		delivery_id TEXT NOT NULL,
+		repo_id INTEGER NOT NULL,
+		repo_full_name TEXT NOT NULL,
+		default_branch TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		before_sha TEXT NOT NULL DEFAULT '',
+		after_sha TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		max_attempts INTEGER NOT NULL DEFAULT 3,
+		last_error TEXT,
+		scheduled_at DATETIME NOT NULL,
+		started_at DATETIME,
+		lease_token TEXT NOT NULL DEFAULT '',
+		finished_at DATETIME,
+		created_at DATETIME NOT NULL,
+		CONSTRAINT uq_git_capability_sync_jobs_delivery
+			UNIQUE (git_server_id, delivery_id)
+	)`
+	if err := database.GetDB().Exec(ddl).Error; err != nil {
+		t.Fatalf("create git_capability_sync_jobs: %v", err)
+	}
+}
+
+// Forking creates a repository but pushes nothing, so Gitea never delivers a
+// push webhook for it — and the webhook ingress is the only other producer of
+// sync jobs. Without the fork queueing its own first sync the row stays
+// git_sync_status='pending' with an empty git_sha forever, which the
+// Marketplace projection filters out: the fork would be silently unusable.
+func TestForkItem_Git_QueuesInitialSyncJob(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-1", "cospowers-requirements", "costrict-plugins-repo/cospowers-requirements")
+	fx.gitea.repos["costrict-plugins-repo/cospowers-requirements"] = "main"
+	createGitCapabilitySyncJobTable(t)
+
+	w := forkReq(newForkRouter("bob"), "plug-1")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var jobs []models.GitCapabilitySyncJob
+	if err := database.GetDB().Find(&jobs).Error; err != nil {
+		t.Fatalf("load sync jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("want exactly one queued sync job, got %d", len(jobs))
+	}
+	job := jobs[0]
+
+	// Derived from the item ID so a retried fork collapses onto the same job
+	// through the (git_server_id, delivery_id) unique index.
+	if want := "fork:" + resp.ID; job.DeliveryID != want {
+		t.Errorf("delivery id: want %q, got %q", want, job.DeliveryID)
+	}
+	// The worker locates the repository by stable numeric ID, not by name.
+	if job.GitServerID != "gs-1" || job.RepoID != 501 {
+		t.Errorf("job identity: server=%q repo=%d", job.GitServerID, job.RepoID)
+	}
+	if job.RepoFullName != "10001/cospowers-requirements" {
+		t.Errorf("repo full name: got %q", job.RepoFullName)
+	}
+	if job.DefaultBranch != "main" || job.Ref != "refs/heads/main" {
+		t.Errorf("branch: default=%q ref=%q", job.DefaultBranch, job.Ref)
+	}
+	if job.Status != models.GitCapabilitySyncJobStatusPending {
+		t.Errorf("status: want pending, got %q", job.Status)
+	}
+	// An all-zero SHA is the wire encoding for "default branch deleted"; the
+	// worker would archive the very item this fork just published.
+	if job.AfterSHA == strings.Repeat("0", 40) {
+		t.Error("after_sha must not be the branch-deletion sentinel")
+	}
+}
+
+// The legacy DB fork owns its content outright — there is no repository to
+// index, so queueing a sync job would leave the worker chasing a repo that
+// does not exist.
+func TestForkItem_DBFork_QueuesNoSyncJob(t *testing.T) {
+	defer setupTestDB(t)()
+	createPublicRegistry(t)
+	fx := setupGitForkFixture(t)
+	seedUserGitAccount(t, fx.db, "bob", "10001", true)
+	seedPluginSource(t, "plug-10", "not-mirrored", "u/r") // metadata, but no repo on Gitea
+	createGitCapabilitySyncJobTable(t)
+
+	w := forkReq(newForkRouter("bob"), "plug-10")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("fork: expected 201, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp gitForkResp
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ContentBackend == "git" {
+		t.Fatalf("precondition: expected a db-backed fork, got %q", resp.ContentBackend)
+	}
+
+	var count int64
+	if err := database.GetDB().Model(&models.GitCapabilitySyncJob{}).Count(&count).Error; err != nil {
+		t.Fatalf("count sync jobs: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("db-backed fork must not queue a sync job, got %d", count)
+	}
+}

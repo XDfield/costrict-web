@@ -33,13 +33,16 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // defaultPluginGitMirrorOwner is the Gitea namespace holding the plugin
@@ -66,6 +69,12 @@ func isGitBacked(item *models.CapabilityItem) bool {
 // — not a failure, just a plugin that stays on the DB fork path.
 var errNoGiteaMirror = errors.New("handlers: no gitea mirror for item")
 
+// errGiteaMirrorManifestInvalid signals that a candidate repository exists but
+// cannot prove it contains the requested plugin. This is distinct from a
+// missing mirror: silently falling back to DB here would hide a corrupted or
+// emptied Git source behind a successful-looking fork.
+var errGiteaMirrorManifestInvalid = errors.New("handlers: gitea mirror manifest is invalid")
+
 func pluginGitMirrorOwner() string {
 	if v := strings.TrimSpace(os.Getenv("PLUGIN_GIT_MIRROR_OWNER")); v != "" {
 		return v
@@ -76,9 +85,11 @@ func pluginGitMirrorOwner() string {
 // gitForkPlan is the outcome of a successful Gitea fork: the coordinate to
 // persist on the new item.
 type gitForkPlan struct {
-	RepoURL  string // normalized <endpoint>/<owner>/<name>
-	RepoRef  string // branch name
-	RepoPath string // repo-relative main file (manifest) path; "" when undetected
+	RepoURL     string // normalized <endpoint>/<owner>/<name>
+	RepoRef     string // branch name
+	RepoPath    string // repo-relative main file (manifest) path; "" when undetected
+	GitServerID string // stable git_servers.server_id
+	GitRepoID   int64  // stable Gitea repository numeric ID
 }
 
 // planGitBackedFork performs the Gitea side of a plugin fork and returns the
@@ -156,6 +167,15 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 			},
 		}
 	}
+	if strings.TrimSpace(cfg.ServerID) == "" {
+		return nil, &httpErr{
+			status: http.StatusServiceUnavailable,
+			body: gin.H{
+				"error":      "git server is missing its stable server identity; contact your platform admin",
+				"error_code": "GIT_SERVER_ID_MISSING",
+			},
+		}
+	}
 
 	// Locate the source repo with the ADMIN token: this is a read-only probe
 	// and must not depend on the user having a PAT yet.
@@ -165,19 +185,39 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 	}
 	candidates := make([]repoCandidate, 0, 3)
 	if srcRepoOK {
-		// Persisted coordinate — already verified when it was written.
-		candidates = append(candidates, repoCandidate{srcRepoOwner, srcRepoName, true})
+		candidates = append(candidates, repoCandidate{
+			owner: srcRepoOwner,
+			name:  srcRepoName,
+			kind:  repoCandidateTrusted,
+		})
 	}
 	if src.Slug != "" {
-		candidates = append(candidates, repoCandidate{pluginGitMirrorOwner(), src.Slug, false})
+		candidates = append(candidates, repoCandidate{
+			owner: pluginGitMirrorOwner(),
+			name:  src.Slug,
+			kind:  repoCandidatePerItemMirror,
+		})
 	}
 	if hasMarketplace {
-		candidates = append(candidates, repoCandidate{mpOwner, mpRepo, false})
+		candidates = append(candidates, repoCandidate{
+			owner: mpOwner,
+			name:  mpRepo,
+			kind:  repoCandidateMarketplace,
+		})
 	}
 	srcOwner, srcName, srcBranch, srcPath, err := locateGiteaSourceRepo(ctx, adminCli, candidates, pluginNameOf(src.Metadata))
 	if err != nil {
 		if errors.Is(err, errNoGiteaMirror) {
 			return unavailable("its repository was not found on the git server")
+		}
+		if errors.Is(err, errGiteaMirrorManifestInvalid) {
+			return nil, &httpErr{
+				status: http.StatusConflict,
+				body: gin.H{
+					"error":      "the source repository does not contain a valid manifest for this plugin; contact your platform admin",
+					"error_code": "GIT_SOURCE_MANIFEST_INVALID",
+				},
+			}
 		}
 		// Reachability/permission failure: fail closed rather than silently
 		// producing a DB copy of something that should have been git-backed.
@@ -238,6 +278,15 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		}
 	}
 
+	if repo == nil || repo.ID <= 0 {
+		return nil, &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "git server returned a fork without a stable repository identity; contact your platform admin",
+				"error_code": "GIT_FORK_REPO_ID_INVALID",
+			},
+		}
+	}
 	owner, name, ok := splitOwnerRepoPath(repo.FullName)
 	if !ok {
 		// An unparsable full_name is an untrustworthy response — do NOT fall back
@@ -277,8 +326,63 @@ func planGitBackedFork(c *gin.Context, userID string, src models.CapabilityItem)
 		RepoRef: ref,
 		// A fork is a byte-identical copy of the source tree, so the manifest
 		// path probed on the source is equally valid on the fork.
-		RepoPath: srcPath,
+		RepoPath:    srcPath,
+		GitServerID: cfg.ServerID,
+		GitRepoID:   repo.ID,
 	}, nil
+}
+
+// enqueueForkGitSync schedules the first index sync for a freshly forked
+// git-backed item.
+//
+// Forking creates a repository but produces no push event, and the webhook
+// ingress is the only other producer of sync jobs. Without this the row stays
+// git_sync_status='pending' with an empty git_sha forever, and the Marketplace
+// projection — which publishes only synced rows carrying a 40-char SHA — omits
+// the fork entirely, so subscribing to it installs nothing.
+//
+// Best-effort by design: the repository and the DB row both already exist, so a
+// queueing failure must not fail the fork. DeliveryID is derived from the item
+// ID, letting the (git_server_id, delivery_id) unique index collapse retries
+// onto the same job instead of queueing duplicate work.
+func enqueueForkGitSync(db *gorm.DB, itemID string, plan *gitForkPlan) {
+	if db == nil || plan == nil {
+		return
+	}
+	owner, name, ok := splitRepoURL(plan.RepoURL)
+	if !ok {
+		log.Printf("fork: cannot queue initial git sync for item %s: unreadable repo URL %q", itemID, plan.RepoURL)
+		return
+	}
+	branch := plan.RepoRef
+	if branch == "" {
+		branch = "main"
+	}
+	now := time.Now().UTC()
+	job := &models.GitCapabilitySyncJob{
+		ID:            uuid.NewString(),
+		GitServerID:   plan.GitServerID,
+		DeliveryID:    "fork:" + itemID,
+		RepoID:        plan.GitRepoID,
+		RepoFullName:  owner + "/" + name,
+		DefaultBranch: branch,
+		Ref:           "refs/heads/" + branch,
+		// The worker resolves the repository's current HEAD itself, so no commit
+		// SHAs are needed here. AfterSHA is left empty rather than zero-filled:
+		// an all-zero SHA is the wire encoding for "default branch deleted" and
+		// would make the worker archive the item it was meant to publish.
+		Status:      models.GitCapabilitySyncJobStatusPending,
+		MaxAttempts: 3,
+		ScheduledAt: now,
+		CreatedAt:   now,
+	}
+	err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "git_server_id"}, {Name: "delivery_id"}},
+		DoNothing: true,
+	}).Create(job).Error
+	if err != nil {
+		log.Printf("fork: queue initial git sync for item %s failed: %v", itemID, err)
+	}
 }
 
 // gitWebBase returns the browser-facing base URL of the tenant's git server,
@@ -293,8 +397,10 @@ func gitWebBase(cfg *gitserver.Config) string {
 }
 
 // locateGiteaSourceRepo returns the first candidate coordinate that actually
-// exists on the git server, along with its default branch and the repo-relative
-// path its plugin manifest was found at ("" when none was readable).
+// exists on the git server and has a readable, valid plugin manifest matching
+// the catalog plugin. The manifest is the minimum usable content for a plugin
+// fork: accepting a repository without it would create a permanently broken
+// git-backed item.
 //
 // Callers order candidates by confidence:
 //
@@ -308,12 +414,16 @@ func gitWebBase(cfg *gitserver.Config) string {
 // many plugins (e.g. anthropics/claude-plugins-official) it names a repo
 // shared by dozens of items, so the per-item mirror wins when both exist.
 //
-// Returns errNoGiteaMirror when no candidate exists; any other error is a real
-// lookup failure and must not be mistaken for "not mirrored".
+// Returns errNoGiteaMirror when no candidate exists. A candidate that exists
+// but lacks a valid matching manifest returns errGiteaMirrorManifestInvalid;
+// it is not a legacy DB-backed plugin, so callers must not silently fall back.
+// Any other error is a real lookup failure and must not be mistaken for "not
+// mirrored".
 func locateGiteaSourceRepo(
 	ctx context.Context, cli *gitsync.Client, candidates []repoCandidate, wantPlugin string,
 ) (owner, name, defaultBranch, manifestPath string, err error) {
 	seen := map[string]bool{}
+	sawInvalidCandidate := false
 	for _, cand := range candidates {
 		if cand.owner == "" || cand.name == "" {
 			continue
@@ -331,78 +441,100 @@ func locateGiteaSourceRepo(
 		if repo == nil {
 			continue // 404 — try the next candidate
 		}
-		// Probed for EVERY candidate, trusted or not: besides confirming a guess,
-		// the probe is the only way to learn where the manifest actually lives,
-		// and that path is what the "edit in Gitea" link needs.
-		path, matches := probeRepoManifest(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin)
-		// A guessed coordinate that exists is not proof it belongs to THIS item:
-		// the namespace may hold an unrelated repo of the same name. Only guesses
-		// are rejected on a mismatch — a trusted coordinate was already verified
-		// when it was persisted.
-		if !cand.trusted && !matches {
+		// Probed for EVERY candidate. A persisted coordinate is only trusted for
+		// routing; it is not trusted as content evidence after a later force-push
+		// or manual repository replacement.
+		path, verdict, probeErr := probeRepoManifest(ctx, cli, cand.owner, cand.name, repo.DefaultBranch, wantPlugin)
+		if probeErr != nil {
+			return "", "", "", "", probeErr
+		}
+		if verdict != manifestProbeMatch {
+			// The source item's own coordinate cannot be redirected to a guess.
+			// A per-item mirror is authoritative when it exists and has no usable
+			// manifest; trying marketplace_repo after that would hide a corrupted
+			// mirror behind a successful but different fork. A readable manifest
+			// with another name is the one recoverable case: that is a namespace
+			// collision, so continue to the next candidate.
+			if cand.kind == repoCandidateTrusted ||
+				(cand.kind == repoCandidatePerItemMirror && verdict != manifestProbeNameMismatch) {
+				return "", "", "", "", errGiteaMirrorManifestInvalid
+			}
+			sawInvalidCandidate = true
 			continue
 		}
 		return cand.owner, cand.name, repo.DefaultBranch, path, nil
 	}
+	if sawInvalidCandidate {
+		return "", "", "", "", errGiteaMirrorManifestInvalid
+	}
 	return "", "", "", "", errNoGiteaMirror
 }
 
-// repoCandidate is a coordinate to probe. trusted marks a coordinate we already
-// verified and persisted (the item's own source_repo_url); untrusted ones are
-// guesses from naming conventions and must be confirmed against the manifest.
+// repoCandidate is a coordinate to probe. Candidate kind defines whether an
+// invalid manifest may fall through to a lower-priority coordinate.
 type repoCandidate struct {
-	owner   string
-	name    string
-	trusted bool
+	owner string
+	name  string
+	kind  repoCandidateKind
 }
+
+type repoCandidateKind uint8
+
+const (
+	repoCandidateTrusted repoCandidateKind = iota
+	repoCandidatePerItemMirror
+	repoCandidateMarketplace
+)
 
 // pluginManifestPaths are the marketplace layouts a mirrored plugin may use.
 var pluginManifestPaths = []string{".claude-plugin/plugin.json", ".plugin.json", "plugin.json"}
 
+type manifestProbeResult uint8
+
+const (
+	manifestProbeMissingOrInvalid manifestProbeResult = iota
+	manifestProbeNameMismatch
+	manifestProbeMatch
+)
+
 // probeRepoManifest locates the repo's plugin manifest and reports whether it
-// names the plugin we're looking for. It returns the repo-relative path the
-// manifest was found at — the item's "main file", which the edit hand-off links
-// straight at.
-//
-// Verdict when no manifest can be read: ACCEPT (path ""), with a warning. Being
-// strict here would break mirrors that use a layout we don't know, turning a
-// working fork into a silent DB-copy fallback. The check exists to catch the
-// realistic failure — a name collision with a repo that IS a plugin but a
-// different one — and that case does yield a readable, mismatching manifest.
-// An empty path likewise never blocks a fork; it only means the link falls back
-// to the repo home page instead of a file that may not be there.
-func probeRepoManifest(ctx context.Context, cli *gitsync.Client, owner, name, branch, wantPlugin string) (path string, matches bool) {
+// names the catalog plugin we're looking for. A repository is accepted only
+// when both the manifest and its name are readable. The result distinguishes a
+// missing/damaged manifest from a readable manifest for another plugin so the
+// caller can apply its candidate-priority policy.
+func probeRepoManifest(ctx context.Context, cli *gitsync.Client, owner, name, branch, wantPlugin string) (path string, result manifestProbeResult, err error) {
 	if branch == "" {
 		branch = "main"
 	}
+	wantPlugin = strings.TrimSpace(wantPlugin)
+	if wantPlugin == "" {
+		log.Printf("fork: repo %s/%s cannot be verified because the source item has no plugin_name", owner, name)
+		return "", manifestProbeMissingOrInvalid, nil
+	}
 	for _, candidatePath := range pluginManifestPaths {
-		raw, err := cli.ReadFile(ctx, owner, name, branch, candidatePath)
-		if err != nil || len(raw) == 0 {
-			continue
+		raw, readErr := cli.ReadFile(ctx, owner, name, branch, candidatePath)
+		if readErr != nil {
+			return "", manifestProbeMissingOrInvalid, readErr
 		}
-		if wantPlugin == "" {
-			return candidatePath, true // nothing to compare against
+		if len(raw) == 0 {
+			continue
 		}
 		var manifest struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(raw, &manifest) != nil || manifest.Name == "" {
-			continue
+			log.Printf("fork: repo %s/%s has an invalid plugin manifest at %s", owner, name, candidatePath)
+			return candidatePath, manifestProbeMissingOrInvalid, nil
 		}
 		if strings.EqualFold(strings.TrimSpace(manifest.Name), wantPlugin) {
-			return candidatePath, true
+			return candidatePath, manifestProbeMatch, nil
 		}
 		log.Printf("fork: repo %s/%s holds plugin %q, not %q — skipping candidate",
 			owner, name, manifest.Name, wantPlugin)
-		// The path is still reported: rejection is the caller's call (a trusted
-		// coordinate keeps it), and the manifest does live there either way.
-		return candidatePath, false
+		return candidatePath, manifestProbeNameMismatch, nil
 	}
-	if wantPlugin != "" {
-		log.Printf("fork: repo %s/%s has no readable plugin manifest; accepting %q on name match alone",
-			owner, name, wantPlugin)
-	}
-	return "", true
+	log.Printf("fork: repo %s/%s has no readable plugin manifest for %q", owner, name, wantPlugin)
+	return "", manifestProbeMissingOrInvalid, nil
 }
 
 // pluginNameOf reads metadata.install.plugin_name — the marketplace identifier
@@ -436,14 +568,10 @@ func splitRepoURL(raw string) (owner, name string, ok bool) {
 	return splitOwnerRepoPath(parts[len(parts)-2] + "/" + parts[len(parts)-1])
 }
 
-// resolveForkUserBinding loads the caller's Gitea identity, provisioning the
-// account on the fly when it is missing or stale — the same self-healing
-// kb.EnsureUserRepo does, so a user whose account was never provisioned (or
-// whose provisioning failed once) doesn't have to go re-login to fork.
-//
-// If it still isn't usable afterwards, that's a 409 with an actionable hint —
-// never a silent fallback to the DB fork, which would look like success while
-// producing no repo.
+// resolveForkUserBinding loads the caller's already-provisioned Gitea identity.
+// Account creation is driven by the cs-user user.created outbox and its
+// reconciler, not by this request: this handler does not possess an
+// authoritative short_id and must never manufacture one from subject_id.
 func resolveForkUserBinding(ctx context.Context, userID, tenantID string) (*models.UserGitBinding, *httpErr) {
 	var binding models.UserGitBinding
 	err := gitsyncDB.WithContext(ctx).
@@ -455,32 +583,17 @@ func resolveForkUserBinding(ctx context.Context, userID, tenantID string) (*mode
 			body:   gin.H{"error": "failed to load your git account: " + err.Error(), "error_code": "GIT_BINDING_LOOKUP_FAILED"},
 		}
 	}
-	// Fallback provisioning, mirroring kb.resolveBinding: best-effort, then
-	// re-read. ProvisionUser is idempotent, so a concurrent caller is harmless.
-	if (errors.Is(err, gorm.ErrRecordNotFound) || binding.SyncStatus != models.GitSyncStatusSynced) &&
-		gitsyncUserProvisionSvc != nil {
-		short := strings.ReplaceAll(userID, "-", "")
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		_ = gitsyncUserProvisionSvc.ProvisionUser(ctx, gitsync.UserProvisionParams{
-			SubjectID: userID,
-			TenantID:  tenantID,
-			ShortID:   "u-" + short,
-		})
-		err = gitsyncDB.WithContext(ctx).
-			Where("user_subject_id = ? AND tenant_id = ?", userID, tenantID).
-			First(&binding).Error
-	}
 	if errors.Is(err, gorm.ErrRecordNotFound) || binding.GitUsername == "" || binding.SyncStatus != models.GitSyncStatusSynced {
 		status := "missing"
 		if binding.SyncStatus != "" {
 			status = binding.SyncStatus
 		}
+		// This is a business-state conflict, not a Gitea JWT middleware
+		// contract. Existing Fork API callers already branch on 409 here.
 		return nil, &httpErr{
 			status: http.StatusConflict,
 			body: gin.H{
-				"error":      "your git account is not ready yet (status: " + status + "); sign out and sign in again to trigger provisioning, or contact your platform admin",
+				"error":      "your git account is not ready yet (status: " + status + "); wait for provisioning to complete or contact your platform admin",
 				"error_code": "GIT_ACCOUNT_NOT_READY",
 				"status":     status,
 			},
