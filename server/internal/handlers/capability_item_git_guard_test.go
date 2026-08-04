@@ -138,6 +138,122 @@ func TestUpdateItem_StatusOnlyOnGitBackedRowIsAllowed(t *testing.T) {
 	}
 }
 
+// cscSkillPublishBody is the shape `csc skill publish` sends when it bumps a
+// skill it already owns: it resolves the item through
+// GET /items/my?slug=&type=skill and then PUTs the rewritten manifest here.
+// Kept as one literal so both halves of R1.7 are provably the same request.
+func cscSkillPublishBody() map[string]any {
+	return map[string]any{
+		"name":        "Published from csc",
+		"description": "published from the device",
+		"version":     "1.1.0",
+		"content":     "---\nname: Published from csc\n---\nrewritten body",
+		"sourcePath":  "SKILL.md",
+		"commitMsg":   "publish from csc",
+	}
+}
+
+// R1.7: `csc skill publish` is a second writer that can put content straight
+// into the DB. On a Git-backed row that contradicts "content changes go
+// through Git", so the publish is refused — and the refusal has to name the
+// repository, or the device can only report that the user may not proceed.
+func TestUpdateItem_CscSkillPublishOnGitBackedRowIsRefused(t *testing.T) {
+	defer setupTestDB(t)()
+	createTestRepository(t, "repo-guard", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-guard", Name: "guard-reg", SourceType: "internal", RepoID: "repo-guard", OwnerID: "u1",
+	})
+	seedGuardedItem(t, "guard-publish-git", models.ContentBackendGit)
+
+	w := putJSON(newItemRouter("u1"), "/api/items/guard-publish-git", cscSkillPublishBody())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["error_code"] != "GIT_BACKED_ITEM" {
+		t.Errorf("refusal is not machine-readable: %v", body)
+	}
+	if body["repoUrl"] != "https://gitea.example.test/owner/repo" || body["repoRef"] != "main" {
+		t.Errorf("refusal does not say where to push: %v", body)
+	}
+
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", "guard-publish-git").Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	published := cscSkillPublishBody()
+	if after.Content == published["content"] || after.Name == published["name"] ||
+		after.Description == published["description"] || after.Version == published["version"] {
+		t.Fatalf("publish wrote through to a git-backed row: %+v", after)
+	}
+}
+
+// The DB-backed half of R1.7: the same publish must behave exactly as before.
+// Gray-scale coexistence rests on csc needing no change, so any regression
+// here breaks the device for every skill that is not Git-backed yet.
+func TestUpdateItem_CscSkillPublishOnDBBackedRowIsUnchanged(t *testing.T) {
+	defer setupTestDB(t)()
+	createTestRepository(t, "repo-guard", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-guard", Name: "guard-reg", SourceType: "internal", RepoID: "repo-guard", OwnerID: "u1",
+	})
+	seedGuardedItem(t, "guard-publish-db", models.ContentBackendDB)
+
+	body := cscSkillPublishBody()
+	w := putJSON(newItemRouter("u1"), "/api/items/guard-publish-db", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", "guard-publish-db").Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Content != body["content"] || after.Name != body["name"] ||
+		after.Description != body["description"] || after.Version != body["version"] {
+		t.Fatalf("publish did not land on the db-backed row: %+v", after)
+	}
+	var versions int64
+	database.DB.Model(&models.CapabilityVersion{}).
+		Where("item_id = ? AND content = ?", "guard-publish-db", body["content"]).Count(&versions)
+	if versions != 1 {
+		t.Fatalf("publish did not snapshot a version: %d", versions)
+	}
+}
+
+// The create half of the same channel. `csc skill publish` falls back to
+// POST /api/items when its slug lookup finds nothing, so the create path must
+// not be able to land on top of a Git-backed row either. It cannot: the
+// (repo, type, slug) unique index refuses it before any row is touched.
+func TestCreateItem_CscSkillPublishCannotLandOnGitBackedSlug(t *testing.T) {
+	defer setupTestDB(t)()
+	createTestRepository(t, "repo-guard", "public")
+	database.DB.Create(&models.CapabilityRegistry{
+		ID: "reg-guard", Name: "guard-reg", SourceType: "internal", RepoID: "repo-guard", OwnerID: "u1",
+	})
+	seedGuardedItem(t, "guard-publish-slug", models.ContentBackendGit)
+
+	body := cscSkillPublishBody()
+	body["registryId"] = "reg-guard"
+	body["itemType"] = "skill"
+	body["slug"] = "guard-publish-slug"
+	w := postJSON(newItemRouter("u1"), "/api/items", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var after models.CapabilityItem
+	if err := database.DB.First(&after, "id = ?", "guard-publish-slug").Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Content != "seed content" || after.ContentBackend != models.ContentBackendGit {
+		t.Fatalf("create path disturbed the git-backed row: %+v", after)
+	}
+}
+
 // The content path stays a 409 (pre-existing handler guard), so the new
 // backstop did not change the user-visible contract.
 func TestUpdateItem_ContentOnGitBackedRowStill409s(t *testing.T) {
