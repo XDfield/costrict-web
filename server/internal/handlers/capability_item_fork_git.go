@@ -80,6 +80,42 @@ func respondGitOwnedFieldConflict(c *gin.Context, err error) bool {
 	return true
 }
 
+// gitBackedUnbindHint is appended to every refusal whose real remedy is the
+// same: the row cannot go away while the repository still points at it.
+const gitBackedUnbindHint = "unbind the repository from this item first, or archive it instead of deleting"
+
+// respondGitBackedItemConflict answers 409 for an operation refused on one
+// already-loaded Git-backed row, handing back the repo coordinate so the caller
+// knows where the truth lives. Mirrors the payload plugin download uses.
+func respondGitBackedItemConflict(c *gin.Context, item *models.CapabilityItem, message string) {
+	c.JSON(http.StatusConflict, gin.H{
+		"error":      message,
+		"error_code": "GIT_BACKED_ITEM",
+		"repoUrl":    item.SourceRepoURL,
+		"repoRef":    item.SourceRepoRef,
+	})
+}
+
+// respondGitBackedItemsConflict maps a pre-flight refusal (or the itemdelete
+// backstop it shares a sentinel with) onto 409, naming the blocking rows.
+// Returns false when err is something else, so callers keep their own 500 path.
+func respondGitBackedItemsConflict(c *gin.Context, message string, err error) bool {
+	if !errors.Is(err, models.ErrGitBackedItemsPresent) {
+		return false
+	}
+	body := gin.H{
+		"error":      message,
+		"error_code": "GIT_BACKED_ITEM",
+	}
+	var blocked *models.GitBackedItemsError
+	if errors.As(err, &blocked) {
+		body["blockedItems"] = blocked.Items
+		body["blockedCount"] = blocked.Total
+	}
+	c.JSON(http.StatusConflict, body)
+	return true
+}
+
 // errNoGiteaMirror signals "this item has no repository on the tenant's Gitea"
 // — not a failure, just a plugin that stays on the DB fork path.
 var errNoGiteaMirror = errors.New("handlers: no gitea mirror for item")

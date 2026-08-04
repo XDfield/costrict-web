@@ -1921,6 +1921,18 @@ func DeleteItem(c *gin.Context) {
 		return
 	}
 
+	// W11 — a bare delete of a Git-backed row is refused: the cascade is a
+	// physical DELETE, the repository stays bound, and the next push recreates
+	// the capability under a new uuid with every favourite/distribution/bookmark
+	// left pointing at the old one.
+	if err := models.RefuseGitBackedItems(db, models.CapabilityItemsWithIDs(id)); err != nil {
+		if respondGitBackedItemsConflict(c, "This item's content lives in git and cannot be deleted directly; "+gitBackedUnbindHint, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item"})
+		return
+	}
+
 	// Shared cascade (see internal/itemdelete): hard-deletes bundled sub-skills
 	// recursively, clears dependent rows + distribution/mcp-config orphans, then
 	// the item itself. Forks owned by other users are left intact.
@@ -1928,6 +1940,11 @@ func DeleteItem(c *gin.Context) {
 		return itemdelete.CascadeDelete(tx, id)
 	})
 	if err != nil {
+		// The cascade repeats the check per row, so a Git-backed sub-skill of a
+		// DB-backed plugin surfaces here rather than in the pre-flight above.
+		if respondGitBackedItemsConflict(c, "This item bundles git-backed content and cannot be deleted directly; "+gitBackedUnbindHint, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete item"})
 		return
 	}
@@ -2019,6 +2036,19 @@ func BatchDeleteItems(c *gin.Context) {
 		authorized = append(authorized, id)
 	}
 
+	// W12 — same refusal as W11. The batch is all-or-nothing by design (see the
+	// endpoint doc), so one Git-backed id refuses the whole request rather than
+	// deleting the rest and reporting a partial result.
+	if len(authorized) > 0 {
+		if err := models.RefuseGitBackedItems(db, models.CapabilityItemsWithIDs(authorized...)); err != nil {
+			if respondGitBackedItemsConflict(c, "Some of these items' content lives in git and cannot be deleted directly; "+gitBackedUnbindHint, err) {
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
+			return
+		}
+	}
+
 	deleted := make([]string, 0)
 	if len(authorized) > 0 {
 		var batchSkipped []string
@@ -2028,6 +2058,9 @@ func BatchDeleteItems(c *gin.Context) {
 			return e
 		})
 		if err != nil {
+			if respondGitBackedItemsConflict(c, "Some of these items bundle git-backed content and cannot be deleted directly; "+gitBackedUnbindHint, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete items"})
 			return
 		}
@@ -4081,6 +4114,14 @@ func MoveItem(c *gin.Context) {
 		return
 	}
 
+	// W9 — git_capability_repositories pins the binding to one registry, and
+	// discovery keeps creating rows under binding.RegistryID. Moving the item
+	// alone splits the same repository across two registries.
+	if isGitBacked(&item) {
+		respondGitBackedItemConflict(c, &item, "Git-backed items belong to their repository's registry and cannot be moved")
+		return
+	}
+
 	if req.TargetRegistryID == item.RegistryID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Item already belongs to the target registry"})
 		return
@@ -4190,6 +4231,13 @@ func TransferItemToRepo(c *gin.Context) {
 	isSourceRepoAdmin := sourceReg.RepoID != "" && isRepoAdmin(getCallerRepoRole(c, sourceReg.RepoID))
 	if !isCreator && !isSourceRepoAdmin {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or source repo admin can transfer this item"})
+		return
+	}
+
+	// W10 — refused for the same reason as MoveItem (W9); this endpoint rewrites
+	// the same two columns, on both the public and the repo branch below.
+	if isGitBacked(&item) {
+		respondGitBackedItemConflict(c, &item, "Git-backed items belong to their repository's registry and cannot be transferred")
 		return
 	}
 

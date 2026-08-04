@@ -1430,6 +1430,14 @@ func DeleteRepository(c *gin.Context) {
 		// 2. 如果有 registry，获取所有 item IDs
 		var itemIDs []string
 		if len(registryIDs) > 0 {
+			// W15 — the repo delete hard-deletes every item under its registries.
+			// Scoped by registry_id, not repo_id, because that is exactly the set
+			// the delete below resolves. A Git-backed row here would be recreated
+			// under a new uuid on the next push, and its
+			// git_capability_repositories binding would be left orphaned.
+			if err := models.RefuseGitBackedItems(tx, models.CapabilityItemsInRegistries(registryIDs...)); err != nil {
+				return err
+			}
 			if err := tx.Model(&models.CapabilityItem{}).Where("registry_id IN ?", registryIDs).Pluck("id", &itemIDs).Error; err != nil {
 				return fmt.Errorf("failed to get item IDs: %w", err)
 			}
@@ -1511,6 +1519,9 @@ func DeleteRepository(c *gin.Context) {
 	})
 
 	if err != nil {
+		if respondGitBackedItemsConflict(c, "This repository holds git-backed items; unbind their repositories before deleting it", err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

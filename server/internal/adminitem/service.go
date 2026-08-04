@@ -362,6 +362,15 @@ func (s *Service) DeleteItem(id string) error {
 		return err
 	}
 
+	// W14 — admin moderation does not get to bypass the Git-backed refusal: the
+	// cascade is a physical DELETE and the bound repository would recreate the
+	// capability under a new uuid on its next push. Pre-flighted here so the
+	// caller gets the reason before any row is touched; the cascade repeats the
+	// check for rows only the recursion reaches.
+	if err := models.RefuseGitBackedItems(s.db, models.CapabilityItemsWithIDs(id)); err != nil {
+		return err
+	}
+
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		return itemdelete.CascadeDelete(tx, id)
 	})
@@ -374,6 +383,14 @@ func (s *Service) DeleteItem(id string) error {
 // deleted. On any hard error nothing is committed and (nil, nil, err) is
 // returned.
 func (s *Service) BatchDeleteItems(ids []string) (deleted, skipped []string, err error) {
+	// W14 (batch) — one Git-backed id refuses the whole request, matching the
+	// all-or-nothing contract this endpoint already documents.
+	if len(ids) > 0 {
+		if gitErr := models.RefuseGitBackedItems(s.db, models.CapabilityItemsWithIDs(ids...)); gitErr != nil {
+			return nil, nil, gitErr
+		}
+	}
+
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		deleted, skipped, err = itemdelete.CascadeDeleteMany(tx, ids)
 		return err

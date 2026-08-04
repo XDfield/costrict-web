@@ -10,8 +10,29 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/audit"
 	appmiddleware "github.com/costrict/costrict-web/server/internal/middleware"
+	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 )
+
+// respondGitBackedItemsConflict maps the delete refusal onto 409, naming the
+// blocking rows. Duplicated (rather than shared with internal/handlers) because
+// admin modules deliberately do not import the public handler package.
+func respondGitBackedItemsConflict(c *gin.Context, message string, err error) bool {
+	if !errors.Is(err, models.ErrGitBackedItemsPresent) {
+		return false
+	}
+	body := gin.H{
+		"error":      message,
+		"error_code": "GIT_BACKED_ITEM",
+	}
+	var blocked *models.GitBackedItemsError
+	if errors.As(err, &blocked) {
+		body["blockedItems"] = blocked.Items
+		body["blockedCount"] = blocked.Total
+	}
+	c.JSON(http.StatusConflict, body)
+	return true
+}
 
 // maxBatchDelete bounds a single batch-delete request. The cap guards against an
 // accidental "select all → delete" wiping a huge slice in one transaction and
@@ -198,6 +219,9 @@ func (m *Module) DeleteItemHandler() gin.HandlerFunc {
 		}
 
 		if err := m.svc.DeleteItem(id); err != nil {
+			if respondGitBackedItemsConflict(c, "this item's content lives in git and cannot be deleted directly; unbind its repository first, or archive it instead", err) {
+				return
+			}
 			switch {
 			case errors.Is(err, ErrItemNotFound):
 				c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
@@ -268,6 +292,9 @@ func (m *Module) BatchDeleteItemsHandler() gin.HandlerFunc {
 
 		deleted, skipped, err := m.svc.BatchDeleteItems(ids)
 		if err != nil {
+			if respondGitBackedItemsConflict(c, "some of these items' content lives in git and cannot be deleted directly; unbind their repositories first, or archive them instead", err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete items"})
 			return
 		}

@@ -267,6 +267,18 @@ func DeleteRegistry(c *gin.Context) {
 		return
 	}
 
+	// W29 — this delete does NOT cascade into items, it strands them. For a
+	// Git-backed row that means both the item's registry_id and the
+	// git_capability_repositories binding point at a registry that no longer
+	// exists, and discovery has nowhere to put the next push.
+	if err := models.RefuseGitBackedItems(db, models.CapabilityItemsInRegistries(registry.ID)); err != nil {
+		if respondGitBackedItemsConflict(c, "This registry holds git-backed items; unbind their repositories before deleting it", err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete registry"})
+		return
+	}
+
 	result := db.Delete(&models.CapabilityRegistry{}, "id = ?", id)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete registry"})
@@ -346,6 +358,13 @@ func TransferRegistry(c *gin.Context) {
 
 	// Use a transaction to atomically update both the registry and all its items.
 	if err := db.Transaction(func(tx *gorm.DB) error {
+		// W28 — the batch update below re-homes EVERY item under this registry,
+		// which is the same registry_id/repo_id rewrite MoveItem refuses (W9),
+		// applied to the whole set at once. Checked inside the transaction so it
+		// sees the rows the update would write.
+		if err := models.RefuseGitBackedItems(tx, models.CapabilityItemsInRegistries(registry.ID)); err != nil {
+			return err
+		}
 		if err := tx.Model(&registry).Updates(map[string]interface{}{
 			"repo_id": req.TargetRepoID,
 		}).Error; err != nil {
@@ -359,6 +378,9 @@ func TransferRegistry(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
+		if respondGitBackedItemsConflict(c, "This registry holds git-backed items, which belong to their repository and cannot be transferred", err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to transfer registry"})
 		return
 	}

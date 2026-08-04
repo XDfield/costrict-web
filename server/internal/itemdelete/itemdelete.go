@@ -16,6 +16,10 @@
 //     artifacts/favorites/tags/scans/behavior logs/mcp user configs).
 //   - distribution rows and their receipts are cleared (previously orphaned).
 //   - the item row itself is hard-deleted last.
+//   - a Git-backed row anywhere in the cascade aborts the whole thing with
+//     models.ErrGitBackedItemsPresent (handlers map it to 409). Deleting one
+//     would not remove the capability: the repository is still bound, and the
+//     next push recreates it under a new uuid.
 //
 // Forks are deliberately left intact: a fork (forked_from_item_id = id, owned by
 // another user) is that user's own copy and survives the source's deletion;
@@ -45,6 +49,16 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		return nil
 	}
 	visited[id] = true
+
+	// 0) Git-backed rows are never hard-deleted here. The repository outlives the
+	//    row, so the next push finds no bound item and recreates the capability
+	//    under a new uuid, leaving every reference to the old id dangling. Callers
+	//    pre-flight this (and produce a better message), but the check is repeated
+	//    per row because the recursion below reaches ids the caller never named:
+	//    a DB-backed plugin may bundle a Git-backed sub-skill.
+	if err := models.RefuseGitBackedItems(tx, models.CapabilityItemsWithIDs(id)); err != nil {
+		return err
+	}
 
 	// 1) Recurse into bundled sub-skills first so each child clears its own
 	//    dependent rows before the parent row goes away.
