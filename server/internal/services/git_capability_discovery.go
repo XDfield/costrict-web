@@ -910,15 +910,23 @@ func ensureGitCapabilityReconciliationBinding(
 // hashing for the manifest formats only Git discovery accepts.
 //
 // ContentHashService canonicalizes "mcp" and "plugin" content as JSON, which
-// holds for every DB-path row of those types. Git discovery is wider: it also
-// classifies pyproject.toml as "mcp" and stores the raw TOML as Content
-// (parseMCPPyproject below), and falls back to ParseSKILLMD for non-JSON mcp
-// manifests, storing Markdown. Handing those to the JSON canonicalizer fails.
-// Skipping them would silently drop capabilities the previous md5 hash indexed
-// without complaint, so the manifest's own extension decides the normalization
-// and an unexpectedly malformed .json manifest degrades to a byte hash rather
-// than costing us the row. Every branch still yields a 64-char SHA-256, so the
-// column format stays uniform across backends.
+// holds for every DB-path row of those types. Git discovery is wider, and for
+// two of its formats the stored content is deliberately not JSON:
+//
+//   - plugin: ParsePluginJSON renders a frontmatter+markdown summary via
+//     synthesizePluginContent (parser_service.go) instead of keeping the
+//     .plugin.json bytes, so the plain-text branch is the *normal* path for
+//     every discovered plugin, not an error case.
+//   - mcp: pyproject.toml manifests keep the raw TOML (parseMCPPyproject
+//     below), and non-JSON mcp manifests fall back to ParseSKILLMD.
+//
+// Handing those to the JSON canonicalizer fails, and skipping them would
+// silently drop capabilities the previous md5 hash indexed without complaint.
+// The manifest extension therefore selects the normalization. A .json manifest
+// that still fails to canonicalize cannot reach here in practice — every .json
+// parser rejects invalid JSON during parsing — so that last fallback is purely
+// defensive. Every branch yields a 64-char SHA-256, keeping the column format
+// uniform across backends.
 func hashDiscoveredCapabilityContent(itemType, manifestPath, content string) string {
 	hashSvc := NewContentHashService()
 	if isJSONPath(manifestPath) {

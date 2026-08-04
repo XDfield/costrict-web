@@ -91,23 +91,35 @@ func TestGitCapabilityDiscovery_NonJSONMCPManifestFallsBackToTextHash(t *testing
 	}
 }
 
-// A .json manifest whose stored content somehow is not valid JSON must still
-// yield a row rather than being dropped.
+// The common case, not an edge case: ParsePluginJSON stores a synthesized
+// frontmatter+markdown summary rather than the .plugin.json bytes, so every
+// discovered plugin reaches the plain-text branch even though its manifest
+// path ends in .json.
+func TestGitCapabilityDiscovery_PluginSynthesizedMarkdownHashesAsText(t *testing.T) {
+	const synthesized = "---\nname: demo\ncategory: tools\n---\n\n## Description\n\nA demo plugin.\n"
+	item, version, err := buildTestDiscoveredCapability(t, "plugin", ".plugin.json", synthesized)
+	if err != nil {
+		t.Fatalf("synthesized plugin content must not fail discovery: %v", err)
+	}
+	expected, err := NewContentHashService().HashTextContent("", synthesized)
+	if err != nil {
+		t.Fatalf("hash via ContentHashService: %v", err)
+	}
+	if item.ContentMD5 != expected {
+		t.Fatalf("plugin markdown hash %q != plain-text hash %q", item.ContentMD5, expected)
+	}
+	if version.ContentMD5 != item.ContentMD5 {
+		t.Fatalf("version hash %q != item hash %q", version.ContentMD5, item.ContentMD5)
+	}
+}
+
+// Defensive: every .json parser rejects invalid JSON before discovery builds a
+// capability, so this state is unreachable through the real pipeline. Pinned so
+// a future parser change cannot turn it into a dropped row.
 func TestGitCapabilityDiscovery_MalformedJSONManifestStillHashes(t *testing.T) {
 	item, _, err := buildTestDiscoveredCapability(t, "mcp", "mcp.json", "{not json")
 	if err != nil {
 		t.Fatalf("malformed .json manifest must not fail discovery: %v", err)
-	}
-	if len(item.ContentMD5) != 64 {
-		t.Fatalf("expected 64-char SHA-256 hex, got %d chars: %q", len(item.ContentMD5), item.ContentMD5)
-	}
-}
-
-// Plugin manifests whose content is empty must not trip the JSON canonicalizer.
-func TestGitCapabilityDiscovery_EmptyPluginContentHashes(t *testing.T) {
-	item, _, err := buildTestDiscoveredCapability(t, "plugin", ".plugin.json", "")
-	if err != nil {
-		t.Fatalf("empty plugin content must not fail discovery: %v", err)
 	}
 	if len(item.ContentMD5) != 64 {
 		t.Fatalf("expected 64-char SHA-256 hex, got %d chars: %q", len(item.ContentMD5), item.ContentMD5)
