@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"gorm.io/driver/postgres"
@@ -24,14 +25,28 @@ type row struct {
 
 func main() {
 	mode := flag.String("mode", "inventory", "inventory | compare")
-	serverDSN := flag.String("server-dsn",
-		"postgres://costrict:costrict_password@172.29.254.54:5432/costrict_server?sslmode=disable",
-		"server PG DSN")
-	targetDSN := flag.String("target-dsn",
-		"postgres://costrict:costrict_password@172.29.254.54:5432/cs_user?sslmode=disable",
-		"cs-user PG DSN")
+	// No hardcoded default DSN. A previous version baked the production
+	// password AND a production IP (172.29.254.54) into the binary — same
+	// CVSS 9.2 class as the server's DATABASE_URL default. Operators MUST
+	// supply -server-dsn / -target-dsn (or the env vars below); dbprobe
+	// refuses to run otherwise.
+	serverDSN := flag.String("server-dsn", "",
+		"server PG DSN (required; or set CS_USER_DBPROBE_SERVER_DSN)")
+	targetDSN := flag.String("target-dsn", "",
+		"cs-user PG DSN (required; or set CS_USER_DBPROBE_TARGET_DSN)")
 	limit := flag.Int("limit", 50, "max rows per side for inventory / compare")
 	flag.Parse()
+
+	if strings.TrimSpace(*serverDSN) == "" {
+		*serverDSN = strings.TrimSpace(os.Getenv("CS_USER_DBPROBE_SERVER_DSN"))
+	}
+	if strings.TrimSpace(*targetDSN) == "" {
+		*targetDSN = strings.TrimSpace(os.Getenv("CS_USER_DBPROBE_TARGET_DSN"))
+	}
+	if *serverDSN == "" || *targetDSN == "" {
+		fmt.Fprintln(os.Stderr, "server-dsn and target-dsn are required (set via -server-dsn/-target-dsn flags or CS_USER_DBPROBE_SERVER_DSN/CS_USER_DBPROBE_TARGET_DSN env vars); refusing to run with no DSN — hardcoded default removed for security (CVSS 9.2)")
+		os.Exit(1)
+	}
 
 	gormCfg := &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)}
 
