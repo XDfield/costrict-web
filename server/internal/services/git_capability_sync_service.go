@@ -21,7 +21,77 @@ const (
 	gitCapabilitySyncPending = "pending"
 	gitCapabilitySyncSynced  = "synced"
 	gitCapabilitySyncError   = "error"
+	// gitCapabilitySyncOrphaned marks a row this sync hid itself because its
+	// manifest — or the whole default branch — disappeared from Git. It is the
+	// discriminator the next push needs to tell "Git took this down" from "a
+	// human took this down": both end up as status='archived', but only the
+	// first may be raised back to 'active' when the manifest returns.
+	//
+	// Rows carrying it are archived, so they are already excluded from every
+	// listing and from the marketplace projection (which filters
+	// status='active' before it looks at git_sync_status).
+	gitCapabilitySyncOrphaned = "orphaned"
 )
+
+// gitCapabilityHiddenStatuses are the statuses a human puts a row into to take
+// it off the shelf: admin moderation (adminitem.SetStatus writes 'archived',
+// user_status handlers write 'banned') and PUT /items/:id, which deliberately
+// leaves `status` outside gitBackedUpdateTouchesContentProjection so those
+// administrative actions stay possible on a Git-backed row (R1.6).
+//
+// That permission is only safe because a push never raises a row out of this
+// set — otherwise "PUT may set archived" plus "every push sets active" combine
+// into a resurrection hole: the moderator takes the capability down, the next
+// commit puts it back, and nothing reports the conflict.
+var gitCapabilityHiddenStatuses = []string{"banned", "archived", "inactive"}
+
+func isGitCapabilityHiddenStatus(status string) bool {
+	for _, hidden := range gitCapabilityHiddenStatuses {
+		if status == hidden {
+			return true
+		}
+	}
+	return false
+}
+
+// gitCapabilityActivateStatus is the status assignment for a manifest that is
+// present at HEAD.
+//
+// 'banned' is absolute. 'archived'/'inactive' are honoured too, unless this
+// sync is the one that hid the row (git_sync_status='orphaned'), in which case
+// the reappearing manifest republishes it — a deleted-then-restored file, or a
+// restored default branch, must not leave the capability dark forever.
+//
+// Residual case, stated rather than hidden: an admin who archives an
+// already-orphaned row does not clear the marker (git_sync_status is Git-owned,
+// so only this writer can write it), so a returning manifest still republishes
+// it. 'banned' is the moderation state that survives unconditionally.
+func gitCapabilityActivateStatus() clause.Expr {
+	return gorm.Expr(
+		"CASE WHEN status = ? THEN status "+
+			"WHEN status IN (?) AND git_sync_status <> ? THEN status "+
+			"ELSE ? END",
+		"banned", gitCapabilityHiddenStatuses, gitCapabilitySyncOrphaned, "active")
+}
+
+// gitCapabilityArchiveStatus is the status assignment for a manifest that is
+// gone from HEAD. A row a human already hid keeps that human's status, so
+// 'inactive' is not silently rewritten to 'archived'.
+func gitCapabilityArchiveStatus() clause.Expr {
+	return gorm.Expr("CASE WHEN status IN (?) THEN status ELSE ? END",
+		gitCapabilityHiddenStatuses, "archived")
+}
+
+// gitCapabilityArchiveSyncStatus claims the orphan marker only for rows this
+// sync is actually taking down. A row a human had already hidden keeps
+// 'synced' — claiming it there would hand the next push permission to undo the
+// human's decision. A row that is already orphaned stays orphaned, so repeated
+// pushes with the manifest still missing do not lose the marker.
+func gitCapabilityArchiveSyncStatus() clause.Expr {
+	return gorm.Expr("CASE WHEN status IN (?) AND git_sync_status <> ? THEN ? ELSE ? END",
+		gitCapabilityHiddenStatuses, gitCapabilitySyncOrphaned,
+		gitCapabilitySyncSynced, gitCapabilitySyncOrphaned)
+}
 
 type GitCapabilityReader interface {
 	GetRepoByID(ctx context.Context, repoID int64) (*gitsync.Repo, error)
@@ -249,12 +319,13 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				"git_sync_error":     "",
 			}
 			if entry.removed {
-				updates["status"] = gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "archived")
-				if entry.item.Status != "banned" && entry.item.Status != "archived" {
+				updates["status"] = gitCapabilityArchiveStatus()
+				updates["git_sync_status"] = gitCapabilityArchiveSyncStatus()
+				if !isGitCapabilityHiddenStatus(entry.item.Status) {
 					result.Archived++
 				}
 			} else {
-				updates["status"] = gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "active")
+				updates["status"] = gitCapabilityActivateStatus()
 				updates["name"] = entry.parsed.Name
 				updates["description"] = entry.parsed.Description
 				updates["category"] = entry.parsed.Category
@@ -346,9 +417,9 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
 					item.ID, "git", serverID, repoID).
 				Updates(map[string]any{
-					"status":             gorm.Expr("CASE WHEN status = ? THEN status ELSE ? END", "banned", "archived"),
+					"status":             gitCapabilityArchiveStatus(),
 					"git_last_synced_at": now,
-					"git_sync_status":    gitCapabilitySyncSynced,
+					"git_sync_status":    gitCapabilityArchiveSyncStatus(),
 					"git_sync_error":     "",
 				})
 			if updated.Error != nil {
@@ -357,7 +428,7 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 			if updated.RowsAffected != 1 {
 				return fmt.Errorf("Git-backed item %s changed identity during default-branch archival", item.ID)
 			}
-			if item.Status != "banned" {
+			if !isGitCapabilityHiddenStatus(item.Status) {
 				result.Archived++
 			}
 		}
@@ -385,8 +456,13 @@ func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
 			Model(&models.CapabilityItem{}).
 			Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?", "git", serverID, repoID).
 			Updates(map[string]any{
-				"git_sync_status": gitCapabilitySyncError,
-				"git_sync_error":  syncErr.Error(),
+				// A transient read failure must not erase the record that Git,
+				// not a human, took these rows down: losing the marker would
+				// leave them archived for good once the manifest returns. The
+				// failure is still reported through git_sync_error.
+				"git_sync_status": gorm.Expr("CASE WHEN git_sync_status = ? THEN git_sync_status ELSE ? END",
+					gitCapabilitySyncOrphaned, gitCapabilitySyncError),
+				"git_sync_error": syncErr.Error(),
 			}).Error; err != nil {
 			return err
 		}

@@ -65,6 +65,17 @@ func isGitBacked(item *models.CapabilityItem) bool {
 	return item != nil && item.ContentBackend == contentBackendGit
 }
 
+// gitBackedPushHint names the writer that *is* allowed to change Git-owned
+// content, so every refusal on that path — the web editor, a zip re-upload,
+// `csc skill publish` bumping an existing skill — says where to go instead of
+// only that the caller may not proceed.
+const gitBackedPushHint = "push the change to the bound repository instead"
+
+// gitBackedContentUpdateRefusal is shared by the handler pre-check and the
+// models-layer backstop below so the two cannot drift: whichever one fires
+// first, the caller sees the same contract.
+const gitBackedContentUpdateRefusal = "Git-backed content fields must be updated through Git; " + gitBackedPushHint
+
 // respondGitOwnedFieldConflict maps the models-layer default-deny guard onto
 // the same 409 shape the explicit pre-checks use. The guard is a backstop for
 // writers that never learned about Git backing, so without this mapping a
@@ -74,7 +85,7 @@ func respondGitOwnedFieldConflict(c *gin.Context, err error) bool {
 		return false
 	}
 	c.JSON(http.StatusConflict, gin.H{
-		"error":      "Git-backed content fields must be updated through Git",
+		"error":      gitBackedContentUpdateRefusal,
 		"error_code": "GIT_BACKED_ITEM",
 	})
 	return true

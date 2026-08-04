@@ -485,7 +485,7 @@ type CapabilityItem struct {
 	SourceGitEntryKey string               `gorm:"type:text;not null;default:''" json:"-"`                                       // 同一 manifest 内的稳定条目身份；单条文件为空，多 MCP 使用 mcpServers key
 	GitSHA            string               `gorm:"type:varchar(40);not null;default:''" json:"gitSha,omitempty"`                 // 最近成功写入索引的 default-branch commit
 	GitLastSyncedAt   *time.Time           `json:"gitLastSyncedAt,omitempty"`
-	GitSyncStatus     string               `gorm:"type:varchar(16);not null;default:''" json:"gitSyncStatus,omitempty"`          // pending | synced | error；db-backed 为空
+	GitSyncStatus     string               `gorm:"type:varchar(16);not null;default:''" json:"gitSyncStatus,omitempty"`          // pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空
 	GitSyncError      string               `gorm:"type:text;not null;default:''" json:"-"`
 	PreviewCount      int                  `gorm:"default:0" json:"previewCount"`
 	InstallCount      int                  `gorm:"default:0" json:"installCount"`

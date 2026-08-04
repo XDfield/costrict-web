@@ -1376,8 +1376,14 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only the item creator or a platform admin can edit this item"})
 		return
 	}
+	// R1.7 — this is also the endpoint `csc skill publish` bumps an existing
+	// skill through (it resolves the item via GET /items/my?slug=&type= first,
+	// then PUTs here). A publish always carries content/name/description, so a
+	// Git-backed row refuses it. The refusal is answered in the structured shape
+	// rather than a bare message so the device can tell the user which
+	// repository to push to instead of only that it may not proceed.
 	if item.ContentBackend == contentBackendGit && gitBackedUpdateTouchesContentProjection(fields) {
-		c.JSON(http.StatusConflict, gin.H{"error": "Git-backed content fields must be updated through Git"})
+		respondGitBackedItemConflict(c, &item, gitBackedContentUpdateRefusal)
 		return
 	}
 
@@ -1603,7 +1609,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return
 	}
 	if item.ContentBackend == contentBackendGit {
-		c.JSON(http.StatusConflict, gin.H{"error": "Git-backed items must be updated through Git"})
+		respondGitBackedItemConflict(c, &item, "Git-backed items must be updated through Git; "+gitBackedPushHint)
 		return
 	}
 
