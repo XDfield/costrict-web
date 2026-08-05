@@ -37,6 +37,8 @@ type fakeForkGitea struct {
 	adminToken string
 	// repos holds "owner/name" → default branch.
 	repos map[string]string
+	// privateRepos marks repositories that cannot back public registry items.
+	privateRepos map[string]bool
 	// manifests holds "owner/name" → the plugin name its manifest declares,
 	// backing the contents endpoint used to verify a guessed mirror.
 	manifests map[string]string
@@ -104,6 +106,7 @@ func newFakeForkGitea(adminToken string) *fakeForkGitea {
 	return &fakeForkGitea{
 		adminToken:          adminToken,
 		repos:               map[string]string{},
+		privateRepos:        map[string]bool{},
 		forkParents:         map[string]string{},
 		manifests:           map[string]string{},
 		manifestPaths:       map[string]string{},
@@ -357,12 +360,30 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GET /repos/{owner}/{repo}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/repos/") {
+		name := strings.TrimPrefix(path, "/repos/")
+		f.mu.Lock()
+		_, ok := f.repos[name]
+		delete(f.repos, name)
+		delete(f.privateRepos, name)
+		delete(f.files, name)
+		delete(f.ids, name)
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/") {
 		name := strings.TrimPrefix(path, "/repos/")
 		f.mu.Lock()
 		branch, ok := f.repos[name]
 		parent := f.forkParents[name]
 		id := f.ids[name]
+		private := f.privateRepos[name]
 		f.mu.Unlock()
 		if !ok {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
@@ -373,7 +394,7 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		parts := strings.Split(name, "/")
 		payload := map[string]any{
-			"id": id, "name": parts[1], "full_name": name, "default_branch": branch,
+			"id": id, "name": parts[1], "full_name": name, "default_branch": branch, "private": private,
 		}
 		if parent != "" {
 			payload["fork"] = true

@@ -43,6 +43,8 @@ import (
 // default_branch, so this only fixes what a fresh repository starts as.
 const gitCapabilityRepoBranch = "main"
 
+const gitCapabilityOwnershipMarkerPath = ".costrict/capability.json"
+
 // gitCapabilityManifestPath returns the repo-relative path a standalone
 // capability repository keeps its top-level manifest at (V4 §5.1).
 //
@@ -184,15 +186,23 @@ func provisionGitCapabilityRepo(ctx context.Context, tenantID, userID string, sp
 	}
 
 	owner, name := binding.GitUsername, spec.Slug
-	repo, herr := ensureGitCapabilityRepo(ctx, adminCli, owner, name, spec, manifestPath)
+	repo, created, herr := ensureGitCapabilityRepo(ctx, adminCli, userCli, owner, name, spec, manifestPath)
 	if herr != nil {
 		return nil, herr
+	}
+	cleanupCreated := func(failure *httpErr) (*gitForkPlan, *httpErr) {
+		if created {
+			if err := adminCli.DeleteRepo(context.WithoutCancel(ctx), owner, name); err != nil {
+				log.Printf("provision: failed to roll back newly created repository %s/%s: %v", owner, name, err)
+			}
+		}
+		return nil, failure
 	}
 	branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
 
 	if herr := writeAndVerifyGitCapabilityFile(ctx, userCli, owner, name, branch, manifestPath, content,
 		"feat("+spec.Slug+"): publish capability manifest"); herr != nil {
-		return nil, herr
+		return cleanupCreated(herr)
 	}
 	// Every other file of the capability goes through the same sequence before
 	// the caller is told the repository is usable. Publishing the manifest and
@@ -201,7 +211,7 @@ func provisionGitCapabilityRepo(ctx context.Context, tenantID, userID string, sp
 	for _, file := range spec.ExtraFiles {
 		if herr := writeAndVerifyGitCapabilityFile(ctx, userCli, owner, name, branch, file.Path, file.Content,
 			"feat("+spec.Slug+"): publish "+file.Path); herr != nil {
-			return nil, herr
+			return cleanupCreated(herr)
 		}
 	}
 
@@ -377,9 +387,9 @@ func gitBackingWired() bool {
 // when it holds no OTHER capability manifest: nothing to shadow, nothing to
 // misclaim.
 func ensureGitCapabilityRepo(
-	ctx context.Context, cli *gitsync.Client, owner, name string,
+	ctx context.Context, adminCli, userCli *gitsync.Client, owner, name string,
 	spec gitCapabilityProvisionSpec, manifestPath string,
-) (*gitsync.Repo, *httpErr) {
+) (*gitsync.Repo, bool, *httpErr) {
 	lookupFailed := func(err error) *httpErr {
 		return &httpErr{
 			status: http.StatusBadGateway,
@@ -390,18 +400,18 @@ func ensureGitCapabilityRepo(
 		}
 	}
 
-	existing, err := cli.GetRepo(ctx, owner, name)
+	existing, err := adminCli.GetRepo(ctx, owner, name)
 	if err != nil {
-		return nil, lookupFailed(err)
+		return nil, false, lookupFailed(err)
 	}
 	if existing != nil {
-		if herr := assertRepoFreeForCapability(ctx, cli, existing, owner, name, manifestPath); herr != nil {
-			return nil, herr
+		if herr := assertRepoOwnedByCapability(ctx, adminCli, existing, owner, name, spec, manifestPath); herr != nil {
+			return nil, false, herr
 		}
-		return existing, nil
+		return existing, false, nil
 	}
 
-	created, err := cli.CreateRepo(ctx, owner, gitsync.CreateRepoOptions{
+	created, err := adminCli.CreateRepo(ctx, owner, gitsync.CreateRepoOptions{
 		Name:        name,
 		Description: firstNonEmpty(spec.Description, spec.Name),
 		// Public: these rows land in the public registry, and the device clones
@@ -415,18 +425,18 @@ func ensureGitCapabilityRepo(
 		// Lost a race with a concurrent create (or with the user). Re-read and
 		// apply the same adoption rule rather than failing a retryable request.
 		if errors.Is(err, gitsync.ErrGiteaUsernameTaken) {
-			raced, lookupErr := cli.GetRepo(ctx, owner, name)
+			raced, lookupErr := adminCli.GetRepo(ctx, owner, name)
 			if lookupErr != nil {
-				return nil, lookupFailed(lookupErr)
+				return nil, false, lookupFailed(lookupErr)
 			}
 			if raced != nil {
-				if herr := assertRepoFreeForCapability(ctx, cli, raced, owner, name, manifestPath); herr != nil {
-					return nil, herr
+				if herr := assertRepoOwnedByCapability(ctx, adminCli, raced, owner, name, spec, manifestPath); herr != nil {
+					return nil, false, herr
 				}
-				return raced, nil
+				return raced, false, nil
 			}
 		}
-		return nil, &httpErr{
+		return nil, false, &httpErr{
 			status: http.StatusBadGateway,
 			body: gin.H{
 				"error":      "failed to create the repository on the git server: " + err.Error(),
@@ -435,7 +445,7 @@ func ensureGitCapabilityRepo(
 		}
 	}
 	if created == nil || created.ID <= 0 {
-		return nil, &httpErr{
+		return nil, false, &httpErr{
 			status: http.StatusBadGateway,
 			body: gin.H{
 				"error":      "git server created the repository without a stable identity; contact your platform admin",
@@ -443,15 +453,27 @@ func ensureGitCapabilityRepo(
 			},
 		}
 	}
-	return created, nil
+	branch := firstNonEmpty(created.DefaultBranch, gitCapabilityRepoBranch)
+	marker, markerErr := gitCapabilityOwnershipMarker(spec, manifestPath)
+	if markerErr != nil {
+		_ = adminCli.DeleteRepo(context.WithoutCancel(ctx), owner, name)
+		return nil, false, &httpErr{status: http.StatusInternalServerError, body: gin.H{
+			"error": "failed to build repository ownership marker", "error_code": "GIT_REPO_MARKER_INVALID",
+		}}
+	}
+	if herr := writeAndVerifyGitCapabilityFile(ctx, userCli, owner, name, branch,
+		gitCapabilityOwnershipMarkerPath, marker, "chore: mark CoStrict capability ownership"); herr != nil {
+		_ = adminCli.DeleteRepo(context.WithoutCancel(ctx), owner, name)
+		return nil, false, herr
+	}
+	return created, true, nil
 }
 
-// assertRepoFreeForCapability refuses a pre-existing repository that already
-// describes some other capability. A repository holding only our own manifest
-// path (or none at all — the auto-init state a failed first attempt leaves
-// behind) is free to reuse.
-func assertRepoFreeForCapability(
-	ctx context.Context, cli *gitsync.Client, repo *gitsync.Repo, owner, name, manifestPath string,
+// assertRepoOwnedByCapability refuses every pre-existing repository that cannot
+// prove it was provisioned for this exact capability.
+func assertRepoOwnedByCapability(
+	ctx context.Context, cli *gitsync.Client, repo *gitsync.Repo, owner, name string,
+	spec gitCapabilityProvisionSpec, manifestPath string,
 ) *httpErr {
 	taken := func(reason string) *httpErr {
 		return &httpErr{
@@ -464,14 +486,26 @@ func assertRepoFreeForCapability(
 			},
 		}
 	}
+	if repo.Private {
+		return taken("is private; public registry capabilities must remain anonymously readable")
+	}
+	if !strings.EqualFold(repo.FullName, owner+"/"+name) || !strings.EqualFold(repo.Name, name) {
+		return taken("does not match the requested repository identity")
+	}
 	branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
+	marker, err := cli.ReadFile(ctx, owner, name, branch, gitCapabilityOwnershipMarkerPath)
+	if err != nil {
+		return &httpErr{status: http.StatusBadGateway, body: gin.H{
+			"error":      "failed to verify the existing repository ownership marker: " + err.Error(),
+			"error_code": "GIT_REPO_LOOKUP_FAILED",
+		}}
+	}
+	wantMarker, err := gitCapabilityOwnershipMarker(spec, manifestPath)
+	if err != nil || len(marker) == 0 || !bytes.Equal(marker, wantMarker) {
+		return taken("does not carry the ownership marker for this capability")
+	}
 	tree, err := cli.ListTree(ctx, owner, name, branch)
 	if err != nil {
-		// An empty repository has no tree to read. Anything else is a real
-		// failure and must not be read as "free".
-		if strings.Contains(err.Error(), "status=404") || strings.Contains(err.Error(), "status=409") {
-			return nil
-		}
 		return &httpErr{
 			status: http.StatusBadGateway,
 			body: gin.H{
@@ -487,11 +521,31 @@ func assertRepoFreeForCapability(
 		if entry.Path == manifestPath {
 			continue
 		}
+		if entry.Path == gitCapabilityOwnershipMarkerPath {
+			continue
+		}
 		if services.IsGitCapabilityManifestPath(entry.Path) {
 			return taken("already describes another capability (" + entry.Path + ")")
 		}
 	}
 	return nil
+}
+
+func gitCapabilityOwnershipMarker(spec gitCapabilityProvisionSpec, manifestPath string) ([]byte, error) {
+	payload := struct {
+		Schema       string `json:"schema"`
+		ItemType     string `json:"itemType"`
+		Slug         string `json:"slug"`
+		ManifestPath string `json:"manifestPath"`
+	}{
+		Schema: "costrict-capability/v1", ItemType: spec.ItemType,
+		Slug: spec.Slug, ManifestPath: manifestPath,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
 }
 
 // warnMissingGitWebhook logs when the tenant's git server carries no webhook

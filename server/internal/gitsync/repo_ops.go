@@ -163,6 +163,27 @@ func (c *Client) GetRepoByID(ctx context.Context, repoID int64) (*Repo, error) {
 	return &r, nil
 }
 
+// DeleteRepo removes a repository created by an orchestration attempt that
+// failed before it could publish a usable coordinate. A missing repository is
+// idempotent success.
+func (c *Client) DeleteRepo(ctx context.Context, owner, repo string) error {
+	if c == nil {
+		return ErrGiteaUnreachable
+	}
+	if owner == "" || repo == "" {
+		return fmt.Errorf("gitsync: owner and repo are required")
+	}
+	resp, err := c.doJSON(ctx, http.MethodDelete, repoPath(owner, repo), nil, http.StatusNoContent)
+	if err != nil {
+		if isHTTPNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // ListTree returns the complete recursive file tree at ref. Gitea paginates
 // large trees, so callers must not assume a single response is exhaustive.
 // A hard entry cap prevents a malformed server from making discovery allocate

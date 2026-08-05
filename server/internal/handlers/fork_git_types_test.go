@@ -488,16 +488,15 @@ func TestForkItem_Git_ProvisionWriteFailureLeavesNoRow(t *testing.T) {
 	}
 	assertNoForkPersisted(t, "db-src", "bob")
 
-	// And the retry converges on the repository the first attempt created,
-	// instead of failing forever on the name it already took. The repository the
-	// failed attempt left behind carries no manifest, so it is free to reuse.
+	// The failed attempt's newly created repository is removed. Retrying creates
+	// a fresh marked repository rather than adopting an unowned empty shell.
 	fx.gitea.writeStatus = 0
 	retry := forkReq(newForkRouter("bob"), "db-src")
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("retry: expected 201, got %d (%s)", retry.Code, retry.Body.String())
 	}
-	if len(fx.gitea.createCalls) != 1 {
-		t.Errorf("retry must reuse the repository, not create a second one: creates=%d", len(fx.gitea.createCalls))
+	if len(fx.gitea.createCalls) != 2 {
+		t.Errorf("retry must recreate the rolled-back repository: creates=%d", len(fx.gitea.createCalls))
 	}
 	var stored models.CapabilityItem
 	var resp gitForkResp
@@ -567,10 +566,8 @@ func TestForkItem_Git_ProvisionRefusesRepoHoldingAnotherCapability(t *testing.T)
 	}
 }
 
-// The read-back is what stops a repository that already holds a DIFFERENT
-// manifest at our path from being adopted: Gitea's contents API reports a
-// pre-existing file as success, so without comparing bytes the row would point
-// at content it never produced.
+// A repository with no matching ownership marker is rejected before any write,
+// even if it happens to hold a manifest at the expected path.
 func TestForkItem_Git_ProvisionRejectsPreexistingDifferentManifest(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
@@ -580,18 +577,48 @@ func TestForkItem_Git_ProvisionRejectsPreexistingDifferentManifest(t *testing.T)
 
 	forkSlug := forkSlugFor(t, "db-skill", "bob")
 	fx.gitea.repos["10001/"+forkSlug] = "main"
-	// Same path, other content: not another capability by the tree check, so the
-	// repository is adopted — and then the read-back catches it.
 	fx.gitea.putFile("10001/"+forkSlug, "skill.md", []byte("---\nname: fix-01-skill\n---\n\n# tampered\n"))
 
 	w := forkReq(newForkRouter("bob"), "db-src")
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d (%s)", w.Code, w.Body.String())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d (%s)", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "GIT_REPO_VERIFY_MISMATCH") {
-		t.Errorf("expected GIT_REPO_VERIFY_MISMATCH, got %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "GIT_REPO_NAME_TAKEN") {
+		t.Errorf("expected GIT_REPO_NAME_TAKEN, got %s", w.Body.String())
 	}
 	assertNoForkPersisted(t, "db-src", "bob")
+}
+
+func TestForkItem_Git_ProvisionRefusesPrivateOrOrdinarySameNameRepo(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		makePrivate bool
+	}{
+		{name: "private", makePrivate: true},
+		{name: "ordinary-files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer setupTestDB(t)()
+			createPublicRegistry(t)
+			fx := setupGitForkFixture(t)
+			seedUserGitAccount(t, fx.db, "bob", "10001", true)
+			seedDBBackedSource(t, "db-src", "db-skill", gitBackedTypeCases()[0])
+			forkSlug := forkSlugFor(t, "db-skill", "bob")
+			fullName := "10001/" + forkSlug
+			fx.gitea.repos[fullName] = "main"
+			fx.gitea.privateRepos[fullName] = tc.makePrivate
+			fx.gitea.putFile(fullName, "README.md", []byte("unrelated project"))
+
+			w := forkReq(newForkRouter("bob"), "db-src")
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "GIT_REPO_NAME_TAKEN") {
+				t.Fatalf("expected ownership conflict, got %d (%s)", w.Code, w.Body.String())
+			}
+			assertNoForkPersisted(t, "db-src", "bob")
+			if len(fx.gitea.writeCalls) != 0 {
+				t.Fatalf("unowned repository was modified: %+v", fx.gitea.writeCalls)
+			}
+		})
+	}
 }
 
 // rule/template can be parsed out of a git index file but not out of a
