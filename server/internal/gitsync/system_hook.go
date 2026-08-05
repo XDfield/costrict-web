@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,7 +66,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 	managedPrefix := managedSystemHookServerPrefix(gitServerID)
 	managed := make([]giteaSystemHook, 0, 1)
 	for _, hook := range hooks {
-		if isManagedSystemHookForServer(hook.Name, managedPrefix) || isLegacyManagedSystemHook(hook, targetURL) {
+		if isManagedSystemHookForServer(hook.Name, managedPrefix) || isManagedSystemHookMarkerForServer(hook.Config["url"], managedPrefix) {
 			managed = append(managed, hook)
 		}
 	}
@@ -75,7 +76,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 		Type: systemHookTypeGitea,
 		Name: managedSystemHookName(gitServerID, secret),
 		Config: map[string]string{
-			"url":               targetURL,
+			"url":               managedSystemHookURL(targetURL, managedSystemHookName(gitServerID, secret)),
 			"content_type":      "json",
 			"secret":            secret,
 			"is_system_webhook": "true",
@@ -98,7 +99,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 		// A legacy 1.24.x hook has no name in list responses. If it matches the
 		// exact endpoint, adopt it and restore its strong identity via PATCH.
 		for i := range managed {
-			if managed[i].Type == systemHookTypeGitea && managed[i].Name == "" && managed[i].Config["url"] == targetURL {
+			if managed[i].Type == systemHookTypeGitea && managed[i].Name == "" && managedSystemHookMarker(managed[i].Config["url"]) == desired.Name {
 				primaryIndex = i
 				break
 			}
@@ -117,13 +118,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 	}
 
 	primary := managed[primaryIndex]
-	// Gitea 1.24.x list responses omit name, secret, and the system marker.
-	// Once an exact endpoint-matching legacy hook is adopted, those fields
-	// cannot be observed on subsequent ensures, so avoid an endless PATCH loop.
-	legacyStable := primary.Name == "" && primary.Type == systemHookTypeGitea &&
-		primary.Config["url"] == targetURL && primary.Config["content_type"] == "json" &&
-		primary.Active && len(primary.Events) == 1 && primary.Events[0] == "push"
-	if !legacyStable && !systemHookIsDesired(primary, desired) {
+	if !systemHookIsDesired(primary, desired) {
 		if err := c.updateSystemHook(ctx, primary.ID, desired); err != nil {
 			return err
 		}
@@ -225,7 +220,8 @@ func (c *Client) deleteSystemHook(ctx context.Context, hookID int64) error {
 }
 
 func systemHookIsDesired(current giteaSystemHook, desired giteaSystemHookRequest) bool {
-	return current.Name == desired.Name &&
+	nameOK := current.Name == desired.Name || (current.Name == "" && managedSystemHookMarker(current.Config["url"]) == desired.Name)
+	return nameOK &&
 		current.Type == desired.Type &&
 		current.Active == desired.Active &&
 		current.Config["url"] == desired.Config["url"] &&
@@ -233,11 +229,29 @@ func systemHookIsDesired(current giteaSystemHook, desired giteaSystemHookRequest
 		len(current.Events) == 1 && current.Events[0] == "push"
 }
 
-// Gitea 1.24.x omits system-hook names (and secrets) from GET responses. The
-// only non-secret legacy identity available is an exact endpoint match.
-func isLegacyManagedSystemHook(hook giteaSystemHook, targetURL string) bool {
-	return hook.Name == "" && hook.Type == systemHookTypeGitea &&
-		hook.Config["url"] == targetURL && len(hook.Events) == 1 && hook.Events[0] == "push"
+const systemHookMarkerQuery = "costrict_hook"
+
+func managedSystemHookURL(base, name string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	q := u.Query()
+	q.Set(systemHookMarkerQuery, name)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func managedSystemHookMarker(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get(systemHookMarkerQuery)
+}
+
+func isManagedSystemHookMarkerForServer(raw, serverPrefix string) bool {
+	return isManagedSystemHookForServer(managedSystemHookMarker(raw), serverPrefix)
 }
 
 func managedSystemHookServerPrefix(gitServerID string) string {
