@@ -290,3 +290,32 @@ func TestGitCapabilityWorkerReconcileIsBoundedStaleAndBucketIdempotent(t *testin
 		t.Fatalf("jobs=%d after same bucket, want idempotent 2", count)
 	}
 }
+
+// A sub-second reconcile interval used to take the whole worker down: the
+// bucket divided by whole seconds, so anything under 1s truncated to zero and
+// panicked with a division by zero the moment a repository came due. The value
+// is reachable from configuration — GIT_CAPABILITY_RECONCILE_INTERVAL parses
+// any positive Duration — so this is a deployment away, not a programming error.
+func TestGitCapabilityWorkerReconcileSurvivesSubSecondInterval(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	now := time.Now()
+	repo := models.GitCapabilityRepository{ID: uuid.NewString(), GitServerID: workerGitServerID, GitRepoID: 91, RepositoryID: uuid.NewString(), RegistryID: uuid.NewString(), FullName: "org/subsecond", RepoKind: "standalone", IdentificationStatus: "unknown", Visibility: "public", GitRemoteURL: "https://git/repo", DefaultBranch: "main", CreatedBy: "test", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately bypass Start()'s clamp and hand reconcileIfDue the raw
+	// sub-second value: this pins the bucket arithmetic itself, so the guard and
+	// the arithmetic are independently safe rather than one covering for the other.
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: 500 * time.Millisecond, ReconcileBatchSize: 2}
+
+	// The real assertion is that this returns at all — before the fix it panicked
+	// with an integer divide by zero.
+	p.reconcileIfDue()
+
+	var count int64
+	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("jobs=%d, want the due repository enqueued once", count)
+	}
+}

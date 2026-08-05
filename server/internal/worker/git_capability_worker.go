@@ -66,6 +66,14 @@ func (p *GitCapabilityWorkerPool) Start() {
 	if p.ReconcileInterval <= 0 {
 		p.ReconcileInterval = 10 * time.Minute
 	}
+	// The reconcile bucket divides by whole seconds, so a sub-second interval
+	// truncates to zero and takes the worker down with a division by zero the
+	// moment any repository is due. Nothing is served by a sweep faster than a
+	// second, so raise it rather than reject the deployment outright.
+	if p.ReconcileInterval < time.Second {
+		logger.Warn("Git capability reconcile interval %s is below one second; using 1s", p.ReconcileInterval)
+		p.ReconcileInterval = time.Second
+	}
 	if p.ReconcileBatchSize <= 0 {
 		p.ReconcileBatchSize = 50
 	}
@@ -128,7 +136,10 @@ func (p *GitCapabilityWorkerPool) reconcileIfDue() {
 	for _, repo := range repos {
 		// Bucketed delivery IDs prevent a new row every tick while still allowing
 		// a later interval to retry a repository that failed or was missed.
-		bucket := now.Unix() / int64(interval.Seconds())
+		// Divide in nanoseconds: the Duration's own unit cannot truncate to zero
+		// the way whole seconds can, so this stays safe even if a future caller
+		// reaches here without passing through the guard in the constructor.
+		bucket := now.UnixNano() / interval.Nanoseconds()
 		delivery := fmt.Sprintf("reconcile:%d:%d", repo.GitRepoID, bucket)
 		job := models.GitCapabilitySyncJob{ID: uuid.NewString(), GitServerID: repo.GitServerID, DeliveryID: delivery,
 			RepoID: repo.GitRepoID, RepoFullName: repo.FullName, DefaultBranch: repo.DefaultBranch,
