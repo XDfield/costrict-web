@@ -3946,6 +3946,68 @@ paths:
       summary: Update enterprise customer
       tags:
       - admin/enterprise-customers
+  /admin/git-capability-repositories/{git_repo_id}/resync:
+    post:
+      parameters:
+      - description: Numeric Git repository id
+        in: path
+        name: git_repo_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            properties:
+              duplicate:
+                type: boolean
+              job_id:
+                type: string
+              status:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Queue a Git capability repository resync
+      tags:
+      - git-capability-sync
   /admin/import-jobs:
     get:
       description: Paginated import history, newest first (platform admin only).
@@ -5870,68 +5932,6 @@ paths:
       summary: Backfill missing Git bindings (admin)
       tags:
       - admin/users
-  /api/admin/git-capability-repositories/{git_repo_id}/resync:
-    post:
-      parameters:
-      - description: Numeric Git repository id
-        in: path
-        name: git_repo_id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "202":
-          description: Accepted
-          schema:
-            properties:
-              duplicate:
-                type: boolean
-              job_id:
-                type: string
-              status:
-                type: string
-            type: object
-        "401":
-          description: Unauthorized
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "403":
-          description: Forbidden
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "409":
-          description: Conflict
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            properties:
-              error:
-                type: string
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Queue a Git capability repository resync
-      tags:
-      - git-capability-sync
   /api/internal/git-servers:
     get:
       produces:

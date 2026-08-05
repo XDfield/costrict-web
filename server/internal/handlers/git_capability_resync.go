@@ -33,7 +33,7 @@ func NewGitCapabilityResyncAPI(db *gorm.DB) *GitCapabilityResyncAPI {
 // @Failure 404 {object} object{error=string}
 // @Failure 409 {object} object{error=string}
 // @Failure 500 {object} object{error=string}
-// @Router /api/admin/git-capability-repositories/{git_repo_id}/resync [post]
+// @Router /admin/git-capability-repositories/{git_repo_id}/resync [post]
 func (a *GitCapabilityResyncAPI) ResyncGitCapabilityRepository(c *gin.Context) {
 	if a == nil || a.DB == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "git capability resync is not configured"})
