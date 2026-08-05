@@ -37,6 +37,7 @@ func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 			}
+			w.Header().Set("X-Total-Count", strconv.Itoa(len(visibleHooks)))
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 			if page < 1 {
@@ -318,6 +319,7 @@ func TestEnsureSystemPushWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *
 			return
 		}
 		getCount++
+		w.Header().Set("X-Total-Count", "2")
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		switch page {
 		case 1:
@@ -338,8 +340,8 @@ func TestEnsureSystemPushWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, secret); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if getCount != 3 || mutationCount != 0 {
-		t.Fatalf("requests: GET=%d mutations=%d, want GET=3 mutations=0", getCount, mutationCount)
+	if getCount != 2 || mutationCount != 0 {
+		t.Fatalf("requests: GET=%d mutations=%d, want GET=2 mutations=0", getCount, mutationCount)
 	}
 }
 
@@ -353,6 +355,7 @@ func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) 
 			return
 		}
 		getCount++
+		w.Header().Set("X-Total-Count", strconv.Itoa(systemHookListMaxPages+1))
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		_ = json.NewEncoder(w).Encode([]giteaSystemHook{
 			desiredSystemHook(int64(page), "gs-2", "https://other.example/hook/"+strconv.Itoa(page), "other"),
@@ -362,7 +365,7 @@ func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) 
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
 	err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
-	if err == nil || !strings.Contains(err.Error(), "refusing to reconcile from an incomplete list") {
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("ensure error = %v, want explicit pagination safety error", err)
 	}
 	if getCount != systemHookListMaxPages || mutationCount != 0 {
@@ -379,6 +382,7 @@ func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) 
 		switch r.Method {
 		case http.MethodGet:
 			getCount++
+			// No X-Total-Count models Gitea 1.24.6's full-list response.
 			_ = json.NewEncoder(w).Encode([]giteaSystemHook{hook})
 		case http.MethodDelete:
 			deleteCount++
@@ -393,8 +397,8 @@ func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) 
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if getCount != 2 || deleteCount != 0 {
-		t.Fatalf("requests: GET=%d DELETE=%d, want GET=2 DELETE=0", getCount, deleteCount)
+	if getCount != 1 || deleteCount != 0 {
+		t.Fatalf("requests: GET=%d DELETE=%d, want GET=1 DELETE=0", getCount, deleteCount)
 	}
 }
 
@@ -408,6 +412,7 @@ func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 			return
 		}
 		getCount++
+		w.Header().Set("X-Total-Count", "3")
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		switch page {
 		case 1:
@@ -426,7 +431,7 @@ func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, secret); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if getCount != 4 {
-		t.Fatalf("GET requests = %d, want 4", getCount)
+	if getCount != 3 {
+		t.Fatalf("GET requests = %d, want 3", getCount)
 	}
 }

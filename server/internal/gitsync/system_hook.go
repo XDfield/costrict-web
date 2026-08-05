@@ -126,7 +126,6 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error) {
 	all := make([]giteaSystemHook, 0)
 	seen := make(map[int64]struct{})
-	var previousPageIDs []int64
 	for page := 1; page <= systemHookListMaxPages; page++ {
 		path := fmt.Sprintf("/api/v1/admin/hooks?type=system&page=%d&limit=%d", page, systemHookListPageSize)
 		resp, err := c.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK)
@@ -139,20 +138,15 @@ func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error)
 		if decodeErr != nil {
 			return nil, fmt.Errorf("%w: decode system webhooks page %d: %v", ErrGiteaUnreachable, page, decodeErr)
 		}
-		if len(hooks) == 0 {
-			return all, nil
+		totalHeader := strings.TrimSpace(resp.Header.Get("X-Total-Count"))
+		if totalHeader == "" {
+			// Gitea 1.24.x ignores pagination and returns the complete list.
+			return hooks, nil
 		}
-		pageIDs := make([]int64, len(hooks))
-		for i, hook := range hooks {
-			pageIDs[i] = hook.ID
+		total, err := strconv.Atoi(totalHeader)
+		if err != nil || total < 0 {
+			return nil, fmt.Errorf("gitsync: invalid X-Total-Count %q in system webhook listing", totalHeader)
 		}
-		// Some Gitea versions ignore page parameters and repeat the same
-		// result. Only stop when two consecutive pages are fully identical;
-		// an overlap-only page can still be followed by unseen hooks.
-		if previousPageIDs != nil && equalSystemHookPageIDs(previousPageIDs, pageIDs) {
-			return all, nil
-		}
-		previousPageIDs = pageIDs
 		for _, hook := range hooks {
 			if _, ok := seen[hook.ID]; ok {
 				continue
@@ -160,20 +154,14 @@ func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error)
 			seen[hook.ID] = struct{}{}
 			all = append(all, hook)
 		}
-	}
-	return nil, fmt.Errorf("gitsync: system webhook listing reached safety limit of %d pages; refusing to reconcile from an incomplete list", systemHookListMaxPages)
-}
-
-func equalSystemHookPageIDs(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+		if len(all) >= total {
+			return all, nil
+		}
+		if len(hooks) == 0 {
+			return nil, fmt.Errorf("gitsync: system webhook listing incomplete: collected %d of %d", len(all), total)
 		}
 	}
-	return true
+	return nil, fmt.Errorf("gitsync: system webhook listing reached safety limit of %d pages; collected incomplete list", systemHookListMaxPages)
 }
 
 func (c *Client) createSystemHook(ctx context.Context, desired giteaSystemHookRequest) error {
