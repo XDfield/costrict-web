@@ -779,12 +779,14 @@ func TestGitCapabilitySyncService_SyncsDistinctMCPEntriesFromSameManifest(t *tes
 	db := setupGitCapabilitySyncDB(t)
 	first := newGitCapabilityItem("mcp-entry-a", "repo-mcp-a", "mcp-mcp-a", "mcp", ".mcp.json")
 	first.SourceGitEntryKey = "mcp-a"
+	first.Version = "1.0.0"
 	second := newGitCapabilityItem("mcp-entry-b", "repo-mcp-b", "mcp-mcp-b", "mcp", ".mcp.json")
 	second.SourceGitEntryKey = "mcp-b"
+	second.Version = "0.9.0"
 	createGitCapabilityItem(t, db, first)
 	createGitCapabilityItem(t, db, second)
 	reader := newGitCapabilityReader(map[string][]byte{
-		".mcp.json": []byte(`{"mcpServers":{"mcp-a":{"name":"MCP A","command":"serve-a"},"mcp-b":{"name":"MCP B","command":"serve-b"}}}`),
+		".mcp.json": []byte(`{"mcpServers":{"mcp-a":{"name":"MCP A","command":"serve-a","version":"1.1.0"},"mcp-b":{"name":"MCP B","command":"serve-b","version":"2.0.0"}}}`),
 	})
 	svc, cfg := newGitCapabilitySyncService(db, reader)
 	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-mcp-many", "lease-mcp-many"))
@@ -795,13 +797,13 @@ func TestGitCapabilitySyncService_SyncsDistinctMCPEntriesFromSameManifest(t *tes
 		t.Fatalf("updated = %d, want 2", result.Updated)
 	}
 	for _, expected := range []struct {
-		id, name, key string
+		id, name, key, version string
 	}{
-		{id: first.ID, name: "MCP A", key: "mcp-a"},
-		{id: second.ID, name: "MCP B", key: "mcp-b"},
+		{id: first.ID, name: "MCP A", key: "mcp-a", version: "1.1.0"},
+		{id: second.ID, name: "MCP B", key: "mcp-b", version: "2.0.0"},
 	} {
 		item := loadGitCapabilityItem(t, db, expected.id)
-		if item.Name != expected.name || itemMetadata(t, item)["key"] != expected.key {
+		if item.Name != expected.name || item.Version != expected.version || itemMetadata(t, item)["key"] != expected.key {
 			t.Errorf("entry %s projected wrong manifest child: %+v", expected.id, item)
 		}
 	}

@@ -499,6 +499,10 @@ func (p *ParserService) ParseMCPJSON(content []byte, sourcePath string) ([]*Pars
 		if v, ok := serverMeta["description"].(string); ok {
 			description = v
 		}
+		version := "1.0.0"
+		if v, ok := serverMeta["version"].(string); ok && v != "" {
+			version = v
+		}
 
 		items = append(items, &ParsedItem{
 			Slug:        "mcp-" + slugifyKey(key),
@@ -508,7 +512,7 @@ func (p *ParserService) ParseMCPJSON(content []byte, sourcePath string) ([]*Pars
 			Content:     string(content),
 			Metadata:    serverMeta,
 			SourcePath:  sourcePath,
-			Version:     "1.0.0",
+			Version:     version,
 		})
 	}
 	return items, nil
