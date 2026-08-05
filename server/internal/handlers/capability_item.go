@@ -782,7 +782,7 @@ func buildItemResponseWithGitContent(c *gin.Context, db *gorm.DB, item models.Ca
 		Description:         PickDescription(item.Descriptions, item.Description, locale),
 		Descriptions:        item.Descriptions,
 		Category:            item.Category,
-		Version:             item.Version,
+		Version:             itemWireVersion(&item),
 		Content:             item.Content,
 		ContentMD5:          item.ContentMD5,
 		CurrentRevision:     item.CurrentRevision,
@@ -2609,8 +2609,14 @@ func ListAllItems(c *gin.Context) {
 		// of one Git round trip per row — 20 per page at the default page size.
 		// Leaving the stored column in place is not an option either: it is the
 		// snapshot this change exists to stop serving.
+		//
+		// The version, by contrast, is the one field the device DOES read off
+		// this list, and it reads it to decide whether its installed copy is
+		// stale — so it is projected here exactly as the detail endpoint
+		// projects it (itemWireVersion).
 		if isGitBacked(&item) {
 			item.Content = ""
+			item.Version = itemWireVersion(&item)
 		}
 		out[i] = ItemWithRepo{CapabilityItem: item, Favorited: favoritedSet[item.ID], ForkCount: forkCountMap[item.ID]}
 		if item.Registry != nil {

@@ -568,6 +568,10 @@ func ListMyItems(c *gin.Context) {
 	result := make([]MyItem, len(items))
 	for i, item := range items {
 		reg := registryMap[item.RegistryID]
+		// Same version projection as the store list and the detail endpoint: an
+		// owner looking at their own capability must not see a different number
+		// from the one everyone else — including their device — sees.
+		item.Version = itemWireVersion(&item)
 		result[i] = MyItem{
 			CapabilityItem: item,
 			RepoID:         reg.RepoID,
