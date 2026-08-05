@@ -59,6 +59,20 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 		}
 	}
 
+	// Fallback: infer github from properties when provider is still not set.
+	// Casdoor frequently omits the top-level `provider` claim on GitHub OAuth
+	// logins while still populating `properties.oauth_GitHub_*`. Without this
+	// inference, provider stays "" and buildExternalKey produces
+	// `casdoor:<universal_id>` instead of `casdoor:github:<universal_id>` —
+	// a silent mismatch between GetOrCreateUser and reissue-token that 404s
+	// the latter. Only the github prefix is inferred here; custom/idtrust
+	// share `oauth_Custom_*` and are disambiguated by signupApplication above.
+	if provider == "" {
+		if props := mapAny(claims["properties"]); hasProviderPrefix(props, "oauth_GitHub_") {
+			provider = "github"
+		}
+	}
+
 	properties := mapAny(claims["properties"])
 	prefix := providerPropertyPrefix(provider)
 	providerUserID := providerProp(properties, prefix, "id")
@@ -173,6 +187,22 @@ func providerProp(properties map[string]any, prefix, suffix string) string {
 		}
 	}
 	return ""
+}
+
+// hasProviderPrefix reports whether any key in properties starts with the
+// given prefix. Used to infer provider from `properties.oauth_GitHub_*`
+// presence without caring which sub-keys (id / username / email / ...) are
+// populated — different Casdoor deployments emit different subsets.
+func hasProviderPrefix(properties map[string]any, prefix string) bool {
+	if len(properties) == 0 || prefix == "" {
+		return false
+	}
+	for k := range properties {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func str(claims map[string]any, keys ...string) string {

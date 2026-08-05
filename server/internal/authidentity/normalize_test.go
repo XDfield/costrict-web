@@ -172,6 +172,47 @@ func TestNormalizeClaimsMapPartialFallback(t *testing.T) {
 	}
 }
 
+// TestNormalizeClaimsMapGithubPropertiesFallback is the regression lock for
+// the silent external_key mismatch: a Casdoor JWT from a GitHub OAuth login
+// frequently omits the top-level `provider` claim while populating
+// `properties.oauth_GitHub_*`. Without the properties-based fallback,
+// Provider stays "" and buildExternalKey produces `casdoor:<universal_id>`
+// instead of `casdoor:github:<universal_id>` — reissue-token 404s because
+// the lookup key diverges from what GetOrCreateUser persisted.
+func TestNormalizeClaimsMapGithubPropertiesFallback(t *testing.T) {
+	claims := map[string]any{
+		"sub":              "d20c2d71-1b73-4266-b900-108c4ffccd73",
+		"universal_id":     "d20c2d71-1b73-4266-b900-108c4ffccd73",
+		"id":               "221669007",
+		"name":             "Lucian-Montgomery",
+		"displayName":      "gh_Lucian-Montgomery",
+		"signupApplication": "application_v94pr3",
+		// NOTE: no `provider` / `primary_provider` key.
+		"properties": map[string]any{
+			"oauth_GitHub_id":         "221669007",
+			"oauth_GitHub_username":   "Lucian-Montgomery",
+			"oauth_GitHub_displayName": "gh_Lucian-Montgomery",
+			"oauth_GitHub_email":      "nigulasi0909@gmail.com",
+		},
+		"exp": int64(1893456000),
+	}
+	c := NormalizeClaimsMap(claims)
+	if c.Provider != "github" {
+		t.Errorf("Provider = %q, want \"github\" (properties fallback failed)", c.Provider)
+	}
+	if c.UniversalID != "d20c2d71-1b73-4266-b900-108c4ffccd73" {
+		t.Errorf("UniversalID = %q", c.UniversalID)
+	}
+	// The github switch must still derive username/displayName from the
+	// oauth_GitHub_* sub-keys now that the prefix is correctly resolved.
+	if c.PreferredUsername != "gh_Lucian-Montgomery" {
+		t.Errorf("PreferredUsername = %q, want gh_Lucian-Montgomery", c.PreferredUsername)
+	}
+	if c.ProviderUserID != "221669007" {
+		t.Errorf("ProviderUserID = %q, want 221669007", c.ProviderUserID)
+	}
+}
+
 func TestLookupNested(t *testing.T) {
 	claims := map[string]any{
 		"user": map[string]any{
