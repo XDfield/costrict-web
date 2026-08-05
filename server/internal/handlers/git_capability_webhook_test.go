@@ -61,8 +61,14 @@ func setupGitCapabilityWebhookDB(t *testing.T, webhookSecret string) *gorm.DB {
 			finished_at DATETIME,
 			created_at DATETIME NOT NULL,
 			CONSTRAINT uq_git_capability_sync_jobs_delivery
-				UNIQUE (git_server_id, delivery_id)
-		)`,
+					UNIQUE (git_server_id, delivery_id)
+			)`,
+		`CREATE TABLE capability_items (
+				id TEXT PRIMARY KEY,
+				content_backend TEXT NOT NULL DEFAULT 'db',
+				source_git_server_id TEXT NOT NULL DEFAULT '',
+				source_git_repo_id INTEGER NOT NULL DEFAULT 0
+			)`,
 	} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("create test table: %v", err)
@@ -165,6 +171,34 @@ func TestGitCapabilityWebhookQueuesVerifiedDefaultBranchPush(t *testing.T) {
 	}
 	if job.Status != models.GitCapabilitySyncJobStatusPending || job.MaxAttempts != 3 || job.ScheduledAt.IsZero() {
 		t.Errorf("unexpected queued state: %+v", job)
+	}
+}
+
+func TestGitCapabilityWebhookExcludesUnboundMirrorButQueuesBoundRepo(t *testing.T) {
+	const secret = "webhook-secret"
+	t.Setenv("PLUGIN_GIT_MIRROR_OWNER", "mirror-owner")
+	db := setupGitCapabilityWebhookDB(t, secret)
+	router := newGitCapabilityWebhookRouter(db)
+	body := strings.Replace(validGiteaPushBody, "alice/plugin-one", "mirror-owner/plugin-one", 1)
+
+	w := signedGitCapabilityWebhook(t, router, "push", "delivery-excluded", secret, body)
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), "discovery_owner_excluded") {
+		t.Fatalf("unbound mirror status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+		t.Fatalf("unbound mirror queued %d jobs", count)
+	}
+
+	if err := db.Exec(`INSERT INTO capability_items (id, content_backend, source_git_server_id, source_git_repo_id)
+		VALUES ('bound-item', 'git', 'gs-1', 42)`).Error; err != nil {
+		t.Fatalf("seed bound item: %v", err)
+	}
+	w = signedGitCapabilityWebhook(t, router, "push", "delivery-bound", secret, body)
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), "queued") {
+		t.Fatalf("bound mirror status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 1 {
+		t.Fatalf("bound mirror queued %d jobs, want 1", count)
 	}
 }
 

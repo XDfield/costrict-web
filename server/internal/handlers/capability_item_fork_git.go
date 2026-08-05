@@ -31,10 +31,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/gitcapability"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -44,13 +44,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-// defaultPluginGitMirrorOwner is the Gitea namespace holding the plugin
-// mirrors. Every catalog plugin is mirrored as <owner>/<item slug> —
-// metadata.install.marketplace_repo names the UPSTREAM coordinate (usually a
-// GitHub org), which only coincides with the mirror for first-party plugins.
-// Override with PLUGIN_GIT_MIRROR_OWNER.
-const defaultPluginGitMirrorOwner = "costrict-plugins-repo"
 
 // content_backend values. Rows default to contentBackendDB in the DB, so an
 // empty value on an in-memory struct means "db" too.
@@ -138,10 +131,7 @@ var errNoGiteaMirror = errors.New("handlers: no gitea mirror for item")
 var errGiteaMirrorManifestInvalid = errors.New("handlers: gitea mirror manifest is invalid")
 
 func pluginGitMirrorOwner() string {
-	if v := strings.TrimSpace(os.Getenv("PLUGIN_GIT_MIRROR_OWNER")); v != "" {
-		return v
-	}
-	return defaultPluginGitMirrorOwner
+	return gitcapability.PluginMirrorOwner()
 }
 
 // gitForkPlan is the outcome of a successful Gitea-side operation — a fork, or

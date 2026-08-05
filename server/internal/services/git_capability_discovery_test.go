@@ -159,6 +159,33 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 	}
 }
 
+func TestGitCapabilityDiscovery_SkipsExcludedUnboundOwner(t *testing.T) {
+	t.Setenv("PLUGIN_GIT_MIRROR_OWNER", "mirror-owner")
+	db := setupGitCapabilitySyncDB(t)
+	reader := newGitCapabilityReader(map[string][]byte{
+		"SKILL.md": []byte("---\nname: Duplicate\n---\nbody"),
+	})
+	reader.repo.FullName = "mirror-owner/plugin-one"
+	reader.tree = []gitsync.GitTreeEntry{{Path: "SKILL.md", Type: "blob"}}
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
+		createGitCapabilityLease(t, db, "discover-excluded", "lease-excluded"))
+	if err != nil {
+		t.Fatalf("excluded discovery: %v", err)
+	}
+	if result.Created != 0 || result.Updated != 0 || result.CommitSHA != gitCapabilityTestSHA {
+		t.Fatalf("unexpected excluded result: %+v", result)
+	}
+	var itemCount int64
+	if err := db.Model(&models.CapabilityItem{}).Count(&itemCount).Error; err != nil {
+		t.Fatalf("count items: %v", err)
+	}
+	if itemCount != 0 {
+		t.Fatalf("excluded owner created %d capability items", itemCount)
+	}
+}
+
 func TestGitCapabilityDiscovery_CreatesPluginPack(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	reader := newGitCapabilityReader(map[string][]byte{

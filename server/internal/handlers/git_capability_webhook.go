@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/costrict/costrict-web/server/internal/gitcapability"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
@@ -158,6 +159,22 @@ func (a *GitCapabilityWebhookAPI) ReceiveGiteaPush(c *gin.Context) {
 			"reason":  "non_default_branch",
 		})
 		return
+	}
+	if gitcapability.DiscoveryOwnerExcluded(gitcapability.OwnerFromFullName(payload.Repo.FullName)) {
+		var bound int64
+		if err := a.DB.WithContext(c.Request.Context()).Model(&models.CapabilityItem{}).
+			Where("content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
+				models.ContentBackendGit, cfg.ServerID, payload.Repo.ID).
+			Count(&bound).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "check git capability binding failed"})
+			return
+		}
+		if bound == 0 {
+			c.JSON(http.StatusAccepted, gin.H{
+				"status": "ignored", "ignored": true, "reason": "discovery_owner_excluded",
+			})
+			return
+		}
 	}
 	now := time.Now().UTC()
 	job := &models.GitCapabilitySyncJob{
