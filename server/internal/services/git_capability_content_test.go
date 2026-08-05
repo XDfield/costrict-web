@@ -120,6 +120,91 @@ func TestGitCapabilityContent_ListsAndReadsAssetsWithinCapabilityRoot(t *testing
 	}
 }
 
+// Provisioning bookkeeping is not capability content.
+//
+// The tree here deliberately carries the two files a provisioned repository
+// really contains beyond the capability itself: the ownership marker this
+// rollout added, and the README auto-init used to commit. Both used to be
+// reported as assets, so a fork installed them onto the user's device.
+//
+// The assertion is on the WHOLE manifest, not on "the files I expected are
+// present". Checking only expected entries is exactly how this shipped: the
+// end-to-end pass compared four known files and never asked whether there was a
+// fifth.
+func TestGitCapabilityContent_AssetsExcludeProvisioningBookkeeping(t *testing.T) {
+	reader := &stubContentReader{
+		repo: &gitsync.Repo{ID: 7, FullName: "u-e2es7/fix-01-skill-single"},
+		tree: []gitsync.GitTreeEntry{
+			{Path: "skill.md", Type: "blob", Size: 220},
+			{Path: GitCapabilityOwnershipMarkerPath, Type: "blob", Size: 96},
+			{Path: "README.md", Type: "blob", Size: 135},
+			{Path: "references/guide.md", Type: "blob", Size: 42},
+		},
+	}
+	item := gitContentItem()
+	item.SourceRepoPath = "skill.md"
+
+	assets, err := newContentSvc(reader).ItemAssets(context.Background(), item)
+	if err != nil {
+		t.Fatalf("ItemAssets: %v", err)
+	}
+	got := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		got = append(got, asset.RelPath)
+	}
+	// README.md stays: once the repository exists, a README is the author's file
+	// and we cannot tell it from a generated one. The fix for the generated one
+	// is at the source (provisioning no longer creates it), not a name filter
+	// that would silently drop real documentation.
+	want := []string{"README.md", "references/guide.md"}
+	if len(got) != len(want) {
+		t.Fatalf("asset manifest has %d entries %v, want exactly %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("asset manifest = %v, want %v", got, want)
+		}
+	}
+	for _, relPath := range got {
+		if relPath == GitCapabilityOwnershipMarkerPath {
+			t.Fatalf("ownership marker leaked into the asset manifest: %v", got)
+		}
+	}
+
+	// And it cannot be fetched through the asset proxy either: the byte reader
+	// resolves against this same manifest, so an excluded path is unreadable
+	// rather than merely unlisted.
+	if _, _, err := newContentSvc(reader).ItemAssetBytes(
+		context.Background(), item, GitCapabilityOwnershipMarkerPath,
+	); !errors.Is(err, ErrGitContentMissing) {
+		t.Fatalf("marker fetched through the asset proxy: err = %v, want ErrGitContentMissing", err)
+	}
+}
+
+// Same exclusion one level down: a monorepo capability whose own root carries a
+// marker must not install it either.
+func TestGitCapabilityContent_AssetsExcludeMarkerAtCapabilityRoot(t *testing.T) {
+	reader := &stubContentReader{
+		repo: &gitsync.Repo{ID: 7, FullName: "owner/pack"},
+		tree: []gitsync.GitTreeEntry{
+			{Path: "skills/demo/SKILL.md", Type: "blob", Size: 10},
+			{Path: "skills/demo/" + GitCapabilityOwnershipMarkerPath, Type: "blob", Size: 96},
+			{Path: GitCapabilityOwnershipMarkerPath, Type: "blob", Size: 96},
+			{Path: "skills/demo/assets/logo.png", Type: "blob", Size: 4},
+		},
+	}
+	item := gitContentItem()
+	item.SourceRepoPath = "skills/demo/SKILL.md"
+
+	assets, err := newContentSvc(reader).ItemAssets(context.Background(), item)
+	if err != nil {
+		t.Fatalf("ItemAssets: %v", err)
+	}
+	if len(assets) != 1 || assets[0].RelPath != "assets/logo.png" {
+		t.Fatalf("asset manifest = %#v, want exactly [assets/logo.png]", assets)
+	}
+}
+
 // The branch is the ref, not the last synced commit: pinning to git_sha would
 // make content only as fresh as the last webhook, which is the staleness this
 // path exists to remove. git_sha is the fallback for rows without a branch.

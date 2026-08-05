@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -91,9 +92,10 @@ type forkCall struct {
 }
 
 type createRepoCall struct {
-	owner string
-	auth  string
-	body  string
+	owner    string
+	auth     string
+	body     string
+	autoInit bool
 }
 
 type writeFileCall struct {
@@ -133,6 +135,21 @@ func (f *fakeForkGitea) fileOf(repo, path string) []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.files[repo][path]
+}
+
+// treeOf returns every path a repository holds, sorted. Tests assert on the
+// WHOLE set rather than on individual files: checking only the files we meant
+// to write cannot see a file we did not mean to write, which is how the
+// auto-init README reached devices.
+func (f *fakeForkGitea) treeOf(repo string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	paths := make([]string, 0, len(f.files[repo]))
+	for p := range f.files[repo] {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -204,12 +221,15 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var opts struct {
 			Name          string `json:"name"`
+			Description   string `json:"description"`
 			DefaultBranch string `json:"default_branch"`
+			AutoInit      bool   `json:"auto_init"`
 		}
 		_ = json.Unmarshal(raw, &opts)
 		f.mu.Lock()
 		f.createCalls = append(f.createCalls, createRepoCall{
 			owner: owner, auth: r.Header.Get("Authorization"), body: string(raw),
+			autoInit: opts.AutoInit,
 		})
 		status := f.createStatus
 		full := owner + "/" + opts.Name
@@ -223,6 +243,18 @@ func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.nextRepoID++
 			f.repos[full] = branch
 			f.ids[full] = id
+			// Honour auto_init the way Gitea does: commit a generated README.
+			// The fake used to ignore the flag, which is precisely why no test
+			// could see that the generated README was being reported as a
+			// capability asset and installed onto devices. A fixture that omits
+			// the files the real server creates can only ever confirm what we
+			// already believe.
+			if opts.AutoInit {
+				if f.files[full] == nil {
+					f.files[full] = map[string][]byte{}
+				}
+				f.files[full]["README.md"] = []byte("# " + opts.Name + "\n\n" + opts.Description + "\n")
+			}
 		}
 		f.mu.Unlock()
 		if status != 0 {

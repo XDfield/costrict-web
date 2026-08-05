@@ -268,12 +268,24 @@ func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilit
 			manifestFound = true
 			continue
 		}
+		// Platform bookkeeping is not capability content. The ownership marker is
+		// written by provisioning at the REPOSITORY root, so it is excluded before
+		// the capability root is stripped; the second check below covers a marker
+		// sitting at the capability root of a monorepo. Without this the device
+		// installs .costrict/capability.json alongside the skill, and the user
+		// receives a file describing our provisioning bookkeeping.
+		if normalized == GitCapabilityOwnershipMarkerPath {
+			continue
+		}
 		if root != "" {
 			prefix := root + "/"
 			if !strings.HasPrefix(normalized, prefix) {
 				continue
 			}
 			normalized = strings.TrimPrefix(normalized, prefix)
+			if normalized == GitCapabilityOwnershipMarkerPath {
+				continue
+			}
 		}
 		// A multi-capability repository must not install another item's manifest
 		// as an attachment of this item.

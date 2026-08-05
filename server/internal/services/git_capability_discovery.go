@@ -432,6 +432,22 @@ func IsGitCapabilityManifestPath(filePath string) bool {
 	return ok
 }
 
+// GitCapabilityOwnershipMarkerPath is the repository file provisioning writes to
+// record that CoStrict created the repository for one specific capability. It is
+// platform bookkeeping, never capability content.
+//
+// It lives here rather than in package handlers because two packages must agree
+// on it and they must agree for opposite reasons: handlers WRITES it and reads
+// it back to prove ownership, while the read-through in
+// git_capability_content.go must EXCLUDE it from the asset manifest. A second
+// copy of the literal is how the writer and the filter drift apart, and the
+// symptom of that drift is the marker being installed onto a user's device as
+// if it were part of the capability.
+//
+// classifyGitCapabilityManifest deliberately does not recognise this path, so
+// discovery never indexes the marker as a capability of its own.
+const GitCapabilityOwnershipMarkerPath = ".costrict/capability.json"
+
 func classifyGitCapabilityManifest(filePath string) (gitCapabilityCandidate, bool) {
 	normalized := strings.TrimSpace(strings.ReplaceAll(filePath, "\\", "/"))
 	if normalized == "" || strings.HasPrefix(normalized, "/") || path.Clean(normalized) != normalized || strings.HasPrefix(normalized, "../") {

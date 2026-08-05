@@ -22,6 +22,7 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/database"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"gorm.io/datatypes"
 )
 
@@ -468,6 +469,48 @@ func TestListItemAssets_GitBackedListsLiveTree(t *testing.T) {
 	}
 	if got := body.Assets[0]; got.RelPath != "assets/logo.png" || got.FileSize != 3 {
 		t.Fatalf("unexpected Git asset: %#v", got)
+	}
+}
+
+// The ownership marker provisioning writes is not an asset of the capability.
+//
+// It is bookkeeping that says "CoStrict created this repository for this
+// item"; listing it means the device installs .costrict/capability.json next to
+// the skill. The fixture carries it because the earlier fixtures did not — a
+// tree that never contains the file cannot show that the file leaks.
+func TestListItemAssets_GitBackedExcludesOwnershipMarker(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	gitea.setFile(services.GitCapabilityOwnershipMarkerPath,
+		`{"schema":"costrict-capability/v1","itemType":"skill","slug":"gc-marker","manifestPath":"skill.md"}`)
+	gitea.setFile("assets/logo.png", "PNG")
+	seedGitContentItem(t, "gc-marker", "skill", "skill.md")
+
+	w := get(newItemRouter(""), "/api/items/gc-marker/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body ItemAssetsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode assets: %v", err)
+	}
+	// Whole-manifest assertion: "assets/logo.png is present" would pass while
+	// the marker sat right next to it.
+	if len(body.Assets) != 1 || body.Assets[0].RelPath != "assets/logo.png" {
+		got := make([]string, 0, len(body.Assets))
+		for _, a := range body.Assets {
+			got = append(got, a.RelPath)
+		}
+		t.Fatalf("asset manifest = %v, want exactly [assets/logo.png]", got)
+	}
+
+	// And it is not reachable by asking for it directly: the download route
+	// resolves against the same manifest, so an excluded path is a 404 rather
+	// than an undocumented way to fetch it.
+	w = get(newRouter(""), "/api/registry/repo-gc-gc-marker/skill/gc-marker/"+services.GitCapabilityOwnershipMarkerPath)
+	if w.Code == http.StatusOK {
+		t.Fatalf("ownership marker is downloadable through the registry route: %s", w.Body.String())
 	}
 }
 

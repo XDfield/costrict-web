@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -226,6 +227,73 @@ func TestCreateGitBackedItem_SkeletonFrontmatterAndNoDBContent(t *testing.T) {
 	database.GetDB().Find(&jobs)
 	if len(jobs) != 1 || jobs[0].DeliveryID != "fork:"+resp.ID {
 		t.Errorf("want one queued sync job fork:%s, got %+v", resp.ID, jobs)
+	}
+}
+
+// A provisioned repository holds the capability and the ownership marker, and
+// nothing else.
+//
+// It used to hold a third file: Gitea's auto_init commits a generated
+// README.md, nothing ever removed it, and the read-through asset listing
+// cannot tell a generated README from an authored one — so it was reported as
+// an asset of the capability and installed onto every device that subscribed.
+// Observed on u-e2es7/fix-01-skill-single, whose asset manifest listed a
+// 135-byte README nobody wrote.
+//
+// The assertion is on the ENTIRE tree. Asserting that skill.md is present says
+// nothing about what else is; that is the shape of check that let this ship.
+func TestCreateGitBackedItem_RepositoryHoldsOnlyTheCapabilityAndItsMarker(t *testing.T) {
+	for _, tc := range []struct{ itemType, manifestPath string }{
+		{"skill", "skill.md"},
+		{"subagent", "agent.md"},
+		{"command", "command.md"},
+		{"mcp", "mcp.json"},
+	} {
+		t.Run(tc.itemType, func(t *testing.T) {
+			defer setupTestDB(t)()
+			createPublicRegistry(t)
+			fx := setupGitForkFixture(t)
+			createGitCapabilitySyncJobTable(t)
+			seedUserGitAccount(t, fx.db, "bob", "10001", true)
+
+			w := createGitItemReq(newGitCreateRouter("bob"), map[string]any{
+				"itemType": tc.itemType, "slug": "lean-" + tc.itemType,
+				"name": "Lean " + tc.itemType, "description": "a description long enough to pad a README",
+			})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("create: expected 201, got %d (%s)", w.Code, w.Body.String())
+			}
+			var resp gitForkResp
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			repoName := strings.TrimPrefix(resp.SourceRepoURL, fx.srv.URL+"/")
+
+			// The request itself must not ask for auto-init. The fake honours the
+			// flag, so this and the tree assertion below fail together if the
+			// option is ever flipped back.
+			if len(fx.gitea.createCalls) != 1 {
+				t.Fatalf("expected exactly one repository creation, got %d", len(fx.gitea.createCalls))
+			}
+			if fx.gitea.createCalls[0].autoInit {
+				t.Errorf("provisioning asked Gitea to auto-init: %s", fx.gitea.createCalls[0].body)
+			}
+
+			got := fx.gitea.treeOf(repoName)
+			want := []string{services.GitCapabilityOwnershipMarkerPath, tc.manifestPath}
+			sort.Strings(want)
+			if len(got) != len(want) {
+				t.Fatalf("repository %s holds %v, want exactly %v", repoName, got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("repository %s holds %v, want exactly %v", repoName, got, want)
+				}
+			}
+			for _, p := range got {
+				if strings.EqualFold(p, "README.md") {
+					t.Fatalf("auto-init README leaked into %s: %v", repoName, got)
+				}
+			}
+		})
 	}
 }
 

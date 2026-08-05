@@ -11,8 +11,13 @@
 //     even though the repository was created by the administrator;
 //   - the contents API round-trips the manifest byte for byte (no BOM, no
 //     newline normalisation) — content_md5 is computed over those bytes;
-//   - ListTree answers for a freshly auto-initialised repository, which is what
-//     the "is this repository already someone else's capability" guard reads.
+//   - a repository created WITHOUT auto-init still reports its default_branch
+//     immediately, and the contents API will write the first commit onto that
+//     not-yet-existing branch. This is what lets provisioning skip auto-init,
+//     and skipping it is what keeps a generated README.md out of the tree —
+//     the asset listing cannot tell a generated README from an authored one,
+//     so an auto-init README is installed onto the user's device as part of
+//     the capability.
 //
 // Skipped unless GITEA_E2E_URL is set, so the ordinary suite stays hermetic.
 // Run against the local instance with:
@@ -29,6 +34,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +98,7 @@ func TestProvisionSequenceAgainstRealGitea(t *testing.T) {
 
 			repo, err := admin.CreateRepo(ctx, owner, gitsync.CreateRepoOptions{
 				Name: slug, Description: "probe", Private: false,
-				AutoInit: true, DefaultBranch: gitCapabilityRepoBranch,
+				AutoInit: false, DefaultBranch: gitCapabilityRepoBranch,
 			})
 			if err != nil {
 				t.Fatalf("create repo %s/%s: %v", owner, slug, err)
@@ -103,18 +109,26 @@ func TestProvisionSequenceAgainstRealGitea(t *testing.T) {
 			if repo.ID <= 0 {
 				t.Fatalf("gitea returned no stable repo id: %+v", repo)
 			}
+			// The whole point of skipping auto-init is that the branch name is
+			// still usable straight away: everything downstream writes to it.
+			if repo.DefaultBranch != gitCapabilityRepoBranch {
+				t.Fatalf("a repo created without auto-init must still name its default branch, got %q",
+					repo.DefaultBranch)
+			}
 			branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
 
-			// The adoption guard reads the tree of a repository that already
-			// exists. On a fresh auto-init repo it must answer, not error.
-			tree, err := admin.ListTree(ctx, owner, slug, branch)
+			// Marker first, exactly as ensureGitCapabilityRepo does it: this is
+			// the first commit, it lands on a branch that does not exist yet, and
+			// its path is a nested dotfile. All three are things the contents API
+			// has to accept for the no-auto-init sequence to hold.
+			marker, err := gitCapabilityOwnershipMarker(
+				gitCapabilityProvisionSpec{ItemType: itemType, Slug: slug}, manifestPath)
 			if err != nil {
-				t.Fatalf("list tree of a fresh repo: %v", err)
+				t.Fatalf("build marker: %v", err)
 			}
-			for _, entry := range tree {
-				if services.IsGitCapabilityManifestPath(entry.Path) {
-					t.Fatalf("auto-init left a capability manifest in the tree: %s", entry.Path)
-				}
+			if err := user.WriteFile(ctx, owner, slug, branch, gitCapabilityOwnershipMarkerPath, marker,
+				"chore: mark CoStrict capability ownership"); err != nil {
+				t.Fatalf("write the first commit into an uninitialised repo: %v", err)
 			}
 
 			// The write is signed with the USER's PAT even though the admin
@@ -122,6 +136,35 @@ func TestProvisionSequenceAgainstRealGitea(t *testing.T) {
 			if err := user.WriteFile(ctx, owner, slug, branch, manifestPath, content,
 				"feat("+slug+"): publish capability manifest"); err != nil {
 				t.Fatalf("write %s with the user PAT: %v", manifestPath, err)
+			}
+
+			// The finished repository holds the capability and the marker, and
+			// nothing else. Under auto-init this list also contained a generated
+			// README.md, which the read-through then reported as an asset.
+			tree, err := admin.ListTree(ctx, owner, slug, branch)
+			if err != nil {
+				t.Fatalf("list tree of the provisioned repo: %v", err)
+			}
+			blobs := make([]string, 0, len(tree))
+			for _, entry := range tree {
+				if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
+					continue
+				}
+				if services.IsGitCapabilityManifestPath(entry.Path) && entry.Path != manifestPath {
+					t.Fatalf("provisioning left a foreign capability manifest in the tree: %s", entry.Path)
+				}
+				blobs = append(blobs, entry.Path)
+			}
+			sort.Strings(blobs)
+			want := []string{gitCapabilityOwnershipMarkerPath, manifestPath}
+			sort.Strings(want)
+			if len(blobs) != len(want) {
+				t.Fatalf("provisioned repository holds %v, want exactly %v", blobs, want)
+			}
+			for i := range want {
+				if blobs[i] != want[i] {
+					t.Fatalf("provisioned repository holds %v, want exactly %v", blobs, want)
+				}
 			}
 
 			stored, err := user.ReadFile(ctx, owner, slug, branch, manifestPath)

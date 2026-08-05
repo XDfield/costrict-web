@@ -43,7 +43,11 @@ import (
 // default_branch, so this only fixes what a fresh repository starts as.
 const gitCapabilityRepoBranch = "main"
 
-const gitCapabilityOwnershipMarkerPath = ".costrict/capability.json"
+// gitCapabilityOwnershipMarkerPath aliases the shared constant so this file
+// reads the same as before. The definition lives in services because the
+// read-through asset listing has to exclude exactly the path provisioning
+// writes; see services.GitCapabilityOwnershipMarkerPath.
+const gitCapabilityOwnershipMarkerPath = services.GitCapabilityOwnershipMarkerPath
 
 // gitCapabilityManifestPath returns the repo-relative path a standalone
 // capability repository keeps its top-level manifest at (V4 §5.1).
@@ -417,8 +421,30 @@ func ensureGitCapabilityRepo(
 		// Public: these rows land in the public registry, and the device clones
 		// the repository directly. A private repository would publish an address
 		// no consumer can read.
-		Private:       false,
-		AutoInit:      true,
+		Private: false,
+		// AutoInit is false ON PURPOSE, and this is the one call site where the
+		// package default (true, see gitsync.CreateRepoOptions) is wrong.
+		//
+		// Auto-init commits a generated README.md. Nothing ever removes it, and
+		// the read-through asset listing has no way to tell a generated README
+		// from one the author wrote — so it reports it as an asset and the device
+		// installs it. A user who forks a skill gets a README describing the
+		// repository, delivered as part of the capability.
+		//
+		// Not initialising is safe here because this flow writes the first commit
+		// itself. Verified against Gitea 1.24.6: creating with auto_init=false and
+		// default_branch=main returns default_branch="main" immediately, and the
+		// contents API accepts the first file on that not-yet-existing branch
+		// (HTTP 201, parentless commit) — including a nested dotfile path like the
+		// marker. Only ListTree rejects a still-empty repository (HTTP 400), and
+		// nothing reads the tree before the marker write below: the adoption guard
+		// reads the marker first and a missing marker already short-circuits it.
+		//
+		// The alternative — auto-init and then delete the README — needs a new
+		// delete-file client call, two extra round trips, and a decision about
+		// what to do when the delete fails; every one of those failure modes ends
+		// in the leak this comment exists to prevent.
+		AutoInit:      false,
 		DefaultBranch: gitCapabilityRepoBranch,
 	})
 	if err != nil {
