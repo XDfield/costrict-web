@@ -236,7 +236,7 @@ func createGitCapabilityLease(t *testing.T, db *gorm.DB, id, token string) GitCa
 func newGitCapabilityItem(id, repoID, slug, itemType, sourcePath string) models.CapabilityItem {
 	return models.CapabilityItem{
 		ID:                id,
-		RegistryID:        "registry-1",
+		RegistryID:        boundGitRegistryID,
 		RepoID:            repoID,
 		Slug:              slug,
 		ItemType:          itemType,
@@ -999,7 +999,7 @@ func TestGitCapabilitySyncService_BoundRepositoryStillProjectsOwner(t *testing.T
 	if err := db.Exec(
 		`INSERT INTO capability_registries (id, name, source_type, external_url, external_branch, sync_enabled, sync_interval, sync_status, owner_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"registry-1", "alice/capabilities", "git", "https://git.example/alice/capabilities", "main", true, 3600, "idle", "system", now, now,
+		boundGitRegistryID, "alice/capabilities", "git", "https://git.example/alice/capabilities", "main", true, 3600, "idle", "system", now, now,
 	).Error; err != nil {
 		t.Fatalf("seed registry: %v", err)
 	}
@@ -1009,7 +1009,7 @@ func TestGitCapabilitySyncService_BoundRepositoryStillProjectsOwner(t *testing.T
 			identification_status, visibility, git_remote_url, default_branch, last_synced_commit,
 			last_error, created_by, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"binding-1", gitCapabilityTestServerID, gitCapabilityTestRepoID, "repo-bound", "registry-1",
+		"binding-1", gitCapabilityTestServerID, gitCapabilityTestRepoID, "repo-bound", boundGitRegistryID,
 		"alice/capabilities", "standalone", models.GitCapabilityIdentificationClean, "public",
 		"https://git.example/alice/capabilities", "main", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"", "system", now, now,
@@ -1038,7 +1038,7 @@ func TestGitCapabilitySyncService_BoundRepositoryStillProjectsOwner(t *testing.T
 	// The Git pipeline owns this registry; the legacy clone scheduler must not
 	// be able to adopt it, so every sync converges sync_enabled to false.
 	var syncEnabled bool
-	if err := db.Table("capability_registries").Where("id = ?", "registry-1").Select("sync_enabled").Scan(&syncEnabled).Error; err != nil {
+	if err := db.Table("capability_registries").Where("id = ?", boundGitRegistryID).Select("sync_enabled").Scan(&syncEnabled).Error; err != nil {
 		t.Fatalf("read sync_enabled: %v", err)
 	}
 	if syncEnabled {

@@ -739,24 +739,13 @@ func ensureGitCapabilityRepositoryBinding(
 		if err := syncDiscoveredRepositoryOwnerMembership(tx, platformRepo.ID, ownerID, strings.Split(repo.FullName, "/")[0]); err != nil {
 			return nil, err
 		}
-		// SyncEnabled stays false: this registry exists to carry the
-		// repository-level projection, and its capabilities are reconciled from
-		// push webhooks. The legacy clone scheduler picks registries by
-		// sync_enabled + external_url alone, and its closing sweep archives (and
-		// drops the assets of) every registry row whose source path its own
-		// include patterns do not match — which is most of the layouts the Git
-		// discovery heuristic accepts. One repository, one sync handler.
-		registry := models.CapabilityRegistry{
-			ID: uuid.NewString(), Name: repo.FullName, Description: "Git-backed capabilities discovered from " + repo.FullName,
-			SourceType: GitRegistrySourceType, ExternalURL: repoURL, ExternalBranch: branchName, SyncEnabled: false,
-			LastSyncedAt: &now, LastSyncSHA: headSHA, SyncStatus: "idle", RepoID: platformRepo.ID, OwnerID: ownerID,
-		}
-		if err := tx.Create(&registry).Error; err != nil {
-			return nil, fmt.Errorf("create capability registry: %w", err)
+		registryID, err := mintGitCapabilityRegistry(tx, repo.FullName, repoURL, branchName, headSHA, platformRepo.ID, ownerID, now)
+		if err != nil {
+			return nil, err
 		}
 		binding = models.GitCapabilityRepository{
 			ID: uuid.NewString(), GitServerID: serverID, GitRepoID: repo.ID, RepositoryID: platformRepo.ID,
-			RegistryID: registry.ID, FullName: repo.FullName, RepoKind: repoKind, IdentificationStatus: identificationStatus,
+			RegistryID: registryID, FullName: repo.FullName, RepoKind: repoKind, IdentificationStatus: identificationStatus,
 			Visibility: visibility, GitRemoteURL: repoURL, DefaultBranch: branchName, LastSyncedCommit: headSHA,
 			LastSyncedAt: &now, LastError: lastError, CreatedBy: ownerID, CreatedAt: now, UpdatedAt: now,
 		}
@@ -764,6 +753,15 @@ func ensureGitCapabilityRepositoryBinding(
 			return nil, fmt.Errorf("create Git capability repository binding: %w", err)
 		}
 		return &binding, nil
+	}
+
+	// A binding inherited from an earlier reconciliation pass may point at a
+	// registry that is not this repository's to own (see
+	// ensureOwnedGitCapabilityRegistry). Converge before writing anything through
+	// it, or this pass would rename a shared registry after this repository.
+	registryID, err := ensureOwnedGitCapabilityRegistry(tx, &binding, repo.FullName, repoURL, branchName, headSHA, ownerID, now)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := tx.Model(&models.Repository{}).Where("id = ?", binding.RepositoryID).Updates(map[string]any{
@@ -776,7 +774,7 @@ func ensureGitCapabilityRepositoryBinding(
 	}
 	// sync_enabled is written on every pass so that registries created before
 	// this guard existed converge to false without a data migration.
-	if err := tx.Model(&models.CapabilityRegistry{}).Where("id = ?", binding.RegistryID).Updates(map[string]any{
+	if err := tx.Model(&models.CapabilityRegistry{}).Where("id = ?", registryID).Updates(map[string]any{
 		"name": repo.FullName, "external_url": repoURL, "external_branch": branchName, "last_synced_at": now,
 		"last_sync_sha": headSHA, "sync_status": "idle", "owner_id": ownerID, "sync_enabled": false,
 	}).Error; err != nil {
@@ -794,6 +792,133 @@ func ensureGitCapabilityRepositoryBinding(
 		return nil, err
 	}
 	return &binding, nil
+}
+
+// mintGitCapabilityRegistry creates the CapabilityRegistry that stands for one
+// Git repository's capability index.
+//
+// SyncEnabled stays false: this registry exists to carry the repository-level
+// projection, and its capabilities are reconciled from push webhooks. The legacy
+// clone scheduler picks registries by sync_enabled + external_url alone, and its
+// closing sweep archives (and drops the assets of) every registry row whose
+// source path its own include patterns do not match — which is most of the
+// layouts the Git discovery heuristic accepts. One repository, one sync handler.
+func mintGitCapabilityRegistry(
+	tx *gorm.DB,
+	fullName, repoURL, branchName, headSHA, repositoryID, ownerID string,
+	now time.Time,
+) (string, error) {
+	registry := models.CapabilityRegistry{
+		ID: uuid.NewString(), Name: fullName, Description: "Git-backed capabilities discovered from " + fullName,
+		SourceType: GitRegistrySourceType, ExternalURL: repoURL, ExternalBranch: branchName, SyncEnabled: false,
+		LastSyncedAt: &now, LastSyncSHA: headSHA, SyncStatus: "idle", RepoID: repositoryID, OwnerID: ownerID,
+	}
+	if err := tx.Create(&registry).Error; err != nil {
+		return "", fmt.Errorf("create capability registry: %w", err)
+	}
+	return registry.ID, nil
+}
+
+// gitCapabilityIdentityAvailable reports whether value may serve as this
+// repository's repository_id / registry_id.
+//
+// Two conditions, and the order between them is load-bearing:
+//
+//  1. it has to be storable at all. Both columns are `uuid NOT NULL`, while V4
+//     keeps the virtual "public" repo id on legacy/public capability rows — and
+//     PostgreSQL rejects that string with 22P02 rather than simply not matching,
+//     so it must never reach a comparison against those columns. (SQLite is
+//     untyped and compares it happily, which is why this ordering cannot be left
+//     to the unit tests to discover.)
+//  2. no OTHER repository's binding may already hold it. Both columns are UNIQUE
+//     on git_capability_repositories, so a value another repository holds can
+//     never become this repository's — and must not be borrowed, because every
+//     downstream projection (buildDiscoveredCapability, the registry/repository
+//     updates below) writes through the binding's identity and would land on
+//     that other repository.
+func gitCapabilityIdentityAvailable(tx *gorm.DB, serverID string, gitRepoID int64, column, value string) (bool, error) {
+	if _, err := uuid.Parse(strings.TrimSpace(value)); err != nil {
+		return false, nil
+	}
+	var count int64
+	if err := tx.Model(&models.GitCapabilityRepository{}).
+		Where(column+" = ? AND NOT (git_server_id = ? AND git_repo_id = ?)", value, serverID, gitRepoID).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("check %s ownership: %w", column, err)
+	}
+	return count == 0, nil
+}
+
+// gitCapabilityRegistryOwnable reports whether registryID may serve as the index
+// identity of one Git repository.
+//
+// Two things disqualify a registry, and the first one is the reason forks kept
+// failing:
+//
+//   - it is not a Git-owned registry. Every fork and every S6-migrated row lands
+//     in the shared public registry (handlers.PublicRegistryID), which holds
+//     ~all of the catalog. Letting a repository claim it makes that one
+//     repository the exclusive owner of the whole marketplace registry — the
+//     UNIQUE(registry_id) index then blocks every later fork, and the projection
+//     updates rename the public registry after that one repository.
+//   - it already belongs to a different repository, so it is not free to take.
+//
+// The remaining case — a Git-owned registry this repository already owns, or one
+// left behind after its binding was dropped by the deleted-repository converge —
+// is exactly the one inheritance was written for, and is preserved.
+func gitCapabilityRegistryOwnable(tx *gorm.DB, serverID string, gitRepoID int64, registryID string) (bool, error) {
+	// Availability is checked first so that a value that is not a UUID never
+	// reaches the capability_registries lookup either — that column is `uuid`
+	// too.
+	available, err := gitCapabilityIdentityAvailable(tx, serverID, gitRepoID, "registry_id", registryID)
+	if err != nil || !available {
+		return false, err
+	}
+	var registry models.CapabilityRegistry
+	err = tx.Where("id = ?", registryID).First(&registry).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load capability registry %s: %w", registryID, err)
+	}
+	return registry.SourceType == GitRegistrySourceType, nil
+}
+
+// ensureOwnedGitCapabilityRegistry converges an EXISTING binding whose registry
+// is not its own onto a dedicated one, and returns the registry the caller may
+// write through.
+//
+// Bindings created before gitCapabilityRegistryOwnable existed inherited the
+// bound items' registry unconditionally, so the first forked repository on a
+// deployment captured the shared public registry. Repairing that here means the
+// row heals on its next sync instead of needing a data migration — the same
+// convergence policy sync_enabled already uses. Capability rows are deliberately
+// NOT moved: a fork is published in the public registry and moving it would
+// remove it from the marketplace.
+func ensureOwnedGitCapabilityRegistry(
+	tx *gorm.DB,
+	binding *models.GitCapabilityRepository,
+	fullName, repoURL, branchName, headSHA, ownerID string,
+	now time.Time,
+) (string, error) {
+	ownable, err := gitCapabilityRegistryOwnable(tx, binding.GitServerID, binding.GitRepoID, binding.RegistryID)
+	if err != nil {
+		return "", err
+	}
+	if ownable {
+		return binding.RegistryID, nil
+	}
+	registryID, err := mintGitCapabilityRegistry(tx, fullName, repoURL, branchName, headSHA, binding.RepositoryID, ownerID, now)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Model(&models.GitCapabilityRepository{}).Where("id = ?", binding.ID).
+		Updates(map[string]any{"registry_id": registryID, "updated_at": now}).Error; err != nil {
+		return "", fmt.Errorf("repoint Git capability repository binding to its own registry: %w", err)
+	}
+	binding.RegistryID = registryID
+	return registryID, nil
 }
 
 func syncDiscoveredRepositoryOwnerMembership(tx *gorm.DB, repositoryID, ownerID, gitUsername string) error {
@@ -870,7 +995,11 @@ func updateGitCapabilityRepositoryProjection(
 	if err := syncDiscoveredRepositoryOwnerMembership(tx, binding.RepositoryID, ownerID, gitUsername); err != nil {
 		return err
 	}
-	return tx.Model(&models.CapabilityRegistry{}).Where("id = ?", binding.RegistryID).Updates(map[string]any{
+	registryID, err := ensureOwnedGitCapabilityRegistry(tx, &binding, fullName, repoURL, branchName, headSHA, ownerID, now)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&models.CapabilityRegistry{}).Where("id = ?", registryID).Updates(map[string]any{
 		"name": fullName, "external_url": repoURL, "external_branch": branchName,
 		"last_synced_at": now, "last_sync_sha": headSHA, "sync_status": "idle", "owner_id": ownerID,
 		"sync_enabled": false,
@@ -911,13 +1040,33 @@ func ensureGitCapabilityReconciliationBinding(
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository owner: %w", err)
 	}
-	// V4 keeps legacy/public capability rows on the virtual repo id
-	// ("public"), while git_capability_repositories.repository_id is a real
-	// UUID FK. Never pass that virtual identifier to PostgreSQL. Reuse a
-	// projection with the same stable name when present; otherwise create one
-	// solely as the repository-level binding target. The registry identity is
-	// intentionally left untouched and remains the item's UUID registry.
-	if _, parseErr := uuid.Parse(repositoryID); parseErr != nil {
+	// The bound rows' identity is only a HINT. It may be adopted solely when it
+	// is this repository's alone to hold, because git_capability_repositories
+	// keeps repository_id and registry_id UNIQUE: one Git repository, one
+	// platform repository projection, one capability registry. That 1:1 mapping
+	// is what keeps the V4 stable identity
+	// (git_server_id + git_repo_id + manifest_path + entry_key) resolvable, and
+	// borrowing another repository's half of it would silently file this
+	// repository's capabilities under that other repository.
+	//
+	// Two things make the hint unusable, and both are the normal case rather
+	// than corruption:
+	//
+	//   - repository_id is the virtual "public" repo id that V4 keeps on
+	//     legacy/public capability rows, which is not a UUID FK at all;
+	//   - the hinted identity already belongs to another repository — every fork
+	//     and every migrated row carries the shared public registry, so the
+	//     second repository ever reconciled in a deployment hits this.
+	//
+	// In both cases a dedicated identity is minted, exactly like first
+	// discovery does. The bound rows are NOT moved onto it: they are published
+	// where they are, and relocating them would take a fork out of the
+	// marketplace.
+	projectionAvailable, err := gitCapabilityIdentityAvailable(tx, serverID, repo.ID, "repository_id", repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	if !projectionAvailable {
 		projectionName := discoveredRepositoryName(serverID, repo.ID)
 		var projection models.Repository
 		findErr := tx.Where("name = ?", projectionName).First(&projection).Error
@@ -954,6 +1103,22 @@ func ensureGitCapabilityReconciliationBinding(
 	if repo.Private {
 		visibility = "private"
 	}
+	// The savepoint is taken BEFORE the registry is minted, not just before the
+	// binding insert: if the insert loses a race, rolling back has to take the
+	// registry this pass created with it, or the transaction commits a registry
+	// row nothing points at.
+	if err := tx.SavePoint("git_binding_create").Error; err != nil {
+		return nil, err
+	}
+	registryOwnable, err := gitCapabilityRegistryOwnable(tx, serverID, repo.ID, registryID)
+	if err != nil {
+		return nil, err
+	}
+	if !registryOwnable {
+		if registryID, err = mintGitCapabilityRegistry(tx, repo.FullName, repoURL, branchName, headSHA, repositoryID, ownerID, now); err != nil {
+			return nil, err
+		}
+	}
 	binding = models.GitCapabilityRepository{
 		ID: uuid.NewString(), GitServerID: serverID, GitRepoID: repo.ID,
 		RepositoryID: repositoryID, RegistryID: registryID, FullName: repo.FullName,
@@ -962,9 +1127,6 @@ func ensureGitCapabilityReconciliationBinding(
 		LastSyncedCommit: headSHA, LastSyncedAt: &now, CreatedBy: ownerID,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	if err := tx.SavePoint("git_binding_create").Error; err != nil {
-		return nil, err
-	}
 	if err := tx.Create(&binding).Error; err != nil {
 		if !isUniqueConstraintError(err) {
 			return nil, fmt.Errorf("create Git capability repository binding for reconciliation: %w", err)
@@ -972,14 +1134,76 @@ func ensureGitCapabilityReconciliationBinding(
 		if rbErr := tx.RollbackTo("git_binding_create").Error; rbErr != nil {
 			return nil, rbErr
 		}
-		if reloadErr := tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, repo.ID).First(&binding).Error; reloadErr != nil {
-			return nil, fmt.Errorf("reload Git capability repository binding after conflict: %w", reloadErr)
+		recovered, recoverErr := reloadGitCapabilityBindingAfterConflict(tx, serverID, repo.ID, repositoryID, registryID, err)
+		if recoverErr != nil {
+			return nil, recoverErr
 		}
-		if binding.RepositoryID != repositoryID || binding.RegistryID != registryID {
-			return nil, fmt.Errorf("Git capability repository binding conflict has inconsistent projection/registry: got repository=%q registry=%q want repository=%q registry=%q", binding.RepositoryID, binding.RegistryID, repositoryID, registryID)
-		}
+		binding = *recovered
 	}
 	return &binding, nil
+}
+
+// reloadGitCapabilityBindingAfterConflict recovers from a unique violation on
+// git_capability_repositories, which carries THREE unique keys:
+// (git_server_id, git_repo_id), registry_id and repository_id.
+//
+// Each key is probed in turn rather than parsing the constraint name out of the
+// driver error: PostgreSQL reports uq_git_capability_repositories_registry while
+// SQLite reports git_capability_repositories.registry_id, neither spelling is
+// part of any contract this package owns, and a lookup by the key itself answers
+// the only question that matters — which row is in the way.
+//
+// The three answers are NOT interchangeable:
+//
+//   - identity hit: the row IS this repository's binding, written by a racing
+//     worker. Reuse it, including whatever identity that worker minted; this
+//     pass rolled its own back to the savepoint.
+//   - registry_id / repository_id hit: the row belongs to ANOTHER repository.
+//     Reusing it would give two Git repositories one index identity, so every
+//     capability discovered here would be filed under that other repository and
+//     could never be reconciled back (updateGitCapabilityRepositoryProjection
+//     looks bindings up by identity and would never see them). Fail loudly and
+//     name both repositories instead. Callers reach this only under concurrency:
+//     a foreign identity is detected and replaced before the insert.
+func reloadGitCapabilityBindingAfterConflict(
+	tx *gorm.DB,
+	serverID string,
+	gitRepoID int64,
+	repositoryID, registryID string,
+	cause error,
+) (*models.GitCapabilityRepository, error) {
+	var binding models.GitCapabilityRepository
+	err := tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, gitRepoID).First(&binding).Error
+	if err == nil {
+		return &binding, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("reload Git capability repository binding after conflict: %w", err)
+	}
+	for _, probe := range []struct{ column, label, value string }{
+		{"registry_id", "capability registry", registryID},
+		{"repository_id", "repository projection", repositoryID},
+	} {
+		// Both columns are `uuid`; a non-UUID would abort the probe with 22P02
+		// instead of reporting no match, and could not be the conflicting value
+		// anyway since it could not have been inserted.
+		if _, err := uuid.Parse(strings.TrimSpace(probe.value)); err != nil {
+			continue
+		}
+		var foreign models.GitCapabilityRepository
+		probeErr := tx.Where(probe.column+" = ?", probe.value).First(&foreign).Error
+		if errors.Is(probeErr, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if probeErr != nil {
+			return nil, fmt.Errorf("reload Git capability repository binding after conflict: %w", probeErr)
+		}
+		return nil, fmt.Errorf(
+			"Git capability repository binding conflict: %s %s already belongs to repository %d (%s) on Git server %q; "+
+				"repository %d cannot share it",
+			probe.label, probe.value, foreign.GitRepoID, foreign.FullName, foreign.GitServerID, gitRepoID)
+	}
+	return nil, fmt.Errorf("reload Git capability repository binding after conflict: %w", cause)
 }
 
 // hashDiscoveredCapabilityContent produces the same hash the DB write path
