@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/gitcapability"
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -227,6 +228,9 @@ func (s *GitCapabilitySyncService) SyncRepository(
 	headSHA := strings.ToLower(branch.CommitSHA)
 	result.CommitSHA = headSHA
 	if len(boundItems) == 0 {
+		if gitcapability.DiscoveryOwnerExcluded(owner) {
+			return result, nil
+		}
 		return s.discoverGitCapabilities(ctx, cfg, reader, repo, owner, repoName, branchName, headSHA, lease)
 	}
 

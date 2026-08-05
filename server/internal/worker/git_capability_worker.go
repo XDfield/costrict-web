@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -31,15 +32,19 @@ type GitCapabilitySyncer interface {
 }
 
 type GitCapabilityWorkerPool struct {
-	DB           *gorm.DB
-	Resolver     GitCapabilityConfigResolver
-	SyncService  GitCapabilitySyncer
-	Concurrency  int
-	PollInterval time.Duration
-	LeaseTimeout time.Duration
-	JobTimeout   time.Duration
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
+	DB                 *gorm.DB
+	Resolver           GitCapabilityConfigResolver
+	SyncService        GitCapabilitySyncer
+	Concurrency        int
+	PollInterval       time.Duration
+	LeaseTimeout       time.Duration
+	JobTimeout         time.Duration
+	ReconcileInterval  time.Duration
+	ReconcileBatchSize int
+	lastReconcile      time.Time
+	reconcileMu        sync.Mutex
+	stopCh             chan struct{}
+	wg                 sync.WaitGroup
 }
 
 func (p *GitCapabilityWorkerPool) Start() {
@@ -57,6 +62,12 @@ func (p *GitCapabilityWorkerPool) Start() {
 	}
 	if p.JobTimeout <= 0 {
 		p.JobTimeout = 10 * time.Minute
+	}
+	if p.ReconcileInterval <= 0 {
+		p.ReconcileInterval = 10 * time.Minute
+	}
+	if p.ReconcileBatchSize <= 0 {
+		p.ReconcileBatchSize = 50
 	}
 	p.stopCh = make(chan struct{})
 	for i := 0; i < p.Concurrency; i++ {
@@ -82,7 +93,49 @@ func (p *GitCapabilityWorkerPool) runWorker() {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
+			p.reconcileIfDue()
 			_ = p.processOne()
+		}
+	}
+}
+
+// reconcileIfDue schedules bounded replay jobs for repositories whose index is
+// stale. The durable job uniqueness and claimOne's per-repository exclusion
+// keep webhook/reconcile races idempotent.
+func (p *GitCapabilityWorkerPool) reconcileIfDue() {
+	interval := p.ReconcileInterval
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	batchSize := p.ReconcileBatchSize
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	now := time.Now()
+	p.reconcileMu.Lock()
+	if !p.lastReconcile.IsZero() && now.Sub(p.lastReconcile) < interval {
+		p.reconcileMu.Unlock()
+		return
+	}
+	p.lastReconcile = now
+	p.reconcileMu.Unlock()
+	var repos []models.GitCapabilityRepository
+	cutoff := now.Add(-interval)
+	if err := p.DB.Where("last_synced_at IS NULL OR last_synced_at < ?", cutoff).
+		Order("updated_at ASC").Limit(batchSize).Find(&repos).Error; err != nil {
+		return
+	}
+	for _, repo := range repos {
+		// Bucketed delivery IDs prevent a new row every tick while still allowing
+		// a later interval to retry a repository that failed or was missed.
+		bucket := now.Unix() / int64(interval.Seconds())
+		delivery := fmt.Sprintf("reconcile:%d:%d", repo.GitRepoID, bucket)
+		job := models.GitCapabilitySyncJob{ID: uuid.NewString(), GitServerID: repo.GitServerID, DeliveryID: delivery,
+			RepoID: repo.GitRepoID, RepoFullName: repo.FullName, DefaultBranch: repo.DefaultBranch,
+			Ref: repo.DefaultBranch, AfterSHA: repo.LastSyncedCommit, Status: models.GitCapabilitySyncJobStatusPending,
+			MaxAttempts: 3, ScheduledAt: now, CreatedAt: now}
+		if result := p.DB.Where("git_server_id = ? AND delivery_id = ?", repo.GitServerID, delivery).FirstOrCreate(&job); result.Error != nil {
+			logger.Warn("Git capability reconcile enqueue failed repoID=%d err=%v", repo.GitRepoID, result.Error)
 		}
 	}
 }

@@ -79,8 +79,18 @@ func setupGitCapabilityWorkerDB(t *testing.T) *gorm.DB {
 		t.Fatalf("create jobs table: %v", err)
 	}
 	if err := db.Exec(`CREATE UNIQUE INDEX uq_git_capability_sync_jobs_running_repo
-		ON git_capability_sync_jobs (git_server_id, repo_id) WHERE status = 'running'`).Error; err != nil {
+			ON git_capability_sync_jobs (git_server_id, repo_id) WHERE status = 'running'`).Error; err != nil {
 		t.Fatalf("create running repo index: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE git_capability_repositories (
+		id TEXT PRIMARY KEY, git_server_id TEXT NOT NULL, git_repo_id INTEGER NOT NULL,
+		repository_id TEXT NOT NULL, registry_id TEXT NOT NULL, full_name TEXT NOT NULL,
+		repo_kind TEXT NOT NULL, identification_status TEXT NOT NULL, visibility TEXT NOT NULL,
+		git_remote_url TEXT NOT NULL, default_branch TEXT NOT NULL, last_synced_commit TEXT NOT NULL DEFAULT '',
+		last_synced_at DATETIME, last_error TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL,
+		created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+	)`).Error; err != nil {
+		t.Fatalf("create repositories table: %v", err)
 	}
 	return db
 }
@@ -252,3 +262,31 @@ func TestGitCapabilityWorkerProcessOneMarksDeletedDefaultBranch(t *testing.T) {
 }
 
 func ptrWorkerTime(value time.Time) *time.Time { return &value }
+
+func TestGitCapabilityWorkerReconcileIsBoundedStaleAndBucketIdempotent(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	now := time.Now()
+	for i := int64(1); i <= 4; i++ {
+		repo := models.GitCapabilityRepository{ID: uuid.NewString(), GitServerID: workerGitServerID, GitRepoID: i, RepositoryID: uuid.NewString(), RegistryID: uuid.NewString(), FullName: "org/repo", RepoKind: "standalone", IdentificationStatus: "unknown", Visibility: "public", GitRemoteURL: "https://git/repo", DefaultBranch: "main", CreatedBy: "test", CreatedAt: now, UpdatedAt: now}
+		if i == 1 {
+			fresh := now
+			repo.LastSyncedAt = &fresh
+		}
+		if err := db.Create(&repo).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 2}
+	p.reconcileIfDue()
+	var count int64
+	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("jobs=%d, want bounded batch 2", count)
+	}
+	p.lastReconcile = time.Time{}
+	p.reconcileIfDue()
+	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("jobs=%d after same bucket, want idempotent 2", count)
+	}
+}

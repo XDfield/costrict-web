@@ -869,6 +869,8 @@ func main() {
 			// full reconcile against the tenant's Gitea; returns 503 if
 			// feature is unconfigured.
 			admin.POST("/tenants/:tenant_id/teams/:team_id/sync", handlers.SyncTeam)
+			gitCapabilityResyncAPI := handlers.NewGitCapabilityResyncAPI(db)
+			admin.POST("/git-capability-repositories/:git_repo_id/resync", gitCapabilityResyncAPI.ResyncGitCapabilityRepository)
 
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.
@@ -984,7 +986,7 @@ func main() {
 		// Inner goroutine observes ctx.Done() and exits.
 	})
 	gatewayClient := gateway.NewClient(cfg.InternalSecret)
-// Initialize ClawAgent personal AI assistant
+	// Initialize ClawAgent personal AI assistant
 	clawRT, err := clawagent.NewFromMain(db, cfg, gatewayRegistry, gatewayClient)
 	if err != nil {
 		log.Fatalf("Failed to initialize ClawAgent: %v", err)
