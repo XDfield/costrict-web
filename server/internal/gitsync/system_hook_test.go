@@ -15,6 +15,7 @@ type fakeSystemHookGitea struct {
 	mu        sync.Mutex
 	hooks     []giteaSystemHook
 	mutations []string
+	nullNames bool
 }
 
 func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +59,9 @@ func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			for i := range publicHooks {
 				hook := visibleHooks[start+i]
 				publicHooks[i] = hook
+				if f.nullNames {
+					publicHooks[i].Name = ""
+				}
 				publicHooks[i].Config = map[string]string{
 					"url":          hook.Config["url"],
 					"content_type": hook.Config["content_type"],
@@ -105,6 +109,9 @@ func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				}
 				f.hooks[i].Config["url"] = req.Config["url"]
 				f.hooks[i].Config["content_type"] = req.Config["content_type"]
+				if req.Config["secret"] != "" {
+					f.hooks[i].Config["secret"] = req.Config["secret"]
+				}
 				f.hooks[i].Events = req.Events
 				f.hooks[i].Active = req.Active
 				if req.Name != nil {
@@ -287,7 +294,7 @@ func TestEnsureSystemPushWebhook_PreservesOtherServerAndUnmanagedHooks(t *testin
 
 func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
-	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{
+	fake := &fakeSystemHookGitea{nullNames: true, hooks: []giteaSystemHook{
 		desiredSystemHook(2, "gs-1", target, "secret"),
 		desiredSystemHook(9, "gs-1", target, "secret"),
 		desiredSystemHook(5, "gs-2", "https://other.example/hook", "other"),
@@ -304,6 +311,34 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 	}
 	if len(fake.hooks) != 2 || fake.hooks[0].ID != 2 || fake.hooks[1].ID != 5 {
 		t.Fatalf("remaining hooks = %+v", fake.hooks)
+	}
+}
+
+func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{
+		{ID: 2, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": target, "content_type": "json", "secret": "old"}},
+		{ID: 3, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": target, "content_type": "json", "secret": "old"}},
+		{ID: 8, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"issues"}, IsSystemWebhook: true, Config: map[string]string{"url": target + "/other", "content_type": "json"}},
+	}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.hooks) != 2 || fake.hooks[0].Name != "" {
+		t.Fatalf("hooks=%+v", fake.hooks)
+	}
+	if len(fake.mutations) != 1 || fake.mutations[0] != "delete" {
+		t.Fatalf("mutations=%v", fake.mutations)
+	}
+	fake.mutations = nil
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.mutations) != 0 {
+		t.Fatalf("second ensure mutations=%v", fake.mutations)
 	}
 }
 

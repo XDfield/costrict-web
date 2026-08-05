@@ -65,7 +65,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 	managedPrefix := managedSystemHookServerPrefix(gitServerID)
 	managed := make([]giteaSystemHook, 0, 1)
 	for _, hook := range hooks {
-		if isManagedSystemHookForServer(hook.Name, managedPrefix) {
+		if isManagedSystemHookForServer(hook.Name, managedPrefix) || isLegacyManagedSystemHook(hook, targetURL) {
 			managed = append(managed, hook)
 		}
 	}
@@ -95,6 +95,16 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 		}
 	}
 	if primaryIndex < 0 {
+		// A legacy 1.24.x hook has no name in list responses. If it matches the
+		// exact endpoint, adopt it and restore its strong identity via PATCH.
+		for i := range managed {
+			if managed[i].Type == systemHookTypeGitea && managed[i].Name == "" && managed[i].Config["url"] == targetURL {
+				primaryIndex = i
+				break
+			}
+		}
+	}
+	if primaryIndex < 0 {
 		if err := c.createSystemHook(ctx, desired); err != nil {
 			return err
 		}
@@ -107,7 +117,13 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 	}
 
 	primary := managed[primaryIndex]
-	if !systemHookIsDesired(primary, desired) {
+	// Gitea 1.24.x list responses omit name, secret, and the system marker.
+	// Once an exact endpoint-matching legacy hook is adopted, those fields
+	// cannot be observed on subsequent ensures, so avoid an endless PATCH loop.
+	legacyStable := primary.Name == "" && primary.Type == systemHookTypeGitea &&
+		primary.Config["url"] == targetURL && primary.Config["content_type"] == "json" &&
+		primary.Active && len(primary.Events) == 1 && primary.Events[0] == "push"
+	if !legacyStable && !systemHookIsDesired(primary, desired) {
 		if err := c.updateSystemHook(ctx, primary.ID, desired); err != nil {
 			return err
 		}
@@ -181,8 +197,10 @@ func (c *Client) updateSystemHook(ctx context.Context, hookID int64, desired git
 	name := desired.Name
 	update := giteaSystemHookUpdateRequest{
 		Config: map[string]string{
-			"url":          desired.Config["url"],
-			"content_type": desired.Config["content_type"],
+			"url":               desired.Config["url"],
+			"content_type":      desired.Config["content_type"],
+			"secret":            desired.Config["secret"],
+			"is_system_webhook": "true",
 		},
 		Events: desired.Events,
 		Active: desired.Active,
@@ -213,6 +231,13 @@ func systemHookIsDesired(current giteaSystemHook, desired giteaSystemHookRequest
 		current.Config["url"] == desired.Config["url"] &&
 		current.Config["content_type"] == desired.Config["content_type"] &&
 		len(current.Events) == 1 && current.Events[0] == "push"
+}
+
+// Gitea 1.24.x omits system-hook names (and secrets) from GET responses. The
+// only non-secret legacy identity available is an exact endpoint match.
+func isLegacyManagedSystemHook(hook giteaSystemHook, targetURL string) bool {
+	return hook.Name == "" && hook.Type == systemHookTypeGitea &&
+		hook.Config["url"] == targetURL && len(hook.Events) == 1 && hook.Events[0] == "push"
 }
 
 func managedSystemHookServerPrefix(gitServerID string) string {
