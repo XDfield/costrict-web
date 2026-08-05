@@ -444,6 +444,39 @@ equal_fold() {
 
 json_quote() { printf '%s' "$1" | python3 -c 'import sys, json; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
 
+url_quote() {
+    printf '%s' "$1" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""), end="")'
+}
+
+# verify_pushed_candidate ID — prove a pushed.txt entry still describes this
+# target and this bundle. pushed.txt is only a cache hint; repository deletion,
+# reset, state-dir reuse against another endpoint, or a changed bundle must put
+# the id back into the work list rather than producing a false success.
+verify_pushed_candidate() {
+    local id="$1" bare="${PLUGINS_DIR}/${1}.git" want out code full_name branch branch_out remote_sha local_sha found_name
+    [ -d "$bare" ] || return 1
+    want="$(awk -F'\t' -v k="$id" '$1==k && $2=="MATCH"{print $4; exit}' "${STATE_DIR}/plan.tsv")"
+    [ -n "$want" ] || return 1
+
+    out="$(api GET "/repos/${GITEA_OWNER}/${id}")"
+    code="$(resp_code "$out")"
+    [ "$code" = "200" ] || return 1
+    full_name="$(resp_body "$out" | json_get 'd.get("full_name")')"
+    equal_fold "$full_name" "${GITEA_OWNER}/${id}" || return 1
+    branch="$(resp_body "$out" | json_get 'd.get("default_branch")')"
+    [ -n "$branch" ] || return 1
+
+    branch_out="$(api GET "/repos/${GITEA_OWNER}/${id}/branches/$(url_quote "$branch")")"
+    [ "$(resp_code "$branch_out")" = "200" ] || return 1
+    remote_sha="$(resp_body "$branch_out" | json_get '(d.get("commit") or {}).get("id")')"
+    local_sha="$(git -C "$bare" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$remote_sha" ] && [ -n "$local_sha" ] || return 1
+    equal_fold "$remote_sha" "$local_sha" || return 1
+
+    found_name="$(probe_manifest_name_settled "$id" "$branch" 5)" || found_name=""
+    [ -n "$found_name" ] && equal_fold "$found_name" "$want"
+}
+
 # ---------------------------------------------------------------------------
 # worker dispatch — must come after every function the worker calls
 # ---------------------------------------------------------------------------
@@ -452,6 +485,13 @@ if [ "${1:-}" = "__push-one" ]; then
     [ -n "${STATE_DIR:-}" ] && [ -n "${PLUGINS_DIR:-}" ] && [ -n "${PUSH_BASE:-}" ] ||
         die "__push-one is an internal worker mode; it needs STATE_DIR/PLUGINS_DIR/PUSH_BASE in the environment"
     push_one "$2"
+    exit $?
+fi
+if [ "${1:-}" = "__verify-resume-candidate" ]; then
+    GITEA_API="${GITEA_URL%/}/api/v1"
+    [ -n "${STATE_DIR:-}" ] && [ -n "${PLUGINS_DIR:-}" ] ||
+        die "__verify-resume-candidate is an internal test mode; it needs STATE_DIR/PLUGINS_DIR in the environment"
+    verify_pushed_candidate "$2"
     exit $?
 fi
 
@@ -827,14 +867,25 @@ print(json.dumps({
     esac
 fi
 
-# Resume: anything already pushed AND verified in an earlier run is skipped.
+# Resume: pushed.txt is a candidate cache, never proof. Revalidate each selected
+# cached id against this endpoint, owner, and bundle HEAD before skipping it.
 WORK="${STATE_DIR}/work.txt"
 awk -F'\t' '$2=="MATCH"{print $1}' "$PLAN" | LC_ALL=C sort >"${STATE_DIR}/match.txt"
 LC_ALL=C sort -u "${STATE_DIR}/pushed.txt" >"${STATE_DIR}/pushed.sorted"
-LC_ALL=C comm -23 "${STATE_DIR}/match.txt" "${STATE_DIR}/pushed.sorted" >"$WORK"
-SKIPPED_DONE=$((N_MATCH - $(grep -c . "$WORK" || true)))
+: >"${STATE_DIR}/resume-verified.txt"
+LC_ALL=C comm -12 "${STATE_DIR}/match.txt" "${STATE_DIR}/pushed.sorted" >"${STATE_DIR}/resume-candidates.txt"
+while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if verify_pushed_candidate "$id"; then
+        printf '%s\n' "$id" >>"${STATE_DIR}/resume-verified.txt"
+    else
+        log "  stale resume cache: ${id}; remote/bundle identity changed, scheduling a fresh push"
+    fi
+done <"${STATE_DIR}/resume-candidates.txt"
+LC_ALL=C comm -23 "${STATE_DIR}/match.txt" "${STATE_DIR}/resume-verified.txt" >"$WORK"
+SKIPPED_DONE="$(grep -c . "${STATE_DIR}/resume-verified.txt" || true)"
 WORK_N="$(grep -c . "$WORK" || true)"
-log "to import: ${WORK_N} (resumed/skipped as already imported: ${SKIPPED_DONE})"
+log "to import: ${WORK_N} (resume entries revalidated and skipped: ${SKIPPED_DONE})"
 
 : >"${STATE_DIR}/failed.tsv"
 : >"${STATE_DIR}/created.txt"
@@ -876,7 +927,27 @@ if [ -s "${STATE_DIR}/failed.tsv" ]; then
     fi
 fi
 
-IMPORTED="$(LC_ALL=C sort -u "${STATE_DIR}/pushed.txt" | grep -c . || true)"
+# Final verification is authoritative for both the exit code and the summary.
+# It catches repositories deleted/reset after the resume check and workers that
+# returned without leaving the remote at the selected bundle HEAD.
+: >"${STATE_DIR}/verified.txt"
+while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if verify_pushed_candidate "$id"; then
+        printf '%s\n' "$id" >>"${STATE_DIR}/verified.txt"
+    elif ! awk -F'\t' -v k="$id" '$1==k{found=1} END{exit !found}' "${STATE_DIR}/failed.tsv"; then
+        fail_one "$id" final-verify "remote owner/default-branch HEAD/manifest no longer matches this bundle"
+    fi
+done <"${STATE_DIR}/match.txt"
+
+# Keep unselected historical candidates for a future run, but replace every
+# selected id with only the values verified above. A later run still rechecks
+# all of them before trusting the cache.
+LC_ALL=C comm -23 "${STATE_DIR}/pushed.sorted" "${STATE_DIR}/match.txt" >"${STATE_DIR}/pushed.keep"
+LC_ALL=C sort -u "${STATE_DIR}/pushed.keep" "${STATE_DIR}/verified.txt" >"${STATE_DIR}/pushed.next"
+mv "${STATE_DIR}/pushed.next" "${STATE_DIR}/pushed.txt"
+
+IMPORTED="$(grep -c . "${STATE_DIR}/verified.txt" || true)"
 CREATED="$(LC_ALL=C sort -u "${STATE_DIR}/created.txt" | grep -c . || true)"
 FAILED="$(awk -F'\t' '{print $1}' "${STATE_DIR}/failed.tsv" | LC_ALL=C sort -u | grep -c . || true)"
 
@@ -902,7 +973,7 @@ if [ "$MARKETPLACE_INDEX" = 1 ]; then
     else
         MP_DIR="$(mktemp -d -t costrict-marketplace.XXXXXX)"
         mkdir -p "${MP_DIR}/.claude-plugin"
-        LC_ALL=C sort -u "${STATE_DIR}/pushed.txt" >"${STATE_DIR}/present.txt"
+        LC_ALL=C sort -u "${STATE_DIR}/verified.txt" >"${STATE_DIR}/present.txt"
         if sed "s|{{BASE_URL}}|${PUSH_BASE}|g" "$TMPL" |
             python3 -c '
 import sys, json, os
@@ -975,7 +1046,7 @@ echo "=== import summary ==="
 echo "bundle:              ${BUNDLE_DIR} (version ${BUNDLE_VERSION})"
 echo "target:              ${GITEA_URL}/${GITEA_OWNER}"
 echo "planned MATCH:       ${N_MATCH}"
-echo "imported (verified): ${IMPORTED}   [cumulative for this state dir]"
+echo "imported (verified): ${IMPORTED}   [selected MATCH rows verified this run]"
 echo "repositories created this run: ${CREATED}"
 echo "failed this run:     ${FAILED}"
 echo "marketplace index:   ${INDEX_STATUS}"
@@ -988,7 +1059,7 @@ fi
 echo
 echo "state dir: ${STATE_DIR}"
 echo "  plan.tsv    every selected repository and its verdict"
-echo "  pushed.txt  imported + verified (resume source; delete to force a full re-verify)"
+echo "  pushed.txt  resume candidate cache (every entry is remotely reverified before skip)"
 echo "  failed.tsv  this run's failures"
 
 if [ "$INDEX_RC" != 0 ]; then exit "$INDEX_RC"; fi

@@ -152,6 +152,10 @@ profileGateEnabled: false
 env:
   - name: USER_CREATED_EVENT_PROCESSING_ENABLED
     value: "true"
+  - name: PLUGIN_GIT_MIRROR_OWNER
+    value: "costrict-plugins-repo"
+  - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
+    value: ""
 envFrom: []
 
 # Optional: mount an existing ConfigMap as the .env file in the container

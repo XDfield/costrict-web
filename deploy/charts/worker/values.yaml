@@ -93,7 +93,15 @@ artifactStorage:
       key: ca.crt
       mountPath: /etc/costrict/object-storage
 
-env: []
+env:
+  - name: PLUGIN_GIT_MIRROR_OWNER
+    value: "costrict-plugins-repo"
+  - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
+    value: ""
+  - name: GIT_CAPABILITY_RECONCILE_INTERVAL
+    value: "10m"
+  - name: GIT_CAPABILITY_RECONCILE_BATCH_SIZE
+    value: "50"
 envFrom: []
 
 livenessProbe:
