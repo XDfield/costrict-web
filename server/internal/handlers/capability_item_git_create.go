@@ -78,7 +78,7 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 	// The repository comes first and is proven readable before anything is
 	// written to the DB. The reverse order would publish a row whose content
 	// address 404s, and nothing downstream repairs that.
-	plan, herr := provisionGitCapabilityRepo(c, userID, gitCapabilityProvisionSpec{
+	plan, herr := provisionGitCapabilityRepo(c.Request.Context(), resolveTenantID(c), userID, gitCapabilityProvisionSpec{
 		ItemType:    req.ItemType,
 		Slug:        slug,
 		Name:        req.Name,

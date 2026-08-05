@@ -95,6 +95,13 @@ type gitCapabilityProvisionSpec struct {
 	// Empty asks for the only entry, and a manifest with several then fails
 	// rather than picking one at random.
 	WantEntryKey string
+	// ExtraFiles are the non-manifest files that belong to the same capability
+	// (a multi-file skill's references/, assets/, scripts/ …). They go through
+	// the same write-then-read-back sequence as the manifest, so a repository is
+	// never adopted as complete while part of the tree is missing. Only the S6
+	// migration supplies them: the fork path refuses multi-file sources outright
+	// because it does not own the whole tree.
+	ExtraFiles []GitCapabilityFile
 }
 
 // provisionGitCapabilityRepo creates <short_id>/<slug> on the tenant's Gitea,
@@ -104,7 +111,12 @@ type gitCapabilityProvisionSpec struct {
 // It writes nothing to capability_items: the caller persists the row only after
 // this returns successfully, which is what keeps "flipped but empty" out of
 // existence.
-func provisionGitCapabilityRepo(c *gin.Context, userID string, spec gitCapabilityProvisionSpec) (*gitForkPlan, *httpErr) {
+//
+// Takes a context and a tenant rather than the *gin.Context it used to, because
+// the third caller is a CLI: the migration script has no request to derive them
+// from, and duplicating the sequence there is exactly the second build path
+// this function exists to prevent.
+func provisionGitCapabilityRepo(ctx context.Context, tenantID, userID string, spec gitCapabilityProvisionSpec) (*gitForkPlan, *httpErr) {
 	manifestPath, supported := gitCapabilityManifestPath(spec.ItemType)
 	if !supported {
 		return nil, &httpErr{
@@ -139,9 +151,10 @@ func provisionGitCapabilityRepo(c *gin.Context, userID string, spec gitCapabilit
 			body:   gin.H{"error": err.Error(), "error_code": "GIT_MANIFEST_AMBIGUOUS"},
 		}
 	}
+	if herr := validateGitCapabilityExtraFiles(spec.ExtraFiles, manifestPath); herr != nil {
+		return nil, herr
+	}
 
-	ctx := c.Request.Context()
-	tenantID := resolveTenantID(c)
 	cfg, herr := resolveGitBackingConfig(ctx, tenantID)
 	if herr != nil {
 		return nil, herr
@@ -177,41 +190,18 @@ func provisionGitCapabilityRepo(c *gin.Context, userID string, spec gitCapabilit
 	}
 	branch := firstNonEmpty(repo.DefaultBranch, gitCapabilityRepoBranch)
 
-	if err := userCli.WriteFile(ctx, owner, name, branch, manifestPath, content,
-		"feat("+spec.Slug+"): publish capability manifest"); err != nil {
-		return nil, &httpErr{
-			status: http.StatusBadGateway,
-			body: gin.H{
-				"error":      "failed to write the capability manifest to git: " + err.Error(),
-				"error_code": "GIT_REPO_WRITE_FAILED",
-			},
-		}
+	if herr := writeAndVerifyGitCapabilityFile(ctx, userCli, owner, name, branch, manifestPath, content,
+		"feat("+spec.Slug+"): publish capability manifest"); herr != nil {
+		return nil, herr
 	}
-
-	// Read-back is not paranoia. WriteFile reports a pre-existing file as
-	// success (its conflict branch), so without comparing the bytes a
-	// repository that already held a different manifest would be adopted as if
-	// we had just written ours — and every read path would then serve content
-	// this row never produced.
-	stored, err := userCli.ReadFile(ctx, owner, name, branch, manifestPath)
-	if err != nil {
-		return nil, &httpErr{
-			status: http.StatusBadGateway,
-			body: gin.H{
-				"error":      "failed to verify the capability manifest in git: " + err.Error(),
-				"error_code": "GIT_REPO_VERIFY_FAILED",
-			},
-		}
-	}
-	if !bytes.Equal(stored, content) {
-		log.Printf("provision: %s/%s manifest %s did not read back identical (%d bytes stored, %d written)",
-			owner, name, manifestPath, len(stored), len(content))
-		return nil, &httpErr{
-			status: http.StatusBadGateway,
-			body: gin.H{
-				"error":      "the capability manifest in git does not match what was written; the repository already holds different content",
-				"error_code": "GIT_REPO_VERIFY_MISMATCH",
-			},
+	// Every other file of the capability goes through the same sequence before
+	// the caller is told the repository is usable. Publishing the manifest and
+	// reporting success while a reference file is still missing is the silent
+	// partial the migration is forbidden to produce.
+	for _, file := range spec.ExtraFiles {
+		if herr := writeAndVerifyGitCapabilityFile(ctx, userCli, owner, name, branch, file.Path, file.Content,
+			"feat("+spec.Slug+"): publish "+file.Path); herr != nil {
+			return nil, herr
 		}
 	}
 
@@ -226,6 +216,107 @@ func provisionGitCapabilityRepo(c *gin.Context, userID string, spec gitCapabilit
 		EntryKey:    entryKey,
 		Content:     string(content),
 	}, nil
+}
+
+// writeAndVerifyGitCapabilityFile writes one repository file and proves it
+// reads back byte-identical.
+//
+// Read-back is not paranoia. WriteFile reports a pre-existing file as success
+// (its conflict branch), so without comparing the bytes a repository that
+// already held different content at this path would be adopted as if we had
+// just written ours — and every read path would then serve content this row
+// never produced. It is also the lineage check on a retry: a second run over a
+// repository somebody else's capability already occupies fails here rather than
+// binding it.
+func writeAndVerifyGitCapabilityFile(
+	ctx context.Context, cli *gitsync.Client, owner, name, branch, filePath string,
+	content []byte, message string,
+) *httpErr {
+	if err := cli.WriteFile(ctx, owner, name, branch, filePath, content, message); err != nil {
+		return &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to write " + filePath + " to git: " + err.Error(),
+				"error_code": "GIT_REPO_WRITE_FAILED",
+				"path":       filePath,
+			},
+		}
+	}
+	stored, err := cli.ReadFile(ctx, owner, name, branch, filePath)
+	if err != nil {
+		return &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error":      "failed to verify " + filePath + " in git: " + err.Error(),
+				"error_code": "GIT_REPO_VERIFY_FAILED",
+				"path":       filePath,
+			},
+		}
+	}
+	if !bytes.Equal(stored, content) {
+		log.Printf("provision: %s/%s file %s did not read back identical (%d bytes stored, %d written)",
+			owner, name, filePath, len(stored), len(content))
+		return &httpErr{
+			status: http.StatusBadGateway,
+			body: gin.H{
+				"error": "the file " + filePath + " in git does not match what was written; " +
+					"the repository already holds different content",
+				"error_code": "GIT_REPO_VERIFY_MISMATCH",
+				"path":       filePath,
+			},
+		}
+	}
+	return nil
+}
+
+// validateGitCapabilityExtraFiles refuses a file set that would make the
+// repository describe something other than the one capability it is being
+// provisioned for.
+//
+// Two rejections, both about identity rather than safety:
+//
+//   - a path discovery would classify as a manifest (commands/x.md,
+//     skills/y/skill.md, .claude-plugin/plugin.json …) becomes a SECOND
+//     capability the next sync pass indexes as its own row. The migration would
+//     publish one item and produce several.
+//   - the manifest path itself, or a duplicate, means two writers disagree
+//     about the same file within a single call; the last write would win
+//     silently.
+func validateGitCapabilityExtraFiles(files []GitCapabilityFile, manifestPath string) *httpErr {
+	if len(files) == 0 {
+		return nil
+	}
+	reject := func(path, reason string) *httpErr {
+		return &httpErr{
+			status: http.StatusBadRequest,
+			body: gin.H{
+				"error":      "file " + path + " cannot be published with this capability: " + reason,
+				"error_code": "GIT_EXTRA_FILE_REJECTED",
+				"path":       path,
+			},
+		}
+	}
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		normalized, err := services.NormalizeArchivePath(file.Path)
+		if err != nil {
+			return reject(file.Path, err.Error())
+		}
+		if normalized != file.Path {
+			return reject(file.Path, "path is not in normal form (expected "+normalized+")")
+		}
+		if strings.EqualFold(normalized, manifestPath) {
+			return reject(file.Path, "it collides with the capability manifest")
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			return reject(file.Path, "it appears twice in the same capability")
+		}
+		seen[normalized] = struct{}{}
+		if services.IsGitCapabilityManifestPath(normalized) {
+			return reject(file.Path, "discovery would index it as a separate capability")
+		}
+	}
+	return nil
 }
 
 // resolveGitBackingConfig loads the tenant's git server, mapping every "this

@@ -110,6 +110,11 @@ func main() {
 			}
 			log.Println("Capability content versioning backfill completed successfully")
 			return
+		case "capability-to-git":
+			if err := runCapabilityToGitCommand(db, os.Args[2:]); err != nil {
+				log.Fatalf("capability-to-git: %v", err)
+			}
+			return
 		case "backfill-provider-aware-external-keys":
 			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
 			if err := backfillProviderAwareExternalKeys(db, dryRun); err != nil {
@@ -259,6 +264,15 @@ func printMigrateHelp() {
 	fmt.Println("                                                backfill-everything-ai-coding-metadata pair.")
 	fmt.Println("  go run ./cmd/migrate backfill-provider-aware-external-keys [--dry-run]")
 	fmt.Println("                                                Migrate external_keys from casdoor:<id> to casdoor:<provider>:<id>")
+	fmt.Println("  go run ./cmd/migrate capability-to-git [--type=skill,...] [--owner=<short_id|subject_id>]")
+	fmt.Println("                                        [--ids=a,b,c] [--limit=N] [--tenant=default]")
+	fmt.Println("                                        [--include-catalog] [--clear-stale-content] [--confirm]")
+	fmt.Println("                                                Publish DB-backed capabilities into their owner's Gitea")
+	fmt.Println("                                                namespace and flip content_backend to 'git'.")
+	fmt.Println("                                                MANUAL ONLY — never wire into deploy or a scheduler.")
+	fmt.Println("                                                Dry-run by default; --confirm executes.")
+	fmt.Println("                                                Requires CS_BOT_TOKEN_KEY exported and a git server")
+	fmt.Println("                                                bound to the tenant.")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
@@ -267,6 +281,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate user-external-identities --dry-run")
 	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=./dist/catalog-bundle.tar.gz")
 	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=https://github.com/zgsm-ai/everything-ai-coding/releases/download/catalog-bundle-v1.0.0/catalog-bundle.tar.gz --dry-run")
+	fmt.Println("  go run ./cmd/migrate capability-to-git --type=skill --owner=u-devuser1")
+	fmt.Println("  go run ./cmd/migrate capability-to-git --ids=2fc7fdcb-c640-42b1-a6df-2751b145b132 --confirm")
 }
 
 // ingestUpstreamCatalog is the new entry point that replaces the

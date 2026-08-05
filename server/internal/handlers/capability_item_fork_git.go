@@ -516,7 +516,7 @@ func planProvisionedFork(c *gin.Context, userID, forkSlug string, src models.Cap
 	if src.ItemType == "mcp" {
 		wantEntryKey = firstNonEmpty(src.SourceGitEntryKey, mcpEntryKeyOf(src.Metadata))
 	}
-	return provisionGitCapabilityRepo(c, userID, gitCapabilityProvisionSpec{
+	return provisionGitCapabilityRepo(c.Request.Context(), resolveTenantID(c), userID, gitCapabilityProvisionSpec{
 		ItemType:     src.ItemType,
 		Slug:         forkSlug,
 		Name:         src.Name,
@@ -542,6 +542,15 @@ func planProvisionedFork(c *gin.Context, userID, forkSlug string, src models.Cap
 // ID, letting the (git_server_id, delivery_id) unique index collapse retries
 // onto the same job instead of queueing duplicate work.
 func enqueueForkGitSync(db *gorm.DB, itemID string, plan *gitForkPlan) {
+	enqueueInitialGitSync(db, "fork:"+itemID, itemID, plan)
+}
+
+// enqueueInitialGitSync is enqueueForkGitSync with the delivery id spelled out,
+// so a capability that reached Git some other way (the S6 migration) says so in
+// the job row instead of claiming to be a fork. The id still derives from the
+// item, keeping the (git_server_id, delivery_id) unique index collapsing
+// retries of the same operation onto one job.
+func enqueueInitialGitSync(db *gorm.DB, deliveryID, itemID string, plan *gitForkPlan) {
 	if db == nil || plan == nil {
 		return
 	}
@@ -558,7 +567,7 @@ func enqueueForkGitSync(db *gorm.DB, itemID string, plan *gitForkPlan) {
 	job := &models.GitCapabilitySyncJob{
 		ID:            uuid.NewString(),
 		GitServerID:   plan.GitServerID,
-		DeliveryID:    "fork:" + itemID,
+		DeliveryID:    deliveryID,
 		RepoID:        plan.GitRepoID,
 		RepoFullName:  owner + "/" + name,
 		DefaultBranch: branch,

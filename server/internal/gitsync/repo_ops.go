@@ -381,7 +381,12 @@ func (c *Client) WriteFile(ctx context.Context, owner, repo, branch, path string
 		Content: base64.StdEncoding.EncodeToString(content),
 	}
 
-	reqPath := repoPath(owner, repo) + "/contents/" + url.PathEscape(path)
+	// Per-segment escaping, not url.PathEscape over the whole path: escaping the
+	// separators into %2F leaves the server to unescape them before it can
+	// resolve the path, which has varied across Gitea versions (see
+	// escapeGitFilePath). Identical output for the single-segment paths this
+	// used to write; correct for the nested ones capability migration writes.
+	reqPath := repoPath(owner, repo) + "/contents/" + escapeGitFilePath(path)
 	resp, err := c.doJSON(ctx, http.MethodPost, reqPath, body, http.StatusCreated, http.StatusOK)
 	if err != nil {
 		// Idempotent re-provisioning: if the file already exists (409/422), the
@@ -415,7 +420,7 @@ func (c *Client) ReadFile(ctx context.Context, owner, repo, branch, path string)
 		return nil, fmt.Errorf("gitsync: owner, repo, branch, and path are required")
 	}
 
-	reqPath := repoPath(owner, repo) + "/contents/" + url.PathEscape(path) + "?ref=" + url.QueryEscape(branch)
+	reqPath := repoPath(owner, repo) + "/contents/" + escapeGitFilePath(path) + "?ref=" + url.QueryEscape(branch)
 	resp, err := c.doJSON(ctx, http.MethodGet, reqPath, nil, http.StatusOK)
 	if err != nil {
 		if isHTTPNotFound(err) {
