@@ -244,7 +244,7 @@ func managedSystemHookURL(base, name string) string {
 
 func managedSystemHookMarker(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return ""
 	}
 	return u.Query().Get(systemHookMarkerQuery)

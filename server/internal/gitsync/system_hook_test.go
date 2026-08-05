@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,10 +13,11 @@ import (
 )
 
 type fakeSystemHookGitea struct {
-	mu        sync.Mutex
-	hooks     []giteaSystemHook
-	mutations []string
-	nullNames bool
+	mu             sync.Mutex
+	hooks          []giteaSystemHook
+	mutations      []string
+	nullNames      bool
+	deleteFailures int
 }
 
 func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +123,11 @@ func (f *fakeSystemHookGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				_ = json.NewEncoder(w).Encode(f.hooks[i])
 				return
 			case http.MethodDelete:
+				if f.deleteFailures > 0 {
+					f.deleteFailures--
+					http.Error(w, "injected delete failure", http.StatusInternalServerError)
+					return
+				}
 				f.hooks = append(f.hooks[:i], f.hooks[i+1:]...)
 				f.mutations = append(f.mutations, "delete")
 				w.WriteHeader(http.StatusNoContent)
@@ -141,7 +148,7 @@ func hookFromRequest(id int64, req giteaSystemHookRequest) giteaSystemHook {
 func desiredSystemHook(id int64, gitServerID, target, secret string) giteaSystemHook {
 	return giteaSystemHook{
 		ID: id, Name: managedSystemHookName(gitServerID, secret), Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true,
-		Config: map[string]string{"url": target, "content_type": "json", "secret": secret, "is_system_webhook": "true"},
+		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName(gitServerID, secret)), "content_type": "json", "secret": secret, "is_system_webhook": "true"},
 	}
 }
 
@@ -157,7 +164,7 @@ func TestEnsureSystemPushWebhook_CreatesMissingHook(t *testing.T) {
 	}
 	if len(fake.hooks) != 1 || !systemHookIsDesired(fake.hooks[0], giteaSystemHookRequest{
 		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "secret-1"), Active: true, Events: []string{"push"},
-		Config: map[string]string{"url": target, "content_type": "json", "secret": "secret-1", "is_system_webhook": "true"},
+		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName("gs-1", "secret-1")), "content_type": "json", "secret": "secret-1", "is_system_webhook": "true"},
 	}) {
 		t.Fatalf("created hooks = %+v", fake.hooks)
 	}
@@ -190,7 +197,7 @@ func TestEnsureSystemPushWebhook_UpdatesDriftedHook(t *testing.T) {
 	}
 	if got := fake.hooks[0]; !systemHookIsDesired(got, giteaSystemHookRequest{
 		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "new-secret"), Active: true, Events: []string{"push"},
-		Config: map[string]string{"url": target, "content_type": "json", "secret": "new-secret", "is_system_webhook": "true"},
+		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName("gs-1", "new-secret")), "content_type": "json", "secret": "new-secret", "is_system_webhook": "true"},
 	}) {
 		t.Fatalf("updated hook = %+v", got)
 	}
@@ -264,7 +271,7 @@ func TestEnsureSystemPushWebhook_UpdatesURLForSameManagedIdentity(t *testing.T) 
 	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
 		t.Fatalf("mutations = %v, want update", fake.mutations)
 	}
-	if len(fake.hooks) != 1 || fake.hooks[0].ID != 3 || fake.hooks[0].Config["url"] != newTarget {
+	if len(fake.hooks) != 1 || fake.hooks[0].ID != 3 || fake.hooks[0].Config["url"] != managedSystemHookURL(newTarget, managedSystemHookName("gs-1", "secret")) {
 		t.Fatalf("migrated hook = %+v", fake.hooks)
 	}
 }
@@ -316,9 +323,10 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 
 func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	markedTarget := managedSystemHookURL(target, managedSystemHookName("gs-1", "new"))
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{
-		{ID: 2, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": target, "content_type": "json", "secret": "old"}},
-		{ID: 3, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": target, "content_type": "json", "secret": "old"}},
+		{ID: 2, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": markedTarget, "content_type": "json", "secret": "old"}},
+		{ID: 3, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": markedTarget, "content_type": "json", "secret": "old"}},
 		{ID: 8, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"issues"}, IsSystemWebhook: true, Config: map[string]string{"url": target + "/other", "content_type": "json"}},
 	}}
 	server := httptest.NewServer(fake)
@@ -495,5 +503,61 @@ func TestEnsureSystemPushWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) 
 	}
 	if getCount != 1 || mutationCount != 0 {
 		t.Fatalf("requests: GET=%d mutations=%d, want GET=1 mutations=0", getCount, mutationCount)
+	}
+}
+
+func TestEnsureSystemPushWebhook_UnmarkedExactURLIsPreserved(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{{
+		ID: 11, Name: managedSystemHookServerPrefix("gs-1") + "operator-owned", Type: systemHookTypeGitea,
+		Active: true, Events: []string{"push"}, IsSystemWebhook: true,
+		Config: map[string]string{"url": target, "content_type": "json"},
+	}}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.hooks) != 2 || fake.hooks[0].ID != 11 {
+		t.Fatalf("operator hook changed: %+v", fake.hooks)
+	}
+}
+
+func TestEnsureSystemPushWebhook_RetryAfterDeleteFailure(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	fake := &fakeSystemHookGitea{deleteFailures: 1, hooks: []giteaSystemHook{desiredSystemHook(2, "gs-1", target, "old")}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err == nil {
+		t.Fatal("expected delete failure")
+	}
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.hooks) != 1 || fake.hooks[0].Name != managedSystemHookName("gs-1", "new") {
+		t.Fatalf("hooks=%+v", fake.hooks)
+	}
+}
+
+func TestManagedSystemHookURLPreservesExistingQuery(t *testing.T) {
+	base := "https://cloud.example/hook?tenant=t1&x=1"
+	got := managedSystemHookURL(base, "marker value")
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Query().Get("tenant") != "t1" || u.Query().Get("x") != "1" || u.Query().Get(systemHookMarkerQuery) != "marker value" {
+		t.Fatalf("query=%v", u.Query())
+	}
+}
+
+func TestManagedSystemHookMarkerFailClosed(t *testing.T) {
+	if got := managedSystemHookMarker("://bad%zz"); got != "" {
+		t.Fatalf("marker=%q", got)
+	}
+	if got := managedSystemHookMarker("/relative?costrict_hook=secret"); got != "" {
+		t.Fatalf("marker=%q", got)
 	}
 }
