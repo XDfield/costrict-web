@@ -83,6 +83,15 @@ DB 行 `content_backend='git'`、`source_repo_url` 非空、**`git_sha` 是 40 �
 
 > `git_sha` 为空 + `status='error'` 是已知故障形态，历史上由 binding 认领共享 registry 引起（已修）。
 
+⚠️ **`git_sha` 是异步填充的 —— 这是最容易造成假失败的一处。**
+fork 返回 201 时 `git_sha` 通常还是空、`git_sync_status='pending'`，要等 worker 处理完 `fork:` 队列才落值。
+S5 验收时抽样 30 个 fork 后**立即**查，27/30 显示空 sha + pending，形态与「binding 缺陷未修」的故障**完全一样**；
+实际是 job 才 47 秒、队列在约 7 分钟内单调排空（3 → 17 → 23 → 27 → 30）。
+
+**判断方法**：别看瞬时快照，看队列是否**单调下降**。
+连续查两次仍无变化、且 worker 存活，才是真故障。
+区分要点 —— `pending` 是排队中，`error` 才是失败；只有后者需要停下排查。
+
 ### AC2 正文回流
 Gitea 改**正文**、**不动 frontmatter** → push → 详情页正文变、`gitLastSyncedAt` 前进、
 **版本号不变**（新语义下的正确行为）。
