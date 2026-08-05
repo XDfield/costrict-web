@@ -126,7 +126,26 @@ FIX-06 的详情 content、`/download` 字节、订阅、csc 落盘 SHA 与改�
 已订阅且已安装的 git-backed plugin → Gitea 改 manifest（name + version）→ push →
 Cloud 显示新版本 → **csc 下一轮 reconcile 后本地副本的 name/version 跟着变**。
 
-> plugin 的安装落点与 skill 不同（走 marketplace 物化，不在 `~/.costrict/skills/`）。
+**最有价值的是第二轮：只改内容、不 bump version。** 那才是 V4「改正文不改版本号」
+与 csc 判据冲突的场景；只验第一轮（同时改了 version）会漏掉整个问题。
+通过的标志是本地装的 version 是**短 SHA** 而不是 manifest 里的语义版本号。
+
+> plugin 的安装落点与 skill 不同：状态在 `~/.costrict/plugins/installed_plugins.json`
+> 加版本化缓存目录，**不在 `.claude.json`**（那里 `plugins` 为空是正常的）。
+> 落点要用 `git remote -v` 证实，别靠日志文字。
+
+⚠️ **两个会导致假通过的陷阱**
+
+**1. `AGGREGATED_MARKETPLACE_SOURCE` 默认指向生产** `https://gitea.costrict.ai/…`。
+用一个装过同名 plugin 的旧 HOME 去验，装的很可能是**公共镜像**那份，与本地 fork 毫无关系，
+结果看起来通过、实则验的是线上。必须用干净 HOME 并显式指向本地：
+```bash
+export COSTRICT_PLUGIN_MARKETPLACE_URL=http://127.0.0.1:8099/cloud-api/api/marketplace/costrict-plugins/marketplace.json
+```
+
+**2. worker 按 ~10 分钟 tick 排空 `git_capability_sync_jobs`，不是按需触发。**
+实测有 job 从 pending 到开始等了 2 分 27 秒；另一轮恰好撞上 tick 只等了 5 秒、看起来像实时。
+**验收脚本里不要写秒级等待**，否则会把"还没轮到"误判成"链路断了"。
 
 ---
 
