@@ -397,3 +397,36 @@ func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) 
 		t.Fatalf("requests: GET=%d DELETE=%d, want GET=2 DELETE=0", getCount, deleteCount)
 	}
 }
+
+func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	secret := "secret"
+	getCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+			return
+		}
+		getCount++
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		switch page {
+		case 1:
+			_ = json.NewEncoder(w).Encode([]giteaSystemHook{desiredSystemHook(1, "gs-2", "https://other.example/1", "other"), desiredSystemHook(2, "gs-2", "https://other.example/2", "other")})
+		case 2:
+			_ = json.NewEncoder(w).Encode([]giteaSystemHook{desiredSystemHook(2, "gs-2", "https://other.example/2", "other")})
+		case 3:
+			_ = json.NewEncoder(w).Encode([]giteaSystemHook{desiredSystemHook(3, "gs-1", target, secret)})
+		default:
+			_ = json.NewEncoder(w).Encode([]giteaSystemHook{})
+		}
+	}))
+	defer server.Close()
+
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, secret); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if getCount != 4 {
+		t.Fatalf("GET requests = %d, want 4", getCount)
+	}
+}
