@@ -624,11 +624,9 @@ type ItemResponse struct {
 type ItemAssetsResponse struct {
 	Assets []itemAssetPayload `json:"assets"`
 	// AssetsBackend says where the item's files live when that is not the DB.
-	// It is set only for Git-backed rows — their manifest is legitimately empty,
-	// and without the marker "this item has no assets" reads the same as "its
-	// assets have not been ingested yet". Absent means DB-backed, which is what
-	// every response meant before Git backing existed, so DB-backed responses
-	// stay byte-identical rather than gaining a field that says nothing new.
+	// It is set only for Git-backed rows, whose manifest is read live rather than
+	// ingested into capability_assets. Absent means DB-backed, which preserves the
+	// response shape every existing DB-backed caller already understands.
 	AssetsBackend string `json:"assetsBackend,omitempty"`
 }
 
@@ -1324,7 +1322,7 @@ func GetItem(c *gin.Context) {
 
 // ListItemAssets godoc
 // @Summary      List item assets
-// @Description  Get the manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility. A Git-backed item keeps its files in its repository and is not indexed here: it answers with an empty list and assetsBackend="git".
+// @Description  Get the manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility. Git-backed assets are listed live from the repository tree and are not persisted in capability_assets.
 // @Tags         items
 // @Produce      json
 // @Param        id   path      string  true  "Item ID"
@@ -1332,6 +1330,8 @@ func GetItem(c *gin.Context) {
 // @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
+// @Failure      502  {object}  object{error=string,error_code=string}
+// @Failure      503  {object}  object{error=string,error_code=string}
 // @Router       /items/{id}/assets [get]
 func ListItemAssets(c *gin.Context) {
 	id := c.Param("id")
@@ -1347,20 +1347,21 @@ func ListItemAssets(c *gin.Context) {
 		return
 	}
 
-	// A Git-backed row's files live in its repository and only its top-level
-	// metadata file is served (see DownloadRegistryFile); nothing about it is
-	// indexed in capability_assets. Querying the table would return the same
-	// empty list by accident — say it deliberately, and name the backend so the
-	// caller stops expecting DB assets instead of assuming ingestion is pending.
-	//
-	// The slice must be non-nil. A nil slice marshals to `null`, and the device
-	// installer throws on a non-array `assets` and aborts the whole install,
-	// while `[]` is its ordinary "no assets" path.
 	if isGitBacked(&item) {
-		c.JSON(http.StatusOK, ItemAssetsResponse{
-			Assets:        make([]itemAssetPayload, 0),
-			AssetsBackend: contentBackendGit,
-		})
+		gitAssets, err := gitContentService().ItemAssets(c.Request.Context(), &item)
+		if err != nil {
+			herr := gitContentHTTPError(&item, err)
+			c.JSON(herr.status, herr.body)
+			return
+		}
+		assets := make([]itemAssetPayload, 0, len(gitAssets))
+		for _, asset := range gitAssets {
+			assets = append(assets, itemAssetPayload{
+				RelPath: asset.RelPath, MimeType: asset.MimeType,
+				FileSize: asset.FileSize, ContentSHA: asset.ContentSHA,
+			})
+		}
+		c.JSON(http.StatusOK, ItemAssetsResponse{Assets: assets, AssetsBackend: contentBackendGit})
 		return
 	}
 
@@ -2930,13 +2931,41 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	// does.
 	uidSum := sha256.Sum256([]byte(userID))
 	baseSlug := fmt.Sprintf("%s-fork-%x", src.Slug, uidSum[:4])
+	// Reserve the first currently-free slug before any Git side effect. Git-backed
+	// repositories are named after this value, so the DB row must use the same
+	// coordinate. A later unique race is handled as a conflict, never by renaming
+	// the DB row after the repository was provisioned.
+	selectedSlug := baseSlug
+	selected := false
+	for n := 1; n <= 10; n++ {
+		candidate := baseSlug
+		if n > 1 {
+			candidate = fmt.Sprintf("%s-%d", baseSlug, n)
+		}
+		var count int64
+		if err := h.db.Model(&models.CapabilityItem{}).
+			Where("repo_id = ? AND item_type = ? AND slug = ?", registryRepoID(h.db, PublicRegistryID), src.ItemType, candidate).
+			Count(&count).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate fork slug"})
+			return
+		}
+		if count == 0 {
+			selectedSlug = candidate
+			selected = true
+			break
+		}
+	}
+	if !selected {
+		c.JSON(http.StatusConflict, gin.H{"error": "Could not allocate a unique slug for fork", "error_code": "fork_slug_conflict"})
+		return
+	}
 
 	// Git-backed fork: an item whose content lives in a repository — or one that
 	// is being moved there — is forked on Gitea instead of being copied row by
 	// row. Runs BEFORE any DB write so a Gitea failure leaves nothing behind
 	// (see capability_item_fork_git.go). Returns (nil, nil) for every item that
 	// stays on the legacy DB path.
-	gitPlan, gitErr := planGitBackedFork(c, userID, baseSlug, src)
+	gitPlan, gitErr := planGitBackedFork(c, userID, selectedSlug, src)
 	if gitErr != nil {
 		c.JSON(gitErr.status, gitErr.body)
 		return
@@ -3021,8 +3050,8 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	var item *models.CapabilityItem
 	var err error
 	for attempt := 0; attempt < 10; attempt++ {
-		slug := baseSlug
-		if attempt > 0 {
+		slug := selectedSlug
+		if gitPlan == nil && attempt > 0 {
 			slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
 		}
 		// Fresh copy of asset records each attempt (persistNewItem mutates ID/ItemID).
@@ -3061,6 +3090,10 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 			break
 		}
 		if errors.Is(err, ErrSlugConflict) {
+			if gitPlan != nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "fork slug was claimed concurrently", "error_code": "fork_slug_race"})
+				return
+			}
 			// A unique-constraint violation here is either a slug collision OR the
 			// (forked_from_item_id, created_by) uniqueness from a concurrent fork by
 			// the same user. If a fork now exists for this user+source, return it

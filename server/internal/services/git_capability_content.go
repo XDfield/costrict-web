@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/gitserver"
@@ -73,7 +74,26 @@ type GitContentServerResolver interface {
 // calls are reads; nothing on this path writes to the repository or the DB.
 type GitCapabilityContentReader interface {
 	GetRepoByID(ctx context.Context, repoID int64) (*gitsync.Repo, error)
+	ListTree(ctx context.Context, owner, repo, ref string) ([]gitsync.GitTreeEntry, error)
 	ReadRawFile(ctx context.Context, owner, repo, ref, filePath string) ([]byte, error)
+}
+
+// GitCapabilityAsset is a repository-backed file belonging to one capability.
+// RelPath is relative to the capability root, so callers can install it without
+// exposing the repository's internal prefix (for example plugins/foo/).
+type GitCapabilityAsset struct {
+	RelPath    string
+	MimeType   string
+	FileSize   int64
+	ContentSHA string
+}
+
+type gitCapabilityContentTarget struct {
+	reader       GitCapabilityContentReader
+	owner        string
+	repo         string
+	ref          string
+	manifestPath string
 }
 
 // GitCapabilityContentService serves capability content straight from Git.
@@ -115,6 +135,66 @@ func (s *GitCapabilityContentService) ItemContent(ctx context.Context, item *mod
 // ItemContentBytes is ItemContent without the string conversion, for callers
 // that stream the payload (the download endpoints).
 func (s *GitCapabilityContentService) ItemContentBytes(ctx context.Context, item *models.CapabilityItem) ([]byte, error) {
+	target, err := s.resolveTarget(ctx, item)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := target.reader.ReadRawFile(ctx, target.owner, target.repo, target.ref, target.manifestPath)
+	if err != nil {
+		return nil, classifyGitContentError(err)
+	}
+	return raw, nil
+}
+
+// ItemAssets lists the live repository files owned by item, excluding the
+// capability manifest itself and other recognizable capability manifests.
+func (s *GitCapabilityContentService) ItemAssets(ctx context.Context, item *models.CapabilityItem) ([]GitCapabilityAsset, error) {
+	target, err := s.resolveTarget(ctx, item)
+	if err != nil {
+		return nil, err
+	}
+	return target.assets(ctx)
+}
+
+// ItemAssetBytes reads a live asset after proving that it belongs to the
+// capability's current tree. This prevents the registry route from becoming an
+// arbitrary repository-file proxy.
+func (s *GitCapabilityContentService) ItemAssetBytes(
+	ctx context.Context, item *models.CapabilityItem, relPath string,
+) ([]byte, GitCapabilityAsset, error) {
+	target, err := s.resolveTarget(ctx, item)
+	if err != nil {
+		return nil, GitCapabilityAsset{}, err
+	}
+	normalized, err := NormalizeArchivePath(relPath)
+	if err != nil || normalized != relPath {
+		return nil, GitCapabilityAsset{}, fmt.Errorf("%w: invalid asset path %q", ErrGitContentCoordinate, relPath)
+	}
+	assets, err := target.assets(ctx)
+	if err != nil {
+		return nil, GitCapabilityAsset{}, err
+	}
+	for _, asset := range assets {
+		if asset.RelPath != normalized {
+			continue
+		}
+		repoPath := normalized
+		if root := capabilityAssetRoot(target.manifestPath); root != "" {
+			repoPath = path.Join(root, normalized)
+		}
+		raw, readErr := target.reader.ReadRawFile(ctx, target.owner, target.repo, target.ref, repoPath)
+		if readErr != nil {
+			return nil, GitCapabilityAsset{}, classifyGitContentError(readErr)
+		}
+		return raw, asset, nil
+	}
+	return nil, GitCapabilityAsset{}, fmt.Errorf("%w: asset %q is not in the capability tree", ErrGitContentMissing, relPath)
+}
+
+func (s *GitCapabilityContentService) resolveTarget(
+	ctx context.Context, item *models.CapabilityItem,
+) (*gitCapabilityContentTarget, error) {
 	if s == nil || s.Resolver == nil {
 		return nil, fmt.Errorf("%w: read-through is not configured", ErrGitContentServer)
 	}
@@ -163,11 +243,59 @@ func (s *GitCapabilityContentService) ItemContentBytes(ctx context.Context, item
 		return nil, fmt.Errorf("%w: %v", ErrGitContentUnreachable, err)
 	}
 
-	raw, err := reader.ReadRawFile(ctx, owner, name, ref, filePath)
+	return &gitCapabilityContentTarget{
+		reader: reader, owner: owner, repo: name, ref: ref, manifestPath: filePath,
+	}, nil
+}
+
+func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilityAsset, error) {
+	tree, err := t.reader.ListTree(ctx, t.owner, t.repo, t.ref)
 	if err != nil {
 		return nil, classifyGitContentError(err)
 	}
-	return raw, nil
+	root := capabilityAssetRoot(t.manifestPath)
+	manifestFound := false
+	assets := make([]GitCapabilityAsset, 0)
+	for _, entry := range tree {
+		if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
+			continue
+		}
+		normalized, normalizeErr := NormalizeArchivePath(entry.Path)
+		if normalizeErr != nil || normalized != entry.Path {
+			return nil, fmt.Errorf("%w: invalid repository path %q", ErrGitContentCoordinate, entry.Path)
+		}
+		if normalized == t.manifestPath {
+			manifestFound = true
+			continue
+		}
+		if root != "" {
+			prefix := root + "/"
+			if !strings.HasPrefix(normalized, prefix) {
+				continue
+			}
+			normalized = strings.TrimPrefix(normalized, prefix)
+		}
+		// A multi-capability repository must not install another item's manifest
+		// as an attachment of this item.
+		if IsGitCapabilityManifestPath(entry.Path) {
+			continue
+		}
+		assets = append(assets, GitCapabilityAsset{
+			RelPath: normalized, MimeType: InferMimeType(normalized), FileSize: entry.Size,
+		})
+	}
+	if !manifestFound {
+		return nil, fmt.Errorf("%w: manifest %q is not in the repository tree", ErrGitContentMissing, t.manifestPath)
+	}
+	return assets, nil
+}
+
+func capabilityAssetRoot(manifestPath string) string {
+	root := path.Dir(manifestPath)
+	if root == "." || root == "/" {
+		return ""
+	}
+	return root
 }
 
 // gitCapabilityContentRef picks the ref to read at.

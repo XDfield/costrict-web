@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +81,25 @@ func (f *fakeContentGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": gitContentTestRepoID, "name": strings.Split(fullName, "/")[1],
 			"full_name": fullName, "default_branch": "main", "private": false,
+		})
+		return
+	}
+
+	if idx := strings.Index(path, "/git/trees/"); strings.HasPrefix(path, "/repos/") && idx >= 0 {
+		f.mu.Lock()
+		entries := make([]map[string]any, 0, len(f.files))
+		for filePath, content := range f.files {
+			entries = append(entries, map[string]any{
+				"path": filePath, "type": "blob", "size": len([]byte(content)),
+			})
+		}
+		f.mu.Unlock()
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i]["path"].(string) < entries[j]["path"].(string)
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tree": entries, "truncated": false, "total_count": len(entries),
 		})
 		return
 	}
@@ -402,12 +422,13 @@ func TestDownloadItem_GitBackedFailsClosedWhenGiteaIsDown(t *testing.T) {
 	}
 }
 
-// The registry route serves the main file through the same read-through, and
-// refuses the rest of the tree rather than reporting a bare "not found".
-func TestDownloadRegistryFile_GitBackedMainFileAndAssetRefusal(t *testing.T) {
+// The registry route serves both the main file and assets through live Git
+// reads, without persisting the asset in capability_assets.
+func TestDownloadRegistryFile_GitBackedMainFileAndAssetReadThrough(t *testing.T) {
 	defer setupTestDB(t)()
 	gitea := setupGitContentFixture(t)
 	gitea.setFile("skill.md", gitContentSkillFile)
+	gitea.setFile("assets/logo.png", "PNG")
 	seedGitContentItem(t, "gc-reg", "skill", "skill.md")
 
 	w := get(newRouter(""), "/api/registry/repo-gc-gc-reg/skill/gc-reg/SKILL.md")
@@ -419,11 +440,34 @@ func TestDownloadRegistryFile_GitBackedMainFileAndAssetRefusal(t *testing.T) {
 	}
 
 	w = get(newRouter(""), "/api/registry/repo-gc-gc-reg/skill/gc-reg/assets/logo.png")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for a non-main file, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a Git asset, got %d: %s", w.Code, w.Body.String())
 	}
-	if code := decodeItemBody(t, w.Body.Bytes())["error_code"]; code != "GIT_ASSET_NOT_SERVED" {
-		t.Fatalf("asset refusal is indistinguishable from a missing item: %v", code)
+	if w.Body.String() != "PNG" {
+		t.Fatalf("asset did not come from Git: %q", w.Body.String())
+	}
+}
+
+func TestListItemAssets_GitBackedListsLiveTree(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	gitea.setFile("assets/logo.png", "PNG")
+	seedGitContentItem(t, "gc-assets", "skill", "skill.md")
+
+	w := get(newItemRouter(""), "/api/items/gc-assets/assets")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body ItemAssetsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode assets: %v", err)
+	}
+	if body.AssetsBackend != contentBackendGit || len(body.Assets) != 1 {
+		t.Fatalf("unexpected assets response: %#v", body)
+	}
+	if got := body.Assets[0]; got.RelPath != "assets/logo.png" || got.FileSize != 3 {
+		t.Fatalf("unexpected Git asset: %#v", got)
 	}
 }
 
@@ -508,8 +552,7 @@ func TestDBBackedReadPathsAreUnchanged(t *testing.T) {
 	}
 }
 
-// A Git-backed row owns no capability_assets, so its asset manifest is empty —
-// and it must serialize as [] rather than null.
+// A Git-backed row with no repository assets returns [] rather than null.
 //
 // The distinction is load-bearing on the device: the installer treats a missing
 // `assets` key as "none" but throws on a non-array, aborting the whole install.
@@ -543,10 +586,10 @@ func TestListItemAssets_GitBackedReturnsEmptyArrayNotNull(t *testing.T) {
 	if payload.AssetsBackend != "git" {
 		t.Fatalf(`assetsBackend must mark where the files really are, got %q`, payload.AssetsBackend)
 	}
-	// The manifest is answered from the row alone: no repository tree is walked
-	// and no file is fetched, which is what "assets are not indexed" means.
-	if repoLookups, rawReads := gitea.counts(); repoLookups != 0 || rawReads != 0 {
-		t.Fatalf("the empty manifest made %d repo lookups and %d raw reads", repoLookups, rawReads)
+	// Listing is live: resolve the stable repository identity and walk its tree,
+	// but do not fetch file bodies until the installer asks for an asset.
+	if repoLookups, rawReads := gitea.counts(); repoLookups != 1 || rawReads != 0 {
+		t.Fatalf("the live manifest made %d repo lookups and %d raw reads", repoLookups, rawReads)
 	}
 }
 

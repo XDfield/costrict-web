@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 
@@ -349,7 +350,7 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 
 // DownloadRegistryFile godoc
 // @Summary      Download registry item file by slug
-// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Access is determined by the parent repository's visibility.
+// @Description  Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. Asset files are streamed from Git for Git-backed items and from object storage/DB otherwise. Access is determined by the parent repository's visibility.
 // @Tags         registry
 // @Produce      text/plain,application/octet-stream
 // @Param        repo      path      string  true  "Repository name"
@@ -360,6 +361,8 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 // @Failure      403       {object}  object{error=string}
 // @Failure      404       {object}  object{error=string}
 // @Failure      500       {object}  object{error=string}
+// @Failure      502       {object}  object{error=string,error_code=string}
+// @Failure      503       {object}  object{error=string,error_code=string}
 // @Router       /registry/{repo}/{itemType}/{slug}/{file} [get]
 func DownloadRegistryFile(c *gin.Context) {
 	repoID, ok := resolveRepoID(c.Param("repo"))
@@ -415,17 +418,15 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
-	// Only the top-level metadata file is served for a Git-backed row. The rest
-	// of the repository tree is not indexed as capability_assets and is not
-	// proxied through this route yet, so answering from the (empty) asset table
-	// below would report "no such file" without saying why.
 	if isGitBacked(&item) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":      "this item's files live in git and only its main file is served here",
-			"error_code": "GIT_ASSET_NOT_SERVED",
-			"repoUrl":    item.SourceRepoURL,
-			"repoRef":    item.SourceRepoRef,
-		})
+		raw, asset, err := gitContentService().ItemAssetBytes(c.Request.Context(), &item, requestedFile)
+		if err != nil {
+			herr := gitContentHTTPError(&item, err)
+			c.JSON(herr.status, herr.body)
+			return
+		}
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", path.Base(asset.RelPath)))
+		c.Data(http.StatusOK, asset.MimeType, raw)
 		return
 	}
 

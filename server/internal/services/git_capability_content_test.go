@@ -23,6 +23,8 @@ func (s stubContentResolver) ResolveByServerID(context.Context, string) (*gitser
 type stubContentReader struct {
 	repo    *gitsync.Repo
 	repoErr error
+	tree    []gitsync.GitTreeEntry
+	treeErr error
 
 	file    string
 	fileErr error
@@ -32,6 +34,10 @@ type stubContentReader struct {
 
 func (s *stubContentReader) GetRepoByID(context.Context, int64) (*gitsync.Repo, error) {
 	return s.repo, s.repoErr
+}
+
+func (s *stubContentReader) ListTree(context.Context, string, string, string) ([]gitsync.GitTreeEntry, error) {
+	return s.tree, s.treeErr
 }
 
 func (s *stubContentReader) ReadRawFile(_ context.Context, owner, repo, ref, filePath string) ([]byte, error) {
@@ -79,6 +85,38 @@ func TestGitCapabilityContent_ResolvesRepositoryByNumericIdentity(t *testing.T) 
 	}
 	if len(reader.reads) != 1 || reader.reads[0] != "renamed-owner/renamed-repo@main:skills/demo/skill.md" {
 		t.Fatalf("unexpected reads: %v", reader.reads)
+	}
+}
+
+func TestGitCapabilityContent_ListsAndReadsAssetsWithinCapabilityRoot(t *testing.T) {
+	reader := &stubContentReader{
+		repo: &gitsync.Repo{ID: 7, FullName: "owner/repo"},
+		tree: []gitsync.GitTreeEntry{
+			{Path: "skills/demo/SKILL.md", Type: "blob", Size: 10},
+			{Path: "skills/demo/assets/logo.png", Type: "blob", Size: 4},
+			{Path: "skills/other/SKILL.md", Type: "blob", Size: 12},
+		},
+		file: "logo",
+	}
+	item := gitContentItem()
+	item.SourceRepoPath = "skills/demo/SKILL.md"
+
+	assets, err := newContentSvc(reader).ItemAssets(context.Background(), item)
+	if err != nil {
+		t.Fatalf("ItemAssets: %v", err)
+	}
+	if len(assets) != 1 || assets[0].RelPath != "assets/logo.png" || assets[0].FileSize != 4 {
+		t.Fatalf("unexpected assets: %#v", assets)
+	}
+	raw, asset, err := newContentSvc(reader).ItemAssetBytes(context.Background(), item, "assets/logo.png")
+	if err != nil {
+		t.Fatalf("ItemAssetBytes: %v", err)
+	}
+	if string(raw) != "logo" || asset.RelPath != "assets/logo.png" {
+		t.Fatalf("unexpected asset read: %q %#v", raw, asset)
+	}
+	if got := reader.reads[len(reader.reads)-1]; got != "owner/repo@main:skills/demo/assets/logo.png" {
+		t.Fatalf("asset read used wrong repository path: %s", got)
 	}
 }
 
