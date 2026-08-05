@@ -14,7 +14,7 @@ import (
 // @Accept       json
 // @Produce      json
 // @Param        body  body  CreateMemoryRequest  true  "记忆数据"
-// @Success      200  {object}  models.MemoryFile
+// @Success      200  {object}  github_com_costrict_costrict-web_server_internal_models.MemoryFile
 // @Router       /memories [post]
 func CreateMemoryHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -48,7 +48,7 @@ func CreateMemoryHandler(svc *Service) gin.HandlerFunc {
 // @Produce      json
 // @Param        id    path  string  true  "记忆ID"
 // @Param        body  body  UpdateMemoryRequest  true  "更新数据"
-// @Success      200  {object}  models.MemoryFile
+// @Success      200  {object}  github_com_costrict_costrict-web_server_internal_models.MemoryFile
 // @Router       /memories/{id} [put]
 func UpdateMemoryHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -84,7 +84,7 @@ func UpdateMemoryHandler(svc *Service) gin.HandlerFunc {
 // @Param        workDir      query  string  false  "工作目录"
 // @Param        type         query  string  false  "记忆类型"
 // @Param        keyword      query  string  false  "关键词搜索"
-// @Success      200  {object}  object{items=[]models.MemoryFile}
+// @Success      200  {object}  object{items=[]github_com_costrict_costrict-web_server_internal_models.MemoryFile}
 // @Router       /memories [get]
 func ListMemoriesHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -116,7 +116,7 @@ func ListMemoriesHandler(svc *Service) gin.HandlerFunc {
 // @Tags         memories
 // @Produce      json
 // @Param        id  path  string  true  "记忆ID"
-// @Success      200  {object}  models.MemoryFile
+// @Success      200  {object}  github_com_costrict_costrict-web_server_internal_models.MemoryFile
 // @Router       /memories/{id} [get]
 func GetMemoryHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -171,7 +171,7 @@ func GetMemoryContentHandler(svc *Service) gin.HandlerFunc {
 // @Tags         memories
 // @Produce      json
 // @Param        id  path  string  true  "记忆ID"
-// @Success      200  {object}  object{items=[]models.MemoryVersion}
+// @Success      200  {object}  object{items=[]github_com_costrict_costrict-web_server_internal_models.MemoryVersion}
 // @Router       /memories/{id}/versions [get]
 func ListVersionsHandler(svc *Service) gin.HandlerFunc {
 	return func(c *gin.Context) {

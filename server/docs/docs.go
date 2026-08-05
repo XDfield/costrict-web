@@ -23,6 +23,1920 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/admin/announcements": {
+            "post": {
+                "description": "Send an in-app announcement to all users / an organization / a single user (platform admin only). Optionally also pushes to recipients' external channels.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/announcements"
+                ],
+                "summary": "Broadcast an announcement",
+                "parameters": [
+                    {
+                        "description": "Announcement",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string"
+                                },
+                                "pushExternal": {
+                                    "type": "boolean"
+                                },
+                                "scope": {
+                                    "type": "object",
+                                    "properties": {
+                                        "targetId": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "title": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "sentCount": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List management write-operation audit logs with optional filters and pagination (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/audit-logs"
+                ],
+                "summary": "List admin audit logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by action (e.g. enterprise.create)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by actor subject id",
+                        "name": "actorId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by target type",
+                        "name": "targetType",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Lower bound on created_at (RFC3339 or YYYY-MM-DD)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Upper bound on created_at (RFC3339 or YYYY-MM-DD)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (1-based)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 200)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "logs": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.AdminAuditLog"
+                                    }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/departments/children": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Direct children of a department (depth-1) for lazy-loading the admin department tree. An empty parentId returns the top-level roots; each node carries childDeptCount so the UI can show an expand affordance. Platform admin only. Returns 503 when dept-sync is not configured/unreachable.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/departments"
+                ],
+                "summary": "Department children (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Parent department id (dept_id); empty for top-level roots",
+                        "name": "parentId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "departments": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/departments/tree": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Proxy the real dept-sync department tree (platform admin only). Returns 503 when dept-sync is not configured/unreachable.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/departments"
+                ],
+                "summary": "Department tree (admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "departments": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/departments/{id}/users": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Members of one department from dept-sync, correlated to local users via universal id (platform admin only). Returns 503 when dept-sync is not configured/unreachable.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/departments"
+                ],
+                "summary": "Department members (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Department id (dept_id)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "members": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/distributions": {
+            "get": {
+                "description": "List distributions across all distributors with status/scope/search filters and pagination. Platform admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "List all distributions (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by status (active|paused|revoked)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by scope type (user|department)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search by item name / distributor / target",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (1-based)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "distributions": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/distributions/{id}/receipts": {
+            "get": {
+                "description": "List all receipts for a distribution (unread/read/accepted/dismissed). Platform admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "List distribution receipts (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Distribution ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "receipts": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/enterprise-customers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all enterprise customer configs with raw universal_id account list + resolved members (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/enterprise-customers"
+                ],
+                "summary": "List enterprise customers (admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "customers": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string"
+                                            },
+                                            "logo": {
+                                                "type": "string"
+                                            },
+                                            "members": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object"
+                                                }
+                                            },
+                                            "name": {
+                                                "type": "string"
+                                            },
+                                            "universalIds": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Create an enterprise customer branding config (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/enterprise-customers"
+                ],
+                "summary": "Create enterprise customer",
+                "parameters": [
+                    {
+                        "description": "Enterprise customer (ids = Casdoor universal_id list)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "logo": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "customer": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "logo": {
+                                            "type": "string"
+                                        },
+                                        "members": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object"
+                                            }
+                                        },
+                                        "name": {
+                                            "type": "string"
+                                        },
+                                        "universalIds": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/enterprise-customers/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update an enterprise customer branding config (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/enterprise-customers"
+                ],
+                "summary": "Update enterprise customer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Enterprise customer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Enterprise customer (ids = Casdoor universal_id list)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "logo": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "customer": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "logo": {
+                                            "type": "string"
+                                        },
+                                        "members": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object"
+                                            }
+                                        },
+                                        "name": {
+                                            "type": "string"
+                                        },
+                                        "universalIds": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Delete an enterprise customer branding config (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/enterprise-customers"
+                ],
+                "summary": "Delete enterprise customer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Enterprise customer ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/import-jobs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated import history, newest first (platform admin only).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "List import jobs (admin)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (1-based)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Submit a catalog bundle for dry-run import. Two mutually exclusive submit modes: JSON {sourceUrl,reparse} (preferred) or multipart file upload (field \"file\", optional form \"reparse\"). Returns 202 with a pending jobId; the leader-elected runner executes the dry-run asynchronously.",
+                "consumes": [
+                    "application/json",
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "Create catalog import job (admin)",
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "jobId": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/import-jobs/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Poll an import job's status and dry-run/import result (platform admin only).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "Get import job (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/import-jobs/{id}/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Promote a previewed job to the real-import phase. Rejects when the dry-run had failures, or when the delete count exceeds threshold and confirmLargeDelete is not set. Returns 202; the runner executes asynchronously.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "Confirm import job (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Confirmation flags",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "confirmLargeDelete": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/import-jobs/{id}/errors.log": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Download the job's errors + incompleteErrors as a plain-text attachment (platform admin only).",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "Download import errors log (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "plain text log",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/import-stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Current active inventory grouped by item_type, plus total (platform admin only).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/import"
+                ],
+                "summary": "Import inventory stats (admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "byType": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Cross-registry capability-item list with type/status/security-status filters for the content-management console (platform admin only). Defaults to all statuses (active + archived).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "List items (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact item type filter (skill|plugin|mcp|...)",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact status filter (active|archived); empty = all",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Security risk group (unknown|low|medium|high) or exact security_status",
+                        "name": "securityStatus",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "name/description LIKE",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact author subject_id filter",
+                        "name": "createdBy",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (1-based)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 200)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                },
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items/batch-delete": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Delete up to 200 items (any author) and their dependent records in a single transaction (platform admin only). All succeed or none do; ids that no longer exist are reported as skipped.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "Batch delete items (admin)",
+                "parameters": [
+                    {
+                        "description": "Item ids to delete",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deleted": {
+                                    "type": "integer"
+                                },
+                                "skipped": {
+                                    "type": "integer"
+                                },
+                                "skippedIds": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items/batch-status": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Take up to 200 items online/offline (active|archived) across any author in a single transaction (platform admin only). ids that no longer exist are reported as skipped.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "Batch set item status (admin)",
+                "parameters": [
+                    {
+                        "description": "Item ids + new status (active|archived)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "skipped": {
+                                    "type": "integer"
+                                },
+                                "skippedIds": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                },
+                                "updated": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items/export.csv": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Stream all items matching the same filters as the list (including missingSecurityEval / missingScore) as a CSV attachment (platform admin only). Not paginated.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "Export items as CSV (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact item type filter",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact status filter",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Security risk group or exact value",
+                        "name": "securityStatus",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "name/description LIKE",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact author subject_id",
+                        "name": "createdBy",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Only items never security-evaluated (security_status=unscanned)",
+                        "name": "missingSecurityEval",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Only items with experience_score\u003c=0",
+                        "name": "missingScore",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "CSV attachment",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Delete any author's item and its dependent records (platform admin only).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "Delete item (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/items/{id}/status": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Take an item online/offline (active|archived) across any author (platform admin only).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/items"
+                ],
+                "summary": "Set item status (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status (active|archived)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/admin/notification-channels": {
             "get": {
                 "description": "Get all system notification channels (admin only)",
@@ -300,6 +2214,753 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/organizations": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Roll up users by organization with member counts, busiest first (platform admin only). Proxied to cs-user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "List organizations (admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "organizations": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "memberCount": {
+                                                "type": "integer"
+                                            },
+                                            "organization": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/permission-grants": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List fine-grained permission grants, optionally filtered by permissionCode (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "List permission grants",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by permission code",
+                        "name": "permissionCode",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "grants": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Grant a permission to a user or department (platform admin only). For department subjects the materialized dept_path is resolved from dept-sync and stored redundantly for prefix-based inheritance.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "Grant fine-grained permission",
+                "parameters": [
+                    {
+                        "description": "Grant request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_authz.grantPermissionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "grant": {
+                                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.PermissionGrant"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/permission-grants/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Revoke a permission grant by id (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "Revoke fine-grained permission",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Grant id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/permissions/users/{userId}/grant": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Grant a system role (module permission) to a user by user ID (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "Grant module permission to user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "userId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Grant permission request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_authz.grantUserRoleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/resource-permissions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all resource permissions (menu + api) for the permission matrix (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "List resource permissions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "permissions": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ResourcePermission"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/resource-permissions/{code}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update the allowed roles for a single resource code (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/permissions"
+                ],
+                "summary": "Update resource permission",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Resource code",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Allowed roles",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_authz.updateResourcePermissionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/settings": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Return every system-level setting as a key→value map (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/settings"
+                ],
+                "summary": "List system settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "settings": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/settings/{key}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Upsert a single system setting by key (platform admin only)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/settings"
+                ],
+                "summary": "Update a system setting",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Setting key",
+                        "name": "key",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Setting value (any JSON)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "value": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "setting": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -689,6 +3350,3264 @@ const docTemplate = `{
                 }
             }
         },
+        "/admin/tenants/{tenant_id}/teams/{team_id}/sync": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Runs a full reconcile: compares expected team members (from configured provider) against current Gitea state, adds missing, removes extra. Per-member failures are collected into response.errors[] and do not abort the batch. Returns 200 even on partial success. The tenant's Git server endpoint + admin_token are resolved via cs-user per-tenant (Phase E3b.1.1).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin",
+                    "teams"
+                ],
+                "summary": "Sync Gitea team membership (manual trigger)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID (e.g. t-acme)",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Logical team ID in the provider's namespace",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_gitsync.SyncResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated/searchable/status-filtered user list for the admin console (platform admin only). Identity + status are proxied to cs-user; roles are loaded from the local user_system_roles table.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "List members (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "username/display name/email LIKE",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact organization filter",
+                        "name": "organization",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact status filter (active|disabled|banned)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (1-based)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 200)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "page": {
+                                    "type": "integer"
+                                },
+                                "pageSize": {
+                                    "type": "integer"
+                                },
+                                "total": {
+                                    "type": "integer"
+                                },
+                                "users": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/provision/backfill": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Reconcile existing cs-user users against user_git_binding by invoking ProvisionUser for every user without a synced binding. Intended for one-off migration of users created before user.created event processing was enabled. Idempotent — safe to retry.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "Backfill missing Git bindings (admin)",
+                "parameters": [
+                    {
+                        "description": "optional filters; update_display_name pushes cs-user display_name to existing Gitea users",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "max_users": {
+                                    "type": "integer"
+                                },
+                                "page_size": {
+                                    "type": "integer"
+                                },
+                                "tenant_id": {
+                                    "type": "string"
+                                },
+                                "update_display_name": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_gitsync.BackfillResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/profile": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Identity slice (cs-user) + locally-computed activity counts (capability_items, distributions sent/received) + roles (platform admin only)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "Member profile (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Member subject id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "profile": {
+                                    "type": "object"
+                                },
+                                "user": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-side profile override (R5). Unlike the user-self PATCH /api/users/me/profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. Username changes are tenant-scoped-unique-checked (409 on collision). Proxied to cs-user — the source of truth for users.username/display_name. The platform-admin guard is applied by the caller (main.go's /admin group).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "Override member username / display_name (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Member subject id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to override (at least one required)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adminuser.updateProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/internal_adminuser.adminUserResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/status": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Enable/disable/ban a member. Refuses to change the operator's own status (platform admin only). Proxied to cs-user — the source of truth for user.status.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/users"
+                ],
+                "summary": "Set member status (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Member subject id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status (active|disabled|banned)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "from_status": {
+                                    "type": "string"
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                },
+                                "to_status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/admin/git-capability-repositories/{git_repo_id}/resync": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-capability-sync"
+                ],
+                "summary": "Queue a Git capability repository resync",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Numeric Git repository id",
+                        "name": "git_repo_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "duplicate": {
+                                    "type": "boolean"
+                                },
+                                "job_id": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/git-servers": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-servers"
+                ],
+                "summary": "List all git_server rows",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_handlers.gitServerResponse"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-servers"
+                ],
+                "summary": "Create a git_server row",
+                "parameters": [
+                    {
+                        "description": "git_server fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitServerCreateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitServerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/git-servers/{server_id}": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-servers"
+                ],
+                "summary": "Read one git_server row",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "git_servers.server_id",
+                        "name": "server_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitServerResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-servers"
+                ],
+                "summary": "Update a git_server row",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "git_servers.server_id",
+                        "name": "server_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitServerUpdateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitServerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "git-servers"
+                ],
+                "summary": "Delete a git_server row (refuses if tenant bindings exist)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "git_servers.server_id",
+                        "name": "server_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/teams": {
+            "get": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "GET /api/internal/teams — paginated, single-tenant only (tenant_id from ctx). tenant_id query parameter is explicitly rejected.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "List teams (single-tenant)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "1-based page",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (max 200)",
+                        "name": "page_size",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "fuzzy match on team_display_name",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "active | archived",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.ListResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "POST /api/internal/teams — atomically creates Gitea org t-\u003cteam_short\u003e, provisions bot account, mints bot PAT, optionally applies seed members. Idempotent on team_id within the same tenant.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Create a team (atomic ns + bot account + bot token)",
+                "parameters": [
+                    {
+                        "description": "Create team request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.CreateTeamRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.CreateTeamResult"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.CreateTeamResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Precondition Failed",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/teams/{team_id}": {
+            "get": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "GET /api/internal/teams/:team_id — returns team ns + bot metadata. Never returns bot plaintext token.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Get a team by id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team UUID",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.GetTeamResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "PATCH /api/internal/teams/:team_id — mirrors display_name into team_ns; description mirrors into Gitea org description.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Patch team metadata",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team UUID",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Patch request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.PatchTeamRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "Gone",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/teams/{team_id}/bot-token:rotate": {
+            "post": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "POST /api/internal/teams/:team_id/bot-token:rotate — mints a new PAT, revokes the previous one. Returns new plaintext token once.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Rotate bot token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team UUID",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rotate request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.RotateBotTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.RotateBotTokenResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "Gone",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/teams/{team_id}/dissolve": {
+            "post": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "POST /api/internal/teams/:team_id/dissolve — archive org, purge members, revoke bot token. Idempotent.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Dissolve a team",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team UUID",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Dissolve request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.DissolveTeamRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.DissolveTeamResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/teams/{team_id}/members:sync": {
+            "post": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "POST /api/internal/teams/:team_id/members:sync — apply add/remove deltas OR full reconcile against Gitea org. Partial failures surface as members_unresolved; full-batch failure returns 404.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "teams"
+                ],
+                "summary": "Sync team members (delta or full_sync)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team UUID",
+                        "name": "team_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Sync request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.SyncMembersRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.SyncMembersResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "Gone",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/tenants/{tenant_id}/git-server": {
+            "get": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-git-server"
+                ],
+                "summary": "Read a tenant's git_server binding",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantBindingResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-git-server"
+                ],
+                "summary": "Bind a tenant to a git_server (upsert)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "git_server_id to bind",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantBindingRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantBindingResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-git-server"
+                ],
+                "summary": "Unbind a tenant from its git_server (idempotent)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID",
+                        "name": "tenant_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/users/created": {
+            "post": {
+                "security": [
+                    {
+                        "InternalToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "user-events"
+                ],
+                "summary": "Receive a user.created event from cs-user outbox",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "cs-user event id (UUID)",
+                        "name": "X-Event-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "event payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.userCreatedEventRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "event_id": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/internal/workflow/init": {
+            "post": {
+                "security": [
+                    {
+                        "InternalAuth": []
+                    }
+                ],
+                "description": "POST /api/internal/workflow/init — get-or-create wf-\u003cdef\u003e type repo + inst-\u003cshort\u003e branch, return bot credentials for git auth.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal",
+                    "workflow"
+                ],
+                "summary": "Initialize workflow type repo + instance branch",
+                "parameters": [
+                    {
+                        "description": "Workflow init request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.WorkflowInitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.WorkflowInitResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Precondition Failed",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/kb/ensure": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "POST /api/kb/ensure — get-or-create kb repo for (code_repo_url, team); JWT auth, team auto-derived or explicit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "kb",
+                    "user"
+                ],
+                "summary": "Ensure KB repo for current user (user-side)",
+                "parameters": [
+                    {
+                        "description": "KB ensure request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.KBEnsureRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.KBEnsureResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                },
+                                "hint": {
+                                    "type": "string"
+                                },
+                                "teams": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_handlers.TeamSummary"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                },
+                                "hint": {
+                                    "type": "string"
+                                },
+                                "teams": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_handlers.TeamSummary"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "412": {
+                        "description": "Precondition Failed",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated audit-log list across all tenants. Wrapper over cs-user's /api/internal/platform/audit-logs; returns 502 when the server runs in local backend mode (no audit-log data on this side per ADR D1). Filters: tenant_id / actor_subject_id / action / target_type / target_id / from / to (ISO8601) / limit (default 100, cap 500) / offset (default 0). Newest first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-audit-logs"
+                ],
+                "summary": "List audit-log entries (platform admin, cross-tenant)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact tenant_id match (cross-tenant narrowing)",
+                        "name": "tenant_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact actor_subject_id match",
+                        "name": "actor_subject_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact action match (e.g. tenant.create, user.status_changed)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_type match (e.g. tenant, user)",
+                        "name": "target_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_id match",
+                        "name": "target_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 lower bound on created_at (inclusive)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 upper bound on created_at (inclusive)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, cap 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.AuditLogListResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/tenants": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated list of all tenants. Wrapper over cs-user's /api/internal/platform/tenants; returns 502 when the server runs in local backend mode (no tenant data on this side per ADR D1).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "List tenants (platform admin)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: active | suspended | deleted",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenantListResult"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new tenant. cs-user validates slug format + uniqueness, edition enum, and email_domains non-overlap.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Create tenant (platform admin)",
+                "parameters": [
+                    {
+                        "description": "Tenant to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.platformCreateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/tenants/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns a single tenant. :id accepts either tenant_id OR slug.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Get tenant by id or slug (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates mutable fields. slug + tenant_id are immutable (silently ignored if supplied). Status changes only via suspend / restore / delete endpoints.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Partially update tenant (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.platformUpdateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/tenants/{id}/delete": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Transitions status to deleted and stamps deletion_requested_at = now. The 30-day grace hard-delete is a separate cron (out of scope).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Request tenant deletion (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/tenants/{id}/restore": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Transitions tenant status suspended → active.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Restore tenant (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/platform/tenants/{id}/suspend": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Transitions tenant status active → suspended.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform-tenants"
+                ],
+                "summary": "Suspend tenant (platform admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tenant ID or slug",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tenant/audit-logs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated audit-log list scoped to the caller's tenant. Tenant scope is forced by cs-user from the X-Tenant-Id header; client-supplied tenant_id is ignored. Wrapper over cs-user's /api/internal/tenants/audit-logs; returns 502 when the server runs in local backend mode. Filters: actor_subject_id / action / target_type / target_id / from / to (ISO8601) / limit (default 100, cap 500) / offset (default 0). Newest first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-audit-logs"
+                ],
+                "summary": "List audit-log entries (tenant admin, this tenant only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Exact actor_subject_id match",
+                        "name": "actor_subject_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact action match (e.g. tenant_config.update, user.status_changed)",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_type match",
+                        "name": "target_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact target_id match",
+                        "name": "target_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 lower bound on created_at (inclusive)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO8601 upper bound on created_at (inclusive)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 100, cap 500)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.AuditLogListResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tenant/config": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the caller's tenant_configs row. Missing row returns a synthetic default {\"config_yaml\":\"{}\"} — every tenant implicitly has an empty config. Tenant scoping is enforced by cs-user's ResolveTenant middleware via the forwarded X-Tenant-Id header — caller cannot escape their own tenant.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-config"
+                ],
+                "summary": "Read my tenant's config (tenant admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.TenantConfig"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Replaces the caller's tenant_configs.config_yaml blob. Validates the YAML parses (schema-agnostic — C3.2 accepts any well-formed YAML; C3.3 will layer typed provider_mapping checks on top). Empty / whitespace-only body normalizes to \"{}\". 64 KiB cap. The JWT subject_id is forwarded as X-Actor-Subject-Id so cs-user stamps updated_by.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-config"
+                ],
+                "summary": "Replace my tenant's config (tenant admin)",
+                "parameters": [
+                    {
+                        "description": "Raw YAML blob",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantConfigUpdateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.TenantConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tenant/provider-mapping": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the typed provider_mapping subsection. Missing subsection returns {\"providers\":{}} — every tenant implicitly has an empty mapping. Tenant scoping is enforced by cs-user's ResolveTenant middleware via the forwarded X-Tenant-Id header.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-provider-mapping"
+                ],
+                "summary": "Read my tenant's provider_mapping (tenant admin)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.ProviderMapping"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "PUT (full replace) of the provider_mapping subsection. Sibling YAML sections (employment_providers, features, etc.) are preserved by cs-user. Provider names must match ^[a-z0-9_]{1,64}$; rank non-negative; enterprise_sync.interval a positive Go duration capped at 30 days. Enabled defaults to true when omitted. The JWT subject_id is forwarded as X-Actor-Subject-Id.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-provider-mapping"
+                ],
+                "summary": "Replace my tenant's provider_mapping (tenant admin)",
+                "parameters": [
+                    {
+                        "description": "Typed provider_mapping",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.ProviderMapping"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.ProviderMapping"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tenant/users": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns active users within the caller's tenant. Optional keyword filters by username / display_name / email prefix; limit caps at 200. Tenant scoping is enforced by cs-user's ResolveTenant middleware via the forwarded X-Tenant-Id header — caller cannot escape their own tenant.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-users"
+                ],
+                "summary": "List users in my tenant (tenant admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Substring filter (username / display_name / email prefix)",
+                        "name": "keyword",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.TenantUser"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tenant/users/{id}/status": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Enable/disable/ban a member within the caller's own tenant. Refuses self-lock. Tenant scoping is enforced by cs-user via the forwarded X-Tenant-Id header — a tenant_admin cannot reach users in another tenant (the row is invisible under the scope filter and surfaces as 404). Mirrors the platform_admin endpoint (PUT /admin/users/:id/status) so the frontend can reuse the same form.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenant-users"
+                ],
+                "summary": "Set member status (tenant admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Member subject id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status (active|disabled|banned)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "from_status": {
+                                    "type": "string"
+                                },
+                                "success": {
+                                    "type": "boolean"
+                                },
+                                "to_status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/artifacts/upload": {
             "post": {
                 "description": "Upload a file artifact for a skill item",
@@ -775,7 +6694,7 @@ const docTemplate = `{
         },
         "/artifacts/{id}": {
             "delete": {
-                "description": "Delete an artifact by ID and remove its stored file",
+                "description": "Delete an artifact record by ID. Stored objects are retained for offline garbage collection.",
                 "produces": [
                     "application/json"
                 ],
@@ -868,6 +6787,164 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/bind/cancel-merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Cancels the merge operation when the user declines the merge dialog.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Cancel account merge",
+                "parameters": [
+                    {
+                        "description": "Merge token to cancel",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "merge_token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/bind/confirm-merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "After the user confirms the merge dialog on the frontend, this endpoint",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Confirm account merge",
+                "parameters": [
+                    {
+                        "description": "Merge token from the OAuth redirect",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "merge_token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -1052,14 +7129,14 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/identities/{id}/unbind": {
+        "/auth/identities/{provider}/unbind": {
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Unbinds an auth identity from the current user",
+                "description": "Unbinds an auth identity from the current user by provider type",
                 "produces": [
                     "application/json"
                 ],
@@ -1069,9 +7146,9 @@ const docTemplate = `{
                 "summary": "Unbind auth identity",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "Identity ID",
-                        "name": "id",
+                        "type": "string",
+                        "description": "Provider type (e.g. idtrust, github, phone)",
+                        "name": "provider",
                         "in": "path",
                         "required": true
                     }
@@ -1146,7 +7223,7 @@ const docTemplate = `{
         },
         "/auth/logout": {
             "post": {
-                "description": "Invalidate current session, revoke token at Casdoor, and clear auth cookie",
+                "description": "Clear the auth cookie. Does NOT revoke the token at Casdoor to avoid invalidating sessions in other systems (e.g., credit-manager).",
                 "produces": [
                     "application/json"
                 ],
@@ -1237,6 +7314,63 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/resolve": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resolves the current user from auth cookie/JWT and returns user_id + email + primary_identity. Used by gateway auth_request for Gitea reverse proxy authentication.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Resolve auth user for gateway",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "email": {
+                                    "type": "string"
+                                },
+                                "primary_identity": {
+                                    "type": "string"
+                                },
+                                "user_id": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "headers": {
+                            "X-CS-Email": {
+                                "type": "string",
+                                "description": "User email for gateway"
+                            },
+                            "X-CS-User": {
+                                "type": "string",
+                                "description": "User subject ID for gateway"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2115,7 +8249,7 @@ const docTemplate = `{
         },
         "/devices": {
             "get": {
-                "description": "Get all devices registered by the authenticated user",
+                "description": "Get all devices registered by the authenticated user, with update availability info",
                 "produces": [
                     "application/json"
                 ],
@@ -2240,15 +8374,18 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Different user: unauthorized device registration",
+                        "description": "Recovery available: user must decide",
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "deviceId": {
-                                    "type": "string"
-                                },
                                 "error": {
                                     "type": "string"
+                                },
+                                "recoverableDevice": {
+                                    "type": "object"
+                                },
+                                "recoveryAvailable": {
+                                    "type": "boolean"
                                 }
                             }
                         }
@@ -2344,7 +8481,6 @@ const docTemplate = `{
                 "tags": [
                     "devices"
                 ],
-                "summary": "Update device",
                 "parameters": [
                     {
                         "type": "string",
@@ -2490,6 +8626,90 @@ const docTemplate = `{
                 }
             }
         },
+        "/devices/{deviceID}/fingerprint": {
+            "put": {
+                "description": "Record the current machine fingerprint (MAC-based hash) for a device, enabling recovery when hardware changes",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "devices"
+                ],
+                "summary": "Update legacy fingerprint",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Legacy fingerprint",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "legacyDeviceId": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ok": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/devices/{deviceID}/token/rotate": {
             "post": {
                 "description": "Rotate the authentication token for a device",
@@ -2537,6 +8757,451 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/eligible-users": {
+            "get": {
+                "description": "Search users the current operator may distribute to. Platform admins can see all active users; department managers only see users inside managed subtrees.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Search users eligible for distribution",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search keyword",
+                        "name": "q",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "users": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/my/authority": {
+            "get": {
+                "description": "The current user's distribution reach: unlimited for platform admins, otherwise the department subtrees they lead (manage). Drives the frontend distribute entry + department picker scope. Any authenticated user may query their own.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "My distribution authority",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionAuthority"
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/my/received": {
+            "get": {
+                "description": "Get all distributions received by the current user with item details",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "List my received distributions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "receipts": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/my/sent": {
+            "get": {
+                "description": "Get all distributions sent by the current user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "List my sent distributions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "distributions": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/{id}": {
+            "put": {
+                "description": "Update a distribution's status, permission mode, or message",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Update distribution",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Distribution ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update fields",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                },
+                                "permissionMode": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Revoke a distribution (soft delete)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Revoke distribution",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Distribution ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/{id}/dismiss": {
+            "post": {
+                "description": "Dismiss a received distribution from the user's view",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Dismiss distribution receipt",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Distribution ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/distributions/{id}/read": {
+            "post": {
+                "description": "Mark a received distribution as read",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Mark distribution as read",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Distribution ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/enterprise-customers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all enterprise customer branding configs (readable by any authenticated user)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enterprise-customers"
+                ],
+                "summary": "List enterprise customers",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "customers": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string"
+                                            },
+                                            "ids": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                }
+                                            },
+                                            "logo": {
+                                                "type": "string"
+                                            },
+                                            "name": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -2787,6 +9452,9 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "properties": {
+                                "apiBaseURL": {
+                                    "type": "string"
+                                },
                                 "capacity": {
                                     "type": "integer"
                                 },
@@ -3571,6 +10239,18 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Filter to sub-skills bundled by the given parent plugin item ID",
+                        "name": "parentPluginId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Hide bundled sub-skills from the result when true",
+                        "name": "excludeSubSkills",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Page number (default: 1)",
                         "name": "page",
@@ -3755,6 +10435,90 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "delete": {
+                "description": "Delete up to 200 of the caller's own items (or any items for a platform admin) and their dependent records in a single transaction. All authorized deletes succeed or none do. Items the caller may not delete are reported in ` + "`" + `forbidden` + "`" + `; ids that no longer exist are reported in ` + "`" + `skipped` + "`" + `.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Batch delete items",
+                "parameters": [
+                    {
+                        "description": "Item ids to delete",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "deleted": {
+                                    "type": "integer"
+                                },
+                                "forbidden": {
+                                    "type": "integer"
+                                },
+                                "skipped": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "/items/filter-options": {
@@ -3780,6 +10544,139 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/git": {
+            "post": {
+                "description": "Provision \u003cshort_id\u003e/\u003cslug\u003e on the tenant's Gitea with a manifest skeleton, then register the capability as a Git-backed index row. The body of the capability is written in Gitea, not here — the response carries sourceRepoUrl / sourceRepoRef / sourceRepoPath for the hand-off.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Create a Git-backed item",
+                "parameters": [
+                    {
+                        "description": "Capability to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "author": {
+                                    "type": "string"
+                                },
+                                "category": {
+                                    "type": "string"
+                                },
+                                "description": {
+                                    "type": "string"
+                                },
+                                "itemType": {
+                                    "type": "string"
+                                },
+                                "license": {
+                                    "type": "string"
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "slug": {
+                                    "type": "string"
+                                },
+                                "tags": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "version": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -3915,7 +10812,7 @@ const docTemplate = `{
         },
         "/items/{id}": {
             "get": {
-                "description": "Get skill item by ID with registry, artifacts, repo visibility, and populated tags",
+                "description": "Get skill item by ID with registry, artifacts, repo visibility, and populated tags. Access is determined by the parent repository's visibility.",
                 "produces": [
                     "application/json"
                 ],
@@ -3939,12 +10836,51 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_handlers.ItemResponse"
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -4097,6 +11033,28 @@ const docTemplate = `{
                             }
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -4212,7 +11170,7 @@ const docTemplate = `{
         },
         "/items/{id}/assets": {
             "get": {
-                "description": "Get current text assets of a skill item for on-demand editor loading",
+                "description": "Get the manifest for current text and binary assets of an item. Access is determined by the parent repository's visibility. Git-backed assets are listed live from the repository tree and are not persisted in capability_assets.",
                 "produces": [
                     "application/json"
                 ],
@@ -4236,6 +11194,17 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_handlers.ItemAssetsResponse"
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
                         "schema": {
@@ -4253,6 +11222,34 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -4327,6 +11324,28 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -4421,6 +11440,136 @@ const docTemplate = `{
                 }
             }
         },
+        "/items/{id}/distribute": {
+            "post": {
+                "description": "Push (distribute) an item to users or departments with specified permission mode.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "Push item to targets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Distribution request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "distributions": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/distributions": {
+            "get": {
+                "description": "Get distributions for a specific item scoped to the caller. Non-admin callers only see distributions they sent; platform admins see all distributions for the item.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "distributions"
+                ],
+                "summary": "List item distributions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "distributions": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/items/{id}/download": {
             "get": {
                 "description": "Download the Markdown content of a capability item (skill/subagent/command) as a file. Access is determined by the parent repository's visibility.",
@@ -4464,6 +11613,34 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -4638,6 +11815,101 @@ const docTemplate = `{
                 }
             }
         },
+        "/items/{id}/fork": {
+            "post": {
+                "description": "Create a personal copy of a public capability item under the current user, placed in the public registry, recording fork provenance (forkedFromItemId/ownerId). Only public, non-archive items not owned by the caller can be forked; each user may fork a given source item once.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Fork an item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Source item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/items/{id}/improve": {
             "post": {
                 "description": "Apply suggested improvements to a skill",
@@ -4697,6 +11969,85 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/items/{id}/mcp-config": {
+            "put": {
+                "description": "Save the current user's filled placeholder values for an MCP item (merge; empty v clears a key). Returns the saved status (owner-only).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "items"
+                ],
+                "summary": "Upsert per-user MCP config values",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Field values",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.upsertMCPConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "mcpConfig": {
+                                    "$ref": "#/definitions/internal_handlers.MCPConfigStatus"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -5354,6 +12705,28 @@ const docTemplate = `{
                             }
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
@@ -5412,57 +12785,6 @@ const docTemplate = `{
                             }
                         }
                     },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/marketplace/{repo}/marketplace.json": {
-            "get": {
-                "description": "Return installable Git-backed plugins as a standard csc marketplace manifest. Plugin sources are pinned to the last successfully synced commit.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "marketplace"
-                ],
-                "summary": "Get marketplace.json",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Marketplace identity: costrict-plugins, public, or a repository name",
-                        "name": "repo",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.marketplaceManifest"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
                     "403": {
                         "description": "Forbidden",
                         "schema": {
@@ -5476,17 +12798,6 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "error": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -5892,6 +13203,430 @@ const docTemplate = `{
                                     "type": "string"
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/marketplace/{repo}/marketplace.json": {
+            "get": {
+                "description": "Return installable Git-backed plugins as a standard csc marketplace manifest. Plugin sources are pinned to the last successfully synced commit.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "marketplace"
+                ],
+                "summary": "Get marketplace.json",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Marketplace identity: costrict-plugins, public, or a repository name",
+                        "name": "repo",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.marketplaceManifest"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/me": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the authenticated user's basic identity and account activity metadata. Deliberately excludes Casdoor infrastructure IDs, external identity keys, organization, system roles, and the auth{} map surfaced by the legacy /api/auth/me — only basic profile fields plus last-login / last-sync / created-at timestamps. Falls back to /api/auth/me for richer fields when the caller needs them.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Get current user (privacy-scoped)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/memories": {
+            "get": {
+                "description": "按项目路径、工作目录、类型、关键词过滤查询当前用户的记忆列表",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "查询记忆列表",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "项目路径",
+                        "name": "projectPath",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "工作目录",
+                        "name": "workDir",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "记忆类型",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "关键词搜索",
+                        "name": "keyword",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "创建新记忆或更新已存在的记忆（按 userID + projectPath + slug 去重）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "上报记忆",
+                "parameters": [
+                    {
+                        "description": "记忆数据",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_memory.CreateMemoryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
+                        }
+                    }
+                }
+            }
+        },
+        "/memories/{id}": {
+            "get": {
+                "description": "获取指定记忆的元信息（不含内容）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "获取记忆详情",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "更新指定记忆的内容，可选择创建新版本或覆盖当前版本",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "更新记忆",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新数据",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_memory.UpdateMemoryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryFile"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "软删除指定记忆及其所有版本记录",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "删除记忆",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/memories/{id}/content": {
+            "get": {
+                "description": "获取指定记忆当前版本的 markdown 内容",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "获取记忆内容",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/memories/{id}/versions": {
+            "get": {
+                "description": "获取指定记忆的所有历史版本",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "获取版本列表",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.MemoryVersion"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/memories/{id}/versions/{version}/content": {
+            "get": {
+                "description": "获取指定记忆指定版本的 markdown 内容",
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "memories"
+                ],
+                "summary": "获取指定版本内容",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "记忆ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "版本号",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -6430,6 +14165,169 @@ const docTemplate = `{
                                 },
                                 "success": {
                                     "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/plugins/builtin": {
+            "get": {
+                "description": "Get all plugins marked as built-in (is_builtin = true).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "plugins"
+                ],
+                "summary": "List built-in plugins",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_handlers.builtinPluginItemResponse"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/plugins/upload": {
+            "post": {
+                "description": "Upload a plugin zip file to create or overwrite a plugin item.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "plugins"
+                ],
+                "summary": "Upload a plugin archive",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target repository ID",
+                        "name": "repo_id",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Plugin zip archive",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.ItemResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/plugins/{slug}/download": {
+            "get": {
+                "description": "Download a plugin (and its assets) packaged as a zip file.",
+                "produces": [
+                    "application/zip"
+                ],
+                "tags": [
+                    "plugins"
+                ],
+                "summary": "Download plugin zip",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Plugin slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
                                 }
                             }
                         }
@@ -8219,6 +16117,17 @@ const docTemplate = `{
                                 }
                             }
                         }
+                    },
+                    "503": {
+                        "description": "sync disabled by security policy",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -8550,7 +16459,7 @@ const docTemplate = `{
         },
         "/registry/{repo}/{itemType}/{slug}/{file}": {
             "get": {
-                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. For asset files (images, binaries, etc.), streams the file with its original MIME type from storage. Access is determined by the parent repository's visibility.",
+                "description": "Download a specific file of an item identified by repo/itemType/slug/filename. For the main content file (e.g. SKILL.md), returns text/plain content directly. Asset files are streamed from Git for Git-backed items and from object storage/DB otherwise. Access is determined by the parent repository's visibility.",
                 "produces": [
                     "text/plain",
                     "application/octet-stream"
@@ -8624,6 +16533,34 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -9823,6 +17760,17 @@ const docTemplate = `{
                                 }
                             }
                         }
+                    },
+                    "503": {
+                        "description": "sync disabled by security policy",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -10135,6 +18083,17 @@ const docTemplate = `{
                             "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncJob"
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
                         "schema": {
@@ -10172,6 +18131,17 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.SyncLog"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
                         }
                     },
                     "404": {
@@ -11548,6 +19518,57 @@ const docTemplate = `{
                 }
             }
         },
+        "/tenants/suggest": {
+            "get": {
+                "description": "Resolve which tenant(s) an email address belongs to by domain lookup against cs-user. Used by the login picker UI when subdomain resolution (Layer 1) and the OAuth callback's automatic resolution (Layer 2) come back ambiguous. Returns a three-state body — ok / ambiguous / not_found — so the frontend can auto-redirect, render a picker, or fall back to the default tenant respectively. Unavailable when the server runs in local backend mode (no tenant data on this side per ADR D1).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tenants"
+                ],
+                "summary": "Suggest tenants for an email domain",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User email address; domain is extracted and matched against tenant email_domains",
+                        "name": "email",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.tenantSuggestResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/users/info": {
             "get": {
                 "description": "Query a user's basic information by user ID, including name and avatar URL.",
@@ -11646,6 +19667,293 @@ const docTemplate = `{
                 }
             }
         },
+        "/users/me/complete-registration": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "One-shot. Sets username + display_name and marks profile_completed_at = NOW(). Subsequent calls return 409. username is immutable from the user side after this call.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Finish first-time registration",
+                "parameters": [
+                    {
+                        "description": "Username + optional display_name",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.completeRegistrationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/internal_handlers.meUserDTO"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/users/me/profile": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "username is NOT editable from the user side; admin overrides go through a separate admin RPC.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Update display_name (user self-edit)",
+                "parameters": [
+                    {
+                        "description": "display_name to set",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.updateMyProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "user": {
+                                    "$ref": "#/definitions/internal_handlers.meUserDTO"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/users/me/suggest-profile": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Pure-function hint from the Casdoor-brokered JWT claims (R4). Frontend uses this to pre-fill the registration form. Returns empty strings when the backend has no mapping logic (local) or the provider is unrecognised; caller should treat that as \"user must type it in\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Suggest registration profile from IdP claims",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "display_name": {
+                                    "type": "string"
+                                },
+                                "username": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/users/me/username-available": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Real-time validation for the registration form. Returns available=true when free, available=false with reason ∈ {taken, invalid_format, reserved} otherwise.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "me"
+                ],
+                "summary": "Check username availability",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Candidate username",
+                        "name": "username",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.usernameAvailableResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/users/names": {
             "get": {
                 "description": "Given a comma-separated list of user IDs, return a map of id -\u003e displayName. Results are served from an in-memory cache when possible.",
@@ -11696,7 +20004,7 @@ const docTemplate = `{
         },
         "/users/search": {
             "get": {
-                "description": "Search users by username or email keyword (requires authentication)",
+                "description": "Search users by username or display name keyword (requires authentication). Returns only basic, non-sensitive fields.",
                 "produces": [
                     "application/json"
                 ],
@@ -11707,7 +20015,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search keyword",
+                        "description": "Search keyword (min 1 character)",
                         "name": "q",
                         "in": "query",
                         "required": true
@@ -11722,8 +20030,19 @@ const docTemplate = `{
                                 "users": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser"
+                                        "$ref": "#/definitions/internal_handlers.userSearchResult"
                                     }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
                                 }
                             }
                         }
@@ -12671,108 +20990,145 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "internal_handlers.marketplaceManifest": {
+        "github_com_costrict_costrict-web_server_internal_deptsync.Dept": {
             "type": "object",
             "properties": {
-                "name": {
-                    "type": "string"
+                "childDeptCount": {
+                    "type": "integer"
                 },
-                "owner": {
-                    "$ref": "#/definitions/internal_handlers.marketplaceOwner"
-                },
-                "plugins": {
+                "children": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/internal_handlers.marketplacePluginEntry"
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept"
                     }
+                },
+                "deptId": {
+                    "type": "string"
+                },
+                "deptLevel": {
+                    "type": "integer"
+                },
+                "deptName": {
+                    "type": "string"
+                },
+                "deptPath": {
+                    "type": "string"
+                },
+                "leaderId": {
+                    "type": "string"
+                },
+                "orderNum": {
+                    "type": "integer"
+                },
+                "parentDeptId": {
+                    "type": "string"
                 }
             }
         },
-        "internal_handlers.marketplaceOwner": {
+        "github_com_costrict_costrict-web_server_internal_gitsync.BackfillFailure": {
             "type": "object",
             "properties": {
-                "email": {
+                "error": {
                     "type": "string"
                 },
-                "name": {
+                "subject_id": {
                     "type": "string"
                 }
             }
         },
-        "internal_handlers.marketplacePluginEntry": {
+        "github_com_costrict_costrict-web_server_internal_gitsync.BackfillResult": {
             "type": "object",
             "properties": {
-                "category": {
+                "already_bound": {
+                    "type": "integer"
+                },
+                "display_name_updated": {
+                    "type": "integer"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "failures": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_gitsync.BackfillFailure"
+                    }
+                },
+                "provisioned": {
+                    "type": "integer"
+                },
+                "skipped": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_gitsync.MemberSyncError": {
+            "type": "object",
+            "properties": {
+                "error": {
                     "type": "string"
                 },
-                "description": {
+                "gitea_username": {
                     "type": "string"
                 },
-                "name": {
+                "operation": {
+                    "description": "\"add\" | \"remove\"",
                     "type": "string"
-                },
-                "source": {
-                    "$ref": "#/definitions/internal_handlers.marketplacePluginSource"
-                },
-                "strict": {
-                    "type": "boolean"
-                },
-                "tags": {
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_gitsync.SyncResult": {
+            "type": "object",
+            "properties": {
+                "added": {
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
-                "version": {
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_gitsync.MemberSyncError"
+                    }
+                },
+                "gitea_team_id": {
+                    "type": "integer"
+                },
+                "removed": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "skipped": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "team_id": {
                     "type": "string"
                 }
             }
         },
-        "internal_handlers.marketplacePluginSource": {
+        "github_com_costrict_costrict-web_server_internal_gitsync.UserSpaceInfo": {
             "type": "object",
             "properties": {
-                "path": {
+                "git_username": {
                     "type": "string"
                 },
-                "ref": {
+                "ready": {
+                    "type": "boolean"
+                },
+                "sync_status": {
+                    "description": "\"synced\" | \"pending\" | \"error\" | \"\"",
                     "type": "string"
                 },
-                "sha": {
-                    "type": "string"
-                },
-                "source": {
-                    "type": "string"
-                },
-                "url": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_casdoor.CasdoorUser": {
-            "type": "object",
-            "properties": {
-                "email": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "owner": {
-                    "type": "string"
-                },
-                "picture": {
-                    "type": "string"
-                },
-                "preferred_username": {
-                    "type": "string"
-                },
-                "sub": {
-                    "type": "string"
-                },
-                "universal_id": {
+                "user_subject_id": {
                     "type": "string"
                 }
             }
@@ -12842,6 +21198,32 @@ const docTemplate = `{
                 "ActionFeedback",
                 "ActionIgnore"
             ]
+        },
+        "github_com_costrict_costrict-web_server_internal_models.AdminAuditLog": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actorId": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "payload": {
+                    "type": "object"
+                },
+                "targetId": {
+                    "type": "string"
+                },
+                "targetType": {
+                    "type": "string"
+                }
+            }
         },
         "github_com_costrict_costrict-web_server_internal_models.BehaviorLog": {
             "type": "object",
@@ -13005,6 +21387,10 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentBackend": {
+                    "description": "db | git",
+                    "type": "string"
+                },
                 "contentMd5": {
                     "type": "string"
                 },
@@ -13020,8 +21406,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "embeddingUpdatedAt": {
-                    "type": "string"
+                "descriptions": {
+                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
+                    "type": "object"
                 },
                 "evaluation": {
                     "type": "object"
@@ -13032,6 +21419,25 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
+                "forkedFromItemId": {
+                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
+                    "type": "string"
+                },
+                "gitLastSyncedAt": {
+                    "type": "string"
+                },
+                "gitSha": {
+                    "description": "最近成功写入索引的 default-branch commit",
+                    "type": "string"
+                },
+                "gitSyncStatus": {
+                    "description": "pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空",
+                    "type": "string"
+                },
                 "health": {
                     "type": "object"
                 },
@@ -13040,6 +21446,9 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
+                },
+                "isBuiltIn": {
+                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -13051,6 +21460,10 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "parentPluginId": {
+                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -13078,11 +21491,23 @@ const docTemplate = `{
                 "sourcePath": {
                     "type": "string"
                 },
+                "sourceRepoPath": {
+                    "description": "主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页",
+                    "type": "string"
+                },
+                "sourceRepoRef": {
+                    "description": "仓库 ref（分支）",
+                    "type": "string"
+                },
+                "sourceRepoUrl": {
+                    "description": "Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。\nContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。",
+                    "type": "string"
+                },
                 "sourceSha": {
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive",
+                    "description": "direct | archive | fork",
                     "type": "string"
                 },
                 "status": {
@@ -13208,6 +21633,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "descriptions": {
+                    "type": "object"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -13321,6 +21749,83 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_server_internal_models.ItemDistribution": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "distributorId": {
+                    "type": "string"
+                },
+                "expiresAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "item": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityItem"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "permissionMode": {
+                    "description": "readonly | dismissible",
+                    "type": "string"
+                },
+                "revokedAt": {
+                    "type": "string"
+                },
+                "scopeType": {
+                    "description": "user | department",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "active | paused | revoked",
+                    "type": "string"
+                },
+                "targetId": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.ItemDistributionReceipt": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "distribution": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemDistribution"
+                },
+                "distributionId": {
+                    "type": "string"
+                },
+                "forkedItemId": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "receiptStatus": {
+                    "description": "unread | read | dismissed | accepted",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "userId": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_server_internal_models.ItemTagDict": {
             "type": "object",
             "properties": {
@@ -13339,6 +21844,68 @@ const docTemplate = `{
                 "tagClass": {
                     "description": "system | custom",
                     "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.MemoryFile": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "currentVersion": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "projectPath": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "user | feedback | project | reference",
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "userId": {
+                    "type": "string"
+                },
+                "workDir": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.MemoryVersion": {
+            "type": "object",
+            "properties": {
+                "contentMD5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "memoryFileId": {
+                    "type": "string"
+                },
+                "storageKey": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "integer"
                 }
             }
         },
@@ -13376,6 +21943,34 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "userId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.PermissionGrant": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "deptPath": {
+                    "description": "部门授权时冗余存其 dept_path",
+                    "type": "string"
+                },
+                "grantedBy": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "permissionCode": {
+                    "type": "string"
+                },
+                "subjectId": {
+                    "type": "string"
+                },
+                "subjectType": {
+                    "description": "user | department",
                     "type": "string"
                 }
             }
@@ -13588,6 +22183,33 @@ const docTemplate = `{
                 },
                 "visibility": {
                     "description": "public | private",
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_models.ResourcePermission": {
+            "type": "object",
+            "properties": {
+                "allowedRoles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "resourceCode": {
+                    "type": "string"
+                },
+                "resourceType": {
+                    "description": "menu | api",
+                    "type": "string"
+                },
+                "updatedAt": {
                     "type": "string"
                 }
             }
@@ -13996,6 +22618,84 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_costrict_costrict-web_server_internal_services.DistributeItemRequest": {
+            "type": "object",
+            "required": [
+                "permissionMode",
+                "targets"
+            ],
+            "properties": {
+                "expiresAt": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "permissionMode": {
+                    "type": "string",
+                    "enum": [
+                        "readonly",
+                        "dismissible"
+                    ]
+                },
+                "targets": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.DistributionTarget"
+                    }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.DistributionAuthority": {
+            "type": "object",
+            "properties": {
+                "departments": {
+                    "description": "Departments are the managed subtrees (the departments the user leads). For an\nunlimited operator this is empty and the frontend uses the full admin tree.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_deptsync.Dept"
+                    }
+                },
+                "unlimited": {
+                    "description": "Unlimited is true for platform admins (may distribute to anyone / any scope).",
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.DistributionTarget": {
+            "type": "object",
+            "required": [
+                "scopeType",
+                "targetId"
+            ],
+            "properties": {
+                "scopeType": {
+                    "description": "user | department",
+                    "type": "string"
+                },
+                "targetId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_services.EligibleDistributionUser": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_costrict_costrict-web_server_internal_services.ItemBehaviorStats": {
             "type": "object",
             "properties": {
@@ -14090,6 +22790,10 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentBackend": {
+                    "description": "db | git",
+                    "type": "string"
+                },
                 "contentMd5": {
                     "type": "string"
                 },
@@ -14105,8 +22809,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "embeddingUpdatedAt": {
-                    "type": "string"
+                "descriptions": {
+                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
+                    "type": "object"
                 },
                 "evaluation": {
                     "type": "object"
@@ -14117,6 +22822,25 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
+                "forkedFromItemId": {
+                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
+                    "type": "string"
+                },
+                "gitLastSyncedAt": {
+                    "type": "string"
+                },
+                "gitSha": {
+                    "description": "最近成功写入索引的 default-branch commit",
+                    "type": "string"
+                },
+                "gitSyncStatus": {
+                    "description": "pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空",
+                    "type": "string"
+                },
                 "health": {
                     "type": "object"
                 },
@@ -14125,6 +22849,9 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
+                },
+                "isBuiltIn": {
+                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -14136,6 +22863,10 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "parentPluginId": {
+                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -14169,11 +22900,23 @@ const docTemplate = `{
                 "sourcePath": {
                     "type": "string"
                 },
+                "sourceRepoPath": {
+                    "description": "主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页",
+                    "type": "string"
+                },
+                "sourceRepoRef": {
+                    "description": "仓库 ref（分支）",
+                    "type": "string"
+                },
+                "sourceRepoUrl": {
+                    "description": "Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。\nContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。",
+                    "type": "string"
+                },
                 "sourceSha": {
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive",
+                    "description": "direct | archive | fork",
                     "type": "string"
                 },
                 "status": {
@@ -14261,6 +23004,10 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentBackend": {
+                    "description": "db | git",
+                    "type": "string"
+                },
                 "contentMd5": {
                     "type": "string"
                 },
@@ -14276,8 +23023,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "embeddingUpdatedAt": {
-                    "type": "string"
+                "descriptions": {
+                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
+                    "type": "object"
                 },
                 "evaluation": {
                     "type": "object"
@@ -14288,6 +23036,25 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
+                "forkedFromItemId": {
+                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
+                    "type": "string"
+                },
+                "gitLastSyncedAt": {
+                    "type": "string"
+                },
+                "gitSha": {
+                    "description": "最近成功写入索引的 default-branch commit",
+                    "type": "string"
+                },
+                "gitSyncStatus": {
+                    "description": "pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空",
+                    "type": "string"
+                },
                 "health": {
                     "type": "object"
                 },
@@ -14296,6 +23063,9 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
+                },
+                "isBuiltIn": {
+                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -14307,6 +23077,10 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "parentPluginId": {
+                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -14337,11 +23111,23 @@ const docTemplate = `{
                 "sourcePath": {
                     "type": "string"
                 },
+                "sourceRepoPath": {
+                    "description": "主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页",
+                    "type": "string"
+                },
+                "sourceRepoRef": {
+                    "description": "仓库 ref（分支）",
+                    "type": "string"
+                },
+                "sourceRepoUrl": {
+                    "description": "Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。\nContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。",
+                    "type": "string"
+                },
                 "sourceSha": {
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive",
+                    "description": "direct | archive | fork",
                     "type": "string"
                 },
                 "status": {
@@ -14427,168 +23213,6 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_costrict_costrict-web_server_internal_services.UsageActivityResponse": {
-            "type": "object",
-            "properties": {
-                "git_repo_url": {
-                    "type": "string"
-                },
-                "range": {
-                    "type": "object",
-                    "properties": {
-                        "from": {
-                            "type": "string"
-                        },
-                        "to": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "users": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageUserActivity"
-                    }
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.UsageDaily": {
-            "type": "object",
-            "properties": {
-                "date": {
-                    "type": "string"
-                },
-                "requests": {
-                    "type": "integer"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportItem": {
-            "type": "object",
-            "required": [
-                "date",
-                "git_repo_url",
-                "message_id",
-                "model_id",
-                "session_id",
-                "updated"
-            ],
-            "properties": {
-                "cache_read_tokens": {
-                    "type": "integer"
-                },
-                "cache_write_tokens": {
-                    "type": "integer"
-                },
-                "cost": {
-                    "type": "number"
-                },
-                "date": {
-                    "type": "string"
-                },
-                "git_repo_url": {
-                    "type": "string"
-                },
-                "git_worktree": {
-                    "type": "string"
-                },
-                "input_tokens": {
-                    "type": "integer"
-                },
-                "message_id": {
-                    "type": "string"
-                },
-                "model_id": {
-                    "type": "string"
-                },
-                "output_tokens": {
-                    "type": "integer"
-                },
-                "provider_id": {
-                    "type": "string"
-                },
-                "reasoning_tokens": {
-                    "type": "integer"
-                },
-                "request_id": {
-                    "type": "string"
-                },
-                "request_time": {
-                    "type": "string"
-                },
-                "rounds": {
-                    "type": "integer"
-                },
-                "session_id": {
-                    "type": "string"
-                },
-                "updated": {
-                    "type": "string"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportRequest": {
-            "type": "object",
-            "required": [
-                "reports"
-            ],
-            "properties": {
-                "client_version": {
-                    "type": "string"
-                },
-                "device_id": {
-                    "type": "string"
-                },
-                "reported_at": {
-                    "type": "string"
-                },
-                "reports": {
-                    "type": "array",
-                    "maxItems": 500,
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageReportItem"
-                    }
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.UsageReportResponse": {
-            "type": "object",
-            "properties": {
-                "accepted": {
-                    "type": "integer"
-                },
-                "errors": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "skipped": {
-                    "type": "integer"
-                }
-            }
-        },
-        "github_com_costrict_costrict-web_server_internal_services.UsageUserActivity": {
-            "type": "object",
-            "properties": {
-                "daily": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_services.UsageDaily"
-                    }
-                },
-                "total_requests": {
-                    "type": "integer"
-                },
-                "user_id": {
-                    "type": "string"
-                },
-                "username": {
-                    "type": "string"
-                }
-            }
-        },
         "github_com_costrict_costrict-web_server_internal_services.WorkspaceWithDeviceStatus": {
             "type": "object",
             "properties": {
@@ -14638,6 +23262,630 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "userId": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.BotView": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "gitea_user_id": {
+                    "type": "integer"
+                },
+                "gitea_username": {
+                    "type": "string"
+                },
+                "rotated_at": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "token_id": {
+                    "type": "integer"
+                },
+                "token_sha256": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.CreateTeamRequest": {
+            "type": "object",
+            "properties": {
+                "creator": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                },
+                "initial_members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                    }
+                },
+                "team_display_name": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.CreateTeamResult": {
+            "type": "object",
+            "properties": {
+                "audit_log_id": {
+                    "type": "string"
+                },
+                "bot": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.BotView"
+                },
+                "created": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.CreatedFlags"
+                },
+                "git_server_id": {
+                    "type": "string"
+                },
+                "gitea_base_url": {
+                    "type": "string"
+                },
+                "members_added_count": {
+                    "type": "integer"
+                },
+                "team_display_name": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                },
+                "team_ns_org": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.CreatedFlags": {
+            "type": "object",
+            "properties": {
+                "bot_account": {
+                    "type": "boolean"
+                },
+                "bot_token": {
+                    "type": "boolean"
+                },
+                "team_ns": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.DissolveTeamRequest": {
+            "type": "object",
+            "properties": {
+                "actor": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.DissolveTeamResult": {
+            "type": "object",
+            "properties": {
+                "archived": {
+                    "type": "boolean"
+                },
+                "audit_log_id": {
+                    "type": "string"
+                },
+                "bot_token_revoked": {
+                    "type": "boolean"
+                },
+                "members_removed_count": {
+                    "type": "integer"
+                },
+                "retention_until": {
+                    "type": "string"
+                },
+                "team_ns_org": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.GetTeamResult": {
+            "type": "object",
+            "properties": {
+                "bot": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.BotView"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "git_server_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "team_display_name": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                },
+                "team_ns_org": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.ListResult": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
+                },
+                "page_size": {
+                    "type": "integer"
+                },
+                "teams": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.ListTeamItem"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.ListTeamItem": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "team_display_name": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                },
+                "team_ns_org": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.PatchTeamRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "team_display_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.RotateBotTokenRequest": {
+            "type": "object",
+            "properties": {
+                "actor": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.RotateBotTokenResult": {
+            "type": "object",
+            "properties": {
+                "audit_log_id": {
+                    "type": "string"
+                },
+                "bot": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.BotView"
+                },
+                "previous_token_revoked": {
+                    "type": "boolean"
+                },
+                "team_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.SyncMembersRequest": {
+            "type": "object",
+            "properties": {
+                "add_members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                    }
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "remove_members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.UserRef"
+                    }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.SyncMembersResult": {
+            "type": "object",
+            "properties": {
+                "audit_log_id": {
+                    "type": "string"
+                },
+                "members_added_count": {
+                    "type": "integer"
+                },
+                "members_removed_count": {
+                    "type": "integer"
+                },
+                "members_unresolved": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_teamns.UnresolvedMember"
+                    }
+                },
+                "team_ns_org": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_teamns.UnresolvedMember": {
+            "type": "object",
+            "properties": {
+                "employee_number": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.AuditLogEntry": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "actor_platform_scope": {
+                    "type": "string"
+                },
+                "actor_subject_id": {
+                    "type": "string"
+                },
+                "actor_tenant_role": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "ip": {
+                    "type": "string"
+                },
+                "payload": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "target_id": {
+                    "type": "string"
+                },
+                "target_type": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "user_agent": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.AuditLogListResult": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "logs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.AuditLogEntry"
+                    }
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.EnterpriseSync": {
+            "type": "object",
+            "properties": {
+                "interval": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.PlatformTenant": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "deletion_requested_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "string"
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.PlatformTenantListResult": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "tenants": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.PlatformTenant"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.Provider": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "enterprise_sync": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.EnterpriseSync"
+                },
+                "field_map": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "rank": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.ProviderMapping": {
+            "type": "object",
+            "properties": {
+                "providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_user.Provider"
+                    }
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.TenantConfig": {
+            "type": "object",
+            "properties": {
+                "config_yaml": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.TenantUser": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_costrict_costrict-web_server_internal_user.UserRef": {
+            "type": "object",
+            "properties": {
+                "employee_number": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adminuser.adminUserResponse": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "lastLoginAt": {
+                    "type": "string"
+                },
+                "organization": {
+                    "type": "string"
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "universalId": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adminuser.updateProfileRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_authz.grantPermissionRequest": {
+            "type": "object",
+            "required": [
+                "permissionCode",
+                "subjectId",
+                "subjectType"
+            ],
+            "properties": {
+                "permissionCode": {
+                    "type": "string"
+                },
+                "subjectId": {
+                    "type": "string"
+                },
+                "subjectType": {
+                    "description": "user | department",
+                    "type": "string"
+                },
+                "targetDeptId": {
+                    "description": "TargetDeptID is an optional target department, used only when the grant binds\na TARGET department to a USER subject — i.e. the metrics-view preset\n\"kanban.scope.dept\" where a specific user A is allowed to see an extra\ndepartment Y (and its subtree) beyond their own. The target department's\nmaterialized dept_path is resolved from dept-sync and stored in the grant's\ndept_path, which ResolveUserScope reads as the extra-visible prefix for A.\n(For department subjects the dept_path is the SUBJECT department's own path,\nresolved from SubjectID; TargetDeptID is ignored there.)",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_authz.grantUserRoleRequest": {
+            "type": "object",
+            "required": [
+                "role"
+            ],
+            "properties": {
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_authz.updateResourcePermissionRequest": {
+            "type": "object",
+            "properties": {
+                "allowedRoles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "internal_handlers.BotCredentialsView": {
+            "type": "object",
+            "properties": {
+                "clone_url_with_token": {
+                    "type": "string"
+                },
+                "gitea_user_id": {
+                    "type": "integer"
+                },
+                "gitea_username": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }
@@ -14711,6 +23959,10 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/internal_handlers.itemAssetPayload"
                     }
+                },
+                "assetsBackend": {
+                    "description": "AssetsBackend says where the item's files live when that is not the DB.\nIt is set only for Git-backed rows, whose manifest is read live rather than\ningested into capability_assets. Absent means DB-backed, which preserves the\nresponse shape every existing DB-backed caller already understands.",
+                    "type": "string"
                 }
             }
         },
@@ -14758,6 +24010,10 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentBackend": {
+                    "description": "db | git — 内容真相源；git 时正文/文件树在仓库里",
+                    "type": "string"
+                },
                 "contentMd5": {
                     "type": "string"
                 },
@@ -14774,10 +24030,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "description": {
+                    "description": "Resolved per ` + "`" + `?lang=` + "`" + ` query or Accept-Language header; en is the default. Use ` + "`" + `descriptions` + "`" + ` for raw locale map.",
                     "type": "string"
                 },
-                "embeddingUpdatedAt": {
-                    "type": "string"
+                "descriptions": {
+                    "description": "Raw locale → text map, e.g. {\"en\":\"...\",\"zh\":\"...\"}.",
+                    "type": "object"
                 },
                 "evaluation": {
                     "type": "object"
@@ -14791,7 +24049,22 @@ const docTemplate = `{
                 "favorited": {
                     "type": "boolean"
                 },
+                "forkCount": {
+                    "description": "本 item 被 fork 的次数",
+                    "type": "integer"
+                },
+                "forkedFromItemId": {
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "type": "string"
+                },
                 "gitLastSyncedAt": {
+                    "description": "仅 git-backed：最近一次成功写入 Git 投影的时间",
+                    "type": "string"
+                },
+                "gitSyncStatus": {
+                    "description": "仅 git-backed：pending | synced | error | orphaned",
                     "type": "string"
                 },
                 "health": {
@@ -14803,16 +24076,43 @@ const docTemplate = `{
                 "installCount": {
                     "type": "integer"
                 },
+                "isBuiltIn": {
+                    "type": "boolean"
+                },
                 "itemType": {
                     "type": "string"
                 },
                 "lastScanId": {
                     "type": "string"
                 },
+                "mcpConfig": {
+                    "description": "per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_handlers.MCPConfigStatus"
+                        }
+                    ]
+                },
                 "metadata": {
                     "type": "object"
                 },
+                "myForkItemId": {
+                    "description": "当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）",
+                    "type": "string"
+                },
                 "name": {
+                    "type": "string"
+                },
+                "parentPluginId": {
+                    "description": "sub-skill: 所属父 plugin item ID",
+                    "type": "string"
+                },
+                "parentPluginName": {
+                    "description": "父 plugin 展示名（供「来自插件 X」徽章）",
+                    "type": "string"
+                },
+                "parentPluginSlug": {
+                    "description": "父 plugin slug（供跳转）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -14825,6 +24125,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "repoId": {
+                    "type": "string"
+                },
+                "repoName": {
                     "type": "string"
                 },
                 "repoVisibility": {
@@ -14840,6 +24143,18 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "sourcePath": {
+                    "type": "string"
+                },
+                "sourceRepoPath": {
+                    "description": "仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空",
+                    "type": "string"
+                },
+                "sourceRepoRef": {
+                    "description": "仅 git-backed：分支",
+                    "type": "string"
+                },
+                "sourceRepoUrl": {
+                    "description": "仅 git-backed：仓库地址",
                     "type": "string"
                 },
                 "sourceSha": {
@@ -14868,6 +24183,102 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.KBEnsureCreated": {
+            "type": "object",
+            "properties": {
+                "kb_repo": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_handlers.KBEnsureRequest": {
+            "type": "object",
+            "properties": {
+                "code_repo_url": {
+                    "type": "string"
+                },
+                "space_id": {
+                    "description": "team_id or user_subject_id",
+                    "type": "string"
+                },
+                "space_type": {
+                    "description": "\"\" | \"team\" | \"user\"",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.KBEnsureResponse": {
+            "type": "object",
+            "properties": {
+                "algorithm_version": {
+                    "type": "string"
+                },
+                "bot_credentials": {
+                    "$ref": "#/definitions/internal_handlers.BotCredentialsView"
+                },
+                "created": {
+                    "$ref": "#/definitions/internal_handlers.KBEnsureCreated"
+                },
+                "kb_clone_url": {
+                    "type": "string"
+                },
+                "kb_repo_path": {
+                    "description": "--- Repo info (populated only when a repo was created) ---",
+                    "type": "string"
+                },
+                "kb_web_url": {
+                    "type": "string"
+                },
+                "personal_space": {
+                    "description": "user's personal space",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_gitsync.UserSpaceInfo"
+                        }
+                    ]
+                },
+                "space_type": {
+                    "description": "--- Space overview (always populated) ---",
+                    "type": "string"
+                },
+                "team_space": {
+                    "description": "user's default team",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_handlers.TeamSpaceInfo"
+                        }
+                    ]
+                }
+            }
+        },
+        "internal_handlers.MCPConfigStatus": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.MCPFieldStatus"
+                    }
+                }
+            }
+        },
+        "internal_handlers.MCPFieldStatus": {
+            "type": "object",
+            "properties": {
+                "hasValue": {
+                    "type": "boolean"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "secret": {
+                    "type": "boolean"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.MyItem": {
             "type": "object",
             "properties": {
@@ -14889,6 +24300,10 @@ const docTemplate = `{
                 "content": {
                     "type": "string"
                 },
+                "contentBackend": {
+                    "description": "db | git",
+                    "type": "string"
+                },
                 "contentMd5": {
                     "type": "string"
                 },
@@ -14904,8 +24319,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
-                "embeddingUpdatedAt": {
-                    "type": "string"
+                "descriptions": {
+                    "description": "{\"en\":\"...\",\"zh\":\"...\"} — locale → text map; flat ` + "`" + `description` + "`" + ` is the en/default resolution",
+                    "type": "object"
                 },
                 "evaluation": {
                     "type": "object"
@@ -14916,6 +24332,31 @@ const docTemplate = `{
                 "favoriteCount": {
                     "type": "integer"
                 },
+                "favorited": {
+                    "type": "boolean"
+                },
+                "forkCount": {
+                    "type": "integer"
+                },
+                "forkedFromItemId": {
+                    "description": "Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）",
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "description": "源 item 的 createdBy，用于展示原作者（源删除后仍可解析）",
+                    "type": "string"
+                },
+                "gitLastSyncedAt": {
+                    "type": "string"
+                },
+                "gitSha": {
+                    "description": "最近成功写入索引的 default-branch commit",
+                    "type": "string"
+                },
+                "gitSyncStatus": {
+                    "description": "pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空",
+                    "type": "string"
+                },
                 "health": {
                     "type": "object"
                 },
@@ -14924,6 +24365,9 @@ const docTemplate = `{
                 },
                 "installCount": {
                     "type": "integer"
+                },
+                "isBuiltIn": {
+                    "type": "boolean"
                 },
                 "itemType": {
                     "type": "string"
@@ -14935,6 +24379,10 @@ const docTemplate = `{
                     "type": "object"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "parentPluginId": {
+                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
                     "type": "string"
                 },
                 "previewCount": {
@@ -14968,11 +24416,23 @@ const docTemplate = `{
                 "sourcePath": {
                     "type": "string"
                 },
+                "sourceRepoPath": {
+                    "description": "主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页",
+                    "type": "string"
+                },
+                "sourceRepoRef": {
+                    "description": "仓库 ref（分支）",
+                    "type": "string"
+                },
+                "sourceRepoUrl": {
+                    "description": "Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。\nContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。",
+                    "type": "string"
+                },
                 "sourceSha": {
                     "type": "string"
                 },
                 "sourceType": {
-                    "description": "direct | archive",
+                    "description": "direct | archive | fork",
                     "type": "string"
                 },
                 "status": {
@@ -15044,6 +24504,40 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.TeamSpaceInfo": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "org_name": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.TeamSummary": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "team_id": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.VersionResponse": {
             "type": "object",
             "properties": {
@@ -15074,6 +24568,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "descriptions": {
+                    "type": "object"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -15096,6 +24593,333 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "versionLabel": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.WorkflowInitCreated": {
+            "type": "object",
+            "properties": {
+                "instance_branch": {
+                    "type": "boolean"
+                },
+                "type_repo": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_handlers.WorkflowInitRequest": {
+            "type": "object",
+            "properties": {
+                "instance_id": {
+                    "type": "string"
+                },
+                "skip_instance_branch": {
+                    "description": "SkipInstanceBranch omits the per-instance branch creation. Set by\nworkspace/workflow activation (no run yet); left false at issue/run\ntime so the per-run inst branch is created.",
+                    "type": "boolean"
+                },
+                "team_id": {
+                    "type": "string"
+                },
+                "workflow_def_slug": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.WorkflowInitResponse": {
+            "type": "object",
+            "properties": {
+                "algorithm_version": {
+                    "type": "string"
+                },
+                "bot_credentials": {
+                    "$ref": "#/definitions/internal_handlers.BotCredentialsView"
+                },
+                "created": {
+                    "$ref": "#/definitions/internal_handlers.WorkflowInitCreated"
+                },
+                "instance_branch": {
+                    "type": "string"
+                },
+                "team_ns_exists": {
+                    "type": "boolean"
+                },
+                "wf_clone_url": {
+                    "type": "string"
+                },
+                "wf_repo_path": {
+                    "type": "string"
+                },
+                "wf_web_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.builtinPluginAssetResponse": {
+            "type": "object",
+            "properties": {
+                "contentSha": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "fileSize": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "mimeType": {
+                    "type": "string"
+                },
+                "relPath": {
+                    "type": "string"
+                },
+                "storageBackend": {
+                    "type": "string"
+                },
+                "storageKey": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.builtinPluginItemResponse": {
+            "type": "object",
+            "properties": {
+                "assets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.builtinPluginAssetResponse"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "contentMd5": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "type": "string"
+                },
+                "currentRevision": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "descriptions": {},
+                "evaluation": {},
+                "favoriteCount": {
+                    "type": "integer"
+                },
+                "forkedFromItemId": {
+                    "type": "string"
+                },
+                "forkedFromOwnerId": {
+                    "type": "string"
+                },
+                "health": {},
+                "id": {
+                    "type": "string"
+                },
+                "installCount": {
+                    "type": "integer"
+                },
+                "isBuiltIn": {
+                    "type": "boolean"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "lastScanId": {
+                    "type": "string"
+                },
+                "metadata": {},
+                "name": {
+                    "type": "string"
+                },
+                "previewCount": {
+                    "type": "integer"
+                },
+                "registry": {
+                    "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.CapabilityRegistry"
+                },
+                "registryId": {
+                    "type": "string"
+                },
+                "repoId": {
+                    "type": "string"
+                },
+                "securityStatus": {
+                    "type": "string"
+                },
+                "shareUrl": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "sourcePath": {
+                    "type": "string"
+                },
+                "sourceSha": {
+                    "type": "string"
+                },
+                "sourceType": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_costrict_costrict-web_server_internal_models.ItemTagDict"
+                    }
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "updatedBy": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.completeRegistrationRequest": {
+            "type": "object",
+            "required": [
+                "username"
+            ],
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.eventUserBody": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "short_id": {
+                    "type": "string"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.gitServerCreateRequest": {
+            "type": "object",
+            "required": [
+                "display_name",
+                "endpoint",
+                "kind"
+            ],
+            "properties": {
+                "config": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "endpoint": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.gitServerResponse": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "endpoint": {
+                    "type": "string"
+                },
+                "is_template": {
+                    "type": "boolean"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "server_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.gitServerUpdateRequest": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "endpoint": {
+                    "type": "string"
+                },
+                "kind": {
                     "type": "string"
                 }
             }
@@ -15171,6 +24995,188 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.marketplaceManifest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/internal_handlers.marketplaceOwner"
+                },
+                "plugins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.marketplacePluginEntry"
+                    }
+                }
+            }
+        },
+        "internal_handlers.marketplaceOwner": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.marketplacePluginEntry": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "source": {
+                    "$ref": "#/definitions/internal_handlers.marketplacePluginSource"
+                },
+                "strict": {
+                    "type": "boolean"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.marketplacePluginSource": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
+                "sha": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.mcpFieldEntry": {
+            "type": "object",
+            "properties": {
+                "secret": {
+                    "type": "boolean"
+                },
+                "v": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.meUserDTO": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "lastLoginAt": {
+                    "type": "string"
+                },
+                "lastSyncAt": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "subjectId": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.platformCreateRequest": {
+            "type": "object",
+            "required": [
+                "display_name",
+                "slug"
+            ],
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.platformUpdateRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "edition": {
+                    "type": "string"
+                },
+                "email_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "features": {
+                    "type": "string"
+                },
+                "limits": {
+                    "type": "string"
+                },
+                "settings": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.setItemTagsRequest": {
             "type": "object",
             "properties": {
@@ -15207,6 +25213,98 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.tenantBindingRequest": {
+            "type": "object",
+            "required": [
+                "git_server_id"
+            ],
+            "properties": {
+                "git_server_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantBindingResponse": {
+            "type": "object",
+            "properties": {
+                "bound_at": {
+                    "type": "string"
+                },
+                "git_server_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantCandidateDTO": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantConfigUpdateRequest": {
+            "type": "object",
+            "required": [
+                "config_yaml"
+            ],
+            "properties": {
+                "config_yaml": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.tenantSuggestResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.tenantCandidateDTO"
+                    }
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.updateMyProfileRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.upsertMCPConfigRequest": {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/internal_handlers.mcpFieldEntry"
+                    }
+                }
+            }
+        },
         "internal_handlers.userBasicInfoResponse": {
             "type": "object",
             "properties": {
@@ -15214,6 +25312,122 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.userCreatedEventRequest": {
+            "type": "object",
+            "required": [
+                "event_id",
+                "event_type",
+                "subject_id",
+                "user"
+            ],
+            "properties": {
+                "event_id": {
+                    "type": "string"
+                },
+                "event_type": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "subject_id": {
+                    "type": "string"
+                },
+                "tenant_id": {
+                    "type": "string"
+                },
+                "user": {
+                    "$ref": "#/definitions/internal_handlers.eventUserBody"
+                }
+            }
+        },
+        "internal_handlers.userSearchResult": {
+            "type": "object",
+            "properties": {
+                "avatarUrl": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.usernameAvailableResponse": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_memory.CreateMemoryRequest": {
+            "type": "object",
+            "required": [
+                "content",
+                "name",
+                "projectPath",
+                "slug",
+                "type"
+            ],
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "projectPath": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "user",
+                        "feedback",
+                        "project",
+                        "reference"
+                    ]
+                },
+                "workDir": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_memory.UpdateMemoryRequest": {
+            "type": "object",
+            "required": [
+                "content"
+            ],
+            "properties": {
+                "bumpVersion": {
+                    "type": "boolean"
+                },
+                "content": {
+                    "type": "string"
+                },
+                "description": {
                     "type": "string"
                 },
                 "name": {
