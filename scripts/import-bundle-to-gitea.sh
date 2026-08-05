@@ -289,7 +289,15 @@ push_one() {
                 "$(json_quote "$id")")")"
         code="$(resp_code "$out")"
         case "$code" in
-        201) created=1 ;;
+        201)
+            created=1
+            # Only a 201 is this run creating the repository. created.txt is what
+            # the closing summary counts as "repositories created this run", and
+            # it is also what cleanup_created consults, so recording a repository
+            # this worker did not create would both inflate the number and
+            # nominate somebody else's repository for deletion.
+            printf '%s\n' "$id" >>"${STATE_DIR}/created.txt"
+            ;;
         409)
             # Lost a race with a concurrent worker; treat as present.
             created=0
@@ -299,7 +307,6 @@ push_one() {
             return 1
             ;;
         esac
-        printf '%s\n' "$id" >>"${STATE_DIR}/created.txt"
         branch="main"
         ;;
     *)
