@@ -459,3 +459,53 @@ func TestMapClaimsToModel_IdtrustFallbackDerivesProvider(t *testing.T) {
 		t.Errorf("ProviderUserID: got %q, want idt-1001", got.ProviderUserID)
 	}
 }
+
+// TestMapClaimsToModel_GithubPropertiesFallbackDerivesProvider is the
+// regression lock for the silent external_key mismatch reported in production:
+// Casdoor's GitHub OAuth login JWTs frequently omit the top-level `provider`
+// claim while populating `properties.oauth_GitHub_*`. Without the properties-
+// based fallback, Provider stays "" and BuildExternalKey produces
+// `casdoor:<universal_id>` instead of `casdoor:github:<universal_id>` —
+// reissue-token 404s because the lookup key diverges from the row
+// GetOrCreateUser wrote. The payload below mirrors the real token that
+// surfaced the bug.
+func TestMapClaimsToModel_GithubPropertiesFallbackDerivesProvider(t *testing.T) {
+	claims := jwt.MapClaims{
+		"sub":                "d20c2d71-1b73-4266-b900-108c4ffccd73",
+		"universal_id":       "d20c2d71-1b73-4266-b900-108c4ffccd73",
+		"id":                 "221669007",
+		"name":               "Lucian-Montgomery",
+		"displayName":        "gh_Lucian-Montgomery",
+		"signupApplication":  "application_v94pr3",
+		"iss":                "http://casdoor:8000",
+		"exp":                time.Now().Add(time.Hour).Unix(),
+		// NOTE: no `provider` / `primary_provider` key — the github provider
+		// must be inferred from `properties.oauth_GitHub_*`.
+		"properties": map[string]any{
+			"oauth_GitHub_id":          "221669007",
+			"oauth_GitHub_username":    "Lucian-Montgomery",
+			"oauth_GitHub_displayName": "gh_Lucian-Montgomery",
+			"oauth_GitHub_email":       "nigulasi0909@gmail.com",
+		},
+	}
+	got := mapClaimsToModel(claims)
+
+	if got.Provider != "github" {
+		t.Errorf("Provider: got %q, want \"github\" (properties fallback failed)", got.Provider)
+	}
+	if got.UniversalID != "d20c2d71-1b73-4266-b900-108c4ffccd73" {
+		t.Errorf("UniversalID: got %q", got.UniversalID)
+	}
+	// The github switch must still derive username/displayName from the
+	// oauth_GitHub_* sub-keys now that the prefix is correctly resolved.
+	if got.PreferredUsername != "gh_Lucian-Montgomery" {
+		t.Errorf("PreferredUsername: got %q, want gh_Lucian-Montgomery", got.PreferredUsername)
+	}
+	if got.ProviderUserID != "221669007" {
+		t.Errorf("ProviderUserID: got %q, want 221669007", got.ProviderUserID)
+	}
+	// ExternalClaims must still carry the raw payload (harvest unchanged).
+	if got.ExternalClaims["signupApplication"] != "application_v94pr3" {
+		t.Errorf("ExternalClaims['signupApplication']: got %v", got.ExternalClaims["signupApplication"])
+	}
+}

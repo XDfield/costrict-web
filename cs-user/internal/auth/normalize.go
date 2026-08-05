@@ -1,12 +1,12 @@
 // Package auth: claim normalization.
 //
-// FIXME(认证流程迁移): 本文件是 server/internal/authidentity/normalize.go 的
-// 等价副本 —— cs-user 作为 platform identity authority 必须自己拥有完整的
-// Casdoor claims 规范化规则（provider 推导、phone fallback、idtrust 检测、
-// per-provider username/displayName 派生等），不再依赖 server 转交的派生结果。
-// 当前问题：reissue-token 阶段 cs-user 自己验签后只做裸字段拷贝，external_key
-// 拼接漏掉 provider，与 GetOrCreateUser 写入的键不一致 → 404。详见 casdoor_verifier.go
-// 的 mapClaimsToModel。
+// 本文件是 server/internal/authidentity/normalize.go 的等价副本 —— cs-user
+// 作为 platform identity authority 必须自己拥有完整的 Casdoor claims 规范化
+// 规则（provider 推导、phone fallback、idtrust 检测、properties.oauth_GitHub_*
+// 反推、per-provider username/displayName 派生等），不再依赖 server 转交的
+// 派生结果。两侧实现必须保持 byte-for-byte 等价 —— GetOrCreateUser（server）
+// 与 ReissueToken（cs-user）从同一份 Casdoor JWT 必须推出同一个 external_key，
+// 任何分歧都会让 reissue-token 因 lookup 落空而 404。
 //
 // 副本策略：保留 server 的 normalize.go 原样不动（server middleware 仍在用），
 // cs-user 拥有独立的副本；待 server 的 middleware auth 也通过 cs-user RPC 完成
@@ -60,6 +60,20 @@ func NormalizeClaimsMap(claims map[string]any) *NormalizedClaims {
 	if provider == "" {
 		if signupApp := str(claims, "signupApplication"); strings.EqualFold(signupApp, "idtrust") {
 			provider = "idtrust"
+		}
+	}
+
+	// Fallback: infer github from properties when provider is still not set.
+	// Casdoor frequently omits the top-level `provider` claim on GitHub OAuth
+	// logins while still populating `properties.oauth_GitHub_*`. Without this
+	// inference, provider stays "" and buildExternalKey produces
+	// `casdoor:<universal_id>` instead of `casdoor:github:<universal_id>` —
+	// a silent mismatch between GetOrCreateUser and reissue-token that 404s
+	// the latter. Only the github prefix is inferred here; custom/idtrust
+	// share `oauth_Custom_*` and are disambiguated by signupApplication above.
+	if provider == "" {
+		if props := mapAny(claims["properties"]); hasProviderPrefix(props, "oauth_GitHub_") {
+			provider = "github"
 		}
 	}
 
@@ -177,6 +191,22 @@ func providerProp(properties map[string]any, prefix, suffix string) string {
 		}
 	}
 	return ""
+}
+
+// hasProviderPrefix reports whether any key in properties starts with the
+// given prefix. Used to infer provider from `properties.oauth_GitHub_*`
+// presence without caring which sub-keys (id / username / email / ...) are
+// populated — different Casdoor deployments emit different subsets.
+func hasProviderPrefix(properties map[string]any, prefix string) bool {
+	if len(properties) == 0 || prefix == "" {
+		return false
+	}
+	for k := range properties {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func str(claims map[string]any, keys ...string) string {
