@@ -125,6 +125,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 
 func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error) {
 	all := make([]giteaSystemHook, 0)
+	seen := make(map[int64]struct{})
 	for page := 1; page <= systemHookListMaxPages; page++ {
 		path := fmt.Sprintf("/api/v1/admin/hooks?type=system&page=%d&limit=%d", page, systemHookListPageSize)
 		resp, err := c.doJSON(ctx, http.MethodGet, path, nil, http.StatusOK)
@@ -137,8 +138,21 @@ func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error)
 		if decodeErr != nil {
 			return nil, fmt.Errorf("%w: decode system webhooks page %d: %v", ErrGiteaUnreachable, page, decodeErr)
 		}
-		all = append(all, hooks...)
 		if len(hooks) == 0 {
+			return all, nil
+		}
+		newHooks := 0
+		for _, hook := range hooks {
+			if _, ok := seen[hook.ID]; ok {
+				continue
+			}
+			seen[hook.ID] = struct{}{}
+			all = append(all, hook)
+			newHooks++
+		}
+		// Some Gitea versions ignore page parameters and repeat the same
+		// result. Once a page contributes no new IDs, the listing is stable.
+		if newHooks == 0 {
 			return all, nil
 		}
 	}

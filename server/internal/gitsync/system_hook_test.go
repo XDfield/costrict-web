@@ -369,3 +369,31 @@ func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) 
 		t.Fatalf("requests: GET=%d mutations=%d, want GET=%d mutations=0", getCount, mutationCount, systemHookListMaxPages)
 	}
 }
+
+func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	hook := desiredSystemHook(2, "gs-1", target, "secret")
+	getCount := 0
+	deleteCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCount++
+			_ = json.NewEncoder(w).Encode([]giteaSystemHook{hook})
+		case http.MethodDelete:
+			deleteCount++
+			http.Error(w, "unexpected duplicate delete", http.StatusNotFound)
+		default:
+			http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if getCount != 2 || deleteCount != 0 {
+		t.Fatalf("requests: GET=%d DELETE=%d, want GET=2 DELETE=0", getCount, deleteCount)
+	}
+}
