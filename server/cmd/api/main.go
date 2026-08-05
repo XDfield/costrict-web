@@ -870,7 +870,13 @@ func main() {
 			// feature is unconfigured.
 			admin.POST("/tenants/:tenant_id/teams/:team_id/sync", handlers.SyncTeam)
 			gitCapabilityResyncAPI := handlers.NewGitCapabilityResyncAPI(db)
-			admin.POST("/git-capability-repositories/:git_repo_id/resync", gitCapabilityResyncAPI.ResyncGitCapabilityRepository)
+			// Both path segments are the repository's identity: a Gitea numeric
+			// repo id is unique only within one server, so the server id is not
+			// decoration. It is a path segment rather than an optional query
+			// parameter precisely so it cannot be omitted — a caller that leaves
+			// it out gets a router 404 instead of a resync of somebody else's
+			// repository reported as success.
+			admin.POST("/git-capability-repositories/:git_server_id/:git_repo_id/resync", gitCapabilityResyncAPI.ResyncGitCapabilityRepository)
 
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.

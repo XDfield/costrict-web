@@ -3952,10 +3952,15 @@ paths:
       summary: Update enterprise customer
       tags:
       - admin/enterprise-customers
-  /admin/git-capability-repositories/{git_repo_id}/resync:
+  /admin/git-capability-repositories/{git_server_id}/{git_repo_id}/resync:
     post:
       parameters:
-      - description: Numeric Git repository id
+      - description: Stable Git server id the repository belongs to
+        in: path
+        name: git_server_id
+        required: true
+        type: string
+      - description: Numeric Git repository id, unique only within that server
         in: path
         name: git_repo_id
         required: true

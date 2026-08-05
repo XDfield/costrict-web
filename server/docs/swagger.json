@@ -974,7 +974,7 @@
                 }
             }
         },
-        "/admin/git-capability-repositories/{git_repo_id}/resync": {
+        "/admin/git-capability-repositories/{git_server_id}/{git_repo_id}/resync": {
             "post": {
                 "security": [
                     {
@@ -990,8 +990,15 @@
                 "summary": "Queue a Git capability repository resync",
                 "parameters": [
                     {
+                        "type": "string",
+                        "description": "Stable Git server id the repository belongs to",
+                        "name": "git_server_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
                         "type": "integer",
-                        "description": "Numeric Git repository id",
+                        "description": "Numeric Git repository id, unique only within that server",
                         "name": "git_repo_id",
                         "in": "path",
                         "required": true

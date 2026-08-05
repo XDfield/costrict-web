@@ -36,11 +36,39 @@ func seedResyncRepo(t *testing.T, id int64, valid bool) {
 	t.Helper()
 	repo := models.GitCapabilityRepository{ID: "repo-1", GitServerID: "gs-1", GitRepoID: id, RepositoryID: "r-1", RegistryID: "reg-1", FullName: "org/repo", GitRemoteURL: "https://git/repo", DefaultBranch: "main", CreatedBy: "u", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if !valid {
-		repo.GitServerID = ""
+		// An addressable row whose binding is unusable. It keeps its server id on
+		// purpose: blanking that instead would make the row unreachable through
+		// the server-scoped lookup and the 409 guard would never be exercised.
+		repo.FullName = ""
 	}
 	if err := database.GetDB().Create(&repo).Error; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedResyncRepoOn seeds one binding with an explicit server, so a test can put
+// the same numeric repo id on two different servers — which the table allows,
+// because its uniqueness is on the pair.
+func seedResyncRepoOn(t *testing.T, rowID, serverID string, repoID int64, fullName string) {
+	t.Helper()
+	repo := models.GitCapabilityRepository{
+		ID: rowID, GitServerID: serverID, GitRepoID: repoID,
+		RepositoryID: "r-" + rowID, RegistryID: "reg-" + rowID, FullName: fullName,
+		GitRemoteURL: "https://" + serverID + "/" + fullName, DefaultBranch: "main",
+		CreatedBy: "u", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := database.GetDB().Create(&repo).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// resyncRouter mounts the endpoint at its real shape: BOTH halves of the
+// repository identity are path segments.
+func resyncRouter() *gin.Engine {
+	r := gin.New()
+	api := NewGitCapabilityResyncAPI(database.GetDB())
+	r.POST("/resync/:git_server_id/:git_repo_id", api.ResyncGitCapabilityRepository)
+	return r
 }
 
 func resyncRequest(r http.Handler, path string) *httptest.ResponseRecorder {
@@ -52,30 +80,33 @@ func resyncRequest(r http.Handler, path string) *httptest.ResponseRecorder {
 
 func TestResyncGitCapabilityRepositoryValidationAndIdempotency(t *testing.T) {
 	defer setupResyncDB(t)()
-	api := NewGitCapabilityResyncAPI(database.GetDB())
-	r := gin.New()
-	r.POST("/resync/:git_repo_id", api.ResyncGitCapabilityRepository)
+	r := resyncRouter()
 	for _, id := range []string{"0", "-1", "abc"} {
-		if w := resyncRequest(r, "/resync/"+id); w.Code != 409 {
+		if w := resyncRequest(r, "/resync/gs-1/"+id); w.Code != 409 {
 			t.Errorf("id %s: got %d", id, w.Code)
 		}
 	}
-	if w := resyncRequest(r, "/resync/99"); w.Code != 404 {
+	if w := resyncRequest(r, "/resync/gs-1/99"); w.Code != 404 {
 		t.Fatalf("missing repo: %d", w.Code)
 	}
 	seedResyncRepo(t, 7, false)
-	if w := resyncRequest(r, "/resync/7"); w.Code != 409 {
+	if w := resyncRequest(r, "/resync/gs-1/7"); w.Code != 409 {
 		t.Fatalf("invalid binding: %d", w.Code)
+	}
+	// Same repo id, a server that has no such binding: 404, never a fallback to
+	// the row another server owns.
+	if w := resyncRequest(r, "/resync/gs-other/7"); w.Code != 404 {
+		t.Fatalf("unknown server must not resolve to another server's row: %d", w.Code)
 	}
 	database.GetDB().Exec("DELETE FROM git_capability_repositories")
 	seedResyncRepo(t, 7, true)
-	first := resyncRequest(r, "/resync/7")
+	first := resyncRequest(r, "/resync/gs-1/7")
 	if first.Code != 202 {
 		t.Fatal(first.Code)
 	}
 	var one map[string]interface{}
 	_ = json.Unmarshal(first.Body.Bytes(), &one)
-	second := resyncRequest(r, "/resync/7")
+	second := resyncRequest(r, "/resync/gs-1/7")
 	if second.Code != 202 {
 		t.Fatal(second.Code)
 	}
@@ -91,17 +122,60 @@ func TestResyncGitCapabilityRepositoryValidationAndIdempotency(t *testing.T) {
 	}
 }
 
+// A Gitea repository id is unique only inside one server. With two servers
+// carrying the same id, a lookup keyed on the id alone returns whichever row
+// the database happens to yield first — and the endpoint then queues a job for
+// THAT repository while answering 202 for the one the administrator asked for.
+// The intended repository is never resynced and nothing reports a failure.
+func TestResyncGitCapabilityRepositoryDisambiguatesByGitServer(t *testing.T) {
+	defer setupResyncDB(t)()
+	// Seeded in this order so a single-key query resolves to gs-a: the test has
+	// to be able to fail.
+	seedResyncRepoOn(t, "repo-a", "gs-a", 42, "org-a/alpha")
+	seedResyncRepoOn(t, "repo-b", "gs-b", 42, "org-b/beta")
+	r := resyncRouter()
+
+	for _, tc := range []struct{ server, wantFullName string }{
+		{"gs-b", "org-b/beta"},
+		{"gs-a", "org-a/alpha"},
+	} {
+		w := resyncRequest(r, "/resync/"+tc.server+"/42")
+		if w.Code != 202 {
+			t.Fatalf("%s: status %d", tc.server, w.Code)
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode: %v", tc.server, err)
+		}
+		jobID, _ := body["job_id"].(string)
+		var job models.GitCapabilitySyncJob
+		if err := database.GetDB().Where("id = ?", jobID).First(&job).Error; err != nil {
+			t.Fatalf("%s: load queued job: %v", tc.server, err)
+		}
+		if job.GitServerID != tc.server || job.RepoFullName != tc.wantFullName {
+			t.Fatalf("resync of %s/42 queued a job for %s/%s, want %s/%s",
+				tc.server, job.GitServerID, job.RepoFullName, tc.server, tc.wantFullName)
+		}
+	}
+
+	// Two distinct repositories means two distinct jobs; the per-server delivery
+	// key must not collapse them into one.
+	var count int64
+	database.GetDB().Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("jobs=%d, want 2 (one per server)", count)
+	}
+}
+
 func TestResyncGitCapabilityRepositoryConcurrentIdempotent(t *testing.T) {
 	defer setupResyncDB(t)()
 	seedResyncRepo(t, 8, true)
-	api := NewGitCapabilityResyncAPI(database.GetDB())
-	r := gin.New()
-	r.POST("/resync/:git_repo_id", api.ResyncGitCapabilityRepository)
+	r := resyncRouter()
 	var wg sync.WaitGroup
 	codes := make(chan int, 2)
 	wg.Add(2)
 	for i := 0; i < 2; i++ {
-		go func() { defer wg.Done(); codes <- resyncRequest(r, "/resync/8").Code }()
+		go func() { defer wg.Done(); codes <- resyncRequest(r, "/resync/gs-1/8").Code }()
 	}
 	wg.Wait()
 	close(codes)
@@ -126,19 +200,21 @@ func TestResyncGitCapabilityRepositoryMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := NewGitCapabilityResyncAPI(database.GetDB())
+	const route = "/git-capability-repositories/:git_server_id/:git_repo_id/resync"
+	const path = "/api/admin/git-capability-repositories/gs-1/9/resync"
 	r := gin.New()
 	g := r.Group("/api/admin")
 	g.Use(systemrole.RequirePlatformAdmin(database.GetDB()))
-	g.POST("/git-capability-repositories/:git_repo_id/resync", api.ResyncGitCapabilityRepository)
-	if w := resyncRequest(r, "/api/admin/git-capability-repositories/9/resync"); w.Code != 401 {
+	g.POST(route, api.ResyncGitCapabilityRepository)
+	if w := resyncRequest(r, path); w.Code != 401 {
 		t.Errorf("unauth=%d", w.Code)
 	}
 	for _, uid := range []string{"user", "admin"} {
 		r2 := gin.New()
 		inject := func(c *gin.Context) { c.Set(middleware.UserIDKey, uid); c.Next() }
 		g2 := r2.Group("/api/admin", inject, systemrole.RequirePlatformAdmin(database.GetDB()))
-		g2.POST("/git-capability-repositories/:git_repo_id/resync", api.ResyncGitCapabilityRepository)
-		rec := resyncRequest(r2, "/api/admin/git-capability-repositories/9/resync")
+		g2.POST(route, api.ResyncGitCapabilityRepository)
+		rec := resyncRequest(r2, path)
 		want := 403
 		if uid == "admin" {
 			want = 202
