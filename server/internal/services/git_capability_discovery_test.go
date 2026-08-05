@@ -55,10 +55,14 @@ func TestGitCapabilityIdentityAvailable_RejectsNonUUIDWithoutQuerying(t *testing
 func TestEnsureGitCapabilityReconciliationBinding_ProjectsLegacyPublicRepoID(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	seedGitDiscoveryOwner(t, db)
-	// A Git-owned registry no other repository holds is this repository's to
-	// adopt — the case reconciliation inheritance exists for (its binding was
-	// dropped by the deleted-repository converge, its rows stayed behind).
-	seedGitCapabilityRegistry(t, db, legacyGitRegistryID, GitRegistrySourceType)
+	// A Git-owned registry no other repository holds, whose repo_id still names
+	// the projection this repository resolves to, is this repository's to adopt —
+	// the case reconciliation inheritance exists for (its binding was dropped by
+	// the deleted-repository converge, its registry and its rows stayed behind).
+	// Re-discovery finds that projection again through the deterministic
+	// discoveredRepositoryName, which is why the identity survives at all.
+	projectionID := seedDiscoveredProjection(t, db, gitCapabilityTestServerID, gitCapabilityTestRepoID)
+	seedGitCapabilityRegistry(t, db, legacyGitRegistryID, GitRegistrySourceType, projectionID)
 	bound := []models.CapabilityItem{
 		{RepoID: "public", RegistryID: legacyGitRegistryID},
 		{RepoID: "public", RegistryID: legacyGitRegistryID},
@@ -121,7 +125,7 @@ func TestEnsureGitCapabilityReconciliationBinding_PreservesUUIDRepoID(t *testing
 	if err := db.Create(&models.Repository{ID: repoID, Name: "existing-projection", DisplayName: "Existing", OwnerID: "user-alice", RepoType: "sync"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	seedGitCapabilityRegistry(t, db, uuidGitRegistryID, GitRegistrySourceType)
+	seedGitCapabilityRegistry(t, db, uuidGitRegistryID, GitRegistrySourceType, repoID)
 	bound := []models.CapabilityItem{{RepoID: repoID, RegistryID: uuidGitRegistryID}}
 	repo := &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}}
 	var binding *models.GitCapabilityRepository
@@ -139,13 +143,33 @@ func TestEnsureGitCapabilityReconciliationBinding_PreservesUUIDRepoID(t *testing
 	}
 }
 
-func seedGitCapabilityRegistry(t *testing.T, db *gorm.DB, id, sourceType string) {
+// seedGitCapabilityRegistry takes repoID explicitly because
+// capability_registries.repo_id is now part of what makes a registry ownable.
+// mintGitCapabilityRegistry is its only writer and always stores the binding's
+// repository projection, so a fixture that hard-coded "public" for a Git-owned
+// registry described a row production cannot produce.
+func seedGitCapabilityRegistry(t *testing.T, db *gorm.DB, id, sourceType, repoID string) {
 	t.Helper()
 	if err := db.Create(&models.CapabilityRegistry{
-		ID: id, Name: id, SourceType: sourceType, RepoID: "public", OwnerID: "user-alice",
+		ID: id, Name: id, SourceType: sourceType, RepoID: repoID, OwnerID: "user-alice",
 	}).Error; err != nil {
 		t.Fatalf("seed capability registry %s: %v", id, err)
 	}
+}
+
+// seedDiscoveredProjection creates the repository row re-discovery resolves by
+// its deterministic name, which is what makes an orphaned registry inheritable
+// again after the deleted-repository converge dropped its binding.
+func seedDiscoveredProjection(t *testing.T, db *gorm.DB, serverID string, gitRepoID int64) string {
+	t.Helper()
+	id := uuid.NewString()
+	if err := db.Create(&models.Repository{
+		ID: id, Name: discoveredRepositoryName(serverID, gitRepoID), DisplayName: "alice/capabilities",
+		OwnerID: "user-alice", RepoType: "sync", Visibility: "public",
+	}).Error; err != nil {
+		t.Fatalf("seed discovered projection: %v", err)
+	}
+	return id
 }
 
 func reconcileBindingForRepo(
@@ -173,7 +197,7 @@ func reconcileBindingForRepo(
 func TestEnsureGitCapabilityReconciliationBinding_NeverClaimsSharedRegistry(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	seedGitDiscoveryOwner(t, db)
-	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal")
+	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal", "public")
 	repo := &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/first-fork", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}}
 
 	binding, err := reconcileBindingForRepo(t, db, repo, []models.CapabilityItem{{RepoID: "public", RegistryID: publicRegistryFixtureID}})
@@ -204,7 +228,7 @@ func TestEnsureGitCapabilityReconciliationBinding_NeverClaimsSharedRegistry(t *t
 func TestEnsureGitCapabilityReconciliationBinding_SecondRepositorySharingRegistry(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	seedGitDiscoveryOwner(t, db)
-	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal")
+	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal", "public")
 	bound := []models.CapabilityItem{{RepoID: "public", RegistryID: publicRegistryFixtureID}}
 
 	first, err := reconcileBindingForRepo(t, db,
@@ -235,8 +259,12 @@ func TestEnsureGitCapabilityReconciliationBinding_MintsProjectionWhenUUIDClaimed
 	if err := db.Create(&models.Repository{ID: sharedRepoID, Name: "personal-space", OwnerID: "user-alice", RepoType: "sync"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	seedGitCapabilityRegistry(t, db, gitRegistryAID, GitRegistrySourceType)
-	seedGitCapabilityRegistry(t, db, gitRegistryBID, GitRegistrySourceType)
+	// Registry A indexes the shared personal space; registry B was minted for the
+	// repository that moved out, so it names that repository's own projection —
+	// the one re-discovery resolves by deterministic name.
+	movedProjectionID := seedDiscoveredProjection(t, db, gitCapabilityTestServerID, 302)
+	seedGitCapabilityRegistry(t, db, gitRegistryAID, GitRegistrySourceType, sharedRepoID)
+	seedGitCapabilityRegistry(t, db, gitRegistryBID, GitRegistrySourceType, movedProjectionID)
 
 	first, err := reconcileBindingForRepo(t, db,
 		&gitsync.Repo{ID: 301, FullName: "alice/moved-one", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}},
@@ -256,8 +284,128 @@ func TestEnsureGitCapabilityReconciliationBinding_MintsProjectionWhenUUIDClaimed
 	if second.RepositoryID == sharedRepoID {
 		t.Fatalf("second repository borrowed a claimed projection: %+v", second)
 	}
+	if second.RepositoryID != movedProjectionID {
+		t.Fatalf("second repository should have resolved its own discovered projection: %+v", second)
+	}
 	if second.RegistryID != gitRegistryBID {
 		t.Fatalf("unclaimed Git registry should have been adopted: %+v", second)
+	}
+}
+
+// The boundary 534103b left open. A Git-owned registry that no binding holds
+// still says, in its own repo_id column, which repository projection it indexes.
+// Ownability used to ignore that column, so an orphan left behind by one
+// repository could be inherited by an unrelated one — which then renames it and
+// writes its own projection through it, leaving one registry carrying two
+// repositories' identities. mintGitCapabilityRegistry never produces such a row,
+// so the only way to reach it is a stale or hand-edited one; the answer is to
+// mint a dedicated registry rather than to repair the mismatch in place, because
+// the rows already filed under the orphan belong to the other repository.
+func TestEnsureGitCapabilityReconciliationBinding_RejectsRegistryOfAnotherRepository(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	seedGitDiscoveryOwner(t, db)
+	foreignProjectionID := uuid.NewString()
+	if err := db.Create(&models.Repository{
+		ID: foreignProjectionID, Name: "someone-elses-projection", OwnerID: "user-alice", RepoType: "sync",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Orphaned: git-owned, held by no binding, but its repo_id names a repository
+	// that is not the one this reconciliation is about to record.
+	seedGitCapabilityRegistry(t, db, otherRegistryID, GitRegistrySourceType, foreignProjectionID)
+	repo := &gitsync.Repo{ID: 501, FullName: "alice/newcomer", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}}
+
+	binding, err := reconcileBindingForRepo(t, db, repo,
+		[]models.CapabilityItem{{RepoID: "public", RegistryID: otherRegistryID}})
+	if err != nil {
+		t.Fatalf("reconcile binding: %v", err)
+	}
+	if binding.RegistryID == otherRegistryID {
+		t.Fatalf("binding claimed a registry belonging to repository %s: %+v", foreignProjectionID, binding)
+	}
+	var orphan models.CapabilityRegistry
+	if err := db.First(&orphan, "id = ?", otherRegistryID).Error; err != nil {
+		t.Fatalf("load orphan registry: %v", err)
+	}
+	if orphan.Name != otherRegistryID || orphan.RepoID != foreignProjectionID || orphan.ExternalURL != "" {
+		t.Fatalf("orphan registry was renamed onto another repository: %+v", orphan)
+	}
+	var minted models.CapabilityRegistry
+	if err := db.First(&minted, "id = ?", binding.RegistryID).Error; err != nil {
+		t.Fatalf("load minted registry: %v", err)
+	}
+	if minted.RepoID != binding.RepositoryID || minted.Name != repo.FullName {
+		t.Fatalf("minted registry does not belong to this binding: %+v (binding %+v)", minted, binding)
+	}
+}
+
+// Same mismatch reached through the other caller: an EXISTING binding whose
+// registry_id points at a registry filed under a different repository must
+// re-point itself, exactly as the shared-registry converge already does.
+func TestEnsureOwnedGitCapabilityRegistry_RepointsRegistryOfAnotherRepository(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	seedGitDiscoveryOwner(t, db)
+	ownProjectionID := uuid.NewString()
+	foreignProjectionID := uuid.NewString()
+	for _, id := range []string{ownProjectionID, foreignProjectionID} {
+		if err := db.Create(&models.Repository{
+			ID: id, Name: "projection-" + id[:8], OwnerID: "user-alice", RepoType: "sync",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedGitCapabilityRegistry(t, db, gitRegistryAID, GitRegistrySourceType, foreignProjectionID)
+	now := time.Now().UTC()
+	binding := models.GitCapabilityRepository{
+		ID: uuid.NewString(), GitServerID: gitCapabilityTestServerID, GitRepoID: 601,
+		RepositoryID: ownProjectionID, RegistryID: gitRegistryAID, FullName: "alice/mismatched",
+		RepoKind: "standalone", IdentificationStatus: models.GitCapabilityIdentificationClean,
+		Visibility: "public", GitRemoteURL: "https://git.example/alice/mismatched", DefaultBranch: "main",
+		LastSyncedCommit: gitCapabilityTestSHA, CreatedBy: "user-alice", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := db.Create(&binding).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var registryID string
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		registryID, err = ensureOwnedGitCapabilityRegistry(tx, &binding, "alice/mismatched",
+			"https://git.example/alice/mismatched", "main", gitCapabilityTestSHA, "user-alice", now)
+		return err
+	}); err != nil {
+		t.Fatalf("ensure owned registry: %v", err)
+	}
+	if registryID == gitRegistryAID {
+		t.Fatalf("binding kept a registry filed under repository %s", foreignProjectionID)
+	}
+	var reloaded models.GitCapabilityRepository
+	if err := db.First(&reloaded, "id = ?", binding.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.RegistryID != registryID {
+		t.Fatalf("binding was not re-pointed: %+v", reloaded)
+	}
+	var minted models.CapabilityRegistry
+	if err := db.First(&minted, "id = ?", registryID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if minted.RepoID != ownProjectionID {
+		t.Fatalf("minted registry repo_id = %q, want %q", minted.RepoID, ownProjectionID)
+	}
+	// A second pass must be a no-op: the converge has to settle, not re-mint on
+	// every sync.
+	var settled string
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		settled, err = ensureOwnedGitCapabilityRegistry(tx, &reloaded, "alice/mismatched",
+			"https://git.example/alice/mismatched", "main", gitCapabilityTestSHA, "user-alice", now)
+		return err
+	}); err != nil {
+		t.Fatalf("second converge pass: %v", err)
+	}
+	if settled != registryID {
+		t.Fatalf("converge did not settle: %q then %q", registryID, settled)
 	}
 }
 
@@ -326,7 +474,7 @@ func TestReloadGitCapabilityBindingAfterConflict(t *testing.T) {
 func TestUpdateGitCapabilityRepositoryProjection_ConvergesHijackedRegistry(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	seedGitDiscoveryOwner(t, db)
-	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal")
+	seedGitCapabilityRegistry(t, db, publicRegistryFixtureID, "internal", "public")
 	projectionID := uuid.NewString()
 	if err := db.Create(&models.Repository{ID: projectionID, Name: "projection", OwnerID: "user-alice", RepoType: "sync"}).Error; err != nil {
 		t.Fatal(err)

@@ -996,10 +996,13 @@ func TestGitCapabilitySyncService_BoundRepositoryStillProjectsOwner(t *testing.T
 	).Error; err != nil {
 		t.Fatalf("seed repository: %v", err)
 	}
+	// repo_id names the binding's repository projection, which is what
+	// mintGitCapabilityRegistry writes and what keeps this registry ownable by
+	// this binding rather than re-minted on every pass.
 	if err := db.Exec(
-		`INSERT INTO capability_registries (id, name, source_type, external_url, external_branch, sync_enabled, sync_interval, sync_status, owner_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		boundGitRegistryID, "alice/capabilities", "git", "https://git.example/alice/capabilities", "main", true, 3600, "idle", "system", now, now,
+		`INSERT INTO capability_registries (id, name, source_type, external_url, external_branch, sync_enabled, sync_interval, sync_status, repo_id, owner_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		boundGitRegistryID, "alice/capabilities", "git", "https://git.example/alice/capabilities", "main", true, 3600, "idle", "repo-bound", "system", now, now,
 	).Error; err != nil {
 		t.Fatalf("seed registry: %v", err)
 	}

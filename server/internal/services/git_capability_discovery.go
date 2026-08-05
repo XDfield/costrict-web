@@ -866,9 +866,9 @@ func gitCapabilityIdentityAvailable(tx *gorm.DB, serverID string, gitRepoID int6
 }
 
 // gitCapabilityRegistryOwnable reports whether registryID may serve as the index
-// identity of one Git repository.
+// identity of the repository that will be recorded under repositoryID.
 //
-// Two things disqualify a registry, and the first one is the reason forks kept
+// Three things disqualify a registry, and the first one is the reason forks kept
 // failing:
 //
 //   - it is not a Git-owned registry. Every fork and every S6-migrated row lands
@@ -877,12 +877,25 @@ func gitCapabilityIdentityAvailable(tx *gorm.DB, serverID string, gitRepoID int6
 //     repository the exclusive owner of the whole marketplace registry — the
 //     UNIQUE(registry_id) index then blocks every later fork, and the projection
 //     updates rename the public registry after that one repository.
-//   - it already belongs to a different repository, so it is not free to take.
+//   - another repository's binding already holds it, so it is not free to take.
+//   - it names a DIFFERENT repository projection in capability_registries.repo_id.
+//     The first two checks together still let an orphaned registry — one whose
+//     binding was dropped while the row stayed behind — be claimed by whichever
+//     repository next arrives carrying it as a hint, even though the registry
+//     says in its own row that it indexes somebody else. The caller then renames
+//     it and writes this repository's projection through it, so the registry ends
+//     up carrying one repository's identity while its repo_id points at another:
+//     the "one repository, one index identity" invariant broken in the one place
+//     nothing later re-checks. mintGitCapabilityRegistry is the only writer of
+//     that column and always sets it to the binding's repository, so equality is
+//     the normal state and a mismatch is by construction a stale or foreign row.
 //
-// The remaining case — a Git-owned registry this repository already owns, or one
-// left behind after its binding was dropped by the deleted-repository converge —
-// is exactly the one inheritance was written for, and is preserved.
-func gitCapabilityRegistryOwnable(tx *gorm.DB, serverID string, gitRepoID int64, registryID string) (bool, error) {
+// The case inheritance was written for is preserved rather than weakened by the
+// third check: the deleted-repository converge (archiveGitCapabilitiesForMissingRepository)
+// drops only the binding, and re-discovery of the same Git repository resolves
+// its projection through the deterministic discoveredRepositoryName, so the very
+// same repository id comes back and repo_id matches again.
+func gitCapabilityRegistryOwnable(tx *gorm.DB, serverID string, gitRepoID int64, repositoryID, registryID string) (bool, error) {
 	// Availability is checked first so that a value that is not a UUID never
 	// reaches the capability_registries lookup either — that column is `uuid`
 	// too.
@@ -898,7 +911,10 @@ func gitCapabilityRegistryOwnable(tx *gorm.DB, serverID string, gitRepoID int64,
 	if err != nil {
 		return false, fmt.Errorf("load capability registry %s: %w", registryID, err)
 	}
-	return registry.SourceType == GitRegistrySourceType, nil
+	if registry.SourceType != GitRegistrySourceType {
+		return false, nil
+	}
+	return strings.TrimSpace(registry.RepoID) == strings.TrimSpace(repositoryID), nil
 }
 
 // ensureOwnedGitCapabilityRegistry converges an EXISTING binding whose registry
@@ -918,7 +934,7 @@ func ensureOwnedGitCapabilityRegistry(
 	fullName, repoURL, branchName, headSHA, ownerID string,
 	now time.Time,
 ) (string, error) {
-	ownable, err := gitCapabilityRegistryOwnable(tx, binding.GitServerID, binding.GitRepoID, binding.RegistryID)
+	ownable, err := gitCapabilityRegistryOwnable(tx, binding.GitServerID, binding.GitRepoID, binding.RepositoryID, binding.RegistryID)
 	if err != nil {
 		return "", err
 	}
@@ -1126,7 +1142,10 @@ func ensureGitCapabilityReconciliationBinding(
 	if err := tx.SavePoint("git_binding_create").Error; err != nil {
 		return nil, err
 	}
-	registryOwnable, err := gitCapabilityRegistryOwnable(tx, serverID, repo.ID, registryID)
+	// repositoryID, not the hint the bound rows carried: when the hinted
+	// projection was unusable a dedicated one was minted just above, and the
+	// registry has to belong to the projection this binding will actually record.
+	registryOwnable, err := gitCapabilityRegistryOwnable(tx, serverID, repo.ID, repositoryID, registryID)
 	if err != nil {
 		return nil, err
 	}
