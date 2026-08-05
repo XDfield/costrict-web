@@ -2,12 +2,30 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
+
+// countVersionRows is the half of AC7 the tests below were missing. Everything
+// else here asserts that capability_items was not rewritten; this asserts that
+// catalog ingest also did not mint a capability_versions row for a Git-backed
+// item. R2.3 says the version anchor of such a row is its git_sha and that no
+// version rows exist for it, so a minted revision is a contract break even
+// though it leaves capability_items untouched — and it is the one effect that
+// would survive a guard covering only the item table, because updateItem and
+// insertItem write the version row through a separate Create.
+func countVersionRows(t *testing.T, db *gorm.DB, itemID string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.CapabilityVersion{}).Where("item_id = ?", itemID).Count(&count).Error; err != nil {
+		t.Fatalf("count versions for %s: %v", itemID, err)
+	}
+	return count
+}
 
 // seedGitBackedItem creates a row whose content truth is a git repository, in
 // the same public registry / repo_id catalog rows live in. That co-location is
@@ -422,5 +440,185 @@ func TestIngest_ProvisionedGitRow_NotRewritten(t *testing.T) {
 				t.Errorf("git_sha was rewritten: %q -> %q", before.GitSHA, after.GitSHA)
 			}
 		})
+	}
+}
+
+// TestIngest_GitBackedRow_AC7 is AC7 stated as one assertion instead of
+// inferred from several: a Git-backed row survives a real ingest run with its
+// content, its backend marker, its repository coordinates and its git_sha
+// intact, AND without a capability_versions row appearing for it.
+//
+// The version half has no coverage elsewhere. Every other test here asserts on
+// capability_items, and both write paths mint the version through a separate
+// s.DB.Create(ver) — so a change that let a Git row through would show up here
+// first, and a guard that protected only the item table would still leave a
+// revision behind that R2.3 says must not exist (the version anchor of a
+// Git-backed row is its git_sha).
+//
+// The fixture is deliberately the hostile one: a slug the catalog entry also
+// derives, so the row is in range of the cross-entry adoption that used to turn
+// this into an UPDATE, and a non-empty content column so "unchanged" is a real
+// comparison rather than empty-stays-empty.
+func TestIngest_GitBackedRow_AC7(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+
+	before := seedGitBackedItem(t, db, models.CapabilityItem{
+		ID: "ac7-git", Slug: "ac7-skill", ItemType: "skill", Name: "repository truth",
+		Content:    "---\nname: repository truth\n---\nbody from git\n",
+		SourcePath: "skill.md", SourceRepoPath: "skill.md", SourceType: "fork",
+		SourceRepoURL: "https://git.example/u-alice/ac7-skill", SourceRepoRef: "main",
+		SourceSHA: "gitsha-do-not-touch", GitSHA: "1234567890abcdef1234567890abcdef12345678",
+		CatalogEntryDir: "skills/ac7-skill",
+	})
+	if got := countVersionRows(t, db, before.ID); got != 0 {
+		t.Fatalf("fixture already has %d version rows", got)
+	}
+
+	// Three rounds with a changing body, so the entry takes the content-changed
+	// path every time and a guard that only holds on first contact fails here.
+	for round := 1; round <= 3; round++ {
+		bundle := writeMultiEntryBundle(t,
+			[]catalogEntry{{ID: "ac7-skill", Type: "skill", Source: "catalog/x",
+				Description: "catalog copy", Category: "tooling"}},
+			map[string]string{"ac7-skill": skillBodyFor("ac7-skill") + "\nround\n"})
+		result, err := svc.Ingest(context.Background(), IngestSource{Dir: bundle}, IngestOptions{TriggerUser: "tester"})
+		if err != nil {
+			t.Fatalf("ingest round %d: %v", round, err)
+		}
+		if result.Failed != 0 {
+			t.Fatalf("round %d failed entries: %v", round, result.Errors)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	after := loadItemByID(t, db, before.ID)
+	assertItemUnchanged(t, before, after)
+	if after.ContentBackend != models.ContentBackendGit {
+		t.Errorf("content_backend = %q, want git", after.ContentBackend)
+	}
+	if after.SourceRepoURL != before.SourceRepoURL {
+		t.Errorf("source_repo_url = %q, want %q", after.SourceRepoURL, before.SourceRepoURL)
+	}
+	if after.GitSHA != before.GitSHA {
+		t.Errorf("git_sha = %q, want %q", after.GitSHA, before.GitSHA)
+	}
+	if got := countVersionRows(t, db, before.ID); got != 0 {
+		t.Errorf("catalog ingest minted %d capability_versions rows for a Git-backed item", got)
+	}
+}
+
+// TestIngest_UpdateItemOnGitBackedRow_RefusedByTheModelGuard reaches past the
+// pre-load filter and calls updateItem with a Git-backed row directly.
+//
+// Every other test here proves the row never GETS to updateItem, which is the
+// first line of defence and the one that actually runs in production. This one
+// asks the different question a reviewer reading updateItem in isolation asks:
+// the function assigns existing.Content and then creates a version row with no
+// content_backend check of its own — so what happens if a future refactor of
+// the query above ever hands it one?
+//
+// The answer has to be "the write is refused", not "the write lands", and it
+// has to come from the model guard (BeforeUpdate on capability_items) rather
+// than from ingest remembering to check. Asserting it here keeps the two layers
+// from silently collapsing into one.
+func TestIngest_UpdateItemOnGitBackedRow_RefusedByTheModelGuard(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+
+	before := seedGitBackedItem(t, db, models.CapabilityItem{
+		ID: "bypass-git", Slug: "bypass-skill", ItemType: "skill", Name: "repository truth",
+		Content:    "---\nname: repository truth\n---\nbody from git\n",
+		SourcePath: "skill.md", SourceRepoPath: "skill.md", SourceType: "fork",
+		SourceRepoURL: "https://git.example/u-alice/bypass-skill", SourceRepoRef: "main",
+		SourceSHA: "gitsha-do-not-touch", GitSHA: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+	})
+	// A copy, because updateItem mutates the struct it is handed before saving;
+	// the assertions below have to read the database, not that struct.
+	target := before
+
+	parsed := &ParsedItem{
+		Slug: "bypass-skill", ItemType: "skill", Name: "catalog copy",
+		Description: "catalog description", Category: "tooling", Version: "9.9.9",
+		Content: "# catalog body\n", Metadata: map[string]any{},
+	}
+	entry := catalogEntry{ID: "bypass-skill", Type: "skill", Source: "catalog/x",
+		Description: "catalog description", Category: "tooling"}
+
+	err := svc.updateItem(&target, parsed, "catalog-sha", "skills/bypass-skill/SKILL.md",
+		"skills/bypass-skill", entry, "tester")
+	if !errors.Is(err, models.ErrGitOwnedField) {
+		t.Fatalf("updateItem on a Git-backed row returned %v, want ErrGitOwnedField", err)
+	}
+
+	after := loadItemByID(t, db, before.ID)
+	assertItemUnchanged(t, before, after)
+	if after.Version != before.Version {
+		t.Errorf("version = %q, want %q", after.Version, before.Version)
+	}
+	if after.Description != before.Description {
+		t.Errorf("description = %q, want %q", after.Description, before.Description)
+	}
+	// The version row is created after the Save, so a refused Save must also mean
+	// no revision. Asserted rather than assumed: reordering those two statements
+	// would leave a revision behind that nothing else notices.
+	if got := countVersionRows(t, db, before.ID); got != 0 {
+		t.Errorf("a refused update still minted %d capability_versions rows", got)
+	}
+	// And the control: the same call on a DB-backed row still works, so the guard
+	// is not simply refusing everything.
+	legacy := models.CapabilityItem{
+		ID: "bypass-db", RegistryID: PublicRegistryID, RepoID: PublicRepoID,
+		Slug: "bypass-legacy", ItemType: "skill", Name: "stale", Content: "# stale\n",
+		SourcePath: "skills/bypass-legacy/SKILL.md", SourceType: "direct",
+		SourceSHA: "stale", Status: "active", CreatedBy: "system", UpdatedBy: "system",
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatalf("seed db row: %v", err)
+	}
+	legacyParsed := *parsed
+	legacyParsed.Slug = "bypass-legacy"
+	if err := svc.updateItem(&legacy, &legacyParsed, "catalog-sha", "skills/bypass-legacy/SKILL.md",
+		"skills/bypass-legacy", entry, "tester"); err != nil {
+		t.Fatalf("updateItem on a DB-backed row: %v", err)
+	}
+	if got := loadItemByID(t, db, "bypass-db").Content; got != "# catalog body\n" {
+		t.Errorf("db-backed content = %q; the guard is refusing legitimate writes", got)
+	}
+	if got := countVersionRows(t, db, "bypass-db"); got != 1 {
+		t.Errorf("db-backed update minted %d version rows, want 1", got)
+	}
+}
+
+// Same shape for the metadata-only path, which writes a map rather than a
+// struct and therefore takes a different branch of the guard
+// (gitOwnedColumnsInStatement resolves map keys to columns instead of diffing a
+// destination struct). Its update carries category / description / item_type /
+// source_path / catalog_entry_dir, all of which are projected from the
+// repository manifest.
+func TestIngest_ApplyMetadataDeltaOnGitBackedRow_RefusedByTheModelGuard(t *testing.T) {
+	db := newIngestTestDB(t)
+	svc := newIngestService(db)
+
+	before := seedGitBackedItem(t, db, models.CapabilityItem{
+		ID: "meta-git", Slug: "meta-skill", ItemType: "skill", Name: "repository truth",
+		Content: "# from git\n", SourcePath: "skill.md", SourceRepoPath: "skill.md",
+		SourceType: "fork", Category: "from-manifest", Description: "from manifest",
+		SourceSHA: "gitsha-do-not-touch",
+	})
+	target := before
+
+	err := svc.applyMetadataDelta(&target,
+		catalogEntry{ID: "meta-skill", Type: "skill", Source: "catalog/x",
+			Description: "catalog description", Category: "catalog-category", FinalScore: 4.2},
+		"skills/meta-skill/SKILL.md", "skills/meta-skill")
+	if !errors.Is(err, models.ErrGitOwnedField) {
+		t.Fatalf("applyMetadataDelta on a Git-backed row returned %v, want ErrGitOwnedField", err)
+	}
+	after := loadItemByID(t, db, before.ID)
+	assertItemUnchanged(t, before, after)
+	if after.Category != before.Category || after.Description != before.Description {
+		t.Errorf("manifest-owned metadata was rewritten: category %q description %q",
+			after.Category, after.Description)
 	}
 }
