@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -232,12 +233,74 @@ type Permissions struct {
 	Commands []string `json:"commands"`
 }
 
+// ErrScanContentUnavailable means the scanner could not obtain the bytes it is
+// supposed to judge. It is deliberately a hard failure rather than a degraded
+// scan: an LLM handed an empty string reliably answers "low risk", so scanning
+// without the content would publish a *safety verdict about nothing* under the
+// item's name. Callers must not turn this into a security_status write.
+var ErrScanContentUnavailable = errors.New("services: capability content is unavailable for scanning")
+
+// GitCapabilityContentSource is the read-through surface the scanner needs.
+// *GitCapabilityContentService satisfies it; tests substitute a stub.
+type GitCapabilityContentSource interface {
+	ItemContent(ctx context.Context, item *models.CapabilityItem) (string, error)
+}
+
 type ScanService struct {
 	DB          *gorm.DB
 	LLMClient   *llm.Client
 	ModelName   string
 	CategorySvc *CategoryService
-	TagSvc       *TagService
+	TagSvc      *TagService
+	// GitContent supplies the content of Git-backed rows. Nil means "build the
+	// default read-through from DB", the same lazy construction the content
+	// handlers use. It is lazy rather than injected so that forgetting to wire
+	// it cannot silently downgrade a Git-backed scan into a scan of the empty
+	// `content` column — the failure this field exists to prevent.
+	GitContent GitCapabilityContentSource
+}
+
+// scanContent returns the bytes to submit for review.
+//
+// For a DB-backed row that is the stored column, unchanged. For a Git-backed
+// row the column is empty by construction (the migration blanks it, discovery
+// never fills it), so the content has to be read through to the repository the
+// same way the detail endpoint reads it.
+//
+// Every failure path returns an error and no content. There is no "scan what we
+// have" fallback, because what we have is "" and the resulting verdict would be
+// clean — a stronger claim than "unscanned", made on strictly less evidence.
+func (s *ScanService) scanContent(ctx context.Context, item *models.CapabilityItem) (string, error) {
+	if item.ContentBackend != models.ContentBackendGit {
+		return item.Content, nil
+	}
+	source := s.gitContentSource()
+	if source == nil {
+		return "", fmt.Errorf("%w: no read-through configured for git-backed item %s", ErrScanContentUnavailable, item.ID)
+	}
+	content, err := source.ItemContent(ctx, item)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrScanContentUnavailable, err)
+	}
+	// An empty answer is treated as a failed read, not as an empty capability.
+	// Discovery refuses to index a manifest without frontmatter, so a Git-backed
+	// row can never legitimately point at a blank file; a blank body here means
+	// the read returned nothing useful, and that is the one case that must not
+	// reach the LLM.
+	if strings.TrimSpace(content) == "" {
+		return "", fmt.Errorf("%w: repository returned an empty manifest for item %s", ErrScanContentUnavailable, item.ID)
+	}
+	return content, nil
+}
+
+func (s *ScanService) gitContentSource() GitCapabilityContentSource {
+	if s.GitContent != nil {
+		return s.GitContent
+	}
+	if s.DB == nil {
+		return nil
+	}
+	return NewGitCapabilityContentService(s.DB)
 }
 
 func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision int, triggerType string) (*models.SecurityScan, error) {
@@ -276,6 +339,20 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		}
 	}
 
+	// Resolve the content *before* anything is written to the row. A Git-backed
+	// read can fail (server down, file gone, coordinate broken), and a failure
+	// must leave security_status exactly as it was: stamping "scanning" first
+	// and then bailing out would strand the item in a state no later run clears.
+	content, contentErr := s.scanContent(ctx, &item)
+	if contentErr != nil {
+		// No SecurityScan row either. A row with an empty risk_level would be
+		// picked up by the short-circuit above on the next sync trigger and
+		// written back as security_status="unscanned", overwriting a real prior
+		// verdict with the fallout of one unreachable Git server. The scan_job's
+		// last_error is the durable record of this failure.
+		return nil, contentErr
+	}
+
 	s.DB.Model(&item).Updates(map[string]any{"security_status": "scanning"})
 
 	startTime := time.Now()
@@ -307,7 +384,7 @@ func (s *ScanService) ScanItem(ctx context.Context, itemID string, itemRevision 
 		}
 	}
 
-	content := truncateContent(item.Content, maxInputRunes)
+	content = truncateContent(content, maxInputRunes)
 	userPrompt := fmt.Sprintf(scanUserPromptTemplate,
 		item.Name,
 		item.ItemType,

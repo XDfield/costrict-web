@@ -20,11 +20,17 @@ import (
 func TestScanItem_DoesNotOverwriteCategoryOnGitBackedRow(t *testing.T) {
 	db := newIngestTestDB(t)
 
+	// `content` is empty, which is the real shape of a Git-backed row: the
+	// migration blanks the column and discovery never fills it. The earlier
+	// version of this test seeded a leftover sentence here, and that residue
+	// silently gave the scanner something to scan — hiding the fact that a real
+	// Git-backed row would have been judged on "". The content now arrives the
+	// only way it can, through the read-through.
 	item := &models.CapabilityItem{
 		ID: "git-scan-1", RegistryID: "registry-1", RepoID: "public",
 		Slug: "git-scan-skill", ItemType: "skill", Name: "Git Scan Skill",
 		Description: "Git-backed", Category: "from-manifest",
-		Content:  "This skill analyzes backend APIs and service contracts.",
+		Content:  "",
 		Metadata: datatypes.JSON([]byte(`{}`)), Status: "active", CreatedBy: "tester",
 		ContentBackend: models.ContentBackendGit, SourceRepoURL: "https://git.example.test/o/r",
 		SourceRepoRef: "main", SourceRepoPath: "skill.md",
@@ -63,6 +69,9 @@ func TestScanItem_DoesNotOverwriteCategoryOnGitBackedRow(t *testing.T) {
 		ModelName:   "test-model",
 		CategorySvc: &CategoryService{DB: db},
 		TagSvc:      &TagService{DB: db},
+		GitContent: &stubScanContentSource{
+			content: "---\nname: git-scan-skill\n---\nThis skill analyzes backend APIs and service contracts.",
+		},
 	}
 
 	result, err := scanSvc.ScanItem(context.Background(), item.ID, 1, "manual")
