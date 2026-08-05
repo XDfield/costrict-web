@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/costrict/costrict-web/server/internal/gitserver"
@@ -20,15 +22,22 @@ func (s stubContentResolver) ResolveByServerID(context.Context, string) (*gitser
 	return s.cfg, s.err
 }
 
+// stubContentReader is read concurrently: the asset digest pass fans out across
+// workers, so the call log needs its own lock even though nothing else here
+// races.
 type stubContentReader struct {
 	repo    *gitsync.Repo
 	repoErr error
 	tree    []gitsync.GitTreeEntry
 	treeErr error
 
-	file    string
+	file string
+	// files, when set for a repository path, overrides file for that path so a
+	// test can give each asset distinct bytes (and therefore a distinct digest).
+	files   map[string]string
 	fileErr error
 
+	mu    sync.Mutex
 	reads []string
 }
 
@@ -41,11 +50,26 @@ func (s *stubContentReader) ListTree(context.Context, string, string, string) ([
 }
 
 func (s *stubContentReader) ReadRawFile(_ context.Context, owner, repo, ref, filePath string) ([]byte, error) {
+	s.mu.Lock()
 	s.reads = append(s.reads, owner+"/"+repo+"@"+ref+":"+filePath)
+	s.mu.Unlock()
 	if s.fileErr != nil {
 		return nil, s.fileErr
 	}
+	if body, ok := s.files[filePath]; ok {
+		return []byte(body), nil
+	}
 	return []byte(s.file), nil
+}
+
+// readLog returns a copy of the call log, so an assertion cannot race the
+// workers that may still be unwinding after a cancelled digest pass.
+func (s *stubContentReader) readLog() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.reads))
+	copy(out, s.reads)
+	return out
 }
 
 func newContentSvc(reader *stubContentReader) *GitCapabilityContentService {
@@ -83,8 +107,8 @@ func TestGitCapabilityContent_ResolvesRepositoryByNumericIdentity(t *testing.T) 
 	if got != reader.file {
 		t.Fatalf("content = %q", got)
 	}
-	if len(reader.reads) != 1 || reader.reads[0] != "renamed-owner/renamed-repo@main:skills/demo/skill.md" {
-		t.Fatalf("unexpected reads: %v", reader.reads)
+	if reads := reader.readLog(); len(reads) != 1 || reads[0] != "renamed-owner/renamed-repo@main:skills/demo/skill.md" {
+		t.Fatalf("unexpected reads: %v", reads)
 	}
 }
 
@@ -115,8 +139,119 @@ func TestGitCapabilityContent_ListsAndReadsAssetsWithinCapabilityRoot(t *testing
 	if string(raw) != "logo" || asset.RelPath != "assets/logo.png" {
 		t.Fatalf("unexpected asset read: %q %#v", raw, asset)
 	}
-	if got := reader.reads[len(reader.reads)-1]; got != "owner/repo@main:skills/demo/assets/logo.png" {
+	reads := reader.readLog()
+	if got := reads[len(reads)-1]; got != "owner/repo@main:skills/demo/assets/logo.png" {
 		t.Fatalf("asset read used wrong repository path: %s", got)
+	}
+}
+
+// The asset manifest has to carry the SAME digest the device recomputes, which
+// is SHA-256 over the file bytes.
+//
+// The manifest used to leave ContentSHA empty. That does not fail loudly: the
+// device guards its comparison with `if (asset.contentSha)`, so an empty string
+// skips verification entirely and the install succeeds having checked nothing.
+// Nor can the digest be lifted from the tree listing — GitTreeEntry.SHA is the
+// git blob id, sha1("blob <len>\0"+content), which would fail every comparison
+// it was fed to. So the assertion here is against a digest computed from the
+// bytes, per asset, with the entries deliberately given different content.
+func TestGitCapabilityContent_AssetManifestCarriesContentSHA256(t *testing.T) {
+	bodies := map[string]string{
+		"skills/demo/README.md":           "readme body\n",
+		"skills/demo/assets/logo.png":     "\x89PNG\r\n\x1a\nbinary-ish",
+		"skills/demo/assets/nested/a.txt": "third file",
+	}
+	reader := &stubContentReader{
+		repo: &gitsync.Repo{ID: 7, FullName: "owner/repo"},
+		tree: []gitsync.GitTreeEntry{
+			{Path: "skills/demo/SKILL.md", Type: "blob", Size: 10, SHA: strings.Repeat("f", 40)},
+			{Path: "skills/demo/README.md", Type: "blob", Size: 12, SHA: strings.Repeat("e", 40)},
+			{Path: "skills/demo/assets/logo.png", Type: "blob", Size: 20, SHA: strings.Repeat("d", 40)},
+			{Path: "skills/demo/assets/nested/a.txt", Type: "blob", Size: 10, SHA: strings.Repeat("c", 40)},
+		},
+		files: bodies,
+	}
+	item := gitContentItem()
+	item.SourceRepoPath = "skills/demo/SKILL.md"
+
+	assets, err := newContentSvc(reader).ItemAssets(context.Background(), item)
+	if err != nil {
+		t.Fatalf("ItemAssets: %v", err)
+	}
+	if len(assets) != 3 {
+		t.Fatalf("asset manifest = %#v, want 3 entries", assets)
+	}
+	seen := map[string]bool{}
+	for _, asset := range assets {
+		want := sha256Hex([]byte(bodies["skills/demo/"+asset.RelPath]))
+		if asset.ContentSHA == "" {
+			t.Fatalf("asset %q has an empty contentSha; the device skips verification on empty", asset.RelPath)
+		}
+		if asset.ContentSHA != want {
+			t.Errorf("asset %q contentSha = %q, want sha256 of its bytes %q", asset.RelPath, asset.ContentSHA, want)
+		}
+		if len(asset.ContentSHA) != 64 {
+			t.Errorf("asset %q contentSha %q is not a SHA-256 hex digest (a git blob id would be 40)", asset.RelPath, asset.ContentSHA)
+		}
+		if seen[asset.ContentSHA] {
+			t.Errorf("two assets share digest %q, so the digest is not derived from their bytes", asset.ContentSHA)
+		}
+		seen[asset.ContentSHA] = true
+	}
+
+	// The single-asset path returns the same digest, computed from the bytes it
+	// already holds.
+	_, one, err := newContentSvc(reader).ItemAssetBytes(context.Background(), item, "assets/logo.png")
+	if err != nil {
+		t.Fatalf("ItemAssetBytes: %v", err)
+	}
+	if want := sha256Hex([]byte(bodies["skills/demo/assets/logo.png"])); one.ContentSHA != want {
+		t.Errorf("single asset contentSha = %q, want %q", one.ContentSHA, want)
+	}
+}
+
+// Digesting one asset costs one read; resolving one asset must not cost N. The
+// membership check shares the listing, not the digest pass, so a device pulling
+// a 40-file capability makes 40 reads and not 1600.
+func TestGitCapabilityContent_AssetBytesDoesNotDigestTheWholeTree(t *testing.T) {
+	tree := []gitsync.GitTreeEntry{{Path: "skill.md", Type: "blob", Size: 10}}
+	for i := 0; i < 10; i++ {
+		tree = append(tree, gitsync.GitTreeEntry{Path: fmt.Sprintf("assets/f%d.txt", i), Type: "blob", Size: 3})
+	}
+	reader := &stubContentReader{repo: &gitsync.Repo{ID: 7, FullName: "owner/repo"}, tree: tree, file: "abc"}
+	item := gitContentItem()
+	item.SourceRepoPath = "skill.md"
+
+	if _, _, err := newContentSvc(reader).ItemAssetBytes(context.Background(), item, "assets/f3.txt"); err != nil {
+		t.Fatalf("ItemAssetBytes: %v", err)
+	}
+	reads := reader.readLog()
+	if len(reads) != 1 || !strings.HasSuffix(reads[0], ":assets/f3.txt") {
+		t.Fatalf("reads = %v, want exactly the requested asset", reads)
+	}
+}
+
+// A digest that cannot be computed fails the listing. Returning the entry with
+// an empty digest instead would be indistinguishable, to the device, from "this
+// file needs no verification".
+func TestGitCapabilityContent_AssetManifestFailsWhenAnAssetCannotBeRead(t *testing.T) {
+	reader := &stubContentReader{
+		repo: &gitsync.Repo{ID: 7, FullName: "owner/repo"},
+		tree: []gitsync.GitTreeEntry{
+			{Path: "skill.md", Type: "blob", Size: 10},
+			{Path: "assets/gone.txt", Type: "blob", Size: 3},
+		},
+		fileErr: gitsync.ErrGiteaTeamNotFound,
+	}
+	item := gitContentItem()
+	item.SourceRepoPath = "skill.md"
+
+	assets, err := newContentSvc(reader).ItemAssets(context.Background(), item)
+	if !errors.Is(err, ErrGitContentMissing) {
+		t.Fatalf("ItemAssets err = %v (assets %#v), want ErrGitContentMissing", err, assets)
+	}
+	if assets != nil {
+		t.Fatalf("a failed digest pass returned a partial manifest: %#v", assets)
 	}
 }
 

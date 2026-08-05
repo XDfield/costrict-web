@@ -26,12 +26,24 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/costrict/costrict-web/server/internal/gitserver"
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
+
+// gitCapabilityAssetHashWorkers bounds the fan-out of the asset digest pass.
+//
+// The digest cannot come from the tree listing: Gitea reports each entry's git
+// blob id, which is sha1("blob <len>\0" + content) and therefore not the
+// SHA-256 the assets contract carries. So every asset has to be read once, and
+// reading them one after another would turn a listing of a large capability
+// into N sequential round trips to the Git server. A small fixed fan-out keeps
+// the latency proportional to N/workers without letting one request open an
+// unbounded number of connections to a shared Git server.
+const gitCapabilityAssetHashWorkers = 8
 
 // Sentinel errors. Callers map them to HTTP status codes; none of them may be
 // answered with the row's stored content. A Git-backed row's `content` column
@@ -81,6 +93,13 @@ type GitCapabilityContentReader interface {
 // GitCapabilityAsset is a repository-backed file belonging to one capability.
 // RelPath is relative to the capability root, so callers can install it without
 // exposing the repository's internal prefix (for example plugins/foo/).
+//
+// ContentSHA is the SHA-256 of the file's bytes — the same digest DB-backed
+// assets store in capability_assets.content_sha, because the two reach the
+// device through one field of one response and the device applies one algorithm
+// to it. It is deliberately NOT the git blob id the tree listing hands out:
+// that is a SHA-1 over "blob <len>\0"+content, so passing it through would have
+// made every verification fail while looking like the protection was on.
 type GitCapabilityAsset struct {
 	RelPath    string
 	MimeType   string
@@ -148,13 +167,28 @@ func (s *GitCapabilityContentService) ItemContentBytes(ctx context.Context, item
 }
 
 // ItemAssets lists the live repository files owned by item, excluding the
-// capability manifest itself and other recognizable capability manifests.
+// capability manifest itself and other recognizable capability manifests, and
+// digests each one.
+//
+// The digests cost one extra read per asset. That is the price of the manifest
+// being verifiable at all: the device compares sha256(content) against
+// ContentSHA and skips the comparison entirely when the field is empty, so
+// shipping the listing without digests is indistinguishable from shipping no
+// integrity check. Callers that only need membership use target.assets directly
+// and pay nothing.
 func (s *GitCapabilityContentService) ItemAssets(ctx context.Context, item *models.CapabilityItem) ([]GitCapabilityAsset, error) {
 	target, err := s.resolveTarget(ctx, item)
 	if err != nil {
 		return nil, err
 	}
-	return target.assets(ctx)
+	assets, err := target.assets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := target.digestAssets(ctx, assets); err != nil {
+		return nil, err
+	}
+	return assets, nil
 }
 
 // ItemAssetBytes reads a live asset after proving that it belongs to the
@@ -179,14 +213,13 @@ func (s *GitCapabilityContentService) ItemAssetBytes(
 		if asset.RelPath != normalized {
 			continue
 		}
-		repoPath := normalized
-		if root := capabilityAssetRoot(target.manifestPath); root != "" {
-			repoPath = path.Join(root, normalized)
-		}
-		raw, readErr := target.reader.ReadRawFile(ctx, target.owner, target.repo, target.ref, repoPath)
+		raw, readErr := target.readAsset(ctx, normalized)
 		if readErr != nil {
-			return nil, GitCapabilityAsset{}, classifyGitContentError(readErr)
+			return nil, GitCapabilityAsset{}, readErr
 		}
+		// The bytes are in hand, so the digest is free here — no reason to hand
+		// back the one asset shape in this package that carries an empty one.
+		asset.ContentSHA = sha256Hex(raw)
 		return raw, asset, nil
 	}
 	return nil, GitCapabilityAsset{}, fmt.Errorf("%w: asset %q is not in the capability tree", ErrGitContentMissing, relPath)
@@ -300,6 +333,73 @@ func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilit
 		return nil, fmt.Errorf("%w: manifest %q is not in the repository tree", ErrGitContentMissing, t.manifestPath)
 	}
 	return assets, nil
+}
+
+// readAsset reads one asset by its capability-relative path. The caller must
+// have proved the path is in the capability tree first; this only re-attaches
+// the repository prefix the listing stripped.
+func (t *gitCapabilityContentTarget) readAsset(ctx context.Context, relPath string) ([]byte, error) {
+	repoPath := relPath
+	if root := capabilityAssetRoot(t.manifestPath); root != "" {
+		repoPath = path.Join(root, relPath)
+	}
+	raw, err := t.reader.ReadRawFile(ctx, t.owner, t.repo, t.ref, repoPath)
+	if err != nil {
+		return nil, classifyGitContentError(err)
+	}
+	return raw, nil
+}
+
+// digestAssets fills in every asset's ContentSHA in place.
+//
+// A failure fails the whole listing rather than leaving that asset's digest
+// empty: an empty digest is silently skipped by the device, so degrading here
+// would reintroduce exactly the unverified manifest this pass exists to remove.
+// The first error wins and cancels the rest.
+func (t *gitCapabilityContentTarget) digestAssets(ctx context.Context, assets []GitCapabilityAsset) error {
+	if len(assets) == 0 {
+		return nil
+	}
+	workers := gitCapabilityAssetHashWorkers
+	if len(assets) < workers {
+		workers = len(assets)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	indexes := make(chan int)
+	failures := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for index := range indexes {
+				raw, err := t.readAsset(ctx, assets[index].RelPath)
+				if err != nil {
+					failures <- err
+					cancel()
+					return
+				}
+				// Distinct indexes, so the writes do not overlap.
+				assets[index].ContentSHA = sha256Hex(raw)
+			}
+		}()
+	}
+	go func() {
+		defer close(indexes)
+		for index := range assets {
+			select {
+			case indexes <- index:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(failures)
+	return <-failures
 }
 
 func capabilityAssetRoot(manifestPath string) string {
