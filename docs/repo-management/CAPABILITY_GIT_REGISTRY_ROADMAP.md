@@ -7,6 +7,8 @@
 | 创建日期 | 2026-07-07 |
 | 维护原则 | 渐进式演进——每个 Phase 可独立启动、独立验收、独立回滚；Phase 之间允许暂停数周做观察期 |
 
+> **[修正 2026-08-04]** Phase 1（fork Gitea + JWT 中间件）**已完成并在用**（魔改版 `zgsm-ai/gitea` 的 CoStrictJWT，pre-receive 硬配额 hook 除外）；Phase 2（costrict-web 自签 JWT 用户中心）**已被反向决策**——JWT 验证委托 cs-user introspection（main `a863ca2`）。相关表述以 V4 主文档「修正记录（Errata · 2026-08-04）」为准。
+
 ---
 
 ## TL;DR：8 个 Phase 总览
@@ -640,6 +642,11 @@ V3 baseline 稳定后，`costrict-plugin-marketplace` 项目（V2 时代的 770+
 | plugin marketplace 收敛期间 dual source | Phase 8 | pack 平级原则：marketplace pack 与官方 pack 同等对待 |
 
 ---
+
+## 存量内容清理（S6）
+
+保留 `--clear-stale-content`，默认 dry-run，仅 selected git-backed rows；真实 Git
+read-through 成功后才清理；CAS/bypass 单语句保护并有专测，绝不接入自动化调度。
 
 ## 关键里程碑
 

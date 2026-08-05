@@ -2,7 +2,7 @@
 
 | 字段 | 内容 |
 |---|---|
-| 状态 | Accepted (v4) · Plugin 分发契约已修订 |
+| 状态 | Accepted (v4) · Plugin 分发契约已修订 · 2026-08-04 勘误（见「修正记录」） |
 | 作者 | CoStrict 团队 |
 | 创建日期 | 2026-07-06 |
 | 决策日期 | 2026-07-07 |
@@ -12,11 +12,26 @@
 
 > 本文件最初是 v3 PROPOSAL 的章节重排版。2026-08-04 起，v4 在此基础上修订 Plugin 分发契约；与 v3 冲突时，以本文的 Plugin Marketplace 投影与 Git source 约束为准。
 
+## 修正记录（Errata · 2026-08-04）
+
+> 以下条文经实测与代码现实核对后修正。正文中对应位置有 `> **[修正 2026-08-04]**` 就地标注；本表为汇总。**终态定义（§2.1：Git 为真相源、DB 为运行时索引、csc 零代码消费）不变。**
+
+| 修正点 | 原文口径 | 修正后 | 依据 |
+|---|---|---|---|
+| §4.3/§6.5 用户 namespace | `u-<username>` | 裸 cs-user `short_id`（KB 团队空间另有 `t-<team>` 前缀） | `server/internal/gitsync/user_provision.go:166` |
+| §6 用户中心 | costrict-web 自签 JWT | 委托 cs-user introspection | main 分支 `a863ca2`，`3f83631`/`a9326d9` 移除 `JWT_SIGN_MODE` |
+| §5.3 Content/Slug/Metadata | frontmatter 之外的正文 / frontmatter `slug` / frontmatter `metadata` 子键 | 完整原文含 frontmatter / `InferSlug(sourcePath)` / 整个 frontmatter map | 实测（剥离 frontmatter 会使 csc 侧 skill 静默对模型不可见） |
+| TL;DR·§2.1·§10.3·§11.7 内容缓存 | DB 缓存内容 + update content/bump version | 以 §17 决策 18、附录 C.2.1 的 **A2（实时拉不缓存）**为准；git-backed 版本锚点 `git_sha`，不产生 `capability_versions` 行 | 正文与附录矛盾，裁决取附录 |
+| §14.4 `user_gitea_binding` | 待建新表 | 已建表并改名 `user_git_binding` | migration `20260722150010` / `20260722300000` |
+| §15 实施状态 | Stage 2 全量迁移 / Stage 5 下线 V2 | Stage 2 改为手动分批迁移（灰度决策）；Stage 5 未启动（退出条件未满足）。**终态不变** | 灰度落地任务 2026-08-04 |
+
 ---
 
 ## TL;DR
 
 把 `capability_items`（Skill / Subagent / Command / MCP / Plugin 五类能力项）的**内容与版本真相源**从 PostgreSQL 迁移到基于 Gitea 的 Git 仓库；PostgreSQL 退化为运行时索引（缓存 + 业务字段）。每个能力项通过 `source_repo_url + source_repo_path + ref` 获得稳定的唯一可解析地址。**用户中心主权归 costrict-web**（自签 JWT，§6）；Casdoor 退化为多登录源 UI 提供者；Gitea fork 加 JWT 中间件（验证 JWT + 校验 `user_gitea_binding` 状态，账号由 sync worker 在 `user.created` 时 eager 创建，§6）；用户侧行为（csc push / AI agent 代用户 / API 调用）走用户自己 PAT 或 JWT，系统服务侧仅 `costrict-system` 单一 admin PAT 用于 2 个明确场景（capability 索引同步 + 用户生命周期级联，§7.2）。
+
+> **[修正 2026-08-04]** 两处口径以修正为准：① 非 Plugin（skill/subagent/command/mcp）的**内容不落 DB 缓存**——按 §17 决策 18 / 附录 C.2.1 的 A2 方案实时 read-through Gitea，DB 只存 metadata 投影与 Git 坐标；② 「自签 JWT 用户中心主权」已被反向决策，JWT 验证委托 cs-user introspection（main `a863ca2`）。详见「修正记录」。
 
 仓库策略采用**按来源类型混合**：
 
@@ -132,6 +147,8 @@ costrict-skills-repo（外部 git 仓库）
 8. **用户中心主权归 costrict-web**（自签 JWT + 业务字段），**Casdoor 退化为多登录源 UI 提供者**（GitHub OAuth / 短信 / LDAP 等社交登录入口），Gitea fork 加 JWT 中间件验证 costrict-web 签发的 JWT + 校验 `user_gitea_binding` 状态（账号由 sync worker 在 `user.created` 时 eager 创建，§6）；用户/AI 在 costrict-web 与 Gitea 之间通过同域 cookie + JWT 实现 SSO
 9. **发现层走 server REST API**：客户端 / AI 通过 `GET /api/capabilities` 搜索发现，server DB（`capability_items`）是唯一发现索引；不维护人工编辑的派生 Git 索引，Gitea repo description 由用户自行维护。面向 csc 的标准 Marketplace JSON 是可随时重建的安装协议投影，不承担搜索与内容真相源职责
 10. **csc 零代码适配 Plugin**：平台输出 csc 已支持的标准 Marketplace schema，entry 只引用 Git `url` / `git-subdir` source 并固定 commit SHA；csc 不识别 costrict 私有 registry schema，不增加 zip source
+
+> **[修正 2026-08-04]** 目标 2 中「内容字段是 Git 的缓存」不再成立：非 Plugin 内容**不落库**，读取实时走 Gitea raw（A2，§17 决策 18 / 附录 C.2.1）；DB 只作发现索引。目标 8 的「自签 JWT」已反向决策为 cs-user introspection（main `a863ca2`）。
 
 ### 2.2 非目标
 
@@ -318,6 +335,8 @@ gitea.costrict.local/
 ### 4.3 仓库归属规则
 
 > **核心原则**：用户行为产生的 repo（自建 / fork）**一律自动归属到 `u-<username>/` 个人 namespace**；`costrict-*` 四个固定 org 只能由 admin 维护，是**官方资产 / 官方印章**——`costrict/` 与 public/private 无关，仅表示"admin 已审核背书"。用户在自己 namespace 下默认就 public，可被发现 / 被 fork / 被下发；升级为"官方认证"才走 §4.8 PR 流程。
+
+> **[修正 2026-08-04]** `u-` 前缀从未落地：实现为裸 cs-user `short_id`（`server/internal/gitsync/user_provision.go:166`），存量 Gitea 账号与仓库均按此建立，本节及下表中 `u-<username>` 一律按 `<short_id>` 读；KB 团队空间另有 `t-<team>` 前缀。§6.5 基于 `u-` 前缀的长度/字符约束推导随之悬空。归属原则（用户 repo 落个人 namespace、官方 org 仅 admin）不变。
 
 **归属矩阵**：
 
@@ -595,17 +614,19 @@ metadata:
 
 ### 5.3 CapabilityItem 字段映射
 
+> **[修正 2026-08-04]** 下表 `Content` / `Slug` / `Metadata` 三行按实测改值（原口径：Content=「frontmatter 之外的部分；plugin 类为空」、Slug=frontmatter `slug`、Metadata=frontmatter `metadata` 子键）。修正理由：csc 将 `content` 字段逐字节落盘为 SKILL.md 并从**文件内 frontmatter** 读取 description / `disable-model-invocation` 等运行时字段——按原口径剥离 frontmatter 不会报错，而是**静默降级**（skill 装载成功但对模型不可见、invokeMode 失效）；且 frontmatter 从无序的 metadata JSONB 重建必然漂移，产生假 diff。
+
 | CapabilityItem 字段 | 来源 |
 |---|---|
-| `Slug` | frontmatter `slug` |
+| `Slug` | `InferSlug(sourcePath)`（路径推导，非 frontmatter `slug`） |
 | `ItemType` | frontmatter `type` 或目录 |
 | `Name` | frontmatter `name` |
 | `Description` / `Descriptions` | frontmatter `description` / `descriptions` |
 | `Category` | frontmatter `category` |
 | `Version` | frontmatter `version` |
-| `Content` | 顶层 metadata 文件正文（frontmatter 之外的部分；plugin 类为空） |
+| `Content` | 顶层 metadata 文件**完整原文（含 frontmatter）**；plugin 类为合成 manifest markdown（`synthesizePluginContent`）。git-backed 行不落 DB，由 read-through 实时填充响应字段 |
 | `ContentMD5` | server 同步时计算 |
-| `Metadata` | frontmatter `metadata` |
+| `Metadata` | 整个 frontmatter map |
 | `SourceRepoUrl` | repo URL（kind 决定形态） |
 | `SourceRepoPath` | **能力项顶层 metadata 文件**的 repo-relative path |
 | `SourceRepoRef` | git ref（默认 main） |
@@ -677,6 +698,8 @@ pack 中的 Plugin 使用目录 source：
 ## 6. 认证集成（costrict-web 用户中心 + fork Gitea JWT 中间件）
 
 > v3 方案：用户中心主权归 **costrict-web**（含 username / email / 密码 / 业务字段全部自主管理），Casdoor 退化为多登录源 UI 提供者，Gitea fork 加 JWT 认证中间件实现用户自动创建与同步。详见 `IDENTITY_FEDERATION_DECISION.md`。
+
+> **[修正 2026-08-04]** 本章「costrict-web 自签 JWT + 用户中心主权」方向已被反向决策：JWT 验证委托 **cs-user introspection endpoint**（main `a863ca2`；`3f83631`/`a9326d9` 移除 `JWT_SIGN_MODE`/`JWT_SELF_SIGN_ENABLED`），身份论述以 cs-user 为准。**fork Gitea 的 CoStrictJWT 中间件已实现并在用（2026-08-02 确认），该部分仍然有效。**
 
 ### 6.1 角色分工
 
@@ -1203,6 +1226,8 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
 
 **全程 0 次 exec git 命令**。server 容器只依赖标准库 HTTP client + Gitea PAT。
 
+> **[修正 2026-08-04]** 上图「修改：update content + bump version」不再成立：git-backed 非 Plugin **不回写 `content`、不递增 revision、不产生 `capability_versions` 行**；sync 只更新 metadata 投影（name/description/version/tags）与 Git 坐标（`git_sha` 等），内容读取一律走 A2 实时 read-through（§17 决策 18 / 附录 C.2.1），版本锚点为 `git_sha`。
+
 > **关键简化**：由于能力项粒度 = 顶层 metadata 文件，单次 push 即使改了大量子文件（plugin 内重写、批量改 skill），server 也只拉顶层 metadata。子文件改动对 DB 索引透明，但 commit SHA 仍会更新，并作为 Plugin Marketplace source 的不可变 `sha`。因此，同一 commit 内修改 Plugin 运行时内容但不修改 metadata 时，projector 仍会发布新的 source SHA。
 
 ### 10.4 幂等与一致性
@@ -1338,6 +1363,8 @@ AI / 用户 / 上游 mirror  ──push──►  内容 repo
 - sync worker（post-merge webhook 触发）：拉能力项内容 → 写 `capability_items` 主表数据
 - capability-check worker（PR webhook 触发）：拉文件结构 → 写 `health_issues` + `identification_status`
 - 两者共享 Gitea API client 与启发式识别规则模块，但是独立 worker，独立触发
+
+> **[修正 2026-08-04]** 第一条中「拉能力项内容 → 写主表」限于 **metadata 投影与 Git 坐标**；git-backed 非 Plugin 的 `content` 不落主表，读取走 A2 实时 read-through（见 §10.3 修正标注）。
 
 ### 11.8 告警与通知
 
@@ -2117,6 +2144,11 @@ Stage 5：下线旧通道与清理（1 周）
 | fork Gitea 改动 | - | ~400 行（auth_jwt.go + 全局 pre-receive hook + 注册） | §17 第 15 行 / 本附录 C.2.4 |
 
 ---
+
+## 存量内容清理约束
+
+保留 `--clear-stale-content`：默认 dry-run，仅 selected git-backed rows；真实 Git
+read-through 成功后才清理；CAS/bypass 单语句保护并有专测，绝不接入自动化调度。
 
 ## v4 vs v3 章节对照
 

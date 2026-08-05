@@ -302,7 +302,13 @@ token 安全：API 走 `Authorization` header；git 走**按 host 限定**的 `h
 
 ---
 
-## 7. ⚠️ 导入的副作用：discovery 会把每个 mirror 当成新的能力源
+## 7. ⚠️ 导入前必配：discovery 的双层防御
+
+导入 mirror 前必须在 **api 与 worker** 同时配置 `PLUGIN_GIT_MIRROR_OWNER`（默认
+`costrict-plugins-repo`）以及 `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`（默认空）。
+ingress/API 层用 owner 排除规则阻止 mirror 被重复发现，worker 层再次执行同一排除，
+避免配置漂移或绕过入口后产生重复能力项。不要用“无排除开关”或停 hook 的方式规避；
+导入前先发布配置并滚动重启 api、worker，再执行本脚本。
 
 **这是导入前必须做决策的一条，不是注意事项。**
 
@@ -315,10 +321,28 @@ Gitea 的 system webhook 是**服务器级**的，push 到**任何**仓库都会
 
 按 309 个 MATCH 仓库估算，全量导入会额外产生**数千条** capability 行。
 
-**处置（导入前二选一）**：
+**处置：配置 owner 排除（这是现在的正确做法）**
 
-1. **导入期间不让 webhook 生效**（推荐）：确认目标 Gitea 上没有指向本平台的 system webhook（或临时移除），导完再恢复。`GIT_SYSTEM_WEBHOOK_BASE_URL` 为空时 worker 的 webhook reconciler 直接禁用，不会注册。
-2. **接受并事后清理**：导完后按 `source_repo_url LIKE '<gitea>/<owner>/%'` 找出这批行，确认它们不是想要的产物再删（含 `item_tags` / `capability_versions` / `capability_assets` 子行）。
+mirror 仓库的定位是**给 fork 探测用的内容源**，不是「一个待索引的能力仓库」。平台现在有对应的开关，
+导入前配好即可，不需要靠停 webhook 绕过：
+
+```
+PLUGIN_GIT_MIRROR_OWNER=costrict-plugins-repo
+GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS=costrict-plugins-repo
+```
+
+排除在 **ingress/API 层与 worker 层各执行一次**——两层用的是同一份策略，所以既挡得住 webhook 入口，
+也挡得住绕过入口直接入队的路径，不会因为某一层漏配而产生重复能力项。
+
+**备选（只在无法改配置时用）**：
+
+1. 导入期间不让 webhook 生效：确认目标 Gitea 上没有指向本平台的 system webhook（或临时移除），导完再恢复。
+   `GIT_SYSTEM_WEBHOOK_BASE_URL` 为空时 worker 的 webhook reconciler 直接禁用，不会注册。
+2. 接受并事后清理：导完后按 `source_repo_url LIKE '<gitea>/<owner>/%'` 找出这批行，
+   确认它们不是想要的产物再删（含 `item_tags` / `capability_versions` / `capability_assets` 子行）。
+
+⚠️ 备选方案 1 的代价是**导入窗口内所有仓库的正常 push 都不会被索引**，不只是 mirror 那批；
+方案 2 则要求你事后能准确区分「导入产生的」与「本来就该有的」。所以优先配排除开关。
 
 导入前后都记一次数，别靠感觉：
 
@@ -326,8 +350,6 @@ Gitea 的 system webhook 是**服务器级**的，push 到**任何**仓库都会
 SELECT count(*) FROM capability_items WHERE content_backend='git';
 SELECT count(*) FROM capability_items WHERE item_type='plugin';
 ```
-
-> mirror 仓库的定位是**给 fork 探测用的内容源**，不是「一个待索引的能力仓库」。平台目前没有「这个 namespace 不参与 discovery」的开关——这是本轮记录下来的设计缺口，处置方式先按上面两条走。
 
 ---
 
