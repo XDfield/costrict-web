@@ -911,6 +911,45 @@ func ensureGitCapabilityReconciliationBinding(
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository owner: %w", err)
 	}
+	// V4 keeps legacy/public capability rows on the virtual repo id
+	// ("public"), while git_capability_repositories.repository_id is a real
+	// UUID FK. Never pass that virtual identifier to PostgreSQL. Reuse a
+	// projection with the same stable name when present; otherwise create one
+	// solely as the repository-level binding target. The registry identity is
+	// intentionally left untouched and remains the item's UUID registry.
+	if _, parseErr := uuid.Parse(repositoryID); parseErr != nil {
+		projectionName := discoveredRepositoryName(serverID, repo.ID)
+		var projection models.Repository
+		findErr := tx.Where("name = ?", projectionName).First(&projection).Error
+		if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("load repository projection: %w", findErr)
+		}
+		if errors.Is(findErr, gorm.ErrRecordNotFound) {
+			projection = models.Repository{ID: uuid.NewString(), Name: projectionName, DisplayName: repo.FullName,
+				Description: "Discovered from " + repoURL, Visibility: "public", RepoType: "sync", OwnerID: ownerID}
+			if repo.Private {
+				projection.Visibility = "private"
+			}
+			if err := tx.SavePoint("git_projection_create").Error; err != nil {
+				return nil, err
+			}
+			if err := tx.Create(&projection).Error; err != nil {
+				if !isUniqueConstraintError(err) {
+					return nil, fmt.Errorf("create repository projection: %w", err)
+				}
+				if rbErr := tx.RollbackTo("git_projection_create").Error; rbErr != nil {
+					return nil, rbErr
+				}
+				if reloadErr := tx.Where("name = ?", projectionName).First(&projection).Error; reloadErr != nil {
+					return nil, fmt.Errorf("reload repository projection after conflict: %w", reloadErr)
+				}
+			}
+		}
+		repositoryID = projection.ID
+		if err := syncDiscoveredRepositoryOwnerMembership(tx, repositoryID, ownerID, strings.Split(repo.FullName, "/")[0]); err != nil {
+			return nil, err
+		}
+	}
 	visibility := "public"
 	if repo.Private {
 		visibility = "private"
@@ -923,8 +962,22 @@ func ensureGitCapabilityReconciliationBinding(
 		LastSyncedCommit: headSHA, LastSyncedAt: &now, CreatedBy: ownerID,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	if err := tx.SavePoint("git_binding_create").Error; err != nil {
+		return nil, err
+	}
 	if err := tx.Create(&binding).Error; err != nil {
-		return nil, fmt.Errorf("create Git capability repository binding for reconciliation: %w", err)
+		if !isUniqueConstraintError(err) {
+			return nil, fmt.Errorf("create Git capability repository binding for reconciliation: %w", err)
+		}
+		if rbErr := tx.RollbackTo("git_binding_create").Error; rbErr != nil {
+			return nil, rbErr
+		}
+		if reloadErr := tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, repo.ID).First(&binding).Error; reloadErr != nil {
+			return nil, fmt.Errorf("reload Git capability repository binding after conflict: %w", reloadErr)
+		}
+		if binding.RepositoryID != repositoryID || binding.RegistryID != registryID {
+			return nil, fmt.Errorf("Git capability repository binding conflict has inconsistent projection/registry: got repository=%q registry=%q want repository=%q registry=%q", binding.RepositoryID, binding.RegistryID, repositoryID, registryID)
+		}
 	}
 	return &binding, nil
 }

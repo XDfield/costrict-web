@@ -10,8 +10,91 @@ import (
 
 	"github.com/costrict/costrict-web/server/internal/gitsync"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+func TestEnsureGitCapabilityReconciliationBinding_ProjectsLegacyPublicRepoID(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	seedGitDiscoveryOwner(t, db)
+	bound := []models.CapabilityItem{
+		{RepoID: "public", RegistryID: "registry-legacy"},
+		{RepoID: "public", RegistryID: "registry-legacy"},
+	}
+	repo := &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}}
+	now := time.Now().UTC()
+	var first *models.GitCapabilityRepository
+	err := db.Transaction(func(tx *gorm.DB) error {
+		owner := newGitCapabilityOwnerResolver(tx, gitCapabilityTestServerID, 1001, "alice")
+		var err error
+		first, err = ensureGitCapabilityReconciliationBinding(tx, gitCapabilityTestServerID, repo, "https://git.example/alice/capabilities", "main", gitCapabilityTestSHA, "standalone", owner, bound, now)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("ensure legacy binding: %v", err)
+	}
+	if _, err := uuid.Parse(first.RepositoryID); err != nil {
+		t.Fatalf("repository_id = %q is not UUID: %v", first.RepositoryID, err)
+	}
+	if first.RepositoryID == "public" || first.RegistryID != "registry-legacy" {
+		t.Fatalf("unexpected binding identities: %+v", first)
+	}
+	var projection models.Repository
+	if err := db.First(&projection, "id = ?", first.RepositoryID).Error; err != nil {
+		t.Fatalf("load projection: %v", err)
+	}
+	if projection.OwnerID != "user-alice" || projection.Name == "" {
+		t.Fatalf("unexpected projection: %+v", projection)
+	}
+	var ownerMembers []models.RepoMember
+	if err := db.Where("repo_id = ? AND user_id = ? AND role = ?", first.RepositoryID, "user-alice", "owner").Find(&ownerMembers).Error; err != nil {
+		t.Fatalf("load projection owner membership: %v", err)
+	}
+	if len(ownerMembers) != 1 || ownerMembers[0].Username != "alice" {
+		t.Fatalf("projection owner memberships = %+v, want exactly alice owner", ownerMembers)
+	}
+	var ownerCount int64
+	if err := db.Model(&models.RepoMember{}).Where("repo_id = ? AND role = ?", first.RepositoryID, "owner").Count(&ownerCount).Error; err != nil {
+		t.Fatalf("count projection owners: %v", err)
+	}
+	if ownerCount != 1 {
+		t.Fatalf("projection owner count = %d, want 1", ownerCount)
+	}
+	var second *models.GitCapabilityRepository
+	err = db.Transaction(func(tx *gorm.DB) error {
+		owner := newGitCapabilityOwnerResolver(tx, gitCapabilityTestServerID, 1001, "alice")
+		var err error
+		second, err = ensureGitCapabilityReconciliationBinding(tx, gitCapabilityTestServerID, repo, "https://git.example/alice/capabilities", "main", gitCapabilityTestSHA, "standalone", owner, bound, now.Add(time.Minute))
+		return err
+	})
+	if err != nil || second.ID != first.ID || second.RepositoryID != first.RepositoryID || second.RegistryID != first.RegistryID {
+		t.Fatalf("reconciliation not idempotent: first=%+v second=%+v err=%v", first, second, err)
+	}
+}
+
+func TestEnsureGitCapabilityReconciliationBinding_PreservesUUIDRepoID(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	seedGitDiscoveryOwner(t, db)
+	repoID := uuid.NewString()
+	if err := db.Create(&models.Repository{ID: repoID, Name: "existing-projection", DisplayName: "Existing", OwnerID: "user-alice", RepoType: "sync"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	bound := []models.CapabilityItem{{RepoID: repoID, RegistryID: "registry-uuid"}}
+	repo := &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}}
+	var binding *models.GitCapabilityRepository
+	err := db.Transaction(func(tx *gorm.DB) error {
+		owner := newGitCapabilityOwnerResolver(tx, gitCapabilityTestServerID, 1001, "alice")
+		var err error
+		binding, err = ensureGitCapabilityReconciliationBinding(tx, gitCapabilityTestServerID, repo, "https://git.example/alice/capabilities", "main", gitCapabilityTestSHA, "standalone", owner, bound, time.Now().UTC())
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.RepositoryID != repoID {
+		t.Fatalf("UUID repository identity changed: got %q want %q", binding.RepositoryID, repoID)
+	}
+}
 
 func seedGitDiscoveryOwner(t *testing.T, db *gorm.DB) {
 	t.Helper()
