@@ -881,6 +881,47 @@ func TestGitCapabilitySyncService_MissingDefaultBranchOnNonDeletionRetriesInstea
 	}
 }
 
+func TestGitCapabilitySyncService_MissingRepositoryArchivesItemsAndDeletesBinding(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	item := newGitCapabilityItem("item-repo-missing", "repo-repo-missing", "skill", "skill", "SKILL.md")
+	createGitCapabilityItem(t, db, item)
+	hidden := item
+	hidden.ID = "item-repo-missing-hidden"
+	hidden.Status = "archived"
+	hidden.RepoID = "repo-repo-missing-hidden"
+	hidden.SourceRepoPath = "OTHER.md"
+	createGitCapabilityItem(t, db, hidden)
+	if err := db.Exec(`INSERT INTO git_capability_repositories
+		(id, git_server_id, git_repo_id, repository_id, registry_id, full_name, repo_kind, identification_status, visibility, git_remote_url, default_branch, last_synced_commit, last_error, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"binding-missing", gitCapabilityTestServerID, gitCapabilityTestRepoID, "repository-binding", "registry-binding", "alice/capabilities", "standalone", "identified", "public", "https://git/repo", "main", "", "", "test", time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	reader := newGitCapabilityReader(map[string][]byte{})
+	reader.repo = nil
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-repo-missing", "lease-repo-missing"))
+	if err != nil {
+		t.Fatalf("missing repository should converge successfully: %v", err)
+	}
+	if result.Archived != 1 {
+		t.Errorf("archived = %d, want 1", result.Archived)
+	}
+	if after := loadGitCapabilityItem(t, db, item.ID); after.Status != "archived" || after.GitSyncStatus != gitCapabilitySyncOrphaned {
+		t.Errorf("missing repository item projection: %+v", after)
+	}
+	if after := loadGitCapabilityItem(t, db, hidden.ID); after.Status != "archived" || after.GitSyncStatus == gitCapabilitySyncOrphaned {
+		t.Errorf("human-hidden item was resurrectible: %+v", after)
+	}
+	var count int64
+	if err := db.Model(&models.GitCapabilityRepository{}).Where("git_server_id = ? AND git_repo_id = ?", gitCapabilityTestServerID, gitCapabilityTestRepoID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("missing repository binding count = %d, want 0", count)
+	}
+}
+
 func seedTenantGitServer(t *testing.T, db *gorm.DB, tenantID string) {
 	t.Helper()
 	if err := db.Exec(

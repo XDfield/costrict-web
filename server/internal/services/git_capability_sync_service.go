@@ -195,7 +195,7 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		return nil, fmt.Errorf("load repository %d: %w", repoID, err)
 	}
 	if repo == nil {
-		return nil, fmt.Errorf("repository %d no longer exists (delivery reported %q)", repoID, repoFullName)
+		return s.archiveGitCapabilitiesForMissingRepository(ctx, cfg.ServerID, repoID, lease, boundItems)
 	}
 	if repo.ID != repoID {
 		return nil, fmt.Errorf("repository identity mismatch: requested=%d api=%d", repoID, repo.ID)
@@ -416,6 +416,53 @@ func (s *GitCapabilitySyncService) SyncRepository(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("commit Git capability index: %w", err)
+	}
+	return result, nil
+}
+
+// archiveGitCapabilitiesForMissingRepository converges a deleted upstream
+// repository to a terminal state. Item archival and binding removal share the
+// lease-fenced transaction so a reclaimed worker cannot partially apply this
+// transition.
+func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingRepository(
+	ctx context.Context,
+	serverID string,
+	repoID int64,
+	lease GitCapabilitySyncLease,
+	items []models.CapabilityItem,
+) (*GitCapabilitySyncResult, error) {
+	result := &GitCapabilitySyncResult{}
+	now := time.Now()
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := assertGitCapabilityLease(tx, lease); err != nil {
+			return err
+		}
+		for _, item := range items {
+			updated := tx.Set(models.GitSyncBypassSetting, true).
+				Model(&models.CapabilityItem{}).
+				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
+					item.ID, "git", serverID, repoID).
+				Updates(map[string]any{
+					"status":             gitCapabilityArchiveStatus(),
+					"git_last_synced_at": now,
+					"git_sync_status":    gitCapabilityArchiveSyncStatus(),
+					"git_sync_error":     "",
+				})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return fmt.Errorf("Git-backed item %s changed identity during repository archival", item.ID)
+			}
+			if !isGitCapabilityHiddenStatus(item.Status) {
+				result.Archived++
+			}
+		}
+		return tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, repoID).
+			Delete(&models.GitCapabilityRepository{}).Error
+	})
+	if err != nil {
+		return nil, fmt.Errorf("archive Git capabilities for missing repository: %w", err)
 	}
 	return result, nil
 }
