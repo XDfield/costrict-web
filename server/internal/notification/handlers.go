@@ -228,6 +228,7 @@ func AdminDeleteSystemChannelHandler(svc *NotificationService) gin.HandlerFunc {
 //	@Failure		400		{object}	object{error=string}
 //	@Failure		401		{object}	object{error=string}
 //	@Failure		500		{object}	object{error=string}
+//	@Security		BearerAuth
 //	@Router			/admin/announcements [post]
 func AdminBroadcastAnnouncementHandler(svc *NotificationService) gin.HandlerFunc {
 	return func(c *gin.Context) {

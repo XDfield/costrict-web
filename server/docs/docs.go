@@ -25,6 +25,11 @@ const docTemplate = `{
     "paths": {
         "/admin/announcements": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Send an in-app announcement to all users / an organization / a single user (platform admin only). Optionally also pushes to recipients' external channels.",
                 "consumes": [
                     "application/json"
@@ -409,6 +414,11 @@ const docTemplate = `{
         },
         "/admin/distributions": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "List distributions across all distributors with status/scope/search filters and pagination. Platform admin only.",
                 "produces": [
                     "application/json"
@@ -483,6 +493,11 @@ const docTemplate = `{
         },
         "/admin/distributions/{id}/receipts": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "List all receipts for a distribution (unread/read/accepted/dismissed). Platform admin only.",
                 "produces": [
                     "application/json"

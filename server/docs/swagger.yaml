@@ -3396,6 +3396,8 @@ paths:
               error:
                 type: string
             type: object
+      security:
+      - BearerAuth: []
       summary: Broadcast an announcement
       tags:
       - admin/announcements
@@ -3634,6 +3636,8 @@ paths:
               error:
                 type: string
             type: object
+      security:
+      - BearerAuth: []
       summary: List all distributions (platform admin)
       tags:
       - distributions
@@ -3666,6 +3670,8 @@ paths:
               error:
                 type: string
             type: object
+      security:
+      - BearerAuth: []
       summary: List distribution receipts (platform admin)
       tags:
       - distributions

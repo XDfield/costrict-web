@@ -227,6 +227,7 @@ func atoiDefault(s string, def int) int {
 // @Param        pageSize  query     int     false  "Page size (default 20)"
 // @Success      200  {object}  object{distributions=[]models.ItemDistribution,total=int}
 // @Failure      500  {object}  object{error=string}
+// @Security     BearerAuth
 // @Router       /admin/distributions [get]
 func (h *DistributionHandler) ListAllDistributions(c *gin.Context) {
 	f := services.DistributionListFilter{
@@ -252,6 +253,7 @@ func (h *DistributionHandler) ListAllDistributions(c *gin.Context) {
 // @Param        id   path      string  true  "Distribution ID"
 // @Success      200  {object}  object{receipts=[]models.ItemDistributionReceipt}
 // @Failure      500  {object}  object{error=string}
+// @Security     BearerAuth
 // @Router       /admin/distributions/{id}/receipts [get]
 func (h *DistributionHandler) ListDistributionReceipts(c *gin.Context) {
 	receipts, err := h.distSvc.ListReceipts(c.Request.Context(), c.Param("id"))
