@@ -3948,6 +3948,11 @@ const docTemplate = `{
         },
         "/api/admin/git-capability-repositories/{git_repo_id}/resync": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],

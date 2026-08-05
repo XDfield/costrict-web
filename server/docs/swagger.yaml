@@ -5927,6 +5927,8 @@ paths:
               error:
                 type: string
             type: object
+      security:
+      - BearerAuth: []
       summary: Queue a Git capability repository resync
       tags:
       - git-capability-sync

@@ -25,6 +25,7 @@ func NewGitCapabilityResyncAPI(db *gorm.DB) *GitCapabilityResyncAPI {
 // @Summary Queue a Git capability repository resync
 // @Tags git-capability-sync
 // @Produce json
+// @Security BearerAuth
 // @Param git_repo_id path integer true "Numeric Git repository id"
 // @Success 202 {object} object{status=string,job_id=string,duplicate=bool}
 // @Failure 401 {object} object{error=string}
