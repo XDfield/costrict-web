@@ -435,3 +435,30 @@ func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 		t.Fatalf("GET requests = %d, want 3", getCount)
 	}
 }
+
+func TestEnsureSystemPushWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) {
+	getCount := 0
+	mutationCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			mutationCount++
+			http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+			return
+		}
+		getCount++
+		w.Header().Set("X-Total-Count", "0")
+		_ = json.NewEncoder(w).Encode([]giteaSystemHook{
+			desiredSystemHook(1, "gs-2", "https://other.example/hook", "other"),
+		})
+	}))
+	defer server.Close()
+
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
+	if err == nil || !strings.Contains(err.Error(), "inconsistent") {
+		t.Fatalf("ensure error = %v, want explicit inconsistent listing error", err)
+	}
+	if getCount != 1 || mutationCount != 0 {
+		t.Fatalf("requests: GET=%d mutations=%d, want GET=1 mutations=0", getCount, mutationCount)
+	}
+}

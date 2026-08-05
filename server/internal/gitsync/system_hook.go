@@ -154,7 +154,10 @@ func (c *Client) listSystemHooks(ctx context.Context) ([]giteaSystemHook, error)
 			seen[hook.ID] = struct{}{}
 			all = append(all, hook)
 		}
-		if len(all) >= total {
+		if len(all) > total {
+			return nil, fmt.Errorf("gitsync: system webhook listing inconsistent: collected %d unique hooks but X-Total-Count is %d", len(all), total)
+		}
+		if len(all) == total {
 			return all, nil
 		}
 		if len(hooks) == 0 {
