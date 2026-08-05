@@ -220,8 +220,13 @@ func (c *Client) deleteSystemHook(ctx context.Context, hookID int64) error {
 }
 
 func systemHookIsDesired(current giteaSystemHook, desired giteaSystemHookRequest) bool {
-	nameOK := current.Name == desired.Name || (current.Name == "" && managedSystemHookMarker(current.Config["url"]) == desired.Name)
-	return nameOK &&
+	// Gitea 1.24 list responses omit secret and name (the marker is only
+	// available in the URL). A nameless managed hook must therefore be
+	// re-written on every ensure so PATCH restores the complete desired state.
+	if current.Name == "" {
+		return false
+	}
+	return current.Name == desired.Name &&
 		current.Type == desired.Type &&
 		current.Active == desired.Active &&
 		current.Config["url"] == desired.Config["url"] &&

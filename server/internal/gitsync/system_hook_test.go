@@ -313,8 +313,8 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if len(fake.mutations) != 1 || fake.mutations[0] != "delete" {
-		t.Fatalf("mutations = %v, want one delete", fake.mutations)
+	if len(fake.mutations) != 2 || fake.mutations[0] != "update" || fake.mutations[1] != "delete" {
+		t.Fatalf("mutations = %v, want update then delete", fake.mutations)
 	}
 	if len(fake.hooks) != 2 || fake.hooks[0].ID != 2 || fake.hooks[1].ID != 5 {
 		t.Fatalf("remaining hooks = %+v", fake.hooks)
@@ -324,7 +324,7 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	markedTarget := managedSystemHookURL(target, managedSystemHookName("gs-1", "new"))
-	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{
+	fake := &fakeSystemHookGitea{nullNames: true, hooks: []giteaSystemHook{
 		{ID: 2, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": markedTarget, "content_type": "json", "secret": "old"}},
 		{ID: 3, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true, Config: map[string]string{"url": markedTarget, "content_type": "json", "secret": "old"}},
 		{ID: 8, Name: "", Type: systemHookTypeGitea, Active: true, Events: []string{"issues"}, IsSystemWebhook: true, Config: map[string]string{"url": target + "/other", "content_type": "json"}},
@@ -335,18 +335,18 @@ func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) 
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.hooks) != 2 || fake.hooks[0].Name != "" {
+	if len(fake.hooks) != 2 || fake.hooks[0].Name != managedSystemHookName("gs-1", "new") {
 		t.Fatalf("hooks=%+v", fake.hooks)
 	}
-	if len(fake.mutations) != 1 || fake.mutations[0] != "delete" {
+	if len(fake.mutations) != 2 || fake.mutations[0] != "update" || fake.mutations[1] != "delete" {
 		t.Fatalf("mutations=%v", fake.mutations)
 	}
 	fake.mutations = nil
 	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.mutations) != 0 {
-		t.Fatalf("second ensure mutations=%v", fake.mutations)
+	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
+		t.Fatalf("second ensure mutations=%v, want one update", fake.mutations)
 	}
 }
 
